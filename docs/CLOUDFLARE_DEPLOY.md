@@ -19,11 +19,11 @@ Workers Buildsへ以下を設定します。
 Worker name:       moyo-garden
 Production branch: main
 Root directory:    /
-Build command:     npm run check
+Build command:     npm run build
 Deploy command:    npx wrangler deploy
 ```
 
-Worker名は`wrangler.jsonc`の`name`と同じ `moyo-garden` にします。Cloudflareは通常、Workers Builds用API tokenを自動生成します。
+`npm run build`はTypeScript型検査に加え、ブラウザ3Dクライアントと詳細モデル拡張の構文・静的検査を行います。Worker名は`wrangler.jsonc`の`name`と同じ `moyo-garden` にします。Cloudflareは通常、Workers Builds用API tokenを自動生成します。
 
 非production branch buildは最初はOFFを推奨します。Durable Objectsを実装するWorkerには通常のpreview URLが生成されないため、preview環境は後で別Worker名・別DO namespaceとして追加します。
 
@@ -55,8 +55,8 @@ OPEN_COMMANDS      = false
 設定を保存してDeployします。以後、`main`へpushされるたびに次がCloudflare側で実行されます。
 
 ```text
-npm install
-npm run check
+bun install
+npm run build
 npx wrangler deploy
 ```
 
@@ -65,15 +65,15 @@ npx wrangler deploy
 ## 5. 動作確認
 
 ```bash
-curl https://moyo-garden.YOUR_SUBDOMAIN.workers.dev/api/meta
-curl 'https://moyo-garden.YOUR_SUBDOMAIN.workers.dev/api/health?region=garden-1'
+curl https://moyo.bluemoon.works/api/meta
+curl 'https://moyo.bluemoon.works/api/health?region=garden-1'
 ```
 
-ブラウザでworkers.dev URLを開くと3Dクライアントが表示されます。
+ブラウザで `https://moyo.bluemoon.works` を開くと3Dクライアントが表示されます。
 
 ## 6. カスタムドメイン
 
-Workerの **Settings > Domains & Routes** から設定します。Static AssetsとAPIを同じオリジンで提供するため、CORSやWebSocket URLを追加変更する必要はありません。
+`wrangler.jsonc`のCustom Domain routeに `moyo.bluemoon.works` を設定しています。Static AssetsとAPIを同じオリジンで提供するため、CORSやWebSocket URLを追加変更する必要はありません。
 
 ## 7. ロールバック
 
