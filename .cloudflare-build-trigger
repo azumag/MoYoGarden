@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-triggered_at: 2026-08-31T07:29:23+09:00
-reason: retrigger production build after Cloudflare Git integration setup
-nonce: 20260831-072923-jst
+release: detailed-3d-models-and-middle-mouse-pan
+reason: deploy the procedural model detail upgrade and camera navigation changes
+nonce: detail-renderer-v1
