@@ -8,7 +8,7 @@ AIエージェントや機械BOTが住民として行動し、集落・物流・
 - SQLite-backed Durable Objectへの永続化
 - 10秒単位の決定論的シミュレーション
 - REST API / WebSocket / MCPブリッジ
-- 外部ライブラリ不要のWebGL 2ブラウザ3Dクライアント
+- Three.jsをビルド時に自己ホストするglTF/PBRブラウザ3Dクライアント
 - 同じAPIを利用するGodot 4のネイティブ3Dクライアント
 - Cloudflare Workers BuildsによるGitHub連動デプロイ
 
@@ -16,20 +16,22 @@ AIエージェントや機械BOTが住民として行動し、集落・物流・
 
 3勢力12体のBOTが、木材・石材・食料を集め、キャンプ、倉庫、市場、工房を自律建築します。人間・ルールBOT・LLM・MCPクライアントは、すべて同じCommand APIから移動、採集、建築、運搬、取引、目標変更を指示します。
 
-ブラウザ版では、起伏と水面を持つ地形、複数本からなる森林、岩石群、果実の茂み、建物ごとの外観、職業別装備を持つBOTを手続き生成した3D空間で観測できます。左クリックでBOTを選択し、右クリックで移動命令を送ります。
+ブラウザ版では、自己完結型GLBの住民・樹木・岩・建物、metallic-roughness PBRマテリアル、環境光、ソフトシャドウ、水面、3段階LODを使って永続ワールドを描画します。BOTの職業装備や歩行アニメーションも表示し、左クリックで選択、右クリックで移動命令を送れます。
+
+レンダリング構成とLOD距離は [`docs/RENDERING.md`](docs/RENDERING.md) にあります。
 
 ## 3D画面の操作
 
 | 操作 | 内容 |
 |---|---|
 | 左ボタンを押しながらドラッグ | カメラ回転 |
-| ホイールボタンを押しながらドラッグ | カメラ基準で前後左右へ平行移動 |
+| ホイールボタンを押しながらドラッグ | 地図をつかむ感覚で前後左右へ平行移動 |
 | マウスホイール | ズーム |
 | 左クリック | BOT選択 |
 | 右クリック | 選択中BOTへの移動命令 |
 | `W` `A` `S` `D` | カメラ基準で平行移動 |
 
-ホイールボタンのドラッグはWASDと同じ向きで移動します。上へドラッグすると前進、下へドラッグすると後退、左右へのドラッグで横移動します。
+ホイールボタンのドラッグ方向は旧版から反転しています。地図を右へドラッグするとカメラは左へ、上へドラッグするとカメラは後方へ移り、地図そのものをつかんで動かす感覚になります。
 
 ## ローカル起動
 
@@ -47,7 +49,7 @@ npm run dev
 npm run verify
 ```
 
-検証には、決定論的シミュレーション、文明ループ、局所知覚、取引、認証、Durable Object休止後のコマンド復元、詳細3Dクライアントの構文・静的検査が含まれます。
+検証には、決定論的シミュレーション、文明ループ、局所知覚、取引、認証、Durable Object休止後のCommand復元に加え、ブラウザモジュールの構文、import map、GLB構造、PBRマテリアル、LOD、影生成、外部CDN非依存の検査が含まれます。
 
 ## Cloudflareへ自動デプロイ
 
@@ -62,6 +64,8 @@ Root directory:    /
 Build command:     npm run build
 Deploy command:    npx wrangler deploy
 ```
+
+`npm run build`は、TypeScript型検査、4つのGLB生成、固定バージョンのThree.jsランタイム配置、ブラウザJavaScript構文検査、GLB/PBR/LOD/影設定の静的検査を行います。
 
 本番のSecretとして、異なる長い値を設定します。
 
@@ -134,9 +138,9 @@ node tools/mcp.mjs
 - 1領域を1 Durable Objectへ割り当てる
 - WebSocket Hibernation APIを使い、接続中のアイドル課金を避ける
 - コマンドキューもSQLiteへ保存し、DOの休止・再生成で命令を失わない
-- 静的3Dクライアントは外部CDN・外部画像素材なし
+- 3Dクライアントは外部CDNへ依存せず、GLBとThree.jsをCloudflare Static Assetsから配信する
 
-詳しくは [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) を参照してください。
+詳しくは [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) と [`docs/RENDERING.md`](docs/RENDERING.md) を参照してください。
 
 ## 現在のMVP外
 
