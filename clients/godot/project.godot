@@ -1,0 +1,19 @@
+; MoYoGarden native 3D observer/client
+; Open with Godot 4.4 or later.
+config_version=5
+
+[application]
+config/name="MoYoGarden 3D"
+run/main_scene="res://Main.tscn"
+
+[display]
+window/size/viewport_width=1440
+window/size/viewport_height=900
+window/size/window_width_override=1440
+window/size/window_height_override=900
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.055, 0.105, 0.085, 1)

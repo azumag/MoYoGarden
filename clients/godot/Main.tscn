@@ -1,0 +1,97 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="WorldRoot" type="Node3D" parent="."]
+
+[node name="CameraRig" type="Node3D" parent="."]
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig"]
+current = true
+fov = 45.0
+near = 0.1
+far = 180.0
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-55, -35, 0)
+light_color = Color(0.91, 1, 0.84, 1)
+light_energy = 1.15
+shadow_enabled = true
+
+[node name="Fill" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-25, 145, 0)
+light_color = Color(0.37, 0.56, 0.72, 1)
+light_energy = 0.35
+
+[node name="HTTPRequest" type="HTTPRequest" parent="."]
+timeout = 8.0
+
+[node name="PollTimer" type="Timer" parent="."]
+wait_time = 3.0
+autostart = true
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="Header" type="PanelContainer" parent="CanvasLayer"]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 600.0
+offset_bottom = 77.0
+
+[node name="Title" type="Label" parent="CanvasLayer/Header"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.78, 1, 0.4, 1)
+theme_override_font_sizes/font_size = 22
+text = "  MoYoGarden  ·  3D AGENT WORLD  "
+vertical_alignment = 1
+
+[node name="Status" type="Label" parent="CanvasLayer"]
+offset_left = 700.0
+offset_top = 26.0
+offset_right = 1414.0
+offset_bottom = 60.0
+theme_override_colors/font_color = Color(0.73, 0.82, 0.76, 1)
+theme_override_font_sizes/font_size = 14
+text = "CONNECTING"
+horizontal_alignment = 2
+
+[node name="SidePanel" type="PanelContainer" parent="CanvasLayer"]
+offset_left = 1085.0
+offset_top = 88.0
+offset_right = 1418.0
+offset_bottom = 820.0
+
+[node name="VBox" type="VBoxContainer" parent="CanvasLayer/SidePanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Details" type="RichTextLabel" parent="CanvasLayer/SidePanel/VBox"]
+custom_minimum_size = Vector2(310, 620)
+layout_mode = 2
+bbcode_enabled = true
+scroll_active = true
+theme_override_colors/default_color = Color(0.82, 0.88, 0.83, 1)
+theme_override_font_sizes/normal_font_size = 13
+text = "Waiting for the authoritative world snapshot."
+
+[node name="Buttons" type="HBoxContainer" parent="CanvasLayer/SidePanel/VBox"]
+layout_mode = 2
+
+[node name="PauseButton" type="Button" parent="CanvasLayer/SidePanel/VBox/Buttons"]
+layout_mode = 2
+text = "PAUSE"
+
+[node name="TickButton" type="Button" parent="CanvasLayer/SidePanel/VBox/Buttons"]
+layout_mode = 2
+text = "STEP"
+
+[node name="Help" type="Label" parent="CanvasLayer"]
+offset_left = 22.0
+offset_top = 852.0
+offset_right = 1060.0
+offset_bottom = 884.0
+theme_override_colors/font_color = Color(0.52, 0.62, 0.56, 1)
+text = "DRAG: orbit  ·  WHEEL: zoom  ·  LEFT: select  ·  RIGHT: move  ·  WASD: pan"

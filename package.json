@@ -1,0 +1,27 @@
+{
+  "name": "moyo-garden",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Bot-first persistent 3D world on Cloudflare Workers and Durable Objects.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "build:ts": "tsc -p tsconfig.json",
+    "test": "npm run build:ts && node --test --test-concurrency=1 tests/*.test.mjs",
+    "verify:web": "node --check public/app.js && node scripts/validate-public.mjs",
+    "verify": "npm run check && npm test && npm run verify:web",
+    "mcp": "node tools/mcp.mjs",
+    "demo:bot": "node tools/demo-bot.mjs",
+    "llm:bot": "node tools/llm-bot.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "6.0.0",
+    "wrangler": "4.127.1"
+  }
+}

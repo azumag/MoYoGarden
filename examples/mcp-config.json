@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "moyo-garden": {
+      "command": "node",
+      "args": ["/absolute/path/to/MoYoGarden/tools/mcp.mjs"],
+      "env": {
+        "MOYO_API_URL": "https://moyo-garden.YOUR_SUBDOMAIN.workers.dev",
+        "MOYO_REGION": "garden-1",
+        "MOYO_TOKEN": "YOUR_COMMAND_TOKEN"
+      }
+    }
+  }
+}

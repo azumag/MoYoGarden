@@ -1,0 +1,4 @@
+# cp .dev.vars.example .dev.vars
+# Localhost requests do not need tokens. These values make remote tests explicit.
+COMMAND_TOKEN=replace-with-a-long-random-value
+ADMIN_TOKEN=replace-with-a-different-long-random-value

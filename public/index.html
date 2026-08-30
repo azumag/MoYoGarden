@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="AIエージェントと機械BOTが開拓する永続型3Dワールド MoYoGarden" />
+    <meta name="theme-color" content="#07110e" />
+    <title>MoYoGarden — Bot-first persistent world</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="world" aria-label="MoYoGarden 3Dワールド"></canvas>
+
+      <header class="brand-panel glass">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <p class="eyebrow">MASSIVELY MULTI-AGENT WORLD</p>
+          <h1>MoYoGarden</h1>
+        </div>
+      </header>
+
+      <section class="world-status glass" aria-live="polite">
+        <span id="connection-dot" class="connection-dot"></span>
+        <strong id="connection-label">接続中</strong>
+        <span class="divider"></span>
+        <span>REGION <b id="region-label">garden-1</b></span>
+        <span>TICK <b id="tick-label">—</b></span>
+        <span>BOT <b id="agent-count">—</b></span>
+        <span>BUILD <b id="structure-count">—</b></span>
+      </section>
+
+      <nav class="control-panel glass" aria-label="ワールド操作">
+        <button id="pause-button" type="button">一時停止</button>
+        <button id="step-button" type="button">1 tick</button>
+        <button id="reset-button" class="danger" type="button">リセット</button>
+        <button id="focus-button" type="button">追跡</button>
+        <button id="settings-button" class="icon-button" type="button" aria-label="接続設定">⚙</button>
+      </nav>
+
+      <aside id="sidebar" class="sidebar glass">
+        <section>
+          <p class="eyebrow">SELECTED AGENT</p>
+          <div id="agent-empty" class="empty-state">
+            BOTをクリックすると状態を表示します。右クリックで移動命令を送れます。
+          </div>
+          <div id="agent-detail" hidden>
+            <div class="agent-heading">
+              <span id="agent-swatch" class="agent-swatch"></span>
+              <div><h2 id="agent-name">—</h2><p id="agent-role">—</p></div>
+            </div>
+            <dl class="detail-grid">
+              <div><dt>勢力</dt><dd id="agent-faction">—</dd></div>
+              <div><dt>座標</dt><dd id="agent-position">—</dd></div>
+              <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
+              <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
+            </dl>
+            <p id="agent-status" class="agent-status">—</p>
+            <div class="inventory">
+              <span>木 <b id="inv-wood">0</b></span>
+              <span>石 <b id="inv-stone">0</b></span>
+              <span>食 <b id="inv-food">0</b></span>
+            </div>
+            <p id="agent-goal" class="agent-goal">—</p>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-heading">
+            <p class="eyebrow">FACTIONS</p>
+            <span id="paused-badge" class="badge" hidden>PAUSED</span>
+          </div>
+          <div id="faction-list" class="faction-list"></div>
+        </section>
+
+        <section class="events-section">
+          <p class="eyebrow">WORLD FEED</p>
+          <ol id="event-list" class="event-list"></ol>
+        </section>
+      </aside>
+
+      <section id="settings-panel" class="settings-panel glass" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">CONNECTION</p><h2>操作設定</h2></div>
+          <button id="settings-close" class="icon-button" type="button" aria-label="閉じる">×</button>
+        </div>
+        <label>Region<select id="region-select"></select></label>
+        <label>Bearer token<input id="token-input" type="password" autocomplete="off" placeholder="COMMAND_TOKEN / ADMIN_TOKEN" /></label>
+        <p class="settings-note">閲覧は公開です。本番でBOT操作・管理操作を行う場合だけSecretのトークンを入力します。</p>
+        <button id="reconnect-button" type="button">再接続</button>
+      </section>
+
+      <div class="help-panel glass">
+        <span><kbd>ドラッグ</kbd> 回転</span>
+        <span><kbd>ホイール</kbd> ズーム</span>
+        <span><kbd>左</kbd> BOT選択</span>
+        <span><kbd>右</kbd> 移動命令</span>
+        <span><kbd>WASD</kbd> 平行移動</span>
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      <div id="loading" class="loading-screen">
+        <div class="loading-orbit"><span></span><span></span><span></span></div>
+        <p>世界を同期しています</p>
+      </div>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
