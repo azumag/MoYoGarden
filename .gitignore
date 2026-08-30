@@ -7,3 +7,5 @@ dist-ts/
 !.env.example
 *.log
 .DS_Store
+public/vendor/
+public/models/*.glb

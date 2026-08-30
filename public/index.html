@@ -7,10 +7,18 @@
     <meta name="theme-color" content="#07110e" />
     <title>MoYoGarden — Bot-first persistent world</title>
     <link rel="stylesheet" href="/style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/vendor/three/build/three.module.js",
+          "three/addons/": "/vendor/three/examples/jsm/"
+        }
+      }
+    </script>
   </head>
   <body>
     <main id="app">
-      <canvas id="world" aria-label="MoYoGarden 3Dワールド"></canvas>
+      <canvas id="world" aria-label="MoYoGarden PBR 3Dワールド"></canvas>
 
       <header class="brand-panel glass">
         <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -28,6 +36,7 @@
         <span>TICK <b id="tick-label">—</b></span>
         <span>BOT <b id="agent-count">—</b></span>
         <span>BUILD <b id="structure-count">—</b></span>
+        <span>RENDER <b>PBR/LOD</b></span>
       </section>
 
       <nav class="control-panel glass" aria-label="ワールド操作">
@@ -92,7 +101,7 @@
 
       <div class="help-panel glass">
         <span><kbd>左ドラッグ</kbd> 回転</span>
-        <span><kbd>中ドラッグ</kbd> 平行移動</span>
+        <span><kbd>中ドラッグ</kbd> 地図をつかんで移動</span>
         <span><kbd>ホイール</kbd> ズーム</span>
         <span><kbd>左</kbd> BOT選択</span>
         <span><kbd>右</kbd> 移動命令</span>
@@ -102,10 +111,9 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
       <div id="loading" class="loading-screen">
         <div class="loading-orbit"><span></span><span></span><span></span></div>
-        <p>世界を同期しています</p>
+        <p id="loading-label">PBRモデルを読み込んでいます</p>
       </div>
     </main>
-    <script src="/app.js"></script>
-    <script src="/detail-upgrade.js"></script>
+    <script type="module" src="/app.js"></script>
   </body>
 </html>

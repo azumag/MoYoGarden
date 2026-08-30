@@ -1,26 +1,33 @@
 {
   "name": "moyo-garden",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Bot-first persistent 3D world on Cloudflare Workers and Durable Objects.",
   "scripts": {
-    "build": "npm run check && npm run verify:web",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "generate:models": "node scripts/generate-models.mjs",
+    "vendor:three": "node scripts/vendor-three.mjs",
+    "build:web": "npm run generate:models && npm run vendor:three && npm run check:client && node scripts/validate-public.mjs",
+    "build": "npm run check && npm run build:web",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
     "check": "tsc -p tsconfig.json --noEmit",
     "build:ts": "tsc -p tsconfig.json",
     "test": "npm run build:ts && node --test --test-concurrency=1 tests/*.test.mjs",
-    "verify:web": "node --check public/app.js && node --check public/detail-upgrade.js && node scripts/validate-public.mjs",
-    "verify": "npm run check && npm test && npm run verify:web",
+    "verify:web": "npm run build:web",
+    "verify": "npm run build && npm test",
     "mcp": "node tools/mcp.mjs",
     "demo:bot": "node tools/demo-bot.mjs",
-    "llm:bot": "node tools/llm-bot.mjs"
+    "llm:bot": "node tools/llm-bot.mjs",
+    "check:client": "node scripts/check-client.mjs"
   },
   "engines": {
     "node": ">=22"
   },
   "license": "MIT",
+  "dependencies": {
+    "three": "0.185.1"
+  },
   "devDependencies": {
     "typescript": "5.9.3",
     "wrangler": "4.127.1"
