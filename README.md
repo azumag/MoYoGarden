@@ -16,7 +16,20 @@ AIエージェントや機械BOTが住民として行動し、集落・物流・
 
 3勢力12体のBOTが、木材・石材・食料を集め、キャンプ、倉庫、市場、工房を自律建築します。人間・ルールBOT・LLM・MCPクライアントは、すべて同じCommand APIから移動、採集、建築、運搬、取引、目標変更を指示します。
 
-ブラウザ版では、地形、樹木、鉱石、食料、建物、BOTを手続き生成した3D空間で観測できます。左クリックでBOTを選択し、右クリックで移動命令を送ります。
+ブラウザ版では、起伏と水面を持つ地形、複数本からなる森林、岩石群、果実の茂み、建物ごとの外観、職業別装備を持つBOTを手続き生成した3D空間で観測できます。左クリックでBOTを選択し、右クリックで移動命令を送ります。
+
+## 3D画面の操作
+
+| 操作 | 内容 |
+|---|---|
+| 左ボタンを押しながらドラッグ | カメラ回転 |
+| ホイールボタンを押しながらドラッグ | カメラ基準で前後左右へ平行移動 |
+| マウスホイール | ズーム |
+| 左クリック | BOT選択 |
+| 右クリック | 選択中BOTへの移動命令 |
+| `W` `A` `S` `D` | カメラ基準で平行移動 |
+
+ホイールボタンのドラッグはWASDと同じ向きで移動します。上へドラッグすると前進、下へドラッグすると後退、左右へのドラッグで横移動します。
 
 ## ローカル起動
 
@@ -34,7 +47,7 @@ npm run dev
 npm run verify
 ```
 
-検証には、決定論的シミュレーション、文明ループ、局所知覚、取引、認証、Durable Object休止後のコマンド復元、3D静的クライアント検査が含まれます。
+検証には、決定論的シミュレーション、文明ループ、局所知覚、取引、認証、Durable Object休止後のコマンド復元、詳細3Dクライアントの構文・静的検査が含まれます。
 
 ## Cloudflareへ自動デプロイ
 
@@ -46,7 +59,7 @@ GitHub Actionsは使いません。Cloudflareダッシュボードで `azumag/Mo
 Worker name:       moyo-garden
 Production branch: main
 Root directory:    /
-Build command:     npm run check
+Build command:     npm run build
 Deploy command:    npx wrangler deploy
 ```
 
@@ -91,7 +104,7 @@ POST /api/admin/reset                    ADMIN_TOKEN
 
 ```bash
 curl -X POST \
-  'https://moyo-garden.YOUR_SUBDOMAIN.workers.dev/api/agents/agent-ember-builder/commands?region=garden-1' \
+  'https://moyo.bluemoon.works/api/agents/agent-ember-builder/commands?region=garden-1' \
   -H "Authorization: Bearer $MOYO_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"id":"move-001","type":"move","target":{"x":8,"y":6}}'
@@ -104,7 +117,7 @@ curl -X POST \
 Cloudflare上のHTTP APIをstdio MCPへ変換する薄いブリッジです。
 
 ```bash
-MOYO_API_URL=https://moyo-garden.YOUR_SUBDOMAIN.workers.dev \
+MOYO_API_URL=https://moyo.bluemoon.works \
 MOYO_REGION=garden-1 \
 MOYO_TOKEN=YOUR_COMMAND_TOKEN \
 node tools/mcp.mjs
