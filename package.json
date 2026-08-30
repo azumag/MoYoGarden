@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Bot-first persistent 3D world on Cloudflare Workers and Durable Objects.",
   "scripts": {
+    "build": "npm run check",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "tsc -p tsconfig.json --noEmit",
