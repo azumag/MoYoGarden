@@ -1,24 +1,19 @@
 # MoYoGarden
 
-AIエージェントや機械BOTが住民として行動し、集落・物流・市場を作っていく**BOT前提の永続型3Dワールド**です。
+AIエージェントや機械BOTが住民として行動し、集落・物流・市場を作っていく、BOT前提の永続型3Dワールドです。
 
-現在のMVPは、1つのCloudflare Workerに次をまとめています。
+## Production 0.3.1
+
+本番のルート画面は、起動実績のある自己完結型WebGL 2レンダラーを使用します。PBR版でブラウザのモジュール読込が停止する障害が起きたため、glTF/PBR/LOD/影レンダラーは `pbr-preview` ブランチへ退避し、本番起動経路から分離しました。
 
 - Cloudflare Durable Objectsによる権威ワールド状態
 - SQLite-backed Durable Objectへの永続化
 - 10秒単位の決定論的シミュレーション
 - REST API / WebSocket / MCPブリッジ
-- Three.jsをビルド時に自己ホストするglTF/PBRブラウザ3Dクライアント
-- 同じAPIを利用するGodot 4のネイティブ3Dクライアント
+- 外部CDN・外部3D素材に依存しないWebGL 2クライアント
 - Cloudflare Workers BuildsによるGitHub連動デプロイ
 
-## 現在できること
-
-3勢力12体のBOTが、木材・石材・食料を集め、キャンプ、倉庫、市場、工房を自律建築します。人間・ルールBOT・LLM・MCPクライアントは、すべて同じCommand APIから移動、採集、建築、運搬、取引、目標変更を指示します。
-
-ブラウザ版では、自己完結型GLBの住民・樹木・岩・建物、metallic-roughness PBRマテリアル、環境光、ソフトシャドウ、水面、3段階LODを使って永続ワールドを描画します。BOTの職業装備や歩行アニメーションも表示し、左クリックで選択、右クリックで移動命令を送れます。
-
-レンダリング構成とLOD距離は [`docs/RENDERING.md`](docs/RENDERING.md) にあります。
+3勢力12体のBOTが、木材・石材・食料を集め、キャンプ、倉庫、市場、工房を自律建築します。人間、ルールBOT、LLM、MCPクライアントは同じCommand APIから移動、採集、建築、運搬、取引、目標変更を指示します。
 
 ## 3D画面の操作
 
@@ -31,7 +26,7 @@ AIエージェントや機械BOTが住民として行動し、集落・物流・
 | 右クリック | 選択中BOTへの移動命令 |
 | `W` `A` `S` `D` | カメラ基準で平行移動 |
 
-ホイールボタンのドラッグ方向は旧版から反転しています。地図を右へドラッグするとカメラは左へ、上へドラッグするとカメラは後方へ移り、地図そのものをつかんで動かす感覚になります。
+中ボタンドラッグは旧版から上下左右とも反転しています。地図を右へドラッグするとカメラは左へ、上へドラッグするとカメラは後方へ移ります。
 
 ## ローカル起動
 
@@ -43,19 +38,17 @@ cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-`http://127.0.0.1:8787` を開きます。localhostからの操作はトークン不要です。
+`http://127.0.0.1:8787`を開きます。localhostからの操作はトークン不要です。
 
 ```bash
 npm run verify
 ```
 
-検証には、決定論的シミュレーション、文明ループ、局所知覚、取引、認証、Durable Object休止後のCommand復元に加え、ブラウザモジュールの構文、import map、GLB構造、PBRマテリアル、LOD、影生成、外部CDN非依存の検査が含まれます。
+検証には、決定論的シミュレーション、文明ループ、局所知覚、取引、認証、Durable Object休止後のCommand復元、ブラウザJavaScript構文、起動経路、キャッシュバスト、中ボタンドラッグ反転が含まれます。
 
 ## Cloudflareへ自動デプロイ
 
-GitHub Actionsは使いません。Cloudflareダッシュボードで `azumag/MoYoGarden` を一度だけWorkers Buildsへ接続すると、以後は`main`へのpushをCloudflare自身が検出してデプロイします。
-
-設定値は次のとおりです。
+GitHub Actionsは使用しません。Cloudflare Dashboardで`azumag/MoYoGarden`をWorkers Buildsへ接続すると、以後は`main`へのpushをCloudflare自身が検出してデプロイします。
 
 ```text
 Worker name:       moyo-garden
@@ -65,28 +58,18 @@ Build command:     npm run build
 Deploy command:    npx wrangler deploy
 ```
 
-`npm run build`は、TypeScript型検査、4つのGLB生成、固定バージョンのThree.jsランタイム配置、ブラウザJavaScript構文検査、GLB/PBR/LOD/影設定の静的検査を行います。
-
-本番のSecretとして、異なる長い値を設定します。
+Runtime Secretとして次を設定します。
 
 ```text
 COMMAND_TOKEN
 ADMIN_TOKEN
 ```
 
-詳細手順は [`docs/CLOUDFLARE_DEPLOY.md`](docs/CLOUDFLARE_DEPLOY.md) にあります。
-
-## ランニングコスト
-
-MVPのデフォルトは1領域・10秒tickです。1日あたり8,640回のAlarmと、状態保存＋次回Alarm設定で約17,280行の書き込みになります。Cloudflare FreeのDurable Objects枠内に十分収まり、静的3Dアセットの配信は無料・無制限です。
-
-したがって、小規模MVPはCloudflare費用 **$0/月** で運用可能です。安定運用ではWorkers Paidの最低料金 **$5/月** を見込めば、1領域の利用量は付属枠に大きく収まります。LLM推論料金はCloudflare基盤費とは別で、通常はこちらが主要コストになります。
-
-計算根拠と領域数別の目安は [`docs/COST.md`](docs/COST.md) を参照してください。
+本番URL：`https://moyo.bluemoon.works`
 
 ## API
 
-主な公開エンドポイントです。`?region=garden-1`を省略すると既定領域を使います。
+`?region=garden-1`を省略すると既定領域を使います。
 
 ```text
 GET  /api/meta
@@ -104,8 +87,6 @@ POST /api/admin/resume                   ADMIN_TOKEN
 POST /api/admin/reset                    ADMIN_TOKEN
 ```
 
-本番では次のようにBearer tokenを送ります。
-
 ```bash
 curl -X POST \
   'https://moyo.bluemoon.works/api/agents/agent-ember-builder/commands?region=garden-1' \
@@ -114,11 +95,7 @@ curl -X POST \
   -d '{"id":"move-001","type":"move","target":{"x":8,"y":6}}'
 ```
 
-完全な仕様は [`docs/API.md`](docs/API.md) にあります。
-
 ## MCP
-
-Cloudflare上のHTTP APIをstdio MCPへ変換する薄いブリッジです。
 
 ```bash
 MOYO_API_URL=https://moyo.bluemoon.works \
@@ -127,24 +104,9 @@ MOYO_TOKEN=YOUR_COMMAND_TOKEN \
 node tools/mcp.mjs
 ```
 
-設定例は [`examples/mcp-config.json`](examples/mcp-config.json) です。
+## PBR開発
 
-## 設計上の要点
-
-- `WorldState`は描画ノードと分離したJSONデータ
-- `simulate(state, commands)`はseed管理された決定論的tick
-- 人間、BOT、LLM、MCPは同じCommand境界を使用
-- 一般BOTには完全ワールドではなく局所知覚を返す
-- 1領域を1 Durable Objectへ割り当てる
-- WebSocket Hibernation APIを使い、接続中のアイドル課金を避ける
-- コマンドキューもSQLiteへ保存し、DOの休止・再生成で命令を失わない
-- 3Dクライアントは外部CDNへ依存せず、GLBとThree.jsをCloudflare Static Assetsから配信する
-
-詳しくは [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) と [`docs/RENDERING.md`](docs/RENDERING.md) を参照してください。
-
-## 現在のMVP外
-
-戦闘・負傷・死亡、複数領域間の移動、契約・雇用・融資、政治・法律、プレイヤーアカウント、BOT別capability token、差分同期、世界新聞は次段階です。
+glTF 2.0、metallic-roughness PBR、3段階LOD、ソフトシャドウを導入した実装は`pbr-preview`ブランチに保存しています。本番と分離したCloudflare Workerで起動・通信・MIME type・静的アセット配信を検証した後、段階的ローディングと自動フォールバックを付けて再導入します。
 
 ## License
 
