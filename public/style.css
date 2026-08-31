@@ -39,6 +39,7 @@ button.danger:hover { background: rgba(255, 118, 94, .14); border-color: rgba(25
 .control-panel { position: fixed; left: 22px; bottom: 22px; display: flex; gap: 8px; padding: 9px; border-radius: 14px; }
 .icon-button { width: 38px; padding-inline: 0; }
 .sidebar { position: fixed; top: 22px; right: 22px; bottom: 22px; width: 310px; display: flex; flex-direction: column; gap: 18px; padding: 18px; border-radius: 18px; overflow: hidden; }
+.sidebar-toggle { display: none; }
 .sidebar section { border-bottom: 1px solid var(--line); padding-bottom: 16px; }
 .sidebar section:last-child { border-bottom: 0; padding-bottom: 0; min-height: 0; }
 .empty-state { color: var(--muted); font-size: 12px; line-height: 1.65; }
@@ -94,7 +95,54 @@ kbd { color: var(--text); background: rgba(255,255,255,.07); border: 1px solid v
 }
 @media (max-width: 680px) {
   .brand-panel { left: 12px; top: 12px; }
-  .sidebar { top: auto; left: 12px; right: 12px; bottom: 118px; width: auto; height: 230px; flex-direction: row; overflow-x: auto; }
+  .sidebar {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: 118px;
+    width: auto;
+    height: min(230px, calc(100dvh - 220px));
+    min-height: 150px;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-top: 48px;
+    transition: height 180ms ease, min-height 180ms ease, padding 180ms ease;
+  }
+  .sidebar-toggle {
+    position: absolute;
+    z-index: 4;
+    top: 9px;
+    right: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 92px;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: var(--panel-strong);
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .sidebar.is-collapsed {
+    height: 48px;
+    min-height: 48px;
+    padding: 8px 112px 8px 12px;
+    overflow: hidden;
+  }
+  .sidebar.is-collapsed::before {
+    content: "INFO / BOT・勢力・ログ";
+    display: flex;
+    align-items: center;
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    white-space: nowrap;
+  }
+  .sidebar.is-collapsed .sidebar-toggle { top: 8px; }
+  .sidebar.is-collapsed section { display: none; }
   .sidebar section { min-width: 240px; border-bottom: 0; border-right: 1px solid var(--line); padding-right: 16px; }
   .control-panel { left: 12px; bottom: 12px; right: 12px; overflow-x: auto; }
   .world-status { display: none; }
