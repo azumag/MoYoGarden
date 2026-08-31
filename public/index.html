@@ -6,7 +6,7 @@
     <meta name="description" content="AIエージェントと機械BOTが開拓する永続型3Dワールド MoYoGarden" />
     <meta name="theme-color" content="#07110e" />
     <title>MoYoGarden — Bot-first persistent world</title>
-    <link rel="stylesheet" href="/style.css?v=0.3.1-safe" />
+    <link rel="stylesheet" href="/style.css?v=0.3.2-mobile-sidebar" />
   </head>
   <body>
     <main id="app">
@@ -39,6 +39,7 @@
       </nav>
 
       <aside id="sidebar" class="sidebar glass">
+        <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="情報パネルを畳む">畳む ▼</button>
         <section>
           <p class="eyebrow">SELECTED AGENT</p>
           <div id="agent-empty" class="empty-state">
@@ -121,5 +122,6 @@
     <script src="/app.js?v=0.3.1-safe"></script>
     <script src="/detail-upgrade.js?v=0.3.1-safe"></script>
     <script src="/pan-invert.js?v=0.3.1-safe"></script>
+    <script src="/sidebar-collapse.js?v=0.3.2-mobile-sidebar"></script>
   </body>
 </html>
