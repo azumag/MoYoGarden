@@ -35,12 +35,18 @@ export function hash2(x, y, salt = 0) {
 }
 
 export function disposeObject(root) {
+  const geometries = new Set();
+  const materials = new Set();
   root?.traverse?.((object) => {
-    object.geometry?.dispose?.();
+    if (object.geometry && !object.geometry.userData?.moyoShared) geometries.add(object.geometry);
     if (!object.material) return;
-    const materials = Array.isArray(object.material) ? object.material : [object.material];
-    for (const material of materials) material.dispose?.();
+    const values = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of values) {
+      if (!material.userData?.moyoShared) materials.add(material);
+    }
   });
+  for (const geometry of geometries) geometry.dispose?.();
+  for (const material of materials) material.dispose?.();
   root?.removeFromParent?.();
 }
 

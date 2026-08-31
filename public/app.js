@@ -1,5 +1,6 @@
 import { createDemoState } from "./client/demo-state.js";
 import { ModelLibrary } from "./client/model-library.js";
+import { resolveQualityProfile } from "./client/quality.js";
 import { ROLE_LABELS } from "./client/shared.js";
 import { WorldView } from "./client/world-view.js";
 
@@ -8,6 +9,8 @@ const ui = {
   canvas: $("#world"),
   loading: $("#loading"),
   loadingLabel: $("#loading-label"),
+  loadingDetail: $("#loading-detail"),
+  loadingProgress: $("#loading-progress"),
   toast: $("#toast"),
   connectionDot: $("#connection-dot"),
   connectionLabel: $("#connection-label"),
@@ -15,6 +18,7 @@ const ui = {
   tickLabel: $("#tick-label"),
   agentCount: $("#agent-count"),
   structureCount: $("#structure-count"),
+  renderStatus: $("#render-status"),
   pauseButton: $("#pause-button"),
   stepButton: $("#step-button"),
   resetButton: $("#reset-button"),
@@ -44,6 +48,15 @@ const ui = {
   pausedBadge: $("#paused-badge"),
 };
 
+const quality = resolveQualityProfile();
+const models = new ModelLibrary();
+const renderState = {
+  modelsLoaded: 0,
+  modelsFailed: 0,
+  modelsTotal: models.size,
+  environment: false,
+  shadows: false,
+};
 const app = {
   state: null,
   paused: false,
@@ -59,6 +72,7 @@ ui.tokenInput.value = app.token;
 
 let view;
 let toastTimer;
+let readyDispatched = false;
 
 function toast(message, error = false) {
   clearTimeout(toastTimer);
@@ -70,6 +84,17 @@ function toast(message, error = false) {
 function setConnection(mode, label) {
   ui.connectionDot.className = `connection-dot ${mode}`;
   ui.connectionLabel.textContent = label;
+}
+
+function updateRenderStatus() {
+  const parts = [quality.label];
+  if (renderState.modelsLoaded > 0) parts.push(`GLB ${renderState.modelsLoaded}/${renderState.modelsTotal}`);
+  else parts.push("LOD FALLBACK");
+  if (renderState.shadows) parts.push("SHADOW");
+  if (renderState.environment) parts.push("IBL");
+  if (renderState.modelsFailed > 0) parts.push(`MISS ${renderState.modelsFailed}`);
+  ui.renderStatus.textContent = parts.join(" · ");
+  ui.renderStatus.title = `quality=${quality.id}`;
 }
 
 function authHeaders(jsonBody = false) {
@@ -85,15 +110,21 @@ function apiUrl(path) {
   return url;
 }
 
-async function requestJson(path, options = {}) {
-  const response = await fetch(apiUrl(path), options);
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.error || `HTTP ${response.status}`);
-    error.status = response.status;
-    throw error;
+async function requestJson(path, options = {}, timeoutMs = 8_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(apiUrl(path), { ...options, signal: controller.signal });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(body.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  } finally {
+    clearTimeout(timer);
   }
-  return body;
 }
 
 function applyEnvelope(value) {
@@ -104,7 +135,6 @@ function applyEnvelope(value) {
   app.tickMs = Number(value?.tickMs) || app.tickMs;
   view.setState(state, app.tickMs);
   updateUi();
-  ui.loading.classList.add("hidden");
 }
 
 function updateUi() {
@@ -225,25 +255,41 @@ function populateRegions() {
 async function connect() {
   clearInterval(app.pollTimer);
   app.socket?.close();
-  setConnection("", "接続中");
-  ui.loading.classList.remove("hidden");
-  ui.loadingLabel.textContent = "永続ワールドを同期しています";
+  setConnection("", "同期中");
   try {
     const meta = await requestJson("/api/meta");
     app.regions = meta.regions || [meta.defaultRegion || "garden-1"];
-    if (!app.regions.includes(app.region)) {
-      app.region = meta.defaultRegion || app.regions[0];
-    }
+    if (!app.regions.includes(app.region)) app.region = meta.defaultRegion || app.regions[0];
     populateRegions();
     await loadSnapshot();
     connectSocket();
   } catch (error) {
     setConnection("offline", "OFFLINE DEMO");
     toast(`API未接続: ${error.message}`, true);
-    applyEnvelope({ state: createDemoState(), paused: false, tickMs: 10_000 });
-    if (location.protocol !== "file:") {
-      app.reconnectTimer = setTimeout(connect, 6_000);
-    }
+    startPolling();
+    if (location.protocol !== "file:") app.reconnectTimer = setTimeout(connect, 6_000);
+  }
+}
+
+async function loadHighResolutionModels() {
+  const result = await models.load({
+    timeoutMs: quality.modelTimeoutMs,
+    concurrency: quality.modelConcurrency,
+    onProgress: ({ completed, total, key }) => {
+      if (ui.loadingDetail) ui.loadingDetail.textContent = `背景読込: ${key} ${completed}/${total}`;
+      if (ui.loadingProgress) ui.loadingProgress.value = completed / total;
+    },
+    onModelLoaded: ({ key }) => {
+      renderState.modelsLoaded += 1;
+      view.refreshModelType(key);
+      updateRenderStatus();
+    },
+  });
+  renderState.modelsFailed = result.failed.length;
+  updateRenderStatus();
+  if (result.failed.length > 0) {
+    console.warn("MoYoGarden model fallbacks:", result.failed);
+    toast(`${result.failed.length}種類のモデルを軽量LODで表示します`, true);
   }
 }
 
@@ -254,11 +300,8 @@ async function admin(path, body = {}) {
       headers: authHeaders(true),
       body: JSON.stringify(body),
     });
-    if (result.state) {
-      applyEnvelope({ state: result.state, paused: app.paused, tickMs: app.tickMs });
-    } else {
-      await loadSnapshot();
-    }
+    if (result.state) applyEnvelope({ state: result.state, paused: app.paused, tickMs: app.tickMs });
+    else await loadSnapshot();
     return result;
   } catch (error) {
     if (error.status === 401) ui.settingsPanel.hidden = false;
@@ -267,16 +310,41 @@ async function admin(path, body = {}) {
   }
 }
 
-async function initializeRenderer() {
-  const models = new ModelLibrary();
-  ui.loadingLabel.textContent = "glTF / PBRモデルを読み込んでいます";
-  try {
-    await models.load();
-  } catch (error) {
-    console.warn("glTF model load failed; using procedural LOD fallbacks", error);
-    toast("glTFモデルを取得できないため軽量表示で続行します", true);
-  }
-  view = new WorldView(ui.canvas, models);
+function bindUi() {
+  ui.pauseButton.addEventListener("click", async () => {
+    try {
+      const result = await admin(app.paused ? "/api/admin/resume" : "/api/admin/pause");
+      app.paused = Boolean(result.paused);
+      updateUi();
+    } catch {}
+  });
+  ui.stepButton.addEventListener("click", () => admin("/api/admin/tick", { count: 1 }).catch(() => {}));
+  ui.resetButton.addEventListener("click", () => {
+    if (confirm("現在の領域を初期状態へ戻しますか？")) admin("/api/admin/reset", {}).catch(() => {});
+  });
+  ui.focusButton.addEventListener("click", () => {
+    if (view.selectedAgentId) view.focusAgent(view.selectedAgentId);
+  });
+  ui.settingsButton.addEventListener("click", () => {
+    ui.settingsPanel.hidden = !ui.settingsPanel.hidden;
+  });
+  ui.settingsClose.addEventListener("click", () => { ui.settingsPanel.hidden = true; });
+  ui.reconnectButton.addEventListener("click", () => {
+    app.region = ui.regionSelect.value || app.region;
+    app.token = ui.tokenInput.value.trim();
+    if (app.token) sessionStorage.setItem("moyo-token", app.token);
+    else sessionStorage.removeItem("moyo-token");
+    ui.settingsPanel.hidden = true;
+    connect();
+  });
+}
+
+async function initialize() {
+  updateRenderStatus();
+  ui.loadingLabel.textContent = "軽量LODでワールドを開始しています";
+  ui.loadingDetail.textContent = `${quality.label}プロファイル`;
+
+  view = new WorldView(ui.canvas, models, quality);
   view.onSelect = updateAgentDetail;
   view.onCommand = async (agentId, target) => {
     try {
@@ -295,42 +363,33 @@ async function initializeRenderer() {
       toast(error.message, true);
     }
   };
+  view.onEnhancement = ({ feature, active }) => {
+    if (feature === "environment") renderState.environment = active;
+    if (feature === "shadows") renderState.shadows = active;
+    updateRenderStatus();
+  };
+
+  bindUi();
+  applyEnvelope({ state: createDemoState(), paused: false, tickMs: 10_000 });
+  setConnection("offline", "STARTING");
+
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  ui.loading.classList.add("hidden");
+  if (!readyDispatched) {
+    readyDispatched = true;
+    window.dispatchEvent(new CustomEvent("moyo:pbr-ready", {
+      detail: { quality: quality.id, startup: "procedural-lod" },
+    }));
+  }
+
+  view.startEnhancements();
+  void connect();
+  setTimeout(() => { void loadHighResolutionModels(); }, 80);
 }
 
-ui.pauseButton.addEventListener("click", async () => {
-  try {
-    const result = await admin(app.paused ? "/api/admin/resume" : "/api/admin/pause");
-    app.paused = Boolean(result.paused);
-    updateUi();
-  } catch {}
-});
-ui.stepButton.addEventListener("click", () => admin("/api/admin/tick", { count: 1 }).catch(() => {}));
-ui.resetButton.addEventListener("click", () => {
-  if (confirm("現在の領域を初期状態へ戻しますか？")) {
-    admin("/api/admin/reset", {}).catch(() => {});
-  }
-});
-ui.focusButton.addEventListener("click", () => {
-  if (view.selectedAgentId) view.focusAgent(view.selectedAgentId);
-});
-ui.settingsButton.addEventListener("click", () => {
-  ui.settingsPanel.hidden = !ui.settingsPanel.hidden;
-});
-ui.settingsClose.addEventListener("click", () => { ui.settingsPanel.hidden = true; });
-ui.reconnectButton.addEventListener("click", () => {
-  app.region = ui.regionSelect.value || app.region;
-  app.token = ui.tokenInput.value.trim();
-  if (app.token) sessionStorage.setItem("moyo-token", app.token);
-  else sessionStorage.removeItem("moyo-token");
-  ui.settingsPanel.hidden = true;
-  connect();
-});
-
 try {
-  await initializeRenderer();
-  await connect();
+  await initialize();
 } catch (error) {
-  ui.loadingLabel.textContent = `3D初期化に失敗しました: ${error?.message || error}`;
-  setConnection("offline", "RENDER ERROR");
   console.error(error);
+  window.dispatchEvent(new CustomEvent("moyo:pbr-error", { detail: { error } }));
 }

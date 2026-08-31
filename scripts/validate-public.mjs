@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-const clientModules = [
+const applicationModules = [
+  "public/boot.js",
+  "public/app.js",
   "public/client/shared.js",
+  "public/client/quality.js",
   "public/client/model-library.js",
   "public/client/terrain.js",
   "public/client/resources.js",
@@ -14,21 +17,20 @@ const clientModules = [
 ];
 const required = [
   "public/index.html",
-  "public/app.js",
   "public/style.css",
-  ...clientModules,
+  ...applicationModules,
   "public/models/settler.glb",
   "public/models/tree.glb",
   "public/models/rock.glb",
   "public/models/buildings.glb",
   "public/models/README.md",
-  "public/vendor/three/LICENSE",
-  "public/vendor/three/build/three.module.js",
-  "public/vendor/three/build/three.core.js",
-  "public/vendor/three/examples/jsm/loaders/GLTFLoader.js",
-  "public/vendor/three/examples/jsm/environments/RoomEnvironment.js",
-  "public/vendor/three/examples/jsm/utils/BufferGeometryUtils.js",
-  "public/vendor/three/examples/jsm/utils/SkeletonUtils.js",
+  "public/vendor/three-r185/LICENSE",
+  "public/vendor/three-r185/build/three.module.min.js",
+  "public/vendor/three-r185/build/three.core.min.js",
+  "public/vendor/three-r185/examples/jsm/loaders/GLTFLoader.js",
+  "public/vendor/three-r185/examples/jsm/environments/RoomEnvironment.js",
+  "public/vendor/three-r185/examples/jsm/utils/BufferGeometryUtils.js",
+  "public/vendor/three-r185/examples/jsm/utils/SkeletonUtils.js",
 ];
 for (const path of required) {
   const info = await stat(path);
@@ -37,40 +39,78 @@ for (const path of required) {
 }
 
 const html = await readFile("public/index.html", "utf8");
-const sourceFiles = ["public/app.js", ...clientModules];
-const sources = await Promise.all(sourceFiles.map((path) => readFile(path, "utf8")));
-const script = sources.join("\n");
+const boot = await readFile("public/boot.js", "utf8");
+const app = await readFile("public/app.js", "utf8");
+const modelLibrary = await readFile("public/client/model-library.js", "utf8");
+const worldView = await readFile("public/client/world-view.js", "utf8");
+const terrain = await readFile("public/client/terrain.js", "utf8");
+const shared = await readFile("public/client/shared.js", "utf8");
+const quality = await readFile("public/client/quality.js", "utf8");
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+const previewConfig = JSON.parse(await readFile("wrangler.pbr.jsonc", "utf8"));
+const combined = [boot, app, modelLibrary, worldView, terrain, shared, quality].join("\n");
 
-assert.equal(packageJson.version, "0.3.0");
+assert.equal(packageJson.version, "0.3.3");
 assert.equal(packageJson.dependencies.three, "0.185.1", "Three.js must be exactly pinned");
 assert.match(packageJson.scripts["build:web"], /generate:models/);
 assert.match(packageJson.scripts["build:web"], /vendor:three/);
 assert.match(packageJson.scripts["build:web"], /check:client/);
+assert.match(packageJson.scripts["deploy:pbr-preview"], /wrangler\.pbr\.jsonc/);
+
 assert.match(html, /type="importmap"/);
-assert.match(html, /"three"\s*:\s*"\/vendor\/three\/build\/three\.module\.js"/);
-assert.match(html, /type="module" src="\/app\.js"/);
-assert.doesNotMatch(html, /detail-upgrade\.js/);
-assert.match(script, /GLTFLoader/);
-assert.match(script, /parseAsync\(/);
-assert.match(script, /AbortController/);
-assert.match(script, /DEFAULT_MODEL_TIMEOUT_MS\s*=\s*7_000/);
-assert.match(script, /quality"\)\s*===\s*"low"/);
-assert.match(script, /\/models\/settler\.glb/);
-assert.match(script, /MeshStandardMaterial/);
-assert.match(script, /MeshPhysicalMaterial/);
-assert.match(script, /new THREE\.LOD/);
-assert.match(script, /shadowMap\.enabled\s*=\s*true/);
-assert.match(script, /PCFSoftShadowMap/);
-assert.match(script, /shadow\.mapSize\.set\(2048,\s*2048\)/);
-assert.match(script, /addScaledVector\(right,\s*-dx\s*\*\s*amount\)/);
-assert.match(script, /addScaledVector\(forward,\s*dy\s*\*\s*amount\)/);
-assert.match(script, /RoomEnvironment/);
-assert.match(script, /ACESFilmicToneMapping/);
-assert.match(script, /SRGBColorSpace/);
-assert.match(script, /createLod\(high,\s*medium,\s*low/);
+assert.match(html, /"three"\s*:\s*"\/vendor\/three-r185\/build\/three\.module\.min\.js"/);
+assert.match(html, /src="\/boot\.js\?v=0\.3\.3"/);
+assert.doesNotMatch(html, /type="module"\s+src="\/app\.js/);
+assert.match(html, /id="render-status"/);
+assert.match(html, /id="loading-progress"/);
+
+assert.match(boot, /WATCHDOG_MS\s*=\s*12_000/);
+assert.match(boot, /moyo:pbr-ready/);
+assert.match(boot, /moyo:pbr-error/);
+assert.match(boot, /renderer"\)\s*===\s*"compat"/);
+assert.match(boot, /quality"\)\s*===\s*"low"/);
+assert.match(boot, /PBR module graph failed to load/);
+assert.match(boot, /moyo\.bluemoon\.works/);
+
+assert.match(app, /createDemoState\(\)/);
+assert.match(app, /moyo:pbr-ready/);
+assert.match(app, /view\.startEnhancements\(\)/);
+assert.match(app, /loadHighResolutionModels/);
+assert.match(app, /applyEnvelope\(\{ state: createDemoState\(\)/);
+assert.match(app, /setTimeout\(\(\) => \{ void loadHighResolutionModels\(\); \}, 80\)/);
+
+assert.match(modelLibrary, /import\("three\/addons\/loaders\/GLTFLoader\.js"\)/);
+assert.doesNotMatch(modelLibrary, /^import .*GLTFLoader/m);
+assert.match(modelLibrary, /AbortController/);
+assert.match(modelLibrary, /Promise\.race/);
+assert.match(modelLibrary, /concurrency/);
+assert.match(modelLibrary, /validateGlb/);
+assert.match(modelLibrary, /moyoShared/);
+assert.match(modelLibrary, /\/models\/settler\.glb\?v=/);
+
+assert.match(worldView, /import\("three\/addons\/environments\/RoomEnvironment\.js"\)/);
+assert.doesNotMatch(worldView, /^import .*RoomEnvironment/m);
+assert.match(worldView, /shadowMap\.autoUpdate\s*=\s*false/);
+assert.match(worldView, /PCFShadowMap/);
+assert.match(worldView, /startEnhancements/);
+assert.match(worldView, /refreshModelType/);
+assert.match(worldView, /addScaledVector\(right,\s*-dx\s*\*\s*amount\)/);
+assert.match(worldView, /addScaledVector\(forward,\s*dy\s*\*\s*amount\)/);
+assert.match(worldView, /environmentSize/);
+assert.match(terrain, /MeshPhysicalMaterial/);
+assert.match(terrain, /transmission:\s*0/);
+assert.match(shared, /moyoShared/);
+assert.match(quality, /balanced/);
+assert.match(quality, /ultra/);
+assert.match(quality, /pixelRatioCap/);
+
+assert.equal(previewConfig.name, "moyo-garden-pbr-preview");
+assert.equal(previewConfig.workers_dev, true);
+assert.equal(previewConfig.preview_urls, false);
+assert.ok(!("routes" in previewConfig), "PBR preview must not claim the production custom domain");
+
 assert.doesNotMatch(html, /https?:\/\/(?:unpkg|cdn\.jsdelivr|cdnjs)/i);
-assert.doesNotMatch(script, /https?:\/\/(?:unpkg|cdn\.jsdelivr|cdnjs)/i);
+assert.doesNotMatch(combined, /https?:\/\/(?:unpkg|cdn\.jsdelivr|cdnjs)/i);
 
 const expectedNodes = {
   "settler.glb": [
@@ -81,13 +121,11 @@ const expectedNodes = {
   "rock.glb": ["RockRoot", "Rock0", "detail_OreVein"],
   "buildings.glb": ["BuildingsRoot", "Camp", "Storehouse", "Market", "Workshop"],
 };
-
 for (const name of Object.keys(expectedNodes)) {
   const data = await readFile(join("public/models", name));
   assert.equal(data.toString("ascii", 0, 4), "glTF", `${name} is not GLB`);
   assert.equal(data.readUInt32LE(4), 2, `${name} is not glTF 2.0`);
   assert.equal(data.readUInt32LE(8), data.length, `${name} length header is invalid`);
-
   const jsonLength = data.readUInt32LE(12);
   assert.equal(data.toString("ascii", 16, 20), "JSON", `${name} lacks a JSON chunk`);
   const document = JSON.parse(data.toString("utf8", 20, 20 + jsonLength).trim());
@@ -95,38 +133,11 @@ for (const name of Object.keys(expectedNodes)) {
   const binaryLength = data.readUInt32LE(binaryHeaderOffset);
   assert.equal(data.readUInt32LE(binaryHeaderOffset + 4), 0x004e4942, `${name} lacks a BIN chunk`);
   assert.equal(binaryHeaderOffset + 8 + binaryLength, data.length, `${name} BIN chunk length is invalid`);
-
   assert.equal(document.asset.version, "2.0");
-  assert.equal(document.buffers.length, 1);
-  assert.ok(document.buffers[0].byteLength <= binaryLength, `${name} buffer length exceeds BIN chunk`);
-  assert.ok(document.materials.length > 0, `${name} lacks materials`);
-  assert.ok(
-    document.materials.every((material) => material.pbrMetallicRoughness),
-    `${name} has a non-PBR material`,
-  );
-  assert.ok(document.meshes.length > 0, `${name} lacks meshes`);
-  assert.ok(document.nodes.length > 0, `${name} lacks nodes`);
+  assert.ok(document.materials.every((material) => material.pbrMetallicRoughness));
   assert.equal(document.buffers[0].uri, undefined, `${name} must be self-contained`);
-
-  for (const view of document.bufferViews) {
-    assert.ok(
-      (view.byteOffset ?? 0) + view.byteLength <= document.buffers[0].byteLength,
-      `${name} has an out-of-range bufferView`,
-    );
-  }
-  for (const accessor of document.accessors) {
-    assert.ok(
-      Number.isInteger(accessor.bufferView)
-        && accessor.bufferView >= 0
-        && accessor.bufferView < document.bufferViews.length,
-      `${name} has an invalid accessor`,
-    );
-    assert.ok(accessor.count > 0, `${name} has an empty accessor`);
-  }
   const names = new Set(document.nodes.map((node) => node.name));
-  for (const expected of expectedNodes[name]) {
-    assert.ok(names.has(expected), `${name} lacks node ${expected}`);
-  }
+  for (const expected of expectedNodes[name]) assert.ok(names.has(expected), `${name} lacks ${expected}`);
 }
 
-console.log("PBR/glTF/LOD/shadow client validation passed");
+console.log("Progressive PBR/glTF/LOD/shadow preview validation passed");

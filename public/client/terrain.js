@@ -46,10 +46,9 @@ export const terrainMethods = {
         [0,1,0],
         color,
       );
-      const sides = [
+      for (const [dx, dy, edge] of [
         [1, 0, "east"], [-1, 0, "west"], [0, 1, "south"], [0, -1, "north"],
-      ];
-      for (const [dx, dy, edge] of sides) {
+      ]) {
         const neighbor = stateTile(tile.x + dx, tile.y + dy);
         const neighborHeight = neighbor ? this.terrainHeight(neighbor) : -0.6;
         if (height <= neighborHeight + 0.02) continue;
@@ -94,15 +93,16 @@ export const terrainMethods = {
     if (waterMatrices.length > 0) {
       const waterMaterial = new THREE.MeshPhysicalMaterial({
         color: 0x246a82,
-        roughness: 0.18,
-        metalness: 0.08,
+        roughness: 0.2,
+        metalness: 0.06,
         transparent: true,
-        opacity: 0.72,
-        transmission: 0.12,
-        thickness: 0.3,
-        clearcoat: 0.9,
-        clearcoatRoughness: 0.18,
-        envMapIntensity: 1.15,
+        opacity: 0.7,
+        transmission: 0,
+        thickness: 0,
+        clearcoat: 0.82,
+        clearcoatRoughness: 0.22,
+        envMapIntensity: 1.05,
+        depthWrite: false,
       });
       this.waterMesh = new THREE.InstancedMesh(
         new THREE.PlaneGeometry(1, 1),
@@ -111,25 +111,42 @@ export const terrainMethods = {
       );
       waterMatrices.forEach((matrix, index) => this.waterMesh.setMatrixAt(index, matrix));
       this.waterMesh.instanceMatrix.needsUpdate = true;
-      this.waterMesh.receiveShadow = true;
+      this.waterMesh.receiveShadow = false;
+      this.waterMesh.renderOrder = 2;
       this.worldRoot.add(this.waterMesh);
     }
 
     const detail = new THREE.Group();
-    const grassMaterial = new THREE.MeshStandardMaterial({ color: 0x6e8f49, roughness: 1, metalness: 0 });
-    const pebbleMaterial = new THREE.MeshStandardMaterial({ color: 0x777268, roughness: 0.98, metalness: 0.01 });
+    const density = this.quality.detailDensity;
+    const grassMaterial = new THREE.MeshStandardMaterial({
+      color: 0x6e8f49,
+      roughness: 1,
+      metalness: 0,
+    });
+    const pebbleMaterial = new THREE.MeshStandardMaterial({
+      color: 0x777268,
+      roughness: 0.98,
+      metalness: 0.01,
+    });
     const grassGeometry = new THREE.ConeGeometry(0.035, 0.22, 4);
     const pebbleGeometry = new THREE.IcosahedronGeometry(0.08, 0);
+    const grassThreshold = 0.77 - density * 0.28;
+    const pebbleThreshold = 0.8 - density * 0.24;
+    const grassPerTile = density > 0.95 ? 3 : density > 0.72 ? 2 : 1;
     const grassTiles = state.tiles.filter((tile) => tile.terrain === "plain"
-      && !tile.resource && hash2(tile.x, tile.y, 7) > 0.52);
+      && !tile.resource && hash2(tile.x, tile.y, 7) > grassThreshold);
     const pebbleTiles = state.tiles.filter((tile) => tile.terrain === "hill"
-      && !tile.resource && hash2(tile.x, tile.y, 8) > 0.58);
+      && !tile.resource && hash2(tile.x, tile.y, 8) > pebbleThreshold);
 
     if (grassTiles.length > 0) {
-      const grass = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassTiles.length * 2);
+      const grass = new THREE.InstancedMesh(
+        grassGeometry,
+        grassMaterial,
+        grassTiles.length * grassPerTile,
+      );
       let instance = 0;
       for (const tile of grassTiles) {
-        for (let index = 0; index < 2; index += 1) {
+        for (let index = 0; index < grassPerTile; index += 1) {
           const matrix = new THREE.Matrix4();
           matrix.compose(
             this.worldPosition(tile, 0.11).add(new THREE.Vector3(
@@ -205,6 +222,7 @@ export const terrainMethods = {
       far: 75,
     });
     this.sun.shadow.camera.updateProjectionMatrix();
+    this.markShadowsDirty();
   },
 
   pbrMaterial(color, roughness = 0.8, metalness = 0) {
