@@ -1,6 +1,20 @@
 import * as THREE from "three";
 import { TERRAIN_COLORS, disposeObject, hash2 } from "./shared.js";
 
+function quadNormal(corners) {
+  const a = new THREE.Vector3(
+    corners[3][0] - corners[0][0],
+    corners[3][1] - corners[0][1],
+    corners[3][2] - corners[0][2],
+  );
+  const b = new THREE.Vector3(
+    corners[1][0] - corners[0][0],
+    corners[1][1] - corners[0][1],
+    corners[1][2] - corners[0][2],
+  );
+  return a.cross(b).normalize().toArray();
+}
+
 export const terrainMethods = {
   buildTerrain(state) {
     disposeObject(this.terrainMesh);
@@ -11,9 +25,10 @@ export const terrainMethods = {
     const waterMatrices = [];
     const pushQuad = (corners, normal, color) => {
       const base = positions.length / 3;
+      const resolvedNormal = normal || quadNormal(corners);
       for (const corner of corners) {
         positions.push(...corner);
-        normals.push(...normal);
+        normals.push(...resolvedNormal);
         colors.push(color.r, color.g, color.b);
       }
       indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
@@ -22,54 +37,82 @@ export const terrainMethods = {
       ? state.tiles[y * state.width + x]
       : null;
 
+    const cornerHeight = (vertexX, vertexY, fallbackTile) => {
+      const samples = [];
+      for (const dx of [-1, 0]) {
+        for (const dy of [-1, 0]) {
+          const tile = stateTile(vertexX + dx, vertexY + dy);
+          if (tile && tile.terrain !== "water") samples.push(this.terrainHeight(tile));
+        }
+      }
+      const base = samples.length > 0
+        ? samples.reduce((sum, value) => sum + value, 0) / samples.length
+        : this.terrainHeight(fallbackTile);
+      const noise = (hash2(vertexX, vertexY, 501) - 0.5) * 0.055;
+      return base + noise;
+    };
+
+    const topCorners = new Map();
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water") continue;
+      const x = tile.x - state.width / 2;
+      const z = tile.y - state.height / 2;
+      const h00 = cornerHeight(tile.x, tile.y, tile);
+      const h10 = cornerHeight(tile.x + 1, tile.y, tile);
+      const h11 = cornerHeight(tile.x + 1, tile.y + 1, tile);
+      const h01 = cornerHeight(tile.x, tile.y + 1, tile);
+      topCorners.set(`${tile.x}:${tile.y}`, { h00, h10, h11, h01 });
+
+      const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
+      const averageHeight = (h00 + h10 + h11 + h01) * 0.25;
+      color.offsetHSL(
+        (hash2(tile.x, tile.y, 1) - 0.5) * 0.018,
+        tile.terrain === "forest" ? 0.018 : 0,
+        (hash2(tile.x, tile.y, 2) - 0.5) * 0.035 + averageHeight * 0.035,
+      );
+      const corners = [
+        [x, h00, z],
+        [x + 1, h10, z],
+        [x + 1, h11, z + 1],
+        [x, h01, z + 1],
+      ];
+      pushQuad(corners, null, color);
+    }
+
     for (const tile of state.tiles) {
       const x = tile.x - state.width / 2;
       const z = tile.y - state.height / 2;
-      const height = this.terrainHeight(tile);
-      const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
-      color.offsetHSL(
-        (hash2(tile.x, tile.y, 1) - 0.5) * 0.018,
-        0,
-        (hash2(tile.x, tile.y, 2) - 0.5) * 0.045,
-      );
-
       if (tile.terrain === "water") {
         const matrix = new THREE.Matrix4();
         matrix.makeRotationX(-Math.PI / 2);
-        matrix.setPosition(x + 0.5, height + 0.04, z + 0.5);
+        matrix.setPosition(x + 0.5, this.terrainHeight(tile) + 0.035, z + 0.5);
         waterMatrices.push(matrix);
         continue;
       }
-
-      pushQuad(
-        [[x,height,z],[x+1,height,z],[x+1,height,z+1],[x,height,z+1]],
-        [0,1,0],
-        color,
-      );
+      const heights = topCorners.get(`${tile.x}:${tile.y}`);
+      if (!heights) continue;
+      const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone().multiplyScalar(0.72);
       for (const [dx, dy, edge] of [
         [1, 0, "east"], [-1, 0, "west"], [0, 1, "south"], [0, -1, "north"],
       ]) {
         const neighbor = stateTile(tile.x + dx, tile.y + dy);
-        const neighborHeight = neighbor ? this.terrainHeight(neighbor) : -0.58;
-        if (height <= neighborHeight + 0.02) continue;
-        const sideColor = color.clone().multiplyScalar(
-          edge === "east" || edge === "west" ? 0.72 : 0.76,
-        );
+        if (neighbor && neighbor.terrain !== "water") continue;
+        const bottom = neighbor?.terrain === "water" ? this.terrainHeight(neighbor) + 0.02 : -0.62;
         if (edge === "east") pushQuad(
-          [[x+1,neighborHeight,z],[x+1,neighborHeight,z+1],[x+1,height,z+1],[x+1,height,z]],
-          [1,0,0], sideColor,
+          [[x+1,bottom,z],[x+1,bottom,z+1],[x+1,heights.h11,z+1],[x+1,heights.h10,z]],
+          [1,0,0], color,
         );
         if (edge === "west") pushQuad(
-          [[x,neighborHeight,z+1],[x,neighborHeight,z],[x,height,z],[x,height,z+1]],
-          [-1,0,0], sideColor,
+          [[x,bottom,z+1],[x,bottom,z],[x,heights.h00,z],[x,heights.h01,z+1]],
+          [-1,0,0], color,
         );
         if (edge === "south") pushQuad(
-          [[x,neighborHeight,z+1],[x+1,neighborHeight,z+1],[x+1,height,z+1],[x,height,z+1]],
-          [0,0,1], sideColor,
+          [[x,bottom,z+1],[x+1,bottom,z+1],[x+1,heights.h11,z+1],[x,heights.h01,z+1]],
+          [0,0,1], color,
         );
         if (edge === "north") pushQuad(
-          [[x+1,neighborHeight,z],[x,neighborHeight,z],[x,height,z],[x+1,height,z]],
-          [0,0,-1], sideColor,
+          [[x+1,bottom,z],[x,bottom,z],[x,heights.h00,z],[x+1,heights.h10,z]],
+          [0,0,-1], color,
         );
       }
     }
@@ -82,9 +125,9 @@ export const terrainMethods = {
     geometry.computeBoundingSphere();
     const material = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.97,
+      roughness: 0.985,
       metalness: 0,
-      envMapIntensity: 0.38,
+      envMapIntensity: 0.3,
     });
     this.terrainMesh = new THREE.Mesh(geometry, material);
     this.terrainMesh.receiveShadow = true;
@@ -93,30 +136,30 @@ export const terrainMethods = {
     const detail = new THREE.Group();
 
     const underlay = new THREE.Mesh(
-      new THREE.BoxGeometry(state.width + 2.4, 0.45, state.height + 2.4),
+      new THREE.BoxGeometry(state.width + 2.6, 0.5, state.height + 2.6),
       new THREE.MeshStandardMaterial({
-        color: 0x4f5144,
+        color: 0x5d5c4f,
         roughness: 1,
         metalness: 0,
-        envMapIntensity: 0.2,
+        envMapIntensity: 0.12,
       }),
     );
-    underlay.position.y = -0.78;
+    underlay.position.y = -0.82;
     underlay.receiveShadow = true;
     detail.add(underlay);
 
     if (waterMatrices.length > 0) {
       const waterMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0x397e92,
-        roughness: 0.24,
-        metalness: 0.04,
+        color: 0x4a91a3,
+        roughness: 0.2,
+        metalness: 0.03,
         transparent: true,
-        opacity: 0.78,
+        opacity: 0.75,
         transmission: 0,
         thickness: 0,
-        clearcoat: 0.72,
-        clearcoatRoughness: 0.3,
-        envMapIntensity: 0.92,
+        clearcoat: 0.82,
+        clearcoatRoughness: 0.24,
+        envMapIntensity: 1.02,
         depthWrite: false,
       });
       this.waterMesh = new THREE.InstancedMesh(
@@ -131,32 +174,62 @@ export const terrainMethods = {
       this.worldRoot.add(this.waterMesh);
     }
 
-    const clearingMaterial = new THREE.MeshStandardMaterial({
-      color: 0x8b7a5d,
+    const shorelineMaterial = new THREE.MeshStandardMaterial({
+      color: 0x9c9474,
       roughness: 1,
       metalness: 0,
-      envMapIntensity: 0.25,
+      envMapIntensity: 0.14,
+    });
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water") continue;
+      const center = this.worldPosition(tile, 0.012);
+      for (const [dx, dy, edge] of [
+        [1,0,"east"],[-1,0,"west"],[0,1,"south"],[0,-1,"north"],
+      ]) {
+        const neighbor = stateTile(tile.x + dx, tile.y + dy);
+        if (!neighbor || neighbor.terrain !== "water") continue;
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(
+          edge === "east" || edge === "west" ? 0.09 : 0.94,
+          0.025,
+          edge === "east" || edge === "west" ? 0.94 : 0.09,
+        ), shorelineMaterial);
+        strip.position.copy(center);
+        strip.position.y = this.terrainHeight(tile) + 0.028;
+        if (edge === "east") strip.position.x += 0.455;
+        if (edge === "west") strip.position.x -= 0.455;
+        if (edge === "south") strip.position.z += 0.455;
+        if (edge === "north") strip.position.z -= 0.455;
+        strip.receiveShadow = true;
+        detail.add(strip);
+      }
+    }
+
+    const clearingMaterial = new THREE.MeshStandardMaterial({
+      color: 0x958369,
+      roughness: 1,
+      metalness: 0,
+      envMapIntensity: 0.18,
       polygonOffset: true,
       polygonOffsetFactor: -1,
     });
     for (const structure of state.structures) {
       const tile = stateTile(structure.position.x, structure.position.y);
       if (!tile || tile.terrain === "water") continue;
-      const radius = structure.type === "camp" ? 1.2 : 1.42;
-      const clearing = new THREE.Mesh(new THREE.CircleGeometry(radius, 28), clearingMaterial);
+      const radius = structure.type === "camp" ? 1.26 : 1.5;
+      const clearing = new THREE.Mesh(new THREE.CircleGeometry(radius, 36), clearingMaterial);
       clearing.rotation.x = -Math.PI / 2;
       clearing.rotation.z = hash2(structure.position.x, structure.position.y, 301) * Math.PI;
-      clearing.scale.set(1, 0.78 + hash2(structure.position.x, structure.position.y, 302) * 0.18, 1);
-      clearing.position.copy(this.worldPosition(structure.position, 0.018));
+      clearing.scale.set(1, 0.8 + hash2(structure.position.x, structure.position.y, 302) * 0.15, 1);
+      clearing.position.copy(this.worldPosition(structure.position, 0.02));
       clearing.receiveShadow = true;
       detail.add(clearing);
     }
 
     const pathMaterial = new THREE.MeshStandardMaterial({
-      color: 0x817054,
+      color: 0x8b7659,
       roughness: 1,
       metalness: 0,
-      envMapIntensity: 0.2,
+      envMapIntensity: 0.14,
     });
     for (const faction of state.factions) {
       const structures = state.structures
@@ -171,7 +244,7 @@ export const terrainMethods = {
         const dz = end.z - start.z;
         const length = Math.hypot(dx, dz);
         if (length < 0.2) continue;
-        const path = new THREE.Mesh(new THREE.BoxGeometry(length, 0.035, 0.34), pathMaterial);
+        const path = new THREE.Mesh(new THREE.BoxGeometry(length, 0.03, 0.3), pathMaterial);
         path.position.set(
           (start.x + end.x) * 0.5,
           Math.max(start.y, end.y) + 0.012,
@@ -185,19 +258,19 @@ export const terrainMethods = {
 
     const density = this.quality.detailDensity;
     const grassMaterial = new THREE.MeshStandardMaterial({
-      color: 0x63784f,
+      color: 0x70815d,
       roughness: 1,
       metalness: 0,
     });
     const pebbleMaterial = new THREE.MeshStandardMaterial({
-      color: 0x77756f,
+      color: 0x817d75,
       roughness: 0.99,
       metalness: 0,
     });
-    const grassGeometry = new THREE.ConeGeometry(0.024, 0.13, 4);
-    const pebbleGeometry = new THREE.IcosahedronGeometry(0.065, 0);
-    const grassThreshold = 0.94 - density * 0.07;
-    const pebbleThreshold = 0.92 - density * 0.08;
+    const grassGeometry = new THREE.ConeGeometry(0.022, 0.12, 4);
+    const pebbleGeometry = new THREE.IcosahedronGeometry(0.06, 0);
+    const grassThreshold = 0.955 - density * 0.055;
+    const pebbleThreshold = 0.94 - density * 0.065;
     const grassTiles = state.tiles.filter((tile) => tile.terrain === "plain"
       && !tile.resource && hash2(tile.x, tile.y, 7) > grassThreshold);
     const pebbleTiles = state.tiles.filter((tile) => tile.terrain === "hill"
@@ -208,7 +281,7 @@ export const terrainMethods = {
       grassTiles.forEach((tile, index) => {
         const matrix = new THREE.Matrix4();
         matrix.compose(
-          this.worldPosition(tile, 0.065).add(new THREE.Vector3(
+          this.worldPosition(tile, 0.06).add(new THREE.Vector3(
             (hash2(tile.x,tile.y,20)-0.5)*0.58,
             0,
             (hash2(tile.x,tile.y,30)-0.5)*0.58,
@@ -235,7 +308,7 @@ export const terrainMethods = {
       pebbleTiles.forEach((tile, index) => {
         const matrix = new THREE.Matrix4();
         matrix.compose(
-          this.worldPosition(tile, 0.055).add(new THREE.Vector3(
+          this.worldPosition(tile, 0.05).add(new THREE.Vector3(
             (hash2(tile.x,tile.y,72)-0.5)*0.5,
             0,
             (hash2(tile.x,tile.y,73)-0.5)*0.5,
@@ -265,7 +338,7 @@ export const terrainMethods = {
     this.detailRoot = detail;
     this.worldRoot.add(detail);
 
-    const extent = Math.max(state.width, state.height) * 0.72;
+    const extent = Math.max(state.width, state.height) * 0.7;
     Object.assign(this.sun.shadow.camera, {
       left: -extent,
       right: extent,
@@ -283,7 +356,7 @@ export const terrainMethods = {
       color,
       roughness,
       metalness,
-      envMapIntensity: 0.62,
+      envMapIntensity: 0.58,
     });
   },
 };
