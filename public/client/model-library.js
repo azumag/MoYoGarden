@@ -1,7 +1,13 @@
 import * as THREE from "three";
 
 const MODEL_VERSION = "0.3.4";
+const AUTHORED_VERSION = "0.3.7";
 const MODEL_MANIFEST = Object.freeze([
+  ["authored:tree-oak", `/assets/authored/kenney/tree_oak.glb?v=${AUTHORED_VERSION}`],
+  ["authored:tree-pine", `/assets/authored/kenney/tree_pine.glb?v=${AUTHORED_VERSION}`],
+  ["authored:rock-large", `/assets/authored/kenney/rock_large.glb?v=${AUTHORED_VERSION}`],
+  ["authored:rock-medium", `/assets/authored/kenney/rock_medium.glb?v=${AUTHORED_VERSION}`],
+  ["authored:rock-small", `/assets/authored/kenney/rock_small.glb?v=${AUTHORED_VERSION}`],
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
   ["tree", `/models/tree.glb?v=${MODEL_VERSION}`],
@@ -51,6 +57,35 @@ async function loadWithTimeout(loader, key, url, timeoutMs) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function authoredStandardMaterial(material, detail) {
+  if (material.isMeshStandardMaterial || material.isMeshPhysicalMaterial) {
+    const copy = material.clone();
+    copy.envMapIntensity = detail === "high" ? 0.72 : 0.52;
+    return copy;
+  }
+  const color = material.color?.clone?.() || new THREE.Color(0xffffff);
+  const name = material.name || "AuthoredMaterial";
+  const lower = name.toLowerCase();
+  const roughness = lower.includes("leaf") ? 0.84
+    : lower.includes("wood") || lower.includes("bark") ? 0.9
+      : lower.includes("rock") || lower.includes("stone") ? 0.94 : 0.88;
+  const copy = new THREE.MeshStandardMaterial({
+    name,
+    color,
+    map: material.map || null,
+    transparent: Boolean(material.transparent),
+    opacity: material.opacity ?? 1,
+    alphaTest: material.alphaTest ?? 0,
+    side: material.side ?? THREE.FrontSide,
+    vertexColors: Boolean(material.vertexColors),
+    roughness,
+    metalness: 0,
+    envMapIntensity: detail === "high" ? 0.68 : 0.48,
+  });
+  copy.userData = { ...(material.userData || {}), moyoPromotedFromUnlit: true };
+  return copy;
 }
 
 export class ModelLibrary {
@@ -107,7 +142,11 @@ export class ModelLibrary {
             message: error instanceof Error ? error.message : String(error),
           };
           results.push(result);
-          console.warn(`MoYoGarden: ${key} glTF load failed; procedural LOD remains active`, error);
+          const optional = key.startsWith("authored:");
+          console[optional ? "info" : "warn"](
+            `MoYoGarden: ${key} glTF load failed; ${optional ? "authored override skipped" : "procedural LOD remains active"}`,
+            error,
+          );
         } finally {
           completed += 1;
           onProgress?.({ key, completed, total: MODEL_MANIFEST.length });
@@ -138,6 +177,7 @@ export class ModelLibrary {
     const clone = source.clone(true);
     const faction = new THREE.Color(factionColor || 0xffffff);
     const mutedFaction = faction.clone().lerp(new THREE.Color(0x343936), 0.28);
+    const authored = name.startsWith("authored:");
 
     clone.traverse((object) => {
       if ((object.userData.moyoDetail || object.name.startsWith("detail_")) && detail !== "high") {
@@ -151,7 +191,7 @@ export class ModelLibrary {
       object.geometry.userData.moyoShared = true;
       const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
       const materials = sourceMaterials.map((material) => {
-        const copy = material.clone();
+        const copy = authored ? authoredStandardMaterial(material, detail) : material.clone();
         if (copy.name.includes("Faction")) {
           const baseColor = copy.color.clone();
           const strength = copy.name.includes("Dark") ? 0.52 : 0.3;
