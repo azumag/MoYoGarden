@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.11 - 2026-09-03
+
+- BOTのauthoredモデル化を開始し、KayKit Character Pack: Adventurers 1.0由来のCC0キャラクターを近距離LODへ追加
+- 建築・採掘・伐採担当はBarbarian、採集・斥候・交易担当はRogue Hoodedを使用し、中距離以遠は従来の軽量settler LODへ戻す構成に変更
+- KayKit upstreamをコミット`672074b73ba276876a19e8816ecdc5241817ab47`へ固定し、rigged GLBと必要なテクスチャをGit blob SHA-1で検証してビルド時に自己ホスト
+- authored BOTはThree.js SkeletonUtilsで複製し、通常のObject3D cloneによるスキニング破損を回避
+- GLB内のanimation clipを保持し、Idle/Walking/Running系clipを自動選択してBOTの停止・移動状態に応じてクロスフェード再生
+- authored BOTは近距離だけで利用し、約7MBの追加キャラクター資産が描画負荷を常時増やさないようLOD距離を短めに設定
+- 大きなキャラクターGLBだけロードタイムアウトを最大9秒まで許容しつつ、主要な生成モデルとauthored建物を先に読み込む順序を維持
+- authoredキャラクター取得・読込に失敗した場合は従来のgenerated settlerへ自動フォールバックし、初期表示は引き続きGLBを待たない
+
 ## 0.3.10 - 2026-09-03
 
 - authored建物の第一段階として、KayKit Medieval Hexagon Pack 1.0由来のCC0建築モデルをプレビューへ追加
