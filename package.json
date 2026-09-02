@@ -1,11 +1,11 @@
 {
   "name": "moyo-garden",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "type": "module",
   "description": "Bot-first persistent 3D world on Cloudflare Workers and Durable Objects.",
   "scripts": {
-    "generate:models": "node scripts/generate-models.mjs",
+    "generate:models": "node scripts/generate-models.mjs && node scripts/enhance-models.mjs",
     "vendor:three": "node scripts/vendor-three.mjs",
     "check:client": "node scripts/check-client.mjs",
     "build:web": "npm run generate:models && npm run vendor:three && npm run check:client && node scripts/validate-public.mjs",
