@@ -10,10 +10,10 @@ export const ROLE_LABELS = {
 };
 
 export const TERRAIN_COLORS = {
-  plain: new THREE.Color(0x658353),
-  forest: new THREE.Color(0x315a35),
-  hill: new THREE.Color(0x756b57),
-  water: new THREE.Color(0x1c5266),
+  plain: new THREE.Color(0x71845a),
+  forest: new THREE.Color(0x49684a),
+  hill: new THREE.Color(0x817764),
+  water: new THREE.Color(0x39758a),
 };
 
 export const STRUCTURE_NAMES = {
