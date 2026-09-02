@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: pbr-preview-landscape-v0.3.5
-reason: deploy atmospheric sky, corrected terrain surfaces, smoothed height transitions, shorelines, natural resource silhouettes, and clearer settlement framing
-nonce: 20260903-pbr-landscape-v035
+release: pbr-preview-frontier-silhouette-v0.3.6
+reason: deploy distinctive resident clothing and role silhouettes, contact shadows, richer settlement architecture, coherent building orientation, and expanded props
+nonce: 20260903-0219-jst
