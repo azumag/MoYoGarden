@@ -1,53 +1,113 @@
 import * as THREE from "three";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { agentMethods } from "./agents.js";
 import { resourceMethods } from "./resources.js";
 import { structureMethods } from "./structures.js";
 import { terrainMethods } from "./terrain.js";
-import { WORLD_UP, clamp } from "./shared.js";
+import { WORLD_UP, clamp, disposeObject } from "./shared.js";
+
+function scheduleIdle(task, delayMs, timeoutMs = delayMs + 1_000) {
+  setTimeout(() => {
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => task(), { timeout: timeoutMs });
+    } else {
+      task();
+    }
+  }, delayMs);
+}
+
+function createSkyDome() {
+  const geometry = new THREE.SphereGeometry(150, 48, 24);
+  const material = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    toneMapped: false,
+    uniforms: {
+      zenithColor: { value: new THREE.Color(0x6f9db4) },
+      horizonColor: { value: new THREE.Color(0xdbe1d5) },
+      groundColor: { value: new THREE.Color(0x758074) },
+      sunColor: { value: new THREE.Color(0xffe7bb) },
+      sunDirection: { value: new THREE.Vector3(-0.48, 0.78, 0.29).normalize() },
+    },
+    vertexShader: `
+      varying vec3 vDirection;
+      void main() {
+        vDirection = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vDirection;
+      uniform vec3 zenithColor;
+      uniform vec3 horizonColor;
+      uniform vec3 groundColor;
+      uniform vec3 sunColor;
+      uniform vec3 sunDirection;
+      void main() {
+        vec3 dir = normalize(vDirection);
+        float up = clamp(dir.y, -1.0, 1.0);
+        float skyMix = pow(clamp(up, 0.0, 1.0), 0.55);
+        vec3 color = mix(horizonColor, zenithColor, skyMix);
+        float below = 1.0 - smoothstep(-0.32, 0.05, up);
+        color = mix(color, groundColor, below * 0.62);
+        float sunDot = max(dot(dir, sunDirection), 0.0);
+        float halo = pow(sunDot, 18.0) * 0.16;
+        float disc = pow(sunDot, 620.0) * 0.78;
+        color += sunColor * (halo + disc);
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -10_000;
+  return mesh;
+}
 
 export class WorldView {
-  constructor(canvas, models) {
+  constructor(canvas, models, quality) {
     this.canvas = canvas;
     this.models = models;
+    this.quality = quality;
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: quality.antialias,
       alpha: false,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality.pixelRatioCap));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.04;
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.shadowMap.enabled = false;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.autoUpdate = false;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0c1d18);
-    this.scene.fog = new THREE.FogExp2(0x0c1d18, 0.022);
+    this.scene.background = new THREE.Color(0xc3d0c7);
+    this.scene.fog = new THREE.FogExp2(0xb9c8c0, 0.0118);
+    this.scene.environmentIntensity = 0.68;
+    this.sky = createSkyDome();
+    this.scene.add(this.sky);
+
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.1, 180);
     this.cameraState = {
       yaw: -0.74,
-      pitch: 0.68,
-      distance: 34,
-      target: new THREE.Vector3(0, 0.2, 0),
+      pitch: 0.47,
+      distance: 28,
+      target: new THREE.Vector3(0, 0.18, 0),
     };
 
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    const room = new RoomEnvironment();
-    this.scene.environment = pmrem.fromScene(room, 0.04).texture;
-    room.dispose();
-    pmrem.dispose();
-
-    this.hemi = new THREE.HemisphereLight(0xb7d9d0, 0x182018, 1.55);
+    this.hemi = new THREE.HemisphereLight(0xeaf5ef, 0x53604f, 1.92);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(0xfff2d2, 4.1);
-    this.sun.position.set(-18, 26, 14);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.bias = -0.00065;
-    this.sun.shadow.normalBias = 0.025;
+    this.ambient = new THREE.AmbientLight(0xc2d0c5, 0.3);
+    this.scene.add(this.ambient);
+    this.sun = new THREE.DirectionalLight(0xffe9c4, 3.15);
+    this.sun.position.set(-20, 29, 11);
+    this.sun.castShadow = false;
+    this.sun.shadow.bias = -0.00055;
+    this.sun.shadow.normalBias = 0.022;
+    this.sun.shadow.radius = quality.shadowRadius;
     this.sun.target.position.set(0, 0, 0);
     this.scene.add(this.sun, this.sun.target);
 
@@ -65,6 +125,7 @@ export class WorldView {
     this.terrainMesh = null;
     this.waterMesh = null;
     this.detailRoot = null;
+    this.surfaceHeightMap = new Map();
     this.resourceObjects = new Map();
     this.structureObjects = new Map();
     this.agentObjects = new Map();
@@ -72,33 +133,99 @@ export class WorldView {
     this.keys = new Set();
     this.drag = null;
     this.lastFrame = performance.now();
+    this.lastShadowUpdate = 0;
+    this.shadowsEnabled = false;
+    this.environmentTarget = null;
+    this.enhancementsStarted = false;
     this.onSelect = () => {};
     this.onCommand = () => {};
+    this.onEnhancement = () => {};
 
+    this.canvas.addEventListener("webglcontextlost", (event) => {
+      event.preventDefault();
+      window.dispatchEvent(new CustomEvent("moyo:pbr-error", {
+        detail: { error: new Error("WebGL context lost") },
+      }));
+    });
     this.bindInput();
     this.renderer.setAnimationLoop((time) => this.frame(time));
   }
 
-  tileAt(x, y) {
-    if (!this.state || x < 0 || y < 0 || x >= this.state.width || y >= this.state.height) {
-      return null;
+  startEnhancements() {
+    if (this.enhancementsStarted) return;
+    this.enhancementsStarted = true;
+    scheduleIdle(() => this.enableShadows(), 350, 1_600);
+    scheduleIdle(() => { void this.initializeEnvironment(); }, 850, 2_800);
+  }
+
+  enableShadows() {
+    if (this.shadowsEnabled) return;
+    const size = this.quality.shadowSize;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.sun.shadow.mapSize.set(size, size);
+    this.sun.shadow.radius = this.quality.shadowRadius;
+    this.sun.castShadow = true;
+    this.shadowsEnabled = true;
+    this.markShadowsDirty();
+    this.onEnhancement({ feature: "shadows", active: true });
+  }
+
+  async initializeEnvironment() {
+    if (this.environmentTarget || !this.renderer) return;
+    try {
+      const { RoomEnvironment } = await import("three/addons/environments/RoomEnvironment.js");
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      const room = new RoomEnvironment();
+      const target = pmrem.fromScene(room, 0.035, 0.1, 100, {
+        size: this.quality.environmentSize,
+      });
+      this.scene.environment = target.texture;
+      this.scene.environmentIntensity = 0.68;
+      this.environmentTarget = target;
+      room.dispose();
+      pmrem.dispose();
+      this.scene.traverse((object) => {
+        if (!object.isMesh || !object.material) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) {
+          if (material.isMeshStandardMaterial || material.isMeshPhysicalMaterial) {
+            material.needsUpdate = true;
+          }
+        }
+      });
+      this.markShadowsDirty();
+      this.onEnhancement({ feature: "environment", active: true });
+    } catch (error) {
+      console.warn("MoYoGarden: deferred PBR environment failed", error);
+      this.onEnhancement({ feature: "environment", active: false, error });
     }
+  }
+
+  markShadowsDirty() {
+    if (this.shadowsEnabled) this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  tileAt(x, y) {
+    if (!this.state || x < 0 || y < 0 || x >= this.state.width || y >= this.state.height) return null;
     return this.state.tiles[y * this.state.width + x] || null;
   }
 
   terrainHeight(tile) {
     if (!tile) return 0;
-    if (tile.terrain === "hill") return 0.62;
-    if (tile.terrain === "forest") return 0.14;
-    if (tile.terrain === "water") return -0.2;
-    return 0;
+    if (tile.terrain === "hill") return 0.54;
+    if (tile.terrain === "forest") return 0.11;
+    if (tile.terrain === "water") return -0.24;
+    return 0.015;
   }
 
   worldPosition(position, lift = 0) {
     const tile = this.tileAt(position.x, position.y);
+    const surfaceHeight = this.surfaceHeightMap.get(`${position.x}:${position.y}`);
     return new THREE.Vector3(
       position.x - this.state.width / 2 + 0.5,
-      this.terrainHeight(tile) + lift,
+      (surfaceHeight ?? this.terrainHeight(tile)) + lift,
       position.y - this.state.height / 2 + 0.5,
     );
   }
@@ -134,11 +261,33 @@ export class WorldView {
 
   createLod(high, medium, low, distances) {
     const lod = new THREE.LOD();
-    if (high) lod.addLevel(high, distances[0]);
-    if (medium) lod.addLevel(medium, distances[1]);
-    if (low) lod.addLevel(low, distances[2]);
+    const levels = [[high, 0], [medium, distances[1]], [low, distances[2]]]
+      .filter(([object]) => Boolean(object));
+    levels.forEach(([object, distance], index) => {
+      lod.addLevel(object, index === 0 ? 0 : distance * this.quality.lodScale);
+    });
     lod.autoUpdate = true;
     return lod;
+  }
+
+  clearObjectMap(map) {
+    for (const entry of map.values()) disposeObject(entry.lod);
+    map.clear();
+  }
+
+  refreshModelType(key) {
+    if (!this.state) return;
+    if (key === "settler") {
+      this.clearObjectMap(this.agentObjects);
+      this.syncAgents(this.state);
+    } else if (key === "buildings") {
+      this.clearObjectMap(this.structureObjects);
+      this.syncStructures(this.state);
+    } else if (key === "tree" || key === "rock") {
+      this.clearObjectMap(this.resourceObjects);
+      this.syncResources(this.state);
+    }
+    this.markShadowsDirty();
   }
 
   setState(state, tickMs = this.tickMs) {
@@ -150,12 +299,21 @@ export class WorldView {
     this.tickMs = tickMs;
     if (terrainKey !== previousKey || !this.terrainMesh) {
       this.buildTerrain(state);
-      this.cameraState.distance = Math.max(state.width, state.height) * 1.12;
-      this.cameraState.target.set(0, 0.2, 0);
+      this.cameraState.distance = Math.max(state.width, state.height) * 0.88;
+      this.cameraState.target.set(0, 0.18, 0);
     }
     this.syncResources(state);
     this.syncStructures(state);
     this.syncAgents(state);
+    this.markShadowsDirty();
+  }
+
+  agentsAreInterpolating(time) {
+    for (const entry of this.agentObjects.values()) {
+      const duration = Math.max(300, this.tickMs * 0.82);
+      if (entry.from.distanceToSquared(entry.to) > 0.001 && time < entry.start + duration) return true;
+    }
+    return false;
   }
 
   frame(time) {
@@ -166,8 +324,16 @@ export class WorldView {
     for (const entry of this.agentObjects.values()) this.animateAgent(entry, time);
     if (this.waterMesh) {
       const material = this.waterMesh.material;
-      material.opacity = 0.68 + Math.sin(time * 0.0011) * 0.045;
-      material.color.setHSL(0.54, 0.48, 0.29 + Math.sin(time * 0.0007) * 0.02);
+      material.opacity = 0.73 + Math.sin(time * 0.0011) * 0.022;
+      material.color.setHSL(0.545, 0.38, 0.42 + Math.sin(time * 0.0007) * 0.012);
+    }
+    if (
+      this.shadowsEnabled
+      && this.agentsAreInterpolating(time)
+      && time - this.lastShadowUpdate >= this.quality.shadowUpdateIntervalMs
+    ) {
+      this.lastShadowUpdate = time;
+      this.renderer.shadowMap.needsUpdate = true;
     }
     this.updateCamera();
     this.renderer.render(this.scene, this.camera);
@@ -177,13 +343,15 @@ export class WorldView {
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
     if (!width || !height) return;
-    const ratio = Math.min(window.devicePixelRatio || 1, 1.75);
+    const ratio = Math.min(window.devicePixelRatio || 1, this.quality.pixelRatioCap);
     const targetWidth = Math.floor(width * ratio);
     const targetHeight = Math.floor(height * ratio);
     if (this.canvas.width !== targetWidth || this.canvas.height !== targetHeight) {
+      this.renderer.setPixelRatio(ratio);
       this.renderer.setSize(width, height, false);
       this.camera.aspect = width / height;
       this.camera.updateProjectionMatrix();
+      this.markShadowsDirty();
     }
   }
 
@@ -266,7 +434,6 @@ export class WorldView {
       } else {
         const { forward, right } = this.cameraVectors();
         const amount = Math.max(0.0035, this.cameraState.distance * 0.00215);
-        // Grab-map behavior: both axes are reversed from the previous release.
         this.cameraState.target
           .addScaledVector(right, -dx * amount)
           .addScaledVector(forward, dy * amount);
@@ -280,9 +447,7 @@ export class WorldView {
       if (!this.drag || event.pointerId !== this.drag.pointerId) return;
       if (this.drag.mode === "orbit" && !this.drag.moved) {
         this.selectedAgentId = this.pickAgent(event);
-        for (const [id, entry] of this.agentObjects) {
-          entry.ring.visible = id === this.selectedAgentId;
-        }
+        for (const [id, entry] of this.agentObjects) entry.ring.visible = id === this.selectedAgentId;
         this.onSelect(this.selectedAgentId);
       }
       this.drag = null;

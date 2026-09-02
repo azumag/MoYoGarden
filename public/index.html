@@ -4,9 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="AIエージェントと機械BOTが開拓する永続型3Dワールド MoYoGarden" />
-    <meta name="theme-color" content="#07110e" />
+    <meta name="theme-color" content="#9fb3a7" />
     <title>MoYoGarden — Bot-first persistent world</title>
-    <link rel="stylesheet" href="/style.css?v=0.3.2-mobile-sidebar" />
+    <link rel="stylesheet" href="/style.css?v=0.3.11" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/vendor/three-r185/build/three.module.min.js",
+          "three/addons/": "/vendor/three-r185/examples/jsm/"
+        }
+      }
+    </script>
   </head>
   <body>
     <main id="app">
@@ -15,19 +23,20 @@
       <header class="brand-panel glass">
         <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
         <div>
-          <p class="eyebrow">MASSIVELY MULTI-AGENT WORLD</p>
+          <p class="eyebrow">PBR · MASSIVELY MULTI-AGENT WORLD</p>
           <h1>MoYoGarden</h1>
         </div>
       </header>
 
       <section class="world-status glass" aria-live="polite">
         <span id="connection-dot" class="connection-dot"></span>
-        <strong id="connection-label">接続中</strong>
+        <strong id="connection-label">起動中</strong>
         <span class="divider"></span>
         <span>REGION <b id="region-label">garden-1</b></span>
         <span>TICK <b id="tick-label">—</b></span>
         <span>BOT <b id="agent-count">—</b></span>
         <span>BUILD <b id="structure-count">—</b></span>
+        <span>RENDER <b id="render-status">BOOT</b></span>
       </section>
 
       <nav class="control-panel glass" aria-label="ワールド操作">
@@ -87,7 +96,10 @@
         </div>
         <label>Region<select id="region-select"></select></label>
         <label>Bearer token<input id="token-input" type="password" autocomplete="off" placeholder="COMMAND_TOKEN / ADMIN_TOKEN" /></label>
-        <p class="settings-note">閲覧は公開です。本番でBOT操作・管理操作を行う場合だけSecretのトークンを入力します。</p>
+        <p class="settings-note">
+          品質はURLの <code>?quality=balanced</code>、<code>?quality=high</code>、<code>?quality=ultra</code> で指定できます。
+          閲覧は公開です。BOT操作・管理操作を行う場合だけSecretのトークンを入力します。
+        </p>
         <button id="reconnect-button" type="button">再接続</button>
       </section>
 
@@ -103,25 +115,12 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
       <div id="loading" class="loading-screen">
         <div class="loading-orbit"><span></span><span></span><span></span></div>
-        <p>世界を同期しています</p>
+        <p id="loading-label">3Dレンダラーを準備しています</p>
+        <p id="loading-detail" class="loading-detail">軽量LODから開始します</p>
+        <progress id="loading-progress" max="1" value="0" aria-label="起動進捗"></progress>
       </div>
     </main>
-    <script>
-      window.addEventListener("error", (event) => {
-        const label = document.querySelector("#loading p");
-        if (label) label.textContent = `起動エラー: ${event.message || "不明なエラー"}`;
-      });
-      window.setTimeout(() => {
-        const loading = document.querySelector("#loading");
-        const label = document.querySelector("#loading p");
-        if (loading && label && !loading.classList.contains("hidden")) {
-          label.textContent = "起動に時間がかかっています。強制再読み込みをお試しください";
-        }
-      }, 12000);
-    </script>
-    <script src="/app.js?v=0.3.1-safe"></script>
-    <script src="/detail-upgrade.js?v=0.3.1-safe"></script>
-    <script src="/pan-invert.js?v=0.3.1-safe"></script>
-    <script src="/sidebar-collapse.js?v=0.3.2-mobile-sidebar"></script>
+    <script src="/sidebar-collapse.js?v=0.3.11"></script>
+    <script src="/boot.js?v=0.3.11"></script>
   </body>
 </html>

@@ -1,28 +1,121 @@
 # Changelog
 
-## 0.3.1 - 2026-08-31
+## 0.3.11 - 2026-09-03
 
-- 本番の起動経路を実績のある自己完結型WebGL 2レンダラーへ復旧
-- glTF/PBRのモジュール読込停止が本番画面を塞がないよう分離
-- PBR実装を`pbr-preview`ブランチへ保存
-- JavaScriptとCSSのURLへバージョンを付け、古いブラウザキャッシュを回避
-- 起動エラーと12秒ウォッチドッグをローディング画面へ表示
-- 中ボタンドラッグの上下左右を反転し、地図をつかむ操作へ変更
-- Production buildからThree.jsとGLB生成を外し、確実にデプロイできる経路へ戻した
+- BOTのauthoredモデル化を開始し、KayKit Character Pack: Adventurers 1.0由来のCC0キャラクターを近距離LODへ追加
+- 建築・採掘・伐採担当はBarbarian、採集・斥候・交易担当はRogue Hoodedを使用し、中距離以遠は従来の軽量settler LODへ戻す構成に変更
+- KayKit upstreamをコミット`672074b73ba276876a19e8816ecdc5241817ab47`へ固定し、rigged GLBと必要なテクスチャをGit blob SHA-1で検証してビルド時に自己ホスト
+- authored BOTはThree.js SkeletonUtilsで複製し、通常のObject3D cloneによるスキニング破損を回避
+- GLB内のanimation clipを保持し、Idle/Walking/Running系clipを自動選択してBOTの停止・移動状態に応じてクロスフェード再生
+- authored BOTは近距離だけで利用し、約7MBの追加キャラクター資産が描画負荷を常時増やさないようLOD距離を短めに設定
+- 大きなキャラクターGLBだけロードタイムアウトを最大9秒まで許容しつつ、主要な生成モデルとauthored建物を先に読み込む順序を維持
+- authoredキャラクター取得・読込に失敗した場合は従来のgenerated settlerへ自動フォールバックし、初期表示は引き続きGLBを待たない
+
+## 0.3.10 - 2026-09-03
+
+- authored建物の第一段階として、KayKit Medieval Hexagon Pack 1.0由来のCC0建築モデルをプレビューへ追加
+- キャンプ→Home A、倉庫→Lumbermill、市場→Market、工房→Blacksmithを対応付け、既存の手続き生成建物をフォールバックとして維持
+- KayKit upstreamをコミット`84fa4e91af6a88989be7c99e0891cede11f2ca38`へ固定し、gltf/bin/共通テクスチャをGit blob SHA-1で検証
+- 外部bin/png参照をビルド時に自己完結GLBへ再梱包し、runtimeではCloudflare Static Assetsのみを参照
+- authored建物を既存の`buildings`モデル経路へ透過的に差し込み、種類ごとのモデル到着時に建物LODだけを再構築
+- authored建物の原点・接地・高さを既存WorldStateのスケールへ正規化し、既存の集落向き・建築進捗・影・LOD処理を継続利用
+- authored建物の取得失敗はプレビュー全体を停止させず、従来建物へ自動フォールバックするfail-open構成を維持
+
+## 0.3.9 - 2026-09-03
+
+- 大気スカイドームの硬い太陽ディスクが遠景の球体に見える問題を修正
+- 太陽円盤を削除して柔らかい地平線グローだけを残し、スカイドームをカメラ中心へ追従する純粋な背景として扱うよう変更
+
+## 0.3.8 - 2026-09-03
+
+- 高解像度モデルの読込順を見直し、BOT・建物・従来の樹木/岩GLBをauthored自然物より先に読み込むよう変更
+- optionalなauthored自然物が欠落・遅延した場合でも、2本の同時読込枠を長時間占有して主要モデルの表示を遅らせないよう、authoredモデルだけ2.5秒上限の短いタイムアウトを適用
+- authored樹木・岩が後から読み込まれた際に対応するresource LODを再構築するrefresh keyを追加し、主要モデル優先化後もauthored overrideが確実に画面へ反映されるよう修正
+- 読込結果の実モデルkeyと再描画対象keyを分離し、GLB読込数・失敗数の計測を崩さず段階差し替えできるよう整理
+
+## 0.3.7 - 2026-09-03
+
+- authored glTF受け入れの第一段階として、Kenney Nature Kit由来のCC0樹木・岩モデルをビルド時に自己ホストする仕組みを追加
+- upstreamをコミット`ebfd758dea8db5793c765cc72564efadb36a4ed0`へ固定し、各GLBをGit blob SHA-1で検証してサプライチェーン上の差し替えを検出
+- `tree_oak` / `tree_pine` / `rock_small` / `rock_medium` / `rock_large`を近・中距離LODの優先モデルとして採用し、取得失敗時は従来の手続き生成モデルへ自動フォールバック
+- Kenneyのunlit材質をThree.js側でPBR対応`MeshStandardMaterial`へ昇格し、既存の環境光・影・フォグと整合するよう調整
+- authoredモデルの原点・高さ・接地位置を実行時に正規化し、既存WorldStateの1タイル座標系へ適合
+- 樹木はoak/pine、岩はsmall/medium/largeを座標ハッシュで決定論的に使い分け、反復感をさらに軽減
+- authoredアセット取得失敗をプレビュー全体のビルド失敗にしないfail-open方式を採用し、`MOYO_REQUIRE_AUTHORED_ASSETS=1`時のみ厳格モードに変更
+- runtimeは外部CDNを参照せず、Cloudflare Static AssetsからのみGLBを配信
+
+## 0.3.6 - 2026-09-03
+
+- BOTの高詳細LODへコート、肩当て、スカーフ、ポーチ、胸当て、職業別ヘッドギアを追加し、単純な人型プリミティブ感を軽減
+- 建築家・木こり・鉱夫・採集者・斥候・商人で頭部シルエットを変え、遠目でも役割を判別しやすく変更
+- BOTの頭身と胴体比率を調整し、足元に軽量な接地影を追加して地面から浮いて見える問題を軽減
+- 歩行中にコート裾が小さく揺れる二次アニメーションを追加
+- キャンプへ張り出し天幕、薪、寝具、旗を追加
+- 倉庫へ玄関庇、柱、木箱、樽、補強材を追加
+- 市場へ大型天幕、カウンター、看板、荷箱、ランタンを追加
+- 工房へ高い煙突、庇、鍛冶炉、作業台、樽を追加
+- 建物を同勢力の最寄り建物へ向ける配置ルールを追加し、集落がバラバラな方向を向く模型感を軽減
+- 建物のLOD距離とスケールを再調整し、集落を視覚上の主役として強調
+
+## 0.3.5 - 2026-09-03
+
+- 単色背景をやめ、地平線グラデーション・太陽ハローを持つ軽量な大気スカイドームを追加
+- カメラ角度と初期距離を調整し、俯瞰模型ではなく地形の奥行きが読める構図へ変更
+- タイルごとの段差地形を近傍頂点の平均＋微細ノイズで連続化し、格子状の見え方を軽減
+- 地形メッシュの面の向きを修正し、上面と崖面が正しい表側として描画されるよう修正
+- 河岸に明るい土色のshorelineを追加し、水域と陸地の境界を自然化
+- スムージング後の地表高へBOT・建物・資源を追従させ、浮き・めり込みを抑制
+- 樹木を背高型・横広型・標準型へ決定論的に変形し、枝葉位置と樹冠比率も個体差を追加
+- 岩塊の個数・縦横比・回転を個体ごとに変え、同一モデルのスタンプ感を軽減
+- 資源をさらに間引き、集落周辺のclearanceを拡大して建物・BOTの視認性を向上
+
+## 0.3.4 - 2026-09-03
+
+- スクリーンショットで確認した「資源モデルが全面を埋めて世界が読めない」問題を修正
+- 資源の描画をシミュレーション状態から分離し、決定論的な間引き・位置ずらし・サイズ差を追加
+- 建物周辺に資源を置かないsettlement clearingを追加
+- 同勢力の建物間に地面の道を描画し、集落のまとまりを視認可能に変更
+- 建物を大きくし、樹木・岩を小さくして視覚上の優先順位を調整
+- 地面・森林・丘・水の配色、昼光、フォグ、露出、カメラ角度を全面調整
+- 生成GLBへUVを追加し、base color / metallic-roughness / normalの手続き生成PBRテクスチャをGLB内部へ埋め込むベイク工程を追加
+- 勢力色を原色のまま使わず、衣服・屋根向けに彩度と明度を抑えた色へ変更
+- モデルURLを0.3.4でcache bustし、旧GLBとの混在を防止
+
+## 0.3.3 - 2026-08-31
+
+- PBR版の起動を段階化し、GLB・API・環境光・影を待たず軽量LODで操作可能に変更
+- ES module graph外に12秒の起動ウォッチドッグと安定版へのフォールバックを追加
+- GLTFLoaderとRoomEnvironmentを遅延importへ変更
+- GLBを最大2件ずつ読み込み、種類ごとのタイムアウト・構造検査・個別フォールバックを追加
+- 読み込めたモデルだけをBOT・建物・資源へ段階的に差し替える処理を追加
+- balanced/high/ultraの品質プロファイルを追加
+- Three.jsをminified自己ホストランタイムへ変更
+- PMREM環境光と影生成を初回描画後へ遅延
+- 影の毎フレーム再生成をやめ、状態変化と移動中の間引き更新へ変更
+- 水面のtransmission passを無効化し、clearcoatを維持した軽量PBRへ変更
+- 高解像度版を別Worker `moyo-garden-pbr-preview` へ隔離する設定を追加
 
 ## 0.3.0 - 2026-08-31
 
-- Three.jsベースのglTF 2.0レンダラーを試験導入
+- Three.jsベースのglTF 2.0レンダラーへ移行
 - BOT、樹木、岩、キャンプ、倉庫、市場、工房の自己完結GLBモデルを追加
 - metallic-roughness PBR、環境光、ACESトーンマッピングを追加
 - 3段階LODと遠景用軽量モデルを追加
 - PCFソフトシャドウと影受け地形を追加
-
-この実装は起動障害の調査中で、`pbr-preview`ブランチに退避しています。
+- 水面を物理ベースマテリアルへ変更
+- 中ボタンドラッグの上下左右を反転し、地図をつかむ操作へ変更
+- Three.jsをビルド時に自己ホストする構成へ変更
 
 ## 0.2.0 - 2026-08-31
 
-- Cloudflare WorkerとSQLite-backed Durable Objectへ移植
-- WebGL 2の3D観測画面を追加
-- BOT API、WebSocket、MCPブリッジを追加
-- Cloudflare Workers BuildsによるGitHub連動デプロイを追加
+- Cloudflare Worker + SQLite-backed Durable Objectへ移植
+- 10秒Alarm tickとWebSocket Hibernation API
+- Command/Admin bearer token
+- 外部依存なしのWebGL 2 3Dクライアント
+- Godot 4ネイティブ3Dクライアントへ変更
+- Workers BuildsのGitHub自動デプロイ構成
+- DO休止後のCommand復元テスト
+
+## 0.1.0
+
+- ローカルNode.js版BOT-first world MVP

@@ -10,10 +10,10 @@ export const ROLE_LABELS = {
 };
 
 export const TERRAIN_COLORS = {
-  plain: new THREE.Color(0x658353),
-  forest: new THREE.Color(0x315a35),
-  hill: new THREE.Color(0x756b57),
-  water: new THREE.Color(0x1c5266),
+  plain: new THREE.Color(0x71845a),
+  forest: new THREE.Color(0x49684a),
+  hill: new THREE.Color(0x817764),
+  water: new THREE.Color(0x39758a),
 };
 
 export const STRUCTURE_NAMES = {
@@ -35,12 +35,18 @@ export function hash2(x, y, salt = 0) {
 }
 
 export function disposeObject(root) {
+  const geometries = new Set();
+  const materials = new Set();
   root?.traverse?.((object) => {
-    object.geometry?.dispose?.();
+    if (object.geometry && !object.geometry.userData?.moyoShared) geometries.add(object.geometry);
     if (!object.material) return;
-    const materials = Array.isArray(object.material) ? object.material : [object.material];
-    for (const material of materials) material.dispose?.();
+    const values = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of values) {
+      if (!material.userData?.moyoShared) materials.add(material);
+    }
   });
+  for (const geometry of geometries) geometry.dispose?.();
+  for (const material of materials) material.dispose?.();
   root?.removeFromParent?.();
 }
 

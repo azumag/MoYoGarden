@@ -1,125 +1,269 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
-const MODEL_MANIFEST = Object.freeze({
-  settler: "/models/settler.glb",
-  tree: "/models/tree.glb",
-  rock: "/models/rock.glb",
-  buildings: "/models/buildings.glb",
+const MODEL_VERSION = "0.3.4";
+const AUTHORED_VERSION = "0.3.7";
+const AUTHORED_BUILDING_VERSION = "0.3.10";
+const AUTHORED_CHARACTER_VERSION = "0.3.11";
+const MODEL_MANIFEST = Object.freeze([
+  ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
+  ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
+  ["tree", `/models/tree.glb?v=${MODEL_VERSION}`],
+  ["rock", `/models/rock.glb?v=${MODEL_VERSION}`],
+  ["authored:building-camp", `/assets/authored/kaykit/camp.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:building-storehouse", `/assets/authored/kaykit/storehouse.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:building-market", `/assets/authored/kaykit/market.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:building-workshop", `/assets/authored/kaykit/workshop.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:agent-worker", `/assets/authored/kaykit-adventurers/worker.glb?v=${AUTHORED_CHARACTER_VERSION}`],
+  ["authored:agent-roamer", `/assets/authored/kaykit-adventurers/roamer.glb?v=${AUTHORED_CHARACTER_VERSION}`],
+  ["authored:tree-oak", `/assets/authored/kenney/tree_oak.glb?v=${AUTHORED_VERSION}`],
+  ["authored:tree-pine", `/assets/authored/kenney/tree_pine.glb?v=${AUTHORED_VERSION}`],
+  ["authored:rock-large", `/assets/authored/kenney/rock_large.glb?v=${AUTHORED_VERSION}`],
+  ["authored:rock-medium", `/assets/authored/kenney/rock_medium.glb?v=${AUTHORED_VERSION}`],
+  ["authored:rock-small", `/assets/authored/kenney/rock_small.glb?v=${AUTHORED_VERSION}`],
+]);
+const MAX_MODEL_BYTES = 8 * 1024 * 1024;
+const AUTHORED_BUILDING_BY_CHILD = Object.freeze({
+  Camp: "authored:building-camp",
+  Storehouse: "authored:building-storehouse",
+  Market: "authored:building-market",
+  Workshop: "authored:building-workshop",
+});
+const AUTHORED_BUILDING_HEIGHT = Object.freeze({
+  "authored:building-camp": 1.62,
+  "authored:building-storehouse": 1.82,
+  "authored:building-market": 1.72,
+  "authored:building-workshop": 1.88,
 });
 
-const DEFAULT_MODEL_TIMEOUT_MS = 7_000;
-const MAX_MODEL_BYTES = 8 * 1024 * 1024;
-
-function isLowQualityMode() {
-  try {
-    return new URLSearchParams(globalThis.location?.search ?? "").get("quality") === "low";
-  } catch {
-    return false;
-  }
+function isAuthoredKey(key) {
+  return key.startsWith("authored:");
 }
 
-async function loadModelWithTimeout(loader, key, url, timeoutMs) {
+function isAuthoredAgentKey(key) {
+  return key.startsWith("authored:agent-");
+}
+
+function refreshKeyFor(key) {
+  if (key.startsWith("authored:agent-")) return "settler";
+  if (key.startsWith("authored:building-")) return "buildings";
+  if (key.startsWith("authored:tree-")) return "tree";
+  if (key.startsWith("authored:rock-")) return "rock";
+  return key;
+}
+
+function validateGlb(bytes, key) {
+  if (bytes.byteLength < 20 || bytes.byteLength > MAX_MODEL_BYTES) {
+    throw new Error(`${key} model has an invalid size (${bytes.byteLength} bytes)`);
+  }
+  const view = new DataView(bytes);
+  if (view.getUint32(0, true) !== 0x46546c67) throw new Error(`${key} is not a GLB file`);
+  if (view.getUint32(4, true) !== 2) throw new Error(`${key} is not glTF 2.0`);
+  if (view.getUint32(8, true) !== bytes.byteLength) throw new Error(`${key} GLB length is invalid`);
+}
+
+async function loadWithTimeout(loader, key, url, timeoutMs) {
   const controller = new AbortController();
   let timer;
-
+  const operation = (async () => {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: "force-cache",
+      headers: {
+        accept: "model/gltf-binary, application/octet-stream;q=0.9, */*;q=0.1",
+      },
+    });
+    if (!response.ok) throw new Error(`${key} model returned HTTP ${response.status}`);
+    const declaredLength = Number(response.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_MODEL_BYTES) {
+      throw new Error(`${key} model is unexpectedly large (${declaredLength} bytes)`);
+    }
+    const bytes = await response.arrayBuffer();
+    validateGlb(bytes, key);
+    const basePath = new URL(".", new URL(url, location.href)).href;
+    return loader.parseAsync(bytes, basePath);
+  })();
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
       reject(new Error(`${key} model timed out after ${timeoutMs}ms`));
     }, timeoutMs);
   });
-
-  const load = (async () => {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      cache: "force-cache",
-      headers: { accept: "model/gltf-binary, application/octet-stream;q=0.9, */*;q=0.1" },
-    });
-    if (!response.ok) {
-      throw new Error(`${key} model returned HTTP ${response.status}`);
-    }
-
-    const declaredLength = Number(response.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_MODEL_BYTES) {
-      throw new Error(`${key} model is unexpectedly large (${declaredLength} bytes)`);
-    }
-
-    const bytes = await response.arrayBuffer();
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_MODEL_BYTES) {
-      throw new Error(`${key} model has an invalid size (${bytes.byteLength} bytes)`);
-    }
-
-    const basePath = new URL(".", new URL(url, globalThis.location?.href ?? "http://localhost/")).href;
-    return loader.parseAsync(bytes, basePath);
-  })();
-
   try {
-    return await Promise.race([load, timeout]);
+    return await Promise.race([operation, timeout]);
   } finally {
     clearTimeout(timer);
   }
 }
 
+function authoredStandardMaterial(material, detail) {
+  if (material.isMeshStandardMaterial || material.isMeshPhysicalMaterial) {
+    const copy = material.clone();
+    copy.envMapIntensity = detail === "high" ? 0.72 : 0.52;
+    return copy;
+  }
+  const color = material.color?.clone?.() || new THREE.Color(0xffffff);
+  const name = material.name || "AuthoredMaterial";
+  const lower = name.toLowerCase();
+  const roughness = lower.includes("leaf") ? 0.84
+    : lower.includes("wood") || lower.includes("bark") ? 0.9
+      : lower.includes("rock") || lower.includes("stone") ? 0.94 : 0.88;
+  const copy = new THREE.MeshStandardMaterial({
+    name,
+    color,
+    map: material.map || null,
+    transparent: Boolean(material.transparent),
+    opacity: material.opacity ?? 1,
+    alphaTest: material.alphaTest ?? 0,
+    side: material.side ?? THREE.FrontSide,
+    vertexColors: Boolean(material.vertexColors),
+    roughness,
+    metalness: 0,
+    envMapIntensity: detail === "high" ? 0.68 : 0.48,
+  });
+  copy.userData = { ...(material.userData || {}), moyoPromotedFromUnlit: true };
+  return copy;
+}
+
+function fitAuthoredBuilding(root, sourceName) {
+  const targetHeight = AUTHORED_BUILDING_HEIGHT[sourceName];
+  if (!root || !targetHeight) return root;
+  root.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  if (!Number.isFinite(size.y) || size.y <= 0.0001) return root;
+  const scale = targetHeight / size.y;
+  root.scale.multiplyScalar(scale);
+  root.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.position.y -= box.min.y;
+  root.updateMatrixWorld(true);
+  root.userData.moyoAuthoredBuilding = true;
+  root.userData.moyoModelKey = sourceName;
+  return root;
+}
+
 export class ModelLibrary {
   constructor() {
-    this.loader = new GLTFLoader();
+    this.loaderPromise = null;
+    this.skeletonClone = null;
     this.templates = new Map();
-    this.lastLoadResult = { loaded: [], failed: [], skipped: false };
+    this.animations = new Map();
+    this.lastLoadResult = { loaded: [], failed: [] };
   }
 
-  async load({ timeoutMs = DEFAULT_MODEL_TIMEOUT_MS, onProgress } = {}) {
-    if (isLowQualityMode()) {
-      this.lastLoadResult = {
-        loaded: [],
-        failed: [],
-        skipped: true,
-      };
-      return this.lastLoadResult;
+  get size() {
+    return MODEL_MANIFEST.length;
+  }
+
+  has(name) {
+    return this.templates.has(name);
+  }
+
+  clips(name) {
+    return this.animations.get(name) || [];
+  }
+
+  async getLoader() {
+    if (!this.loaderPromise) {
+      this.loaderPromise = Promise.all([
+        import("three/addons/loaders/GLTFLoader.js"),
+        import("three/addons/utils/SkeletonUtils.js"),
+      ]).then(([{ GLTFLoader }, SkeletonUtils]) => {
+        this.skeletonClone = SkeletonUtils.clone;
+        return new GLTFLoader();
+      });
     }
+    return this.loaderPromise;
+  }
 
-    const entries = Object.entries(MODEL_MANIFEST);
+  prepareTemplate(scene) {
+    scene.traverse((object) => {
+      if (!object.isMesh) return;
+      object.geometry.userData.moyoShared = true;
+      object.castShadow = true;
+      object.receiveShadow = true;
+    });
+    return scene;
+  }
+
+  async load({ timeoutMs = 8_000, concurrency = 2, onProgress, onModelLoaded } = {}) {
+    const queue = [...MODEL_MANIFEST];
+    const results = [];
     let completed = 0;
-    const results = await Promise.all(entries.map(async ([key, url]) => {
-      try {
-        const gltf = await loadModelWithTimeout(this.loader, key, url, timeoutMs);
-        this.templates.set(key, gltf.scene);
-        return { key, ok: true };
-      } catch (error) {
-        console.warn(`MoYoGarden: ${key} glTF load failed; fallback LOD will be used`, error);
-        return {
-          key,
-          ok: false,
-          message: error instanceof Error ? error.message : String(error),
-        };
-      } finally {
-        completed += 1;
-        onProgress?.({ key, completed, total: entries.length });
+    const worker = async () => {
+      while (queue.length > 0) {
+        const [key, url] = queue.shift();
+        try {
+          const loader = await this.getLoader();
+          const itemTimeoutMs = isAuthoredAgentKey(key)
+            ? Math.min(Math.max(timeoutMs, 6_500), 9_000)
+            : isAuthoredKey(key) ? Math.min(timeoutMs, 2_500) : timeoutMs;
+          const gltf = await loadWithTimeout(loader, key, url, itemTimeoutMs);
+          this.templates.set(key, this.prepareTemplate(gltf.scene));
+          this.animations.set(key, gltf.animations || []);
+          const result = { key, ok: true };
+          results.push(result);
+          onModelLoaded?.({ ...result, key: refreshKeyFor(key), modelKey: key });
+        } catch (error) {
+          const result = {
+            key,
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          };
+          results.push(result);
+          const optional = isAuthoredKey(key);
+          console[optional ? "info" : "warn"](
+            `MoYoGarden: ${key} glTF load failed; ${optional ? "authored override skipped" : "procedural LOD remains active"}`,
+            error,
+          );
+        } finally {
+          completed += 1;
+          onProgress?.({ key, completed, total: MODEL_MANIFEST.length });
+        }
       }
-    }));
-
+    };
+    const workerCount = Math.max(1, Math.min(Number(concurrency) || 1, MODEL_MANIFEST.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
     this.lastLoadResult = {
       loaded: results.filter((result) => result.ok).map((result) => result.key),
       failed: results.filter((result) => !result.ok).map((result) => ({
         key: result.key,
         message: result.message,
       })),
-      skipped: false,
     };
     return this.lastLoadResult;
   }
 
+  resolveSourceName(name, childName) {
+    if (name === "buildings" && childName) {
+      const authoredKey = AUTHORED_BUILDING_BY_CHILD[childName];
+      if (authoredKey && this.templates.has(authoredKey)) return authoredKey;
+    }
+    return name;
+  }
+
   source(name, childName) {
-    const root = this.templates.get(name);
+    const sourceName = this.resolveSourceName(name, childName);
+    const root = this.templates.get(sourceName);
     if (!root) return null;
+    if (sourceName !== name) return root;
     return childName ? root.getObjectByName(childName) : root;
   }
 
   clone(name, { childName, factionColor, role, detail = "high" } = {}) {
+    const sourceName = this.resolveSourceName(name, childName);
     const source = this.source(name, childName);
     if (!source) return null;
-    const clone = source.clone(true);
+    const needsSkeletonClone = isAuthoredAgentKey(sourceName) && typeof this.skeletonClone === "function";
+    const clone = needsSkeletonClone ? this.skeletonClone(source) : source.clone(true);
     const faction = new THREE.Color(factionColor || 0xffffff);
+    const mutedFaction = faction.clone().lerp(new THREE.Color(0x343936), 0.28);
+    const authored = sourceName.startsWith("authored:");
 
     clone.traverse((object) => {
       if ((object.userData.moyoDetail || object.name.startsWith("detail_")) && detail !== "high") {
@@ -130,21 +274,28 @@ export class ModelLibrary {
       }
       if (!object.isMesh) return;
 
+      object.geometry.userData.moyoShared = true;
       const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
       const materials = sourceMaterials.map((material) => {
-        const copy = material.clone();
+        const copy = authored ? authoredStandardMaterial(material, detail) : material.clone();
         if (copy.name.includes("Faction")) {
           const baseColor = copy.color.clone();
-          copy.color.copy(faction).lerp(baseColor, 0.18);
-          copy.roughness = Math.max(0.56, copy.roughness ?? 0.8);
+          const strength = copy.name.includes("Dark") ? 0.52 : 0.3;
+          copy.color.copy(mutedFaction).lerp(baseColor, strength);
+          copy.roughness = Math.max(0.64, copy.roughness ?? 0.8);
+          copy.metalness = Math.min(0.05, copy.metalness ?? 0);
         }
-        copy.envMapIntensity = detail === "high" ? 0.9 : 0.65;
+        copy.envMapIntensity = detail === "high" ? 0.72 : 0.52;
         return copy;
       });
       object.material = Array.isArray(object.material) ? materials : materials[0];
       object.castShadow = true;
       object.receiveShadow = true;
     });
+
+    clone.userData.moyoModelKey = sourceName;
+    if (sourceName.startsWith("authored:building-")) fitAuthoredBuilding(clone, sourceName);
+    if (isAuthoredAgentKey(sourceName)) clone.userData.moyoAuthoredAgent = true;
     return clone;
   }
 }
