@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-const MODEL_VERSION = "0.3.3";
+const MODEL_VERSION = "0.3.4";
 const MODEL_MANIFEST = Object.freeze([
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
@@ -137,6 +137,7 @@ export class ModelLibrary {
     if (!source) return null;
     const clone = source.clone(true);
     const faction = new THREE.Color(factionColor || 0xffffff);
+    const mutedFaction = faction.clone().lerp(new THREE.Color(0x343936), 0.28);
 
     clone.traverse((object) => {
       if ((object.userData.moyoDetail || object.name.startsWith("detail_")) && detail !== "high") {
@@ -153,10 +154,12 @@ export class ModelLibrary {
         const copy = material.clone();
         if (copy.name.includes("Faction")) {
           const baseColor = copy.color.clone();
-          copy.color.copy(faction).lerp(baseColor, 0.18);
-          copy.roughness = Math.max(0.56, copy.roughness ?? 0.8);
+          const strength = copy.name.includes("Dark") ? 0.52 : 0.3;
+          copy.color.copy(mutedFaction).lerp(baseColor, strength);
+          copy.roughness = Math.max(0.64, copy.roughness ?? 0.8);
+          copy.metalness = Math.min(0.05, copy.metalness ?? 0);
         }
-        copy.envMapIntensity = detail === "high" ? 0.9 : 0.65;
+        copy.envMapIntensity = detail === "high" ? 0.72 : 0.52;
         return copy;
       });
       object.material = Array.isArray(object.material) ? materials : materials[0];
