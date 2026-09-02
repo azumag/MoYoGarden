@@ -46,14 +46,15 @@ const worldView = await readFile("public/client/world-view.js", "utf8");
 const terrain = await readFile("public/client/terrain.js", "utf8");
 const resources = await readFile("public/client/resources.js", "utf8");
 const structures = await readFile("public/client/structures.js", "utf8");
+const agents = await readFile("public/client/agents.js", "utf8");
 const shared = await readFile("public/client/shared.js", "utf8");
 const quality = await readFile("public/client/quality.js", "utf8");
 const enhancer = await readFile("scripts/enhance-models.mjs", "utf8");
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const previewConfig = JSON.parse(await readFile("wrangler.pbr.jsonc", "utf8"));
-const combined = [boot, app, modelLibrary, worldView, terrain, resources, structures, shared, quality].join("\n");
+const combined = [boot, app, modelLibrary, worldView, terrain, resources, structures, agents, shared, quality].join("\n");
 
-assert.equal(packageJson.version, "0.3.5");
+assert.equal(packageJson.version, "0.3.6");
 assert.equal(packageJson.dependencies.three, "0.185.1", "Three.js must be exactly pinned");
 assert.match(packageJson.scripts["generate:models"], /enhance-models\.mjs/);
 assert.match(packageJson.scripts["build:web"], /generate:models/);
@@ -63,13 +64,13 @@ assert.match(packageJson.scripts["deploy:pbr-preview"], /wrangler\.pbr\.jsonc/);
 
 assert.match(html, /type="importmap"/);
 assert.match(html, /"three"\s*:\s*"\/vendor\/three-r185\/build\/three\.module\.min\.js"/);
-assert.match(html, /src="\/boot\.js\?v=0\.3\.5"/);
-assert.match(html, /style\.css\?v=0\.3\.5/);
+assert.match(html, /src="\/boot\.js\?v=0\.3\.6"/);
+assert.match(html, /style\.css\?v=0\.3\.6/);
 assert.doesNotMatch(html, /type="module"\s+src="\/app\.js/);
 assert.match(html, /id="render-status"/);
 assert.match(html, /id="loading-progress"/);
 
-assert.match(boot, /VERSION\s*=\s*"0\.3\.5"/);
+assert.match(boot, /VERSION\s*=\s*"0\.3\.6"/);
 assert.match(boot, /WATCHDOG_MS\s*=\s*12_000/);
 assert.match(boot, /moyo:pbr-ready/);
 assert.match(boot, /moyo:pbr-error/);
@@ -85,7 +86,7 @@ assert.match(app, /loadHighResolutionModels/);
 assert.match(app, /applyEnvelope\(\{ state: createDemoState\(\)/);
 assert.match(app, /setTimeout\(\(\) => \{ void loadHighResolutionModels\(\); \}, 80\)/);
 
-// Generated GLB assets have not changed in 0.3.5, so their independent cache version remains 0.3.4.
+// Generated GLB assets have not changed in 0.3.6, so their independent cache version remains 0.3.4.
 assert.match(modelLibrary, /MODEL_VERSION\s*=\s*"0\.3\.4"/);
 assert.match(modelLibrary, /import\("three\/addons\/loaders\/GLTFLoader\.js"\)/);
 assert.doesNotMatch(modelLibrary, /^import .*GLTFLoader/m);
@@ -125,7 +126,18 @@ assert.match(resources, /isSettlementClearing/);
 assert.match(resources, /object\.name\.startsWith\("Foliage"\)/);
 assert.match(resources, /entry\.lod\.scale\.set\(/);
 assert.match(resources, /style\s*=\s*Math\.floor\(hash2/);
-assert.match(structures, /const base = structure\.type === "camp"/);
+
+assert.match(agents, /decorateAgentModel/);
+assert.match(agents, /MoyoAgentSilhouette/);
+assert.match(agents, /MoyoContactShadow/);
+assert.match(agents, /addRoleHeadgear/);
+assert.match(agents, /MoyoCoatTailLeft/);
+assert.match(structures, /decorateBuildingModel/);
+assert.match(structures, /MoyoArchitecture/);
+assert.match(structures, /structureFacingRotation/);
+assert.match(structures, /MoyoMarketCanopy/);
+assert.match(structures, /MoyoTallChimney/);
+
 assert.match(shared, /moyoShared/);
 assert.match(quality, /balanced/);
 assert.match(quality, /ultra/);
@@ -187,4 +199,4 @@ for (const name of Object.keys(expectedNodes)) {
   for (const expected of expectedNodes[name]) assert.ok(names.has(expected), `${name} lacks ${expected}`);
 }
 
-console.log("Atmospheric textured PBR/glTF/LOD/shadow preview validation passed");
+console.log("Frontier silhouette textured PBR/glTF/LOD/shadow preview validation passed");
