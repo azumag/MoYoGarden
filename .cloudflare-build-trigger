@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: pbr-preview-authored-agent-animation-lod-v0.3.11
-reason: stop authored AnimationMixer updates while the authored high-detail BOT LOD is hidden, preserving nearby animation while reducing distant CPU work
-nonce: 041c2ba73ca7
+release: pbr-preview-parked
+reason: deploy a disabled preview entrypoint that clears any existing Durable Object alarms and never schedules another tick
+nonce: 20260903-0705-jst
