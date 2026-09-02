@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.10 - 2026-09-03
+
+- authored建物の第一段階として、KayKit Medieval Hexagon Pack 1.0由来のCC0建築モデルをプレビューへ追加
+- キャンプ→Home A、倉庫→Lumbermill、市場→Market、工房→Blacksmithを対応付け、既存の手続き生成建物をフォールバックとして維持
+- KayKit upstreamをコミット`84fa4e91af6a88989be7c99e0891cede11f2ca38`へ固定し、gltf/bin/共通テクスチャをGit blob SHA-1で検証
+- 外部bin/png参照をビルド時に自己完結GLBへ再梱包し、runtimeではCloudflare Static Assetsのみを参照
+- authored建物を既存の`buildings`モデル経路へ透過的に差し込み、種類ごとのモデル到着時に建物LODだけを再構築
+- authored建物の原点・接地・高さを既存WorldStateのスケールへ正規化し、既存の集落向き・建築進捗・影・LOD処理を継続利用
+- authored建物の取得失敗はプレビュー全体を停止させず、従来建物へ自動フォールバックするfail-open構成を維持
+
+## 0.3.9 - 2026-09-03
+
+- 大気スカイドームの硬い太陽ディスクが遠景の球体に見える問題を修正
+- 太陽円盤を削除して柔らかい地平線グローだけを残し、スカイドームをカメラ中心へ追従する純粋な背景として扱うよう変更
+
 ## 0.3.8 - 2026-09-03
 
 - 高解像度モデルの読込順を見直し、BOT・建物・従来の樹木/岩GLBをauthored自然物より先に読み込むよう変更
