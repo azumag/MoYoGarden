@@ -29,26 +29,29 @@ export class WorldView {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality.pixelRatioCap));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.04;
+    this.renderer.toneMappingExposure = 1.12;
     this.renderer.shadowMap.enabled = false;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0c1d18);
-    this.scene.fog = new THREE.FogExp2(0x0c1d18, 0.022);
-    this.camera = new THREE.PerspectiveCamera(48, 1, 0.1, 180);
+    this.scene.background = new THREE.Color(0xa6b8ad);
+    this.scene.fog = new THREE.FogExp2(0xa0b3a8, 0.0155);
+    this.scene.environmentIntensity = 0.72;
+    this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 180);
     this.cameraState = {
       yaw: -0.74,
-      pitch: 0.68,
-      distance: 34,
-      target: new THREE.Vector3(0, 0.2, 0),
+      pitch: 0.52,
+      distance: 30,
+      target: new THREE.Vector3(0, 0.18, 0),
     };
 
-    this.hemi = new THREE.HemisphereLight(0xb7d9d0, 0x182018, 1.55);
+    this.hemi = new THREE.HemisphereLight(0xe4eee7, 0x465344, 2.05);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(0xfff2d2, 4.1);
-    this.sun.position.set(-18, 26, 14);
+    this.ambient = new THREE.AmbientLight(0xb7c7bc, 0.38);
+    this.scene.add(this.ambient);
+    this.sun = new THREE.DirectionalLight(0xffedcf, 3.25);
+    this.sun.position.set(-20, 28, 10);
     this.sun.castShadow = false;
     this.sun.shadow.bias = -0.00065;
     this.sun.shadow.normalBias = 0.025;
@@ -126,6 +129,7 @@ export class WorldView {
         size: this.quality.environmentSize,
       });
       this.scene.environment = target.texture;
+      this.scene.environmentIntensity = 0.72;
       this.environmentTarget = target;
       room.dispose();
       pmrem.dispose();
@@ -241,8 +245,8 @@ export class WorldView {
     this.tickMs = tickMs;
     if (terrainKey !== previousKey || !this.terrainMesh) {
       this.buildTerrain(state);
-      this.cameraState.distance = Math.max(state.width, state.height) * 1.12;
-      this.cameraState.target.set(0, 0.2, 0);
+      this.cameraState.distance = Math.max(state.width, state.height) * 0.94;
+      this.cameraState.target.set(0, 0.18, 0);
     }
     this.syncResources(state);
     this.syncStructures(state);
@@ -266,8 +270,8 @@ export class WorldView {
     for (const entry of this.agentObjects.values()) this.animateAgent(entry, time);
     if (this.waterMesh) {
       const material = this.waterMesh.material;
-      material.opacity = 0.67 + Math.sin(time * 0.0011) * 0.035;
-      material.color.setHSL(0.54, 0.48, 0.29 + Math.sin(time * 0.0007) * 0.018);
+      material.opacity = 0.76 + Math.sin(time * 0.0011) * 0.025;
+      material.color.setHSL(0.54, 0.42, 0.38 + Math.sin(time * 0.0007) * 0.012);
     }
     if (
       this.shadowsEnabled
