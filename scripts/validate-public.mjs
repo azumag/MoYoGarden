@@ -60,7 +60,7 @@ const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const previewConfig = JSON.parse(await readFile("wrangler.pbr.jsonc", "utf8"));
 const combined = [boot, app, modelLibrary, worldView, terrain, resources, structures, agents, shared, quality].join("\n");
 
-assert.equal(packageJson.version, "0.3.7");
+assert.equal(packageJson.version, "0.3.8");
 assert.equal(packageJson.dependencies.three, "0.185.1", "Three.js must be exactly pinned");
 assert.match(packageJson.scripts["generate:models"], /enhance-models\.mjs/);
 assert.match(packageJson.scripts["vendor:authored"], /vendor-authored-assets\.mjs/);
@@ -72,13 +72,13 @@ assert.match(packageJson.scripts["deploy:pbr-preview"], /wrangler\.pbr\.jsonc/);
 
 assert.match(html, /type="importmap"/);
 assert.match(html, /"three"\s*:\s*"\/vendor\/three-r185\/build\/three\.module\.min\.js"/);
-assert.match(html, /src="\/boot\.js\?v=0\.3\.7"/);
-assert.match(html, /style\.css\?v=0\.3\.7/);
+assert.match(html, /src="\/boot\.js\?v=0\.3\.8"/);
+assert.match(html, /style\.css\?v=0\.3\.8/);
 assert.doesNotMatch(html, /type="module"\s+src="\/app\.js/);
 assert.match(html, /id="render-status"/);
 assert.match(html, /id="loading-progress"/);
 
-assert.match(boot, /VERSION\s*=\s*"0\.3\.7"/);
+assert.match(boot, /VERSION\s*=\s*"0\.3\.8"/);
 assert.match(boot, /WATCHDOG_MS\s*=\s*12_000/);
 assert.match(boot, /moyo:pbr-ready/);
 assert.match(boot, /moyo:pbr-error/);
@@ -110,6 +110,18 @@ assert.match(modelLibrary, /validateGlb/);
 assert.match(modelLibrary, /moyoShared/);
 assert.match(modelLibrary, /mutedFaction/);
 assert.match(modelLibrary, /\/models\/settler\.glb\?v=/);
+assert.match(modelLibrary, /isAuthoredKey/);
+assert.match(modelLibrary, /refreshKeyFor/);
+assert.match(modelLibrary, /Math\.min\(timeoutMs,\s*2_500\)/);
+assert.match(modelLibrary, /modelKey:\s*key/);
+assert.ok(
+  modelLibrary.indexOf('["settler"') < modelLibrary.indexOf('["authored:tree-oak"'),
+  "core generated models must load before optional authored overrides",
+);
+assert.ok(
+  modelLibrary.indexOf('["rock"') < modelLibrary.indexOf('["authored:rock-large"'),
+  "core resource GLBs must not be blocked by optional authored assets",
+);
 
 assert.match(worldView, /import\("three\/addons\/environments\/RoomEnvironment\.js"\)/);
 assert.doesNotMatch(worldView, /^import .*RoomEnvironment/m);
@@ -172,6 +184,7 @@ assert.match(authoredVendor, /gitBlobSha/);
 assert.match(authoredVendor, /MOYO_REQUIRE_AUTHORED_ASSETS/);
 assert.match(authoredVendor, /Kenney Nature Kit/);
 assert.match(authoredNotice, /Creative Commons CC0 1\.0/);
+// Authored binary payloads are unchanged in 0.3.8, so their independent cache stays at 0.3.7.
 assert.equal(authoredManifest.version, "0.3.7");
 assert.ok(Array.isArray(authoredManifest.loaded));
 assert.ok(Array.isArray(authoredManifest.failed));
@@ -232,4 +245,4 @@ for (const name of Object.keys(expectedNodes)) {
   for (const expected of expectedNodes[name]) assert.ok(names.has(expected), `${name} lacks ${expected}`);
 }
 
-console.log("Authored nature + frontier silhouette PBR/glTF/LOD/shadow preview validation passed");
+console.log("Prioritized authored nature + frontier silhouette PBR/glTF/LOD/shadow preview validation passed");
