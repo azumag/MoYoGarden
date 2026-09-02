@@ -23,6 +23,7 @@ export const terrainMethods = {
 
     const positions = [], normals = [], colors = [], indices = [];
     const waterMatrices = [];
+    const surfaceHeights = new Map();
     const pushQuad = (corners, normal, color) => {
       const base = positions.length / 3;
       const resolvedNormal = normal || quadNormal(corners);
@@ -31,7 +32,9 @@ export const terrainMethods = {
         normals.push(...resolvedNormal);
         colors.push(color.r, color.g, color.b);
       }
-      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      // The corner order is convenient for edge construction but winds downward.
+      // Reverse the triangle winding so terrain and cliff fronts face the camera/outside.
+      indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
     };
     const stateTile = (x, y) => x >= 0 && y >= 0 && x < state.width && y < state.height
       ? state.tiles[y * state.width + x]
@@ -65,6 +68,7 @@ export const terrainMethods = {
 
       const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
       const averageHeight = (h00 + h10 + h11 + h01) * 0.25;
+      surfaceHeights.set(`${tile.x}:${tile.y}`, averageHeight);
       color.offsetHSL(
         (hash2(tile.x, tile.y, 1) - 0.5) * 0.018,
         tile.terrain === "forest" ? 0.018 : 0,
@@ -78,6 +82,7 @@ export const terrainMethods = {
       ];
       pushQuad(corners, null, color);
     }
+    this.surfaceHeightMap = surfaceHeights;
 
     for (const tile of state.tiles) {
       const x = tile.x - state.width / 2;
@@ -194,7 +199,7 @@ export const terrainMethods = {
           edge === "east" || edge === "west" ? 0.94 : 0.09,
         ), shorelineMaterial);
         strip.position.copy(center);
-        strip.position.y = this.terrainHeight(tile) + 0.028;
+        strip.position.y = (surfaceHeights.get(`${tile.x}:${tile.y}`) ?? this.terrainHeight(tile)) + 0.028;
         if (edge === "east") strip.position.x += 0.455;
         if (edge === "west") strip.position.x -= 0.455;
         if (edge === "south") strip.position.z += 0.455;
