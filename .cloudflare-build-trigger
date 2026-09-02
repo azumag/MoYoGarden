@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: gltf-pbr-lod-soft-shadows
-reason: deploy self-hosted Three.js, generated GLB assets, PBR materials, LOD, soft shadows, and inverted grab-pan controls
-nonce: rendering-v0.3.0
+release: pbr-preview-progressive-v0.3.3
+reason: trigger first Cloudflare deployment for the isolated high-resolution preview Worker
+nonce: 20260903-0059-jst
