@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: pbr-preview-progressive-v0.3.3
-reason: trigger first Cloudflare deployment for the isolated high-resolution preview Worker
-nonce: 20260903-0059-jst
+release: pbr-preview-art-direction-v0.3.4
+reason: deploy terrain readability, resource clustering, settlement clearings, revised lighting, and embedded procedural PBR textures
+nonce: 20260903-0208-jst
