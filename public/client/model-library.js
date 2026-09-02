@@ -2,11 +2,16 @@ import * as THREE from "three";
 
 const MODEL_VERSION = "0.3.4";
 const AUTHORED_VERSION = "0.3.7";
+const AUTHORED_BUILDING_VERSION = "0.3.10";
 const MODEL_MANIFEST = Object.freeze([
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
   ["tree", `/models/tree.glb?v=${MODEL_VERSION}`],
   ["rock", `/models/rock.glb?v=${MODEL_VERSION}`],
+  ["authored:building-camp", `/assets/authored/kaykit/camp.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:building-storehouse", `/assets/authored/kaykit/storehouse.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:building-market", `/assets/authored/kaykit/market.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:building-workshop", `/assets/authored/kaykit/workshop.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:tree-oak", `/assets/authored/kenney/tree_oak.glb?v=${AUTHORED_VERSION}`],
   ["authored:tree-pine", `/assets/authored/kenney/tree_pine.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-large", `/assets/authored/kenney/rock_large.glb?v=${AUTHORED_VERSION}`],
@@ -14,12 +19,25 @@ const MODEL_MANIFEST = Object.freeze([
   ["authored:rock-small", `/assets/authored/kenney/rock_small.glb?v=${AUTHORED_VERSION}`],
 ]);
 const MAX_MODEL_BYTES = 8 * 1024 * 1024;
+const AUTHORED_BUILDING_BY_CHILD = Object.freeze({
+  Camp: "authored:building-camp",
+  Storehouse: "authored:building-storehouse",
+  Market: "authored:building-market",
+  Workshop: "authored:building-workshop",
+});
+const AUTHORED_BUILDING_HEIGHT = Object.freeze({
+  "authored:building-camp": 1.62,
+  "authored:building-storehouse": 1.82,
+  "authored:building-market": 1.72,
+  "authored:building-workshop": 1.88,
+});
 
 function isAuthoredKey(key) {
   return key.startsWith("authored:");
 }
 
 function refreshKeyFor(key) {
+  if (key.startsWith("authored:building-")) return "buildings";
   if (key.startsWith("authored:tree-")) return "tree";
   if (key.startsWith("authored:rock-")) return "rock";
   return key;
@@ -96,6 +114,29 @@ function authoredStandardMaterial(material, detail) {
   });
   copy.userData = { ...(material.userData || {}), moyoPromotedFromUnlit: true };
   return copy;
+}
+
+function fitAuthoredBuilding(root, sourceName) {
+  const targetHeight = AUTHORED_BUILDING_HEIGHT[sourceName];
+  if (!root || !targetHeight) return root;
+  root.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  if (!Number.isFinite(size.y) || size.y <= 0.0001) return root;
+  const scale = targetHeight / size.y;
+  root.scale.multiplyScalar(scale);
+  root.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.position.y -= box.min.y;
+  root.updateMatrixWorld(true);
+  root.userData.moyoAuthoredBuilding = true;
+  root.userData.moyoModelKey = sourceName;
+  return root;
 }
 
 export class ModelLibrary {
@@ -176,19 +217,30 @@ export class ModelLibrary {
     return this.lastLoadResult;
   }
 
+  resolveSourceName(name, childName) {
+    if (name === "buildings" && childName) {
+      const authoredKey = AUTHORED_BUILDING_BY_CHILD[childName];
+      if (authoredKey && this.templates.has(authoredKey)) return authoredKey;
+    }
+    return name;
+  }
+
   source(name, childName) {
-    const root = this.templates.get(name);
+    const sourceName = this.resolveSourceName(name, childName);
+    const root = this.templates.get(sourceName);
     if (!root) return null;
+    if (sourceName !== name) return root;
     return childName ? root.getObjectByName(childName) : root;
   }
 
   clone(name, { childName, factionColor, role, detail = "high" } = {}) {
+    const sourceName = this.resolveSourceName(name, childName);
     const source = this.source(name, childName);
     if (!source) return null;
     const clone = source.clone(true);
     const faction = new THREE.Color(factionColor || 0xffffff);
     const mutedFaction = faction.clone().lerp(new THREE.Color(0x343936), 0.28);
-    const authored = name.startsWith("authored:");
+    const authored = sourceName.startsWith("authored:");
 
     clone.traverse((object) => {
       if ((object.userData.moyoDetail || object.name.startsWith("detail_")) && detail !== "high") {
@@ -217,6 +269,9 @@ export class ModelLibrary {
       object.castShadow = true;
       object.receiveShadow = true;
     });
+
+    clone.userData.moyoModelKey = sourceName;
+    if (sourceName.startsWith("authored:building-")) fitAuthoredBuilding(clone, sourceName);
     return clone;
   }
 }
