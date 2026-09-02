@@ -1,6 +1,6 @@
 {
   "name": "moyo-garden",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "type": "module",
   "description": "Bot-first persistent 3D world on Cloudflare Workers and Durable Objects.",
