@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: production-pbr-authored-agents-v0.3.11-r2
-reason: promote the latest verified PBR staging head including lazy SkeletonUtils loading and LOD-aware authored BOT animation while preserving production routing and mobile sidebar collapse
-nonce: 20260903-0648-jst-r2
+release: production-runtime-self-host-hotfix-v0.3.11
+reason: ensure every wrangler deploy generates the self-hosted Three.js runtime and core GLB assets before publishing production static assets
+nonce: 20260903-production-runtime-hotfix
