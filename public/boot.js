@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.10";
+  const VERSION = "0.3.11";
   const WATCHDOG_MS = 12_000;
   const STABLE_URL = "https://moyo.bluemoon.works/";
   const params = new URLSearchParams(location.search);
@@ -78,7 +78,7 @@
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
-    setMessage("高解像度レンダラーを起動しています", "軽量表示の後、authored建物・自然物・PBR・影を段階的に追加します");
+    setMessage("高解像度レンダラーを起動しています", "軽量表示の後、authored BOT・建物・自然物・PBR・影を段階的に追加します");
     try {
       await import(`/client/sky-fix.js?v=${VERSION}`);
     } catch (error) {
