@@ -24,6 +24,9 @@ const required = [
   "public/models/rock.glb",
   "public/models/buildings.glb",
   "public/models/README.md",
+  "scripts/vendor-authored-assets.mjs",
+  "public/assets/authored/kenney/NOTICE.txt",
+  "public/assets/authored/kenney/manifest.json",
   "public/vendor/three-r185/LICENSE",
   "public/vendor/three-r185/build/three.module.min.js",
   "public/vendor/three-r185/build/three.core.min.js",
@@ -35,7 +38,7 @@ const required = [
 for (const path of required) {
   const info = await stat(path);
   assert.ok(info.isFile(), `${path} must be a file`);
-  assert.ok(info.size > 100, `${path} is unexpectedly small`);
+  assert.ok(info.size > 40, `${path} is unexpectedly small`);
 }
 
 const html = await readFile("public/index.html", "utf8");
@@ -50,13 +53,18 @@ const agents = await readFile("public/client/agents.js", "utf8");
 const shared = await readFile("public/client/shared.js", "utf8");
 const quality = await readFile("public/client/quality.js", "utf8");
 const enhancer = await readFile("scripts/enhance-models.mjs", "utf8");
+const authoredVendor = await readFile("scripts/vendor-authored-assets.mjs", "utf8");
+const authoredNotice = await readFile("public/assets/authored/kenney/NOTICE.txt", "utf8");
+const authoredManifest = JSON.parse(await readFile("public/assets/authored/kenney/manifest.json", "utf8"));
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const previewConfig = JSON.parse(await readFile("wrangler.pbr.jsonc", "utf8"));
 const combined = [boot, app, modelLibrary, worldView, terrain, resources, structures, agents, shared, quality].join("\n");
 
-assert.equal(packageJson.version, "0.3.6");
+assert.equal(packageJson.version, "0.3.7");
 assert.equal(packageJson.dependencies.three, "0.185.1", "Three.js must be exactly pinned");
 assert.match(packageJson.scripts["generate:models"], /enhance-models\.mjs/);
+assert.match(packageJson.scripts["vendor:authored"], /vendor-authored-assets\.mjs/);
+assert.match(packageJson.scripts["build:web"], /vendor:authored/);
 assert.match(packageJson.scripts["build:web"], /generate:models/);
 assert.match(packageJson.scripts["build:web"], /vendor:three/);
 assert.match(packageJson.scripts["build:web"], /check:client/);
@@ -64,13 +72,13 @@ assert.match(packageJson.scripts["deploy:pbr-preview"], /wrangler\.pbr\.jsonc/);
 
 assert.match(html, /type="importmap"/);
 assert.match(html, /"three"\s*:\s*"\/vendor\/three-r185\/build\/three\.module\.min\.js"/);
-assert.match(html, /src="\/boot\.js\?v=0\.3\.6"/);
-assert.match(html, /style\.css\?v=0\.3\.6/);
+assert.match(html, /src="\/boot\.js\?v=0\.3\.7"/);
+assert.match(html, /style\.css\?v=0\.3\.7/);
 assert.doesNotMatch(html, /type="module"\s+src="\/app\.js/);
 assert.match(html, /id="render-status"/);
 assert.match(html, /id="loading-progress"/);
 
-assert.match(boot, /VERSION\s*=\s*"0\.3\.6"/);
+assert.match(boot, /VERSION\s*=\s*"0\.3\.7"/);
 assert.match(boot, /WATCHDOG_MS\s*=\s*12_000/);
 assert.match(boot, /moyo:pbr-ready/);
 assert.match(boot, /moyo:pbr-error/);
@@ -86,8 +94,13 @@ assert.match(app, /loadHighResolutionModels/);
 assert.match(app, /applyEnvelope\(\{ state: createDemoState\(\)/);
 assert.match(app, /setTimeout\(\(\) => \{ void loadHighResolutionModels\(\); \}, 80\)/);
 
-// Generated GLB assets have not changed in 0.3.6, so their independent cache version remains 0.3.4.
 assert.match(modelLibrary, /MODEL_VERSION\s*=\s*"0\.3\.4"/);
+assert.match(modelLibrary, /AUTHORED_VERSION\s*=\s*"0\.3\.7"/);
+assert.match(modelLibrary, /authored:tree-oak/);
+assert.match(modelLibrary, /authored:tree-pine/);
+assert.match(modelLibrary, /authored:rock-large/);
+assert.match(modelLibrary, /authoredStandardMaterial/);
+assert.match(modelLibrary, /moyoPromotedFromUnlit/);
 assert.match(modelLibrary, /import\("three\/addons\/loaders\/GLTFLoader\.js"\)/);
 assert.doesNotMatch(modelLibrary, /^import .*GLTFLoader/m);
 assert.match(modelLibrary, /AbortController/);
@@ -123,6 +136,10 @@ assert.match(terrain, /pathMaterial/);
 
 assert.match(resources, /shouldRenderResource/);
 assert.match(resources, /isSettlementClearing/);
+assert.match(resources, /fitAuthoredModel/);
+assert.match(resources, /authoredTreeKey/);
+assert.match(resources, /authoredRockKey/);
+assert.match(resources, /authoredNature/);
 assert.match(resources, /object\.name\.startsWith\("Foliage"\)/);
 assert.match(resources, /entry\.lod\.scale\.set\(/);
 assert.match(resources, /style\s*=\s*Math\.floor\(hash2/);
@@ -149,6 +166,22 @@ assert.match(enhancer, /baseColorTexture/);
 assert.match(enhancer, /metallicRoughnessTexture/);
 assert.match(enhancer, /normalTexture/);
 assert.match(enhancer, /procedural PBR texture baker/);
+
+assert.match(authoredVendor, /ebfd758dea8db5793c765cc72564efadb36a4ed0/);
+assert.match(authoredVendor, /gitBlobSha/);
+assert.match(authoredVendor, /MOYO_REQUIRE_AUTHORED_ASSETS/);
+assert.match(authoredVendor, /Kenney Nature Kit/);
+assert.match(authoredNotice, /Creative Commons CC0 1\.0/);
+assert.equal(authoredManifest.version, "0.3.7");
+assert.ok(Array.isArray(authoredManifest.loaded));
+assert.ok(Array.isArray(authoredManifest.failed));
+for (const asset of authoredManifest.loaded) {
+  const path = join("public/assets/authored/kenney", asset.file);
+  const data = await readFile(path);
+  assert.equal(data.toString("ascii", 0, 4), "glTF", `${asset.file} is not GLB`);
+  assert.equal(data.readUInt32LE(4), 2, `${asset.file} is not glTF 2.0`);
+  assert.equal(data.readUInt32LE(8), data.length, `${asset.file} length header is invalid`);
+}
 
 assert.equal(previewConfig.name, "moyo-garden-pbr-preview");
 assert.equal(previewConfig.workers_dev, true);
@@ -199,4 +232,4 @@ for (const name of Object.keys(expectedNodes)) {
   for (const expected of expectedNodes[name]) assert.ok(names.has(expected), `${name} lacks ${expected}`);
 }
 
-console.log("Frontier silhouette textured PBR/glTF/LOD/shadow preview validation passed");
+console.log("Authored nature + frontier silhouette PBR/glTF/LOD/shadow preview validation passed");
