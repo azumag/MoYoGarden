@@ -150,6 +150,7 @@ function fitAuthoredBuilding(root, sourceName) {
 export class ModelLibrary {
   constructor() {
     this.loaderPromise = null;
+    this.skeletonClonePromise = null;
     this.skeletonClone = null;
     this.templates = new Map();
     this.animations = new Map();
@@ -170,15 +171,22 @@ export class ModelLibrary {
 
   async getLoader() {
     if (!this.loaderPromise) {
-      this.loaderPromise = Promise.all([
-        import("three/addons/loaders/GLTFLoader.js"),
-        import("three/addons/utils/SkeletonUtils.js"),
-      ]).then(([{ GLTFLoader }, SkeletonUtils]) => {
-        this.skeletonClone = SkeletonUtils.clone;
-        return new GLTFLoader();
-      });
+      this.loaderPromise = import("three/addons/loaders/GLTFLoader.js")
+        .then(({ GLTFLoader }) => new GLTFLoader());
     }
     return this.loaderPromise;
+  }
+
+  async ensureSkeletonClone() {
+    if (this.skeletonClone) return this.skeletonClone;
+    if (!this.skeletonClonePromise) {
+      this.skeletonClonePromise = import("three/addons/utils/SkeletonUtils.js")
+        .then((SkeletonUtils) => {
+          this.skeletonClone = SkeletonUtils.clone;
+          return this.skeletonClone;
+        });
+    }
+    return this.skeletonClonePromise;
   }
 
   prepareTemplate(scene) {
@@ -204,6 +212,7 @@ export class ModelLibrary {
             ? Math.min(Math.max(timeoutMs, 6_500), 9_000)
             : isAuthoredKey(key) ? Math.min(timeoutMs, 2_500) : timeoutMs;
           const gltf = await loadWithTimeout(loader, key, url, itemTimeoutMs);
+          if (isAuthoredAgentKey(key)) await this.ensureSkeletonClone();
           this.templates.set(key, this.prepareTemplate(gltf.scene));
           this.animations.set(key, gltf.animations || []);
           const result = { key, ok: true };

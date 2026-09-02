@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: production-pbr-authored-agents-v0.3.11
-reason: promote the verified PBR renderer, authored buildings, authored BOTs, LOD, shadows, and mobile sidebar collapse to production main
-nonce: 20260903-0648-jst
+release: production-pbr-authored-agents-v0.3.11-r2
+reason: promote the latest verified PBR staging head including lazy SkeletonUtils loading and LOD-aware authored BOT animation while preserving production routing and mobile sidebar collapse
+nonce: 20260903-0648-jst-r2

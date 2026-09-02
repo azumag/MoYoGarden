@@ -357,7 +357,7 @@ export const agentMethods = {
       ? Math.abs(Math.sin(phase)) * 0.04
       : Math.sin(phase * 0.25) * 0.009;
 
-    if (entry.mixer) {
+    if (entry.mixer && entry.high?.visible) {
       const desired = moving ? (entry.moveAction || entry.idleAction) : (entry.idleAction || entry.moveAction);
       if (desired && desired !== entry.activeAction) {
         entry.activeAction?.fadeOut(0.18);
@@ -367,6 +367,8 @@ export const agentMethods = {
       const mixerDelta = clamp((time - entry.lastMixerTime) / 1000, 0, 0.08);
       entry.lastMixerTime = time;
       entry.mixer.update(mixerDelta);
+    } else if (entry.mixer) {
+      entry.lastMixerTime = time;
     }
 
     for (const model of [entry.high, entry.medium]) {
