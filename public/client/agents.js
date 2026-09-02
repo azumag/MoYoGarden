@@ -1,6 +1,15 @@
 import * as THREE from "three";
 import { clamp, disposeObject, hash2, setObjectAgentId, setShadows } from "./shared.js";
 
+const AUTHORED_AGENT_BY_ROLE = Object.freeze({
+  builder: "authored:agent-worker",
+  miner: "authored:agent-worker",
+  woodcutter: "authored:agent-worker",
+  forager: "authored:agent-roamer",
+  scout: "authored:agent-roamer",
+  trader: "authored:agent-roamer",
+});
+
 function makeMaterial(color, roughness = 0.82, metalness = 0, emissive = null) {
   const material = new THREE.MeshStandardMaterial({ color, roughness, metalness });
   if (emissive !== null) {
@@ -128,6 +137,56 @@ function decorateAgentModel(model, agent, factionColor, detail = "high") {
   return model;
 }
 
+function fitAuthoredAgent(root, targetHeight = 1.85) {
+  if (!root) return null;
+  root.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  if (!Number.isFinite(size.y) || size.y <= 0.0001) return root;
+  root.scale.multiplyScalar(targetHeight / size.y);
+  root.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.position.y -= box.min.y;
+  root.userData.moyoAuthoredAgent = true;
+  root.updateMatrixWorld(true);
+  return root;
+}
+
+function findClip(clips, patterns) {
+  for (const pattern of patterns) {
+    const clip = clips.find((value) => pattern.test(value.name || ""));
+    if (clip) return clip;
+  }
+  return null;
+}
+
+function createAuthoredAnimation(models, modelKey, root) {
+  if (!root?.userData?.moyoAuthoredAgent) return null;
+  const clips = models.clips(modelKey);
+  if (!clips.length) return null;
+  const idleClip = findClip(clips, [/^idle$/i, /idle/i]);
+  const moveClip = findClip(clips, [/walking[_ -]?a/i, /walk/i, /running[_ -]?a/i, /run/i]);
+  if (!idleClip && !moveClip) return null;
+
+  const mixer = new THREE.AnimationMixer(root);
+  const idleAction = idleClip ? mixer.clipAction(idleClip) : null;
+  const moveAction = moveClip ? mixer.clipAction(moveClip) : null;
+  for (const action of [idleAction, moveAction]) {
+    if (!action) continue;
+    action.enabled = true;
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.clampWhenFinished = false;
+  }
+  const activeAction = idleAction || moveAction;
+  activeAction?.play();
+  return { mixer, idleAction, moveAction, activeAction };
+}
+
 function makeContactShadow() {
   const shadow = new THREE.Mesh(
     new THREE.CircleGeometry(0.38, 24),
@@ -167,22 +226,40 @@ export const agentMethods = {
     return group;
   },
 
+  disposeAgentEntry(entry) {
+    if (!entry) return;
+    if (entry.mixer) {
+      entry.mixer.stopAllAction();
+      if (entry.high) entry.mixer.uncacheRoot(entry.high);
+    }
+    disposeObject(entry.lod);
+  },
+
   createAgent(agent, faction) {
-    const high = decorateAgentModel(this.models.clone("settler", {
+    const authoredKey = AUTHORED_AGENT_BY_ROLE[agent.role] || "authored:agent-roamer";
+    const authoredHigh = this.models.clone(authoredKey, {
       factionColor: faction.color,
       role: agent.role,
       detail: "high",
-    }), agent, faction.color, "high");
+    });
+    const high = authoredHigh
+      ? fitAuthoredAgent(authoredHigh)
+      : decorateAgentModel(this.models.clone("settler", {
+        factionColor: faction.color,
+        role: agent.role,
+        detail: "high",
+      }), agent, faction.color, "high");
     const medium = decorateAgentModel(this.models.clone("settler", {
       factionColor: faction.color,
       role: agent.role,
       detail: "mid",
     }), agent, faction.color, "mid");
     const low = this.makeLowAgent(faction.color, agent.role);
-    const lod = this.createLod(high, medium, low, [0, 11, 27]);
+    const lod = this.createLod(high, medium, low, [0, authoredHigh ? 9 : 11, 27]);
     lod.scale.setScalar(0.8);
     setObjectAgentId(lod, agent.id);
 
+    const animation = authoredHigh ? createAuthoredAnimation(this.models, authoredKey, high) : null;
     const contactShadow = makeContactShadow();
     lod.add(contactShadow);
 
@@ -213,6 +290,12 @@ export const agentMethods = {
       low,
       ring,
       contactShadow,
+      authoredKey: authoredHigh ? authoredKey : null,
+      mixer: animation?.mixer || null,
+      idleAction: animation?.idleAction || null,
+      moveAction: animation?.moveAction || null,
+      activeAction: animation?.activeAction || null,
+      lastMixerTime: performance.now(),
       from: target.clone(),
       to: target.clone(),
       start: performance.now(),
@@ -231,7 +314,7 @@ export const agentMethods = {
         || { color: "#999999" };
       let entry = this.agentObjects.get(agent.id);
       if (!entry || entry.role !== agent.role || entry.factionId !== agent.factionId) {
-        if (entry) disposeObject(entry.lod);
+        if (entry) this.disposeAgentEntry(entry);
         entry = this.createAgent(agent, faction);
         this.agentObjects.set(agent.id, entry);
       }
@@ -250,7 +333,7 @@ export const agentMethods = {
     }
     for (const [id, entry] of this.agentObjects) {
       if (live.has(id)) continue;
-      disposeObject(entry.lod);
+      this.disposeAgentEntry(entry);
       this.agentObjects.delete(id);
     }
     if (this.selectedAgentId && !live.has(this.selectedAgentId)) {
@@ -274,8 +357,20 @@ export const agentMethods = {
       ? Math.abs(Math.sin(phase)) * 0.04
       : Math.sin(phase * 0.25) * 0.009;
 
+    if (entry.mixer) {
+      const desired = moving ? (entry.moveAction || entry.idleAction) : (entry.idleAction || entry.moveAction);
+      if (desired && desired !== entry.activeAction) {
+        entry.activeAction?.fadeOut(0.18);
+        desired.reset().fadeIn(0.18).play();
+        entry.activeAction = desired;
+      }
+      const mixerDelta = clamp((time - entry.lastMixerTime) / 1000, 0, 0.08);
+      entry.lastMixerTime = time;
+      entry.mixer.update(mixerDelta);
+    }
+
     for (const model of [entry.high, entry.medium]) {
-      if (!model) continue;
+      if (!model || model.userData?.moyoAuthoredAgent) continue;
       const leftLeg = model.getObjectByName("LeftLegPivot");
       const rightLeg = model.getObjectByName("RightLegPivot");
       const leftArm = model.getObjectByName("LeftArmPivot");
