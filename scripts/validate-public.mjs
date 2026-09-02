@@ -22,8 +22,12 @@ const required = [
   "public/models/rock.glb",
   "public/models/buildings.glb",
   "scripts/vendor-authored-assets.mjs",
+  "scripts/vendor-authored-buildings.mjs",
+  "scripts/validate-authored-buildings.mjs",
   "public/assets/authored/kenney/NOTICE.txt",
   "public/assets/authored/kenney/manifest.json",
+  "public/assets/authored/kaykit/NOTICE.txt",
+  "public/assets/authored/kaykit/manifest.json",
   "public/vendor/three-r185/LICENSE",
   "public/vendor/three-r185/build/three.module.min.js",
   "public/vendor/three-r185/build/three.core.min.js",
@@ -53,27 +57,33 @@ const previewConfig = JSON.parse(await readFile("wrangler.pbr.jsonc", "utf8"));
 const authoredManifest = JSON.parse(await readFile("public/assets/authored/kenney/manifest.json", "utf8"));
 const authoredNotice = await readFile("public/assets/authored/kenney/NOTICE.txt", "utf8");
 const authoredVendor = await readFile("scripts/vendor-authored-assets.mjs", "utf8");
+const buildingManifest = JSON.parse(await readFile("public/assets/authored/kaykit/manifest.json", "utf8"));
+const buildingNotice = await readFile("public/assets/authored/kaykit/NOTICE.txt", "utf8");
 
-assert.equal(packageJson.version, "0.3.9");
+assert.equal(packageJson.version, "0.3.10");
 assert.equal(packageJson.dependencies.three, "0.185.1");
 assert.match(packageJson.scripts["vendor:authored"], /vendor-authored-assets\.mjs/);
+assert.match(packageJson.scripts["vendor:authored:buildings"], /vendor-authored-buildings\.mjs/);
 assert.match(packageJson.scripts["build:web"], /vendor:authored/);
+assert.match(packageJson.scripts["build:web"], /vendor:authored:buildings/);
 assert.match(packageJson.scripts["build:web"], /vendor:three/);
+assert.match(packageJson.scripts["build:web"], /validate-authored-buildings\.mjs/);
 assert.match(packageJson.scripts["deploy:pbr-preview"], /wrangler\.pbr\.jsonc/);
 
 assert.match(html, /type="importmap"/);
 assert.match(html, /three\.module\.min\.js/);
-assert.match(html, /style\.css\?v=0\.3\.9/);
-assert.match(html, /boot\.js\?v=0\.3\.9/);
+assert.match(html, /style\.css\?v=0\.3\.10/);
+assert.match(html, /boot\.js\?v=0\.3\.10/);
 assert.doesNotMatch(html, /https?:\/\/(?:unpkg|cdn\.jsdelivr|cdnjs)/i);
 
-assert.match(boot, /VERSION\s*=\s*"0\.3\.9"/);
+assert.match(boot, /VERSION\s*=\s*"0\.3\.10"/);
 assert.match(boot, /WATCHDOG_MS\s*=\s*12_000/);
 assert.match(boot, /import\(`\/client\/sky-fix\.js\?v=\$\{VERSION\}`\)/);
 assert.ok(
   boot.indexOf("sky-fix.js") < boot.indexOf("moduleScript.src"),
   "sky fix must be installed before the app module is launched",
 );
+assert.match(boot, /authored建物/);
 assert.match(boot, /PBR module graph failed to load/);
 
 assert.match(skyFix, /WorldView\.prototype\.updateCamera/);
@@ -97,13 +107,24 @@ assert.match(agents, /MoyoAgentSilhouette/);
 
 assert.match(modelLibrary, /MODEL_VERSION\s*=\s*"0\.3\.4"/);
 assert.match(modelLibrary, /AUTHORED_VERSION\s*=\s*"0\.3\.7"/);
+assert.match(modelLibrary, /AUTHORED_BUILDING_VERSION\s*=\s*"0\.3\.10"/);
+assert.match(modelLibrary, /authored:building-camp/);
+assert.match(modelLibrary, /authored:building-storehouse/);
+assert.match(modelLibrary, /authored:building-market/);
+assert.match(modelLibrary, /authored:building-workshop/);
+assert.match(modelLibrary, /AUTHORED_BUILDING_BY_CHILD/);
+assert.match(modelLibrary, /fitAuthoredBuilding/);
 assert.match(modelLibrary, /authored:tree-oak/);
 assert.match(modelLibrary, /authored:tree-pine/);
 assert.match(modelLibrary, /authored:rock-large/);
 assert.match(modelLibrary, /Math\.min\(timeoutMs,\s*2_500\)/);
 assert.ok(
-  modelLibrary.indexOf('["settler"') < modelLibrary.indexOf('["authored:tree-oak"'),
-  "core models must load before optional authored overrides",
+  modelLibrary.indexOf('["settler"') < modelLibrary.indexOf('["authored:building-camp"'),
+  "core models must load before optional authored building overrides",
+);
+assert.ok(
+  modelLibrary.indexOf('["buildings"') < modelLibrary.indexOf('["authored:building-camp"'),
+  "generated buildings must remain the first fallback",
 );
 
 assert.match(authoredVendor, /gitBlobSha/);
@@ -119,6 +140,12 @@ for (const asset of authoredManifest.loaded) {
   assert.equal(data.readUInt32LE(4), 2, `${asset.file} is not glTF 2.0`);
   assert.equal(data.readUInt32LE(8), data.length, `${asset.file} length header is invalid`);
 }
+
+assert.equal(buildingManifest.version, "0.3.10");
+assert.equal(buildingManifest.upstreamCommit, "84fa4e91af6a88989be7c99e0891cede11f2ca38");
+assert.ok(Array.isArray(buildingManifest.loaded));
+assert.ok(Array.isArray(buildingManifest.failed));
+assert.match(buildingNotice, /Creative Commons Zero \(CC0\)/);
 
 const expectedNodes = {
   "settler.glb": ["SettlerRoot", "FactionTorso", "LeftLegPivot", "RightLegPivot"],
@@ -147,4 +174,4 @@ assert.equal(previewConfig.workers_dev, true);
 assert.equal(previewConfig.preview_urls, false);
 assert.ok(!("routes" in previewConfig), "preview must not claim the production custom domain");
 
-console.log("Orb-free authored PBR preview validation passed");
+console.log("Authored-building orb-free PBR preview validation passed");
