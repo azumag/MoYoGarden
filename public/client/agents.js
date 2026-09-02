@@ -255,6 +255,7 @@ export const agentMethods = {
       detail: "mid",
     }), agent, faction.color, "mid");
     const low = this.makeLowAgent(faction.color, agent.role);
+    if (this.quality.id === "balanced") setShadows(low, false, true);
     const lod = this.createLod(high, medium, low, [0, authoredHigh ? 9 : 11, 27]);
     lod.scale.setScalar(0.8);
     setObjectAgentId(lod, agent.id);
