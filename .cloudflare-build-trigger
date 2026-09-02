@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
 release: pbr-preview-authored-agents-v0.3.11
-reason: vendor CC0 KayKit rigged worker and roamer characters, clone skinned meshes safely, and animate nearby BOTs with generated LOD fallbacks
-nonce: 20260903-0504-jst
+reason: deploy rigged CC0 KayKit BOTs with SkeletonUtils cloning, animation-state switching, close-range LOD, and generated fallbacks
+nonce: 20260903-0508-jst
