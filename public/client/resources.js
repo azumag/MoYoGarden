@@ -8,23 +8,28 @@ function distanceSq(a, b) {
 }
 
 export const resourceMethods = {
-  makeLowTree() {
+  makeLowTree(tile = { x: 0, y: 0 }) {
     const group = new THREE.Group();
+    const style = Math.floor(hash2(tile.x, tile.y, 601) * 3);
     const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.1, 0.17, 1.18, 8),
+      new THREE.CylinderGeometry(0.095, 0.17, 1.18, 8),
       this.pbrMaterial(0x5b3927, 0.92),
     );
-    trunk.position.y = 0.58;
+    trunk.position.y = 0.59;
     const lower = new THREE.Mesh(
-      new THREE.ConeGeometry(0.55, 0.92, 9),
-      this.pbrMaterial(0x3f6c43, 0.93),
+      style === 1
+        ? new THREE.SphereGeometry(0.48, 9, 7)
+        : new THREE.ConeGeometry(style === 2 ? 0.47 : 0.55, style === 2 ? 1.05 : 0.92, 9),
+      this.pbrMaterial(style === 2 ? 0x375f3e : 0x436f47, 0.93),
     );
-    lower.position.y = 1.25;
+    lower.position.y = style === 2 ? 1.38 : 1.27;
     const upper = new THREE.Mesh(
-      new THREE.ConeGeometry(0.4, 0.72, 9),
-      this.pbrMaterial(0x517b50, 0.91),
+      style === 1
+        ? new THREE.SphereGeometry(0.36, 9, 7)
+        : new THREE.ConeGeometry(style === 2 ? 0.31 : 0.4, style === 2 ? 0.82 : 0.72, 9),
+      this.pbrMaterial(0x557f55, 0.91),
     );
-    upper.position.y = 1.72;
+    upper.position.set(style === 1 ? 0.11 : -0.04, style === 2 ? 1.94 : 1.72, 0.02);
     group.add(trunk, lower, upper);
     setShadows(group);
     return group;
@@ -64,13 +69,24 @@ export const resourceMethods = {
     return group;
   },
 
-  makeLowRock() {
+  makeLowRock(tile = { x: 0, y: 0 }) {
     const group = new THREE.Group();
     const stone = this.pbrMaterial(0x777b75, 0.96, 0.015);
-    for (let index = 0; index < 3; index += 1) {
+    const count = hash2(tile.x, tile.y, 602) > 0.55 ? 3 : 2;
+    for (let index = 0; index < count; index += 1) {
       const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.32, 1), stone);
-      mesh.position.set((index - 1) * 0.23, 0.16 + (index % 2) * 0.08, (index % 2) * 0.12);
-      mesh.scale.set(1.1, 0.58 + index * 0.09, 0.86);
+      const scatter = 0.18 + hash2(tile.x, tile.y, 610 + index) * 0.12;
+      mesh.position.set((index - (count - 1) / 2) * scatter, 0.13 + (index % 2) * 0.07, (index % 2) * 0.1);
+      mesh.scale.set(
+        0.85 + hash2(tile.x, tile.y, 620 + index) * 0.45,
+        0.42 + hash2(tile.x, tile.y, 630 + index) * 0.34,
+        0.72 + hash2(tile.x, tile.y, 640 + index) * 0.34,
+      );
+      mesh.rotation.set(
+        (hash2(tile.x, tile.y, 650 + index) - 0.5) * 0.25,
+        hash2(tile.x, tile.y, 660 + index) * Math.PI,
+        (hash2(tile.x, tile.y, 670 + index) - 0.5) * 0.22,
+      );
       group.add(mesh);
     }
     setShadows(group);
@@ -79,13 +95,13 @@ export const resourceMethods = {
 
   resourceVisibilityThreshold(kind) {
     const density = this.quality?.detailDensity ?? 0.75;
-    if (kind === "wood") return 0.24 + density * 0.18;
-    if (kind === "stone") return 0.2 + density * 0.15;
-    return 0.46 + density * 0.18;
+    if (kind === "wood") return 0.21 + density * 0.14;
+    if (kind === "stone") return 0.18 + density * 0.12;
+    return 0.42 + density * 0.16;
   },
 
   isSettlementClearing(tile, state) {
-    const radiusSq = 2.45 * 2.45;
+    const radiusSq = 2.65 * 2.65;
     return state.structures.some((structure) => distanceSq(tile, structure.position) <= radiusSq);
   },
 
@@ -93,21 +109,47 @@ export const resourceMethods = {
     if (this.isSettlementClearing(tile, state)) return false;
     const ratio = clamp(tile.resource.amount / Math.max(1, tile.resource.maxAmount), 0, 1);
     const threshold = this.resourceVisibilityThreshold(tile.resource.kind)
-      + (ratio > 0.88 ? 0.08 : 0);
-    return hash2(tile.x, tile.y, 207) < Math.min(0.72, threshold);
+      + (ratio > 0.88 ? 0.055 : 0);
+    return hash2(tile.x, tile.y, 207) < Math.min(0.62, threshold);
   },
 
   naturalizeModel(root, tile, kind) {
     if (!root) return;
-    const hue = (hash2(tile.x, tile.y, 211) - 0.5) * (kind === "wood" ? 0.035 : 0.012);
-    const light = (hash2(tile.x, tile.y, 212) - 0.5) * 0.08;
+    const hue = (hash2(tile.x, tile.y, 211) - 0.5) * (kind === "wood" ? 0.045 : 0.014);
+    const light = (hash2(tile.x, tile.y, 212) - 0.5) * 0.1;
+    const style = Math.floor(hash2(tile.x, tile.y, 603) * 3);
     root.traverse((object) => {
-      if (!object.isMesh || !object.material) return;
-      const materials = Array.isArray(object.material) ? object.material : [object.material];
-      for (const material of materials) {
-        if (!material.color || material.name?.includes("Faction")) continue;
-        material.color.offsetHSL(hue, 0, light);
-        material.roughness = clamp(material.roughness ?? 0.8, 0.48, 0.98);
+      if (object.isMesh && object.material) {
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) {
+          if (!material.color || material.name?.includes("Faction")) continue;
+          material.color.offsetHSL(hue, 0, light);
+          material.roughness = clamp(material.roughness ?? 0.8, 0.48, 0.98);
+        }
+      }
+      if (kind === "wood" && object.name.startsWith("Foliage")) {
+        const index = Number(object.name.replace("Foliage", "")) || 0;
+        const radial = 0.86 + hash2(tile.x, tile.y, 680 + index) * 0.3;
+        const vertical = style === 2 ? 1.08 + index * 0.018 : style === 1 ? 0.82 : 0.94;
+        object.scale.x *= radial * (style === 1 ? 1.16 : 1);
+        object.scale.z *= radial * (style === 1 ? 1.08 : 1);
+        object.scale.y *= vertical;
+        object.position.x += (hash2(tile.x, tile.y, 690 + index) - 0.5) * 0.16;
+        object.position.z += (hash2(tile.x, tile.y, 700 + index) - 0.5) * 0.14;
+        if (style === 2 && index === 4 && hash2(tile.x, tile.y, 711) > 0.42) object.visible = false;
+      }
+      if (kind === "wood" && object.name === "Trunk") {
+        object.scale.y *= style === 2 ? 1.16 : style === 1 ? 0.88 : 1;
+        object.scale.x *= style === 1 ? 1.12 : 0.96;
+        object.scale.z *= style === 1 ? 1.08 : 0.96;
+      }
+      if (kind === "stone" && object.name.startsWith("Rock")) {
+        const index = Number(object.name.replace("Rock", "")) || 0;
+        object.scale.x *= 0.8 + hash2(tile.x, tile.y, 720 + index) * 0.52;
+        object.scale.y *= 0.72 + hash2(tile.x, tile.y, 730 + index) * 0.42;
+        object.scale.z *= 0.78 + hash2(tile.x, tile.y, 740 + index) * 0.48;
+        object.rotation.y += hash2(tile.x, tile.y, 750 + index) * Math.PI;
+        if (index === 3 && hash2(tile.x, tile.y, 760) > 0.58) object.visible = false;
       }
     });
   },
@@ -119,11 +161,11 @@ export const resourceMethods = {
     if (tile.resource.kind === "wood") {
       high = this.models.clone("tree", { detail: "high" });
       medium = this.models.clone("tree", { detail: "mid" });
-      low = this.makeLowTree();
+      low = this.makeLowTree(tile);
     } else if (tile.resource.kind === "stone") {
       high = this.models.clone("rock", { detail: "high" });
       medium = this.models.clone("rock", { detail: "mid" });
-      low = this.makeLowRock();
+      low = this.makeLowRock(tile);
     } else {
       high = this.makeBush(true);
       medium = this.makeBush(false);
@@ -134,7 +176,7 @@ export const resourceMethods = {
     this.naturalizeModel(medium, tile, tile.resource.kind);
     const lod = this.createLod(high, medium, low, [0, 13, 28]);
     lod.rotation.y = hash2(tile.x, tile.y, 99) * Math.PI * 2;
-    lod.rotation.z = (hash2(tile.x, tile.y, 213) - 0.5) * 0.045;
+    lod.rotation.z = (hash2(tile.x, tile.y, 213) - 0.5) * 0.052;
     this.resourceRoot.add(lod);
     return { lod, kind: tile.resource.kind };
   },
@@ -153,16 +195,35 @@ export const resourceMethods = {
         this.resourceObjects.set(key, entry);
       }
       const density = clamp(tile.resource.amount / Math.max(1, tile.resource.maxAmount), 0.22, 1);
-      const jitterX = (hash2(tile.x, tile.y, 214) - 0.5) * 0.34;
-      const jitterZ = (hash2(tile.x, tile.y, 215) - 0.5) * 0.34;
+      const jitterX = (hash2(tile.x, tile.y, 214) - 0.5) * 0.48;
+      const jitterZ = (hash2(tile.x, tile.y, 215) - 0.5) * 0.48;
       entry.lod.position.copy(this.worldPosition(tile, 0));
       entry.lod.position.x += jitterX;
       entry.lod.position.z += jitterZ;
-      const variation = 0.88 + hash2(tile.x, tile.y, 216) * 0.24;
-      const baseScale = tile.resource.kind === "wood"
-        ? 0.5
-        : tile.resource.kind === "stone" ? 0.58 : 0.72;
-      entry.lod.scale.setScalar(baseScale * variation * (0.78 + density * 0.24));
+
+      const variation = 0.86 + hash2(tile.x, tile.y, 216) * 0.25;
+      const densityScale = 0.78 + density * 0.2;
+      if (tile.resource.kind === "wood") {
+        const style = Math.floor(hash2(tile.x, tile.y, 603) * 3);
+        const base = 0.46 * variation * densityScale;
+        const width = style === 1 ? 1.16 : style === 2 ? 0.78 : 0.96;
+        const height = style === 1 ? 0.84 : style === 2 ? 1.24 : 1;
+        entry.lod.scale.set(base * width, base * height, base * (0.92 + hash2(tile.x, tile.y, 770) * 0.16));
+      } else if (tile.resource.kind === "stone") {
+        const base = 0.54 * variation * densityScale;
+        entry.lod.scale.set(
+          base * (0.88 + hash2(tile.x, tile.y, 771) * 0.34),
+          base * (0.72 + hash2(tile.x, tile.y, 772) * 0.34),
+          base * (0.84 + hash2(tile.x, tile.y, 773) * 0.34),
+        );
+      } else {
+        const base = 0.66 * variation * densityScale;
+        entry.lod.scale.set(
+          base * (0.9 + hash2(tile.x, tile.y, 774) * 0.2),
+          base * (0.82 + hash2(tile.x, tile.y, 775) * 0.24),
+          base * (0.9 + hash2(tile.x, tile.y, 776) * 0.2),
+        );
+      }
     }
     for (const [key, entry] of this.resourceObjects) {
       if (live.has(key)) continue;
