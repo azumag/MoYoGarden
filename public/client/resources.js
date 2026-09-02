@@ -7,6 +7,37 @@ function distanceSq(a, b) {
   return dx * dx + dy * dy;
 }
 
+function fitAuthoredModel(root, targetHeight) {
+  if (!root) return null;
+  root.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  if (!Number.isFinite(size.y) || size.y <= 0.0001) return root;
+  const scale = targetHeight / size.y;
+  root.scale.multiplyScalar(scale);
+  root.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.position.y -= box.min.y;
+  root.updateMatrixWorld(true);
+  return root;
+}
+
+function authoredTreeKey(tile) {
+  return hash2(tile.x, tile.y, 801) < 0.54 ? "authored:tree-oak" : "authored:tree-pine";
+}
+
+function authoredRockKey(tile) {
+  const value = hash2(tile.x, tile.y, 802);
+  if (value < 0.34) return "authored:rock-small";
+  if (value < 0.72) return "authored:rock-medium";
+  return "authored:rock-large";
+}
+
 export const resourceMethods = {
   makeLowTree(tile = { x: 0, y: 0 }) {
     const group = new THREE.Group();
@@ -158,13 +189,27 @@ export const resourceMethods = {
     let high;
     let medium;
     let low;
+    let authored = false;
     if (tile.resource.kind === "wood") {
-      high = this.models.clone("tree", { detail: "high" });
-      medium = this.models.clone("tree", { detail: "mid" });
+      const key = authoredTreeKey(tile);
+      high = fitAuthoredModel(this.models.clone(key, { detail: "high" }), key.endsWith("pine") ? 4.25 : 3.55);
+      medium = fitAuthoredModel(this.models.clone(key, { detail: "mid" }), key.endsWith("pine") ? 4.25 : 3.55);
+      authored = Boolean(high && medium);
+      if (!authored) {
+        high = this.models.clone("tree", { detail: "high" });
+        medium = this.models.clone("tree", { detail: "mid" });
+      }
       low = this.makeLowTree(tile);
     } else if (tile.resource.kind === "stone") {
-      high = this.models.clone("rock", { detail: "high" });
-      medium = this.models.clone("rock", { detail: "mid" });
+      const key = authoredRockKey(tile);
+      const targetHeight = key.endsWith("small") ? 0.7 : key.endsWith("medium") ? 1.0 : 1.3;
+      high = fitAuthoredModel(this.models.clone(key, { detail: "high" }), targetHeight);
+      medium = fitAuthoredModel(this.models.clone(key, { detail: "mid" }), targetHeight);
+      authored = Boolean(high && medium);
+      if (!authored) {
+        high = this.models.clone("rock", { detail: "high" });
+        medium = this.models.clone("rock", { detail: "mid" });
+      }
       low = this.makeLowRock(tile);
     } else {
       high = this.makeBush(true);
@@ -174,11 +219,12 @@ export const resourceMethods = {
     }
     this.naturalizeModel(high, tile, tile.resource.kind);
     this.naturalizeModel(medium, tile, tile.resource.kind);
-    const lod = this.createLod(high, medium, low, [0, 13, 28]);
+    const lod = this.createLod(high, medium, low, authored ? [0, 16, 32] : [0, 13, 28]);
     lod.rotation.y = hash2(tile.x, tile.y, 99) * Math.PI * 2;
     lod.rotation.z = (hash2(tile.x, tile.y, 213) - 0.5) * 0.052;
+    lod.userData.authoredNature = authored;
     this.resourceRoot.add(lod);
-    return { lod, kind: tile.resource.kind };
+    return { lod, kind: tile.resource.kind, authored };
   },
 
   syncResources(state) {
@@ -203,14 +249,15 @@ export const resourceMethods = {
 
       const variation = 0.86 + hash2(tile.x, tile.y, 216) * 0.25;
       const densityScale = 0.78 + density * 0.2;
+      const authoredScale = entry.authored ? 0.94 : 1;
       if (tile.resource.kind === "wood") {
         const style = Math.floor(hash2(tile.x, tile.y, 603) * 3);
-        const base = 0.46 * variation * densityScale;
+        const base = 0.46 * variation * densityScale * authoredScale;
         const width = style === 1 ? 1.16 : style === 2 ? 0.78 : 0.96;
         const height = style === 1 ? 0.84 : style === 2 ? 1.24 : 1;
         entry.lod.scale.set(base * width, base * height, base * (0.92 + hash2(tile.x, tile.y, 770) * 0.16));
       } else if (tile.resource.kind === "stone") {
-        const base = 0.54 * variation * densityScale;
+        const base = 0.54 * variation * densityScale * authoredScale;
         entry.lod.scale.set(
           base * (0.88 + hash2(tile.x, tile.y, 771) * 0.34),
           base * (0.72 + hash2(tile.x, tile.y, 772) * 0.34),
