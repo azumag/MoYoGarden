@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: pbr-preview-sky-orb-fix-v0.3.9
-reason: remove the hard sky sun disc that appeared as a distant ball, keep the sky dome centered on the camera, and retain only a soft horizon glow
-nonce: 20260903-0435-jst
+release: pbr-preview-authored-buildings-v0.3.10
+reason: vendor CC0 KayKit camp, storehouse, market, and workshop geometry as self-contained GLB assets with generated-building fallbacks
+nonce: 20260903-0445-jst
