@@ -9,7 +9,7 @@ const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const modelLibrary = await readFile("public/client/model-library.js", "utf8");
 const vendor = await readFile("scripts/vendor-authored-buildings.mjs", "utf8");
 
-assert.equal(packageJson.version, "0.3.10");
+assert.equal(packageJson.version, "0.3.11");
 assert.match(packageJson.scripts["vendor:authored:buildings"], /vendor-authored-buildings\.mjs/);
 assert.match(packageJson.scripts["build:web"], /vendor:authored:buildings/);
 assert.match(packageJson.scripts["build:web"], /validate-authored-buildings\.mjs/);
