@@ -1,5 +1,5 @@
 # Cloudflare Workers Builds trigger
 
-release: pbr-preview-authored-nature-v0.3.7
-reason: vendor pinned CC0 authored tree and rock GLBs, promote unlit materials into the PBR lighting pipeline, normalize asset scale and grounding, and retain procedural fallbacks
-nonce: 20260903-0314-jst
+release: pbr-preview-model-priority-v0.3.8
+reason: load core BOT/building/resource GLBs before optional authored nature overrides, cap authored timeout at 2.5s, and refresh tree/rock LODs when authored replacements arrive
+nonce: 20260903-0414-jst
