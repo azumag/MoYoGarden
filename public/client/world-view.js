@@ -48,7 +48,7 @@ function createSkyDome() {
         float up = clamp(dir.y, -1.0, 1.0);
         float skyMix = pow(clamp(up, 0.0, 1.0), 0.55);
         vec3 color = mix(horizonColor, zenithColor, skyMix);
-        float below = smoothstep(0.05, -0.32, up);
+        float below = 1.0 - smoothstep(-0.32, 0.05, up);
         color = mix(color, groundColor, below * 0.62);
         float sunDot = max(dot(dir, sunDirection), 0.0);
         float halo = pow(sunDot, 18.0) * 0.16;
@@ -125,6 +125,7 @@ export class WorldView {
     this.terrainMesh = null;
     this.waterMesh = null;
     this.detailRoot = null;
+    this.surfaceHeightMap = new Map();
     this.resourceObjects = new Map();
     this.structureObjects = new Map();
     this.agentObjects = new Map();
@@ -221,9 +222,10 @@ export class WorldView {
 
   worldPosition(position, lift = 0) {
     const tile = this.tileAt(position.x, position.y);
+    const surfaceHeight = this.surfaceHeightMap.get(`${position.x}:${position.y}`);
     return new THREE.Vector3(
       position.x - this.state.width / 2 + 0.5,
-      this.terrainHeight(tile) + lift,
+      (surfaceHeight ?? this.terrainHeight(tile)) + lift,
       position.y - this.state.height / 2 + 0.5,
     );
   }
