@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "moyo-garden-pbr-preview",
-  "main": "src/worker.ts",
+  "main": "src/disabled-preview.ts",
   "compatibility_date": "2026-08-28",
   "upload_source_maps": true,
   "workers_dev": false,
