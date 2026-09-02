@@ -3,17 +3,27 @@ import * as THREE from "three";
 const MODEL_VERSION = "0.3.4";
 const AUTHORED_VERSION = "0.3.7";
 const MODEL_MANIFEST = Object.freeze([
+  ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
+  ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
+  ["tree", `/models/tree.glb?v=${MODEL_VERSION}`],
+  ["rock", `/models/rock.glb?v=${MODEL_VERSION}`],
   ["authored:tree-oak", `/assets/authored/kenney/tree_oak.glb?v=${AUTHORED_VERSION}`],
   ["authored:tree-pine", `/assets/authored/kenney/tree_pine.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-large", `/assets/authored/kenney/rock_large.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-medium", `/assets/authored/kenney/rock_medium.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-small", `/assets/authored/kenney/rock_small.glb?v=${AUTHORED_VERSION}`],
-  ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
-  ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
-  ["tree", `/models/tree.glb?v=${MODEL_VERSION}`],
-  ["rock", `/models/rock.glb?v=${MODEL_VERSION}`],
 ]);
 const MAX_MODEL_BYTES = 8 * 1024 * 1024;
+
+function isAuthoredKey(key) {
+  return key.startsWith("authored:");
+}
+
+function refreshKeyFor(key) {
+  if (key.startsWith("authored:tree-")) return "tree";
+  if (key.startsWith("authored:rock-")) return "rock";
+  return key;
+}
 
 function validateGlb(bytes, key) {
   if (bytes.byteLength < 20 || bytes.byteLength > MAX_MODEL_BYTES) {
@@ -130,11 +140,12 @@ export class ModelLibrary {
         const [key, url] = queue.shift();
         try {
           const loader = await this.getLoader();
-          const gltf = await loadWithTimeout(loader, key, url, timeoutMs);
+          const itemTimeoutMs = isAuthoredKey(key) ? Math.min(timeoutMs, 2_500) : timeoutMs;
+          const gltf = await loadWithTimeout(loader, key, url, itemTimeoutMs);
           this.templates.set(key, this.prepareTemplate(gltf.scene));
           const result = { key, ok: true };
           results.push(result);
-          onModelLoaded?.(result);
+          onModelLoaded?.({ ...result, key: refreshKeyFor(key), modelKey: key });
         } catch (error) {
           const result = {
             key,
@@ -142,7 +153,7 @@ export class ModelLibrary {
             message: error instanceof Error ? error.message : String(error),
           };
           results.push(result);
-          const optional = key.startsWith("authored:");
+          const optional = isAuthoredKey(key);
           console[optional ? "info" : "warn"](
             `MoYoGarden: ${key} glTF load failed; ${optional ? "authored override skipped" : "procedural LOD remains active"}`,
             error,
