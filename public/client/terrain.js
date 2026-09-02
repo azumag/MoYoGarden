@@ -262,6 +262,7 @@ export const terrainMethods = {
     }
 
     const density = this.quality.detailDensity;
+    const microDetailShadows = this.quality.id !== "balanced";
     const grassMaterial = new THREE.MeshStandardMaterial({
       color: 0x70815d,
       roughness: 1,
@@ -301,7 +302,7 @@ export const terrainMethods = {
         grass.setMatrixAt(index, matrix);
       });
       grass.instanceMatrix.needsUpdate = true;
-      grass.receiveShadow = true;
+      grass.receiveShadow = microDetailShadows;
       detail.add(grass);
     } else {
       grassGeometry.dispose();
@@ -332,8 +333,8 @@ export const terrainMethods = {
         pebbles.setMatrixAt(index, matrix);
       });
       pebbles.instanceMatrix.needsUpdate = true;
-      pebbles.castShadow = true;
-      pebbles.receiveShadow = true;
+      pebbles.castShadow = microDetailShadows;
+      pebbles.receiveShadow = microDetailShadows;
       detail.add(pebbles);
     } else {
       pebbleGeometry.dispose();
