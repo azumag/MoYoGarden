@@ -203,6 +203,7 @@ export const structureMethods = {
       detail: "mid",
     }), structure.type, faction.color, "mid");
     const low = this.makeLowBuilding(structure.type, faction.color);
+    if (this.quality.id === "balanced") setShadows(low, false, true);
     const lod = this.createLod(high, medium, low, [0, 22, 46]);
     lod.userData.structureId = structure.id;
     lod.rotation.y = structureFacingRotation(structure, state);
