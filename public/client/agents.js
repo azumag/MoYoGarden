@@ -95,7 +95,13 @@ function addRoleHeadgear(group, role, palette, detail) {
     return;
   }
 
-  if (role === "forager" || role === "scout") {
+  if (role === "forager") {
+    const straw = makeMaterial(0x9b7b4d, 0.94);
+    addPart(group, new THREE.ConeGeometry(0.31, 0.16, 14), straw, [0, 1.87, -0.005], null, [1, 1, 0.92], "MoyoForagerHat");
+    return;
+  }
+
+  if (role === "scout") {
     addPart(group, new THREE.ConeGeometry(0.245, 0.34, 14, 1, true), cloth, [0, 1.77, -0.015], [0, 0, 0], [1, 1, 0.9], "MoyoHood");
   }
 }
