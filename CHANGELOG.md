@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.7 - 2026-09-03
+
+- authored glTF受け入れの第一段階として、Kenney Nature Kit由来のCC0樹木・岩モデルをビルド時に自己ホストする仕組みを追加
+- upstreamをコミット`ebfd758dea8db5793c765cc72564efadb36a4ed0`へ固定し、各GLBをGit blob SHA-1で検証してサプライチェーン上の差し替えを検出
+- `tree_oak` / `tree_pine` / `rock_small` / `rock_medium` / `rock_large`を近・中距離LODの優先モデルとして採用し、取得失敗時は従来の手続き生成モデルへ自動フォールバック
+- Kenneyのunlit材質をThree.js側でPBR対応`MeshStandardMaterial`へ昇格し、既存の環境光・影・フォグと整合するよう調整
+- authoredモデルの原点・高さ・接地位置を実行時に正規化し、既存WorldStateの1タイル座標系へ適合
+- 樹木はoak/pine、岩はsmall/medium/largeを座標ハッシュで決定論的に使い分け、反復感をさらに軽減
+- authoredアセット取得失敗をプレビュー全体のビルド失敗にしないfail-open方式を採用し、`MOYO_REQUIRE_AUTHORED_ASSETS=1`時のみ厳格モードに変更
+- runtimeは外部CDNを参照せず、Cloudflare Static AssetsからのみGLBを配信
+
 ## 0.3.6 - 2026-09-03
 
 - BOTの高詳細LODへコート、肩当て、スカーフ、ポーチ、胸当て、職業別ヘッドギアを追加し、単純な人型プリミティブ感を軽減
