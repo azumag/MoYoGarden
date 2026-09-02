@@ -3,6 +3,7 @@ import * as THREE from "three";
 const MODEL_VERSION = "0.3.4";
 const AUTHORED_VERSION = "0.3.7";
 const AUTHORED_BUILDING_VERSION = "0.3.10";
+const AUTHORED_CHARACTER_VERSION = "0.3.11";
 const MODEL_MANIFEST = Object.freeze([
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
@@ -12,6 +13,8 @@ const MODEL_MANIFEST = Object.freeze([
   ["authored:building-storehouse", `/assets/authored/kaykit/storehouse.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-market", `/assets/authored/kaykit/market.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-workshop", `/assets/authored/kaykit/workshop.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:agent-worker", `/assets/authored/kaykit-adventurers/worker.glb?v=${AUTHORED_CHARACTER_VERSION}`],
+  ["authored:agent-roamer", `/assets/authored/kaykit-adventurers/roamer.glb?v=${AUTHORED_CHARACTER_VERSION}`],
   ["authored:tree-oak", `/assets/authored/kenney/tree_oak.glb?v=${AUTHORED_VERSION}`],
   ["authored:tree-pine", `/assets/authored/kenney/tree_pine.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-large", `/assets/authored/kenney/rock_large.glb?v=${AUTHORED_VERSION}`],
@@ -36,7 +39,12 @@ function isAuthoredKey(key) {
   return key.startsWith("authored:");
 }
 
+function isAuthoredAgentKey(key) {
+  return key.startsWith("authored:agent-");
+}
+
 function refreshKeyFor(key) {
+  if (key.startsWith("authored:agent-")) return "settler";
   if (key.startsWith("authored:building-")) return "buildings";
   if (key.startsWith("authored:tree-")) return "tree";
   if (key.startsWith("authored:rock-")) return "rock";
@@ -142,7 +150,9 @@ function fitAuthoredBuilding(root, sourceName) {
 export class ModelLibrary {
   constructor() {
     this.loaderPromise = null;
+    this.skeletonClone = null;
     this.templates = new Map();
+    this.animations = new Map();
     this.lastLoadResult = { loaded: [], failed: [] };
   }
 
@@ -154,10 +164,19 @@ export class ModelLibrary {
     return this.templates.has(name);
   }
 
+  clips(name) {
+    return this.animations.get(name) || [];
+  }
+
   async getLoader() {
     if (!this.loaderPromise) {
-      this.loaderPromise = import("three/addons/loaders/GLTFLoader.js")
-        .then(({ GLTFLoader }) => new GLTFLoader());
+      this.loaderPromise = Promise.all([
+        import("three/addons/loaders/GLTFLoader.js"),
+        import("three/addons/utils/SkeletonUtils.js"),
+      ]).then(([{ GLTFLoader }, SkeletonUtils]) => {
+        this.skeletonClone = SkeletonUtils.clone;
+        return new GLTFLoader();
+      });
     }
     return this.loaderPromise;
   }
@@ -181,9 +200,12 @@ export class ModelLibrary {
         const [key, url] = queue.shift();
         try {
           const loader = await this.getLoader();
-          const itemTimeoutMs = isAuthoredKey(key) ? Math.min(timeoutMs, 2_500) : timeoutMs;
+          const itemTimeoutMs = isAuthoredAgentKey(key)
+            ? Math.min(Math.max(timeoutMs, 6_500), 9_000)
+            : isAuthoredKey(key) ? Math.min(timeoutMs, 2_500) : timeoutMs;
           const gltf = await loadWithTimeout(loader, key, url, itemTimeoutMs);
           this.templates.set(key, this.prepareTemplate(gltf.scene));
+          this.animations.set(key, gltf.animations || []);
           const result = { key, ok: true };
           results.push(result);
           onModelLoaded?.({ ...result, key: refreshKeyFor(key), modelKey: key });
@@ -237,7 +259,8 @@ export class ModelLibrary {
     const sourceName = this.resolveSourceName(name, childName);
     const source = this.source(name, childName);
     if (!source) return null;
-    const clone = source.clone(true);
+    const needsSkeletonClone = isAuthoredAgentKey(sourceName) && typeof this.skeletonClone === "function";
+    const clone = needsSkeletonClone ? this.skeletonClone(source) : source.clone(true);
     const faction = new THREE.Color(factionColor || 0xffffff);
     const mutedFaction = faction.clone().lerp(new THREE.Color(0x343936), 0.28);
     const authored = sourceName.startsWith("authored:");
@@ -272,6 +295,7 @@ export class ModelLibrary {
 
     clone.userData.moyoModelKey = sourceName;
     if (sourceName.startsWith("authored:building-")) fitAuthoredBuilding(clone, sourceName);
+    if (isAuthoredAgentKey(sourceName)) clone.userData.moyoAuthoredAgent = true;
     return clone;
   }
 }
