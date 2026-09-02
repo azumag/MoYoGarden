@@ -44,14 +44,18 @@ const app = await readFile("public/app.js", "utf8");
 const modelLibrary = await readFile("public/client/model-library.js", "utf8");
 const worldView = await readFile("public/client/world-view.js", "utf8");
 const terrain = await readFile("public/client/terrain.js", "utf8");
+const resources = await readFile("public/client/resources.js", "utf8");
+const structures = await readFile("public/client/structures.js", "utf8");
 const shared = await readFile("public/client/shared.js", "utf8");
 const quality = await readFile("public/client/quality.js", "utf8");
+const enhancer = await readFile("scripts/enhance-models.mjs", "utf8");
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const previewConfig = JSON.parse(await readFile("wrangler.pbr.jsonc", "utf8"));
-const combined = [boot, app, modelLibrary, worldView, terrain, shared, quality].join("\n");
+const combined = [boot, app, modelLibrary, worldView, terrain, resources, structures, shared, quality].join("\n");
 
-assert.equal(packageJson.version, "0.3.3");
+assert.equal(packageJson.version, "0.3.4");
 assert.equal(packageJson.dependencies.three, "0.185.1", "Three.js must be exactly pinned");
+assert.match(packageJson.scripts["generate:models"], /enhance-models\.mjs/);
 assert.match(packageJson.scripts["build:web"], /generate:models/);
 assert.match(packageJson.scripts["build:web"], /vendor:three/);
 assert.match(packageJson.scripts["build:web"], /check:client/);
@@ -59,11 +63,12 @@ assert.match(packageJson.scripts["deploy:pbr-preview"], /wrangler\.pbr\.jsonc/);
 
 assert.match(html, /type="importmap"/);
 assert.match(html, /"three"\s*:\s*"\/vendor\/three-r185\/build\/three\.module\.min\.js"/);
-assert.match(html, /src="\/boot\.js\?v=0\.3\.3"/);
+assert.match(html, /src="\/boot\.js\?v=0\.3\.4"/);
 assert.doesNotMatch(html, /type="module"\s+src="\/app\.js/);
 assert.match(html, /id="render-status"/);
 assert.match(html, /id="loading-progress"/);
 
+assert.match(boot, /VERSION\s*=\s*"0\.3\.4"/);
 assert.match(boot, /WATCHDOG_MS\s*=\s*12_000/);
 assert.match(boot, /moyo:pbr-ready/);
 assert.match(boot, /moyo:pbr-error/);
@@ -79,6 +84,7 @@ assert.match(app, /loadHighResolutionModels/);
 assert.match(app, /applyEnvelope\(\{ state: createDemoState\(\)/);
 assert.match(app, /setTimeout\(\(\) => \{ void loadHighResolutionModels\(\); \}, 80\)/);
 
+assert.match(modelLibrary, /MODEL_VERSION\s*=\s*"0\.3\.4"/);
 assert.match(modelLibrary, /import\("three\/addons\/loaders\/GLTFLoader\.js"\)/);
 assert.doesNotMatch(modelLibrary, /^import .*GLTFLoader/m);
 assert.match(modelLibrary, /AbortController/);
@@ -86,10 +92,13 @@ assert.match(modelLibrary, /Promise\.race/);
 assert.match(modelLibrary, /concurrency/);
 assert.match(modelLibrary, /validateGlb/);
 assert.match(modelLibrary, /moyoShared/);
+assert.match(modelLibrary, /mutedFaction/);
 assert.match(modelLibrary, /\/models\/settler\.glb\?v=/);
 
 assert.match(worldView, /import\("three\/addons\/environments\/RoomEnvironment\.js"\)/);
 assert.doesNotMatch(worldView, /^import .*RoomEnvironment/m);
+assert.match(worldView, /toneMappingExposure\s*=\s*1\.12/);
+assert.match(worldView, /AmbientLight/);
 assert.match(worldView, /shadowMap\.autoUpdate\s*=\s*false/);
 assert.match(worldView, /PCFShadowMap/);
 assert.match(worldView, /startEnhancements/);
@@ -99,10 +108,22 @@ assert.match(worldView, /addScaledVector\(forward,\s*dy\s*\*\s*amount\)/);
 assert.match(worldView, /environmentSize/);
 assert.match(terrain, /MeshPhysicalMaterial/);
 assert.match(terrain, /transmission:\s*0/);
+assert.match(terrain, /CircleGeometry\(radius/);
+assert.match(terrain, /pathMaterial/);
+assert.match(resources, /shouldRenderResource/);
+assert.match(resources, /isSettlementClearing/);
+assert.match(structures, /const base = structure\.type === "camp"/);
 assert.match(shared, /moyoShared/);
 assert.match(quality, /balanced/);
 assert.match(quality, /ultra/);
 assert.match(quality, /pixelRatioCap/);
+
+assert.match(enhancer, /encodePng/);
+assert.match(enhancer, /TEXCOORD_0/);
+assert.match(enhancer, /baseColorTexture/);
+assert.match(enhancer, /metallicRoughnessTexture/);
+assert.match(enhancer, /normalTexture/);
+assert.match(enhancer, /procedural PBR texture baker/);
 
 assert.equal(previewConfig.name, "moyo-garden-pbr-preview");
 assert.equal(previewConfig.workers_dev, true);
@@ -134,10 +155,23 @@ for (const name of Object.keys(expectedNodes)) {
   assert.equal(data.readUInt32LE(binaryHeaderOffset + 4), 0x004e4942, `${name} lacks a BIN chunk`);
   assert.equal(binaryHeaderOffset + 8 + binaryLength, data.length, `${name} BIN chunk length is invalid`);
   assert.equal(document.asset.version, "2.0");
+  assert.match(document.asset.generator, /procedural PBR texture baker/);
   assert.ok(document.materials.every((material) => material.pbrMetallicRoughness));
+  assert.ok(document.images?.length > 0, `${name} lacks embedded PBR images`);
+  assert.ok(document.textures?.length > 0, `${name} lacks embedded PBR textures`);
+  assert.ok(
+    document.materials.some((material) => material.pbrMetallicRoughness.baseColorTexture),
+    `${name} lacks base-color textures`,
+  );
+  assert.ok(document.materials.some((material) => material.normalTexture), `${name} lacks normal maps`);
+  for (const mesh of document.meshes) {
+    for (const primitive of mesh.primitives) {
+      assert.ok(Number.isInteger(primitive.attributes.TEXCOORD_0), `${name} mesh lacks TEXCOORD_0`);
+    }
+  }
   assert.equal(document.buffers[0].uri, undefined, `${name} must be self-contained`);
   const names = new Set(document.nodes.map((node) => node.name));
   for (const expected of expectedNodes[name]) assert.ok(names.has(expected), `${name} lacks ${expected}`);
 }
 
-console.log("Progressive PBR/glTF/LOD/shadow preview validation passed");
+console.log("Progressive textured PBR/glTF/LOD/shadow preview validation passed");
