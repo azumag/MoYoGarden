@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.8";
+  const VERSION = "0.3.9";
   const WATCHDOG_MS = 12_000;
   const STABLE_URL = "https://moyo.bluemoon.works/";
   const params = new URLSearchParams(location.search);
@@ -74,14 +74,25 @@
     document.head.append(link);
   };
   preload("/vendor/three-r185/build/three.module.min.js");
+  preload(`/client/sky-fix.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
-  setMessage("高解像度レンダラーを起動しています", "軽量表示の後、authored glTF・PBR・影を段階的に追加します");
-  const moduleScript = document.createElement("script");
-  moduleScript.type = "module";
-  moduleScript.src = `/app.js?v=${VERSION}`;
-  moduleScript.addEventListener("error", () => stableFallback("PBR module graph failed to load"), { once: true });
-  document.body.append(moduleScript);
+  const launch = async () => {
+    setMessage("高解像度レンダラーを起動しています", "軽量表示の後、authored glTF・PBR・影を段階的に追加します");
+    try {
+      await import(`/client/sky-fix.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: sky backdrop patch failed; continuing with base renderer", error);
+    }
+
+    const moduleScript = document.createElement("script");
+    moduleScript.type = "module";
+    moduleScript.src = `/app.js?v=${VERSION}`;
+    moduleScript.addEventListener("error", () => stableFallback("PBR module graph failed to load"), { once: true });
+    document.body.append(moduleScript);
+  };
+
+  void launch();
 
   setTimeout(() => {
     if (!ready) stableFallback(`startup watchdog exceeded ${WATCHDOG_MS}ms`);
