@@ -219,6 +219,7 @@ export const resourceMethods = {
     }
     this.naturalizeModel(high, tile, tile.resource.kind);
     this.naturalizeModel(medium, tile, tile.resource.kind);
+    if (this.quality.id === "balanced") setShadows(low, false, true);
     const lod = this.createLod(high, medium, low, authored ? [0, 16, 32] : [0, 13, 28]);
     lod.rotation.y = hash2(tile.x, tile.y, 99) * Math.PI * 2;
     lod.rotation.z = (hash2(tile.x, tile.y, 213) - 0.5) * 0.052;
