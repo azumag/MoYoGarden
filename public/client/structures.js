@@ -6,19 +6,29 @@ export const structureMethods = {
     const group = new THREE.Group();
     const wallColor = type === "workshop"
       ? 0x77756d
-      : type === "market" ? 0x8a5b2c : 0x76502a;
+      : type === "market" ? 0x96643a : type === "camp" ? 0x8a7251 : 0x76502a;
+    const foundation = new THREE.Mesh(
+      new THREE.BoxGeometry(1.35, 0.14, 1.1),
+      this.pbrMaterial(0x685f52, 0.97),
+    );
+    foundation.position.y = 0.07;
     const body = new THREE.Mesh(
-      new THREE.BoxGeometry(1.1, 0.8, 0.9),
-      this.pbrMaterial(wallColor, 0.88),
+      new THREE.BoxGeometry(1.18, 0.82, 0.92),
+      this.pbrMaterial(wallColor, 0.86),
     );
-    body.position.y = 0.4;
+    body.position.y = 0.52;
     const roof = new THREE.Mesh(
-      new THREE.ConeGeometry(0.88, 0.48, 4),
-      this.pbrMaterial(factionColor, 0.78),
+      new THREE.ConeGeometry(0.92, 0.5, 4),
+      this.pbrMaterial(factionColor, 0.74),
     );
-    roof.position.y = 1.02;
+    roof.position.y = 1.14;
     roof.rotation.y = Math.PI / 4;
-    group.add(body, roof);
+    const door = new THREE.Mesh(
+      new THREE.BoxGeometry(0.25, 0.46, 0.035),
+      this.pbrMaterial(0x4e3222, 0.9),
+    );
+    door.position.set(0, 0.35, 0.48);
+    group.add(foundation, body, roof, door);
     setShadows(group);
     return group;
   },
@@ -36,7 +46,7 @@ export const structureMethods = {
       detail: "mid",
     });
     const low = this.makeLowBuilding(structure.type, faction.color);
-    const lod = this.createLod(high, medium, low, [0, 18, 39]);
+    const lod = this.createLod(high, medium, low, [0, 20, 42]);
     lod.userData.structureId = structure.id;
     lod.rotation.y = hash2(structure.position.x, structure.position.y, 120) > 0.5
       ? 0
@@ -69,14 +79,15 @@ export const structureMethods = {
       const progress = active
         ? 1
         : clamp(structure.progress / Math.max(1, structure.requiredProgress), 0.08, 1);
-      entry.lod.scale.set(0.72, 0.72 * (0.25 + 0.75 * progress), 0.72);
+      const base = structure.type === "camp" ? 0.92 : 1.02;
+      entry.lod.scale.set(base, base * (0.28 + 0.72 * progress), base);
       for (const level of [entry.high, entry.medium, entry.low]) {
         level?.traverse?.((object) => {
           if (!object.isMesh) return;
           const materials = Array.isArray(object.material) ? object.material : [object.material];
           for (const material of materials) {
             material.transparent = !active;
-            material.opacity = active ? 1 : 0.48;
+            material.opacity = active ? 1 : 0.52;
             material.depthWrite = active;
           }
         });
