@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.6";
+  const VERSION = "0.3.7";
   const WATCHDOG_MS = 12_000;
   const STABLE_URL = "https://moyo.bluemoon.works/";
   const params = new URLSearchParams(location.search);
@@ -76,7 +76,7 @@
   preload("/vendor/three-r185/build/three.module.min.js");
   preload(`/app.js?v=${VERSION}`);
 
-  setMessage("高解像度レンダラーを起動しています", "まず軽量表示を開始し、glTFと影を後から追加します");
+  setMessage("高解像度レンダラーを起動しています", "軽量表示の後、authored glTF・PBR・影を段階的に追加します");
   const moduleScript = document.createElement("script");
   moduleScript.type = "module";
   moduleScript.src = `/app.js?v=${VERSION}`;
