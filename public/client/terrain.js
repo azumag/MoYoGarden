@@ -39,18 +39,23 @@ export const terrainMethods = {
     const stateTile = (x, y) => x >= 0 && y >= 0 && x < state.width && y < state.height
       ? state.tiles[y * state.width + x]
       : null;
+    const tileHeight = (tile) => {
+      if (!tile || tile.terrain === "water") return this.terrainHeight(tile);
+      if (Number.isFinite(tile.elevation)) return 0.015 + tile.elevation * 0.62;
+      return this.terrainHeight(tile);
+    };
 
     const cornerHeight = (vertexX, vertexY, fallbackTile) => {
       const samples = [];
       for (const dx of [-1, 0]) {
         for (const dy of [-1, 0]) {
           const tile = stateTile(vertexX + dx, vertexY + dy);
-          if (tile && tile.terrain !== "water") samples.push(this.terrainHeight(tile));
+          if (tile && tile.terrain !== "water") samples.push(tileHeight(tile));
         }
       }
       const base = samples.length > 0
         ? samples.reduce((sum, value) => sum + value, 0) / samples.length
-        : this.terrainHeight(fallbackTile);
+        : tileHeight(fallbackTile);
       const noise = (hash2(vertexX, vertexY, 501) - 0.5) * 0.055;
       return base + noise;
     };
