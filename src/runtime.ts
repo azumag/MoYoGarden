@@ -2,6 +2,7 @@ import {
   DEFAULT_SIMULATION_CONFIG,
   manhattanDistance,
   samePosition,
+  type Agent,
   type CommandReceipt,
   parseCommand,
   type SimulationConfig,
@@ -51,8 +52,34 @@ function nearestFoodTile(state: WorldState, position: { x: number; y: number }) 
     })[0];
 }
 
-function applyAutonomousNeeds(state: WorldState, commandedAgentIds: ReadonlySet<string>): Set<string> {
-  const fedAgents = new Set<string>();
+function localFoodDonor(
+  state: WorldState,
+  recipient: Agent,
+  commandedAgentIds: ReadonlySet<string>,
+): Agent | undefined {
+  return state.agents
+    .filter((candidate) =>
+      candidate.id !== recipient.id &&
+      candidate.factionId === recipient.factionId &&
+      candidate.autonomy &&
+      !commandedAgentIds.has(candidate.id) &&
+      candidate.task?.source !== "external" &&
+      candidate.energy > LOW_ENERGY_THRESHOLD &&
+      candidate.inventory.food > 1 &&
+      samePosition(candidate.position, recipient.position)
+    )
+    .sort((a, b) =>
+      b.inventory.food - a.inventory.food ||
+      b.energy - a.energy ||
+      a.id.localeCompare(b.id)
+    )[0];
+}
+
+function applyAutonomousNeeds(
+  state: WorldState,
+  commandedAgentIds: ReadonlySet<string>,
+): Map<string, string> {
+  const fedAgents = new Map<string, string>();
   for (const agent of state.agents) {
     if (
       !agent.autonomy ||
@@ -64,27 +91,35 @@ function applyAutonomousNeeds(state: WorldState, commandedAgentIds: ReadonlySet<
     }
 
     let ate = false;
+    let mealStatus = "resting after a meal";
     if (agent.inventory.food > 0) {
       agent.inventory.food -= 1;
       ate = true;
     } else {
-      const storage = nearestFoodStorage(state, agent.factionId, agent.position);
-      if (storage !== undefined && samePosition(storage.position, agent.position)) {
-        const faction = getFaction(state, agent.factionId);
-        if (faction !== undefined && faction.resources.food > 0) {
-          storage.storage.food -= 1;
-          faction.resources.food -= 1;
-          ate = true;
+      const donor = localFoodDonor(state, agent, commandedAgentIds);
+      if (donor !== undefined) {
+        donor.inventory.food -= 1;
+        ate = true;
+        mealStatus = `resting after ${donor.name} shared food`;
+      } else {
+        const storage = nearestFoodStorage(state, agent.factionId, agent.position);
+        if (storage !== undefined && samePosition(storage.position, agent.position)) {
+          const faction = getFaction(state, agent.factionId);
+          if (faction !== undefined && faction.resources.food > 0) {
+            storage.storage.food -= 1;
+            faction.resources.food -= 1;
+            ate = true;
+          }
+        } else if (storage !== undefined) {
+          agent.task = {
+            source: "autonomy",
+            issuedAtTick: state.tick,
+            type: "move",
+            target: { ...storage.position },
+          };
+          agent.status = "seeking stored food";
+          continue;
         }
-      } else if (storage !== undefined) {
-        agent.task = {
-          source: "autonomy",
-          issuedAtTick: state.tick,
-          type: "move",
-          target: { ...storage.position },
-        };
-        agent.status = "seeking stored food";
-        continue;
       }
     }
 
@@ -96,8 +131,8 @@ function applyAutonomousNeeds(state: WorldState, commandedAgentIds: ReadonlySet<
         type: "move",
         target: { ...agent.position },
       };
-      agent.status = "resting after a meal";
-      fedAgents.add(agent.id);
+      agent.status = mealStatus;
+      fedAgents.set(agent.id, mealStatus);
       continue;
     }
 
@@ -208,9 +243,9 @@ export class WorldRuntime {
     const commandedAgentIds = new Set(commands.map((command) => command.agentId));
     const fedAgents = applyAutonomousNeeds(this.#state, commandedAgentIds);
     const result = simulate(this.#state, commands, this.#simulationConfig);
-    for (const agentId of fedAgents) {
+    for (const [agentId, status] of fedAgents) {
       const agent = getAgent(result.state, agentId);
-      if (agent !== undefined) agent.status = "resting after a meal";
+      if (agent !== undefined) agent.status = status;
     }
     this.#state = result.state;
     const snapshot = this.snapshot();

@@ -71,3 +71,29 @@ test("low-energy autonomous agents eat carried food before resuming work", () =>
   assert.equal(rested.autonomy, true);
   assert.equal(rested.task, undefined);
 });
+
+test("hungry autonomous agents accept surplus food from a nearby ally", () => {
+  const state = createInitialWorld({ seed: 2027 });
+  const hungry = state.agents[0]; assert.ok(hungry);
+  const donor = state.agents[1]; assert.ok(donor);
+  assert.equal(hungry.factionId, donor.factionId);
+
+  hungry.energy = 10;
+  hungry.inventory.food = 0;
+  delete hungry.task;
+  donor.position = { ...hungry.position };
+  donor.energy = 90;
+  donor.inventory.food = 2;
+  delete donor.task;
+
+  const runtime = new WorldRuntime({ state });
+  const next = runtime.tick().state;
+  const rested = next.agents.find((entry) => entry.id === hungry.id); assert.ok(rested);
+  const sharedBy = next.agents.find((entry) => entry.id === donor.id); assert.ok(sharedBy);
+
+  assert.equal(rested.inventory.food, 0);
+  assert.equal(rested.energy, 45);
+  assert.equal(sharedBy.inventory.food, 1);
+  assert.equal(rested.status, `resting after ${donor.name} shared food`);
+  assert.equal(rested.task, undefined);
+});
