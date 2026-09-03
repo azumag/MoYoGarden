@@ -36,6 +36,14 @@ const JSON_HEADERS = {
   "access-control-allow-headers": "content-type,authorization,x-moyo-region",
 } as const;
 
+const IDLE_TICK_MULTIPLIER = 6;
+const MAX_IDLE_TICK_MS = 3_600_000;
+
+export function regionTickDelayMs(tickMs: number, websocketClients: number): number {
+  if (websocketClients > 0) return tickMs;
+  return Math.min(MAX_IDLE_TICK_MS, tickMs * IDLE_TICK_MULTIPLIER);
+}
+
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
   const headers = new Headers(JSON_HEADERS);
   if (extraHeaders !== undefined) {
@@ -222,8 +230,10 @@ export class RegionDurableObject {
     await this.ctx.storage.put("region", stored);
   }
 
-  private async scheduleNextTick(): Promise<void> {
-    await this.ctx.storage.setAlarm(Date.now() + this.tickMs);
+  private async scheduleNextTick(
+    delayMs = regionTickDelayMs(this.tickMs, this.ctx.getWebSockets().length),
+  ): Promise<void> {
+    await this.ctx.storage.setAlarm(Date.now() + delayMs);
   }
 
   private snapshotEnvelope() {
@@ -246,11 +256,12 @@ export class RegionDurableObject {
     }
   }
 
-  private websocketResponse(): Response {
+  private async websocketResponse(): Promise<Response> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [`region:${this.runtime.snapshot().regionId}`]);
+    if (!this.paused) await this.scheduleNextTick(this.tickMs);
     server.send(JSON.stringify(this.snapshotEnvelope()));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -275,6 +286,7 @@ export class RegionDurableObject {
 
     if (request.method === "GET" && path === "/api/health") {
       const state = this.runtime.snapshot();
+      const websocketClients = this.ctx.getWebSockets().length;
       return json({
         ok: true,
         service: "moyo-garden",
@@ -283,10 +295,12 @@ export class RegionDurableObject {
         revision: state.revision,
         paused: this.paused,
         tickMs: this.tickMs,
+        effectiveTickMs: regionTickDelayMs(this.tickMs, websocketClients),
+        tickMode: websocketClients > 0 ? "active" : "idle",
         agents: state.agents.length,
         structures: state.structures.length,
         pendingCommands: this.runtime.pendingCommands().length,
-        websocketClients: this.ctx.getWebSockets().length,
+        websocketClients,
         updatedAt: this.updatedAt,
       });
     }
