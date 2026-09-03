@@ -14,6 +14,7 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { simulate } from "./simulation.js";
+import { ensureWorldExtent } from "./world-scale.js";
 import {
   activeFactionStructures,
   createInitialWorld,
@@ -299,11 +300,17 @@ export class WorldRuntime {
   #simulationConfig: SimulationConfig;
 
   constructor(options: RuntimeOptions = {}) {
-    this.#state = options.state ?? createInitialWorld({
+    const initialState = options.state ?? createInitialWorld({
       ...(options.seed === undefined ? {} : { seed: options.seed }),
       ...(options.width === undefined ? {} : { width: options.width }),
       ...(options.height === undefined ? {} : { height: options.height }),
     });
+    const isLegacyDefault = initialState.width === 32 && initialState.height === 20;
+    const usesDefaultExtent = options.state === undefined
+      ? options.width === undefined && options.height === undefined
+      : isLegacyDefault;
+    if (usesDefaultExtent) ensureWorldExtent(initialState);
+    this.#state = initialState;
     this.#simulationConfig = options.simulationConfig ?? DEFAULT_SIMULATION_CONFIG;
     if (options.pendingCommands !== undefined) {
       this.#pendingCommands = structuredClone(options.pendingCommands);
