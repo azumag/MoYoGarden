@@ -34,6 +34,7 @@ export interface Tile {
   x: number;
   y: number;
   terrain: TerrainKind;
+  elevation?: number;
   resource?: ResourceDeposit;
 }
 
