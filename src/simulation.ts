@@ -16,6 +16,7 @@ import {
   type SimulationConfig,
   type Structure,
   type StructureType,
+  type Tile,
   type WorldCommand,
   type WorldEvent,
   type WorldState,
@@ -43,6 +44,45 @@ const NEIGHBORS: readonly GridPosition[] = [
   { x: 0, y: 1 },
   { x: -1, y: 0 },
 ];
+
+const WATER_MOISTURE_RADIUS = 4;
+
+export function surfaceMoistureAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+): number {
+  const tile = getTile(state, position);
+  if (tile === undefined) return 0;
+  if (tile.terrain === "water") return 1;
+
+  let waterInfluence = 0;
+  for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
+    for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
+      const distance = Math.abs(dx) + Math.abs(dy);
+      if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
+      const neighbor = getTile(state, { x: position.x + dx, y: position.y + dy });
+      if (neighbor?.terrain !== "water") continue;
+      waterInfluence = Math.max(
+        waterInfluence,
+        (WATER_MOISTURE_RADIUS + 1 - distance) / WATER_MOISTURE_RADIUS,
+      );
+    }
+  }
+
+  const vegetationCover =
+    tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
+      ? tile.resource.amount / tile.resource.maxAmount
+      : 0;
+  return Math.min(1, 0.08 + waterInfluence * 0.72 + vegetationCover * 0.16);
+}
+
+export function resourceRegrowthChance(state: WorldState, tile: Tile): number {
+  if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
+  const moisture = surfaceMoistureAt(state, tile);
+  return tile.resource.kind === "wood"
+    ? Math.min(0.32, 0.08 + moisture * 0.22)
+    : Math.min(0.34, 0.06 + moisture * 0.26);
+}
 
 function addEvent(
   state: WorldState,
@@ -606,7 +646,7 @@ function executeBuild(state: WorldState, agent: Agent, task: BuildTask): void {
     agent.status = `${structure.type} completed`;
     addEvent(state, {
       kind: "construction_completed",
-      message: `${agent.name} completed a ${structure.type} for ${agent.factionId}.`,
+      message: `${agent.name} completed a ${task.structureType} for ${agent.factionId}.`,
       agentId: agent.id,
       factionId: agent.factionId,
       position: { ...structure.position },
@@ -708,7 +748,7 @@ function executeTask(state: WorldState, agent: Agent): void {
 function regrowResources(state: WorldState, random: ReturnType<typeof createRandom>): void {
   for (const tile of state.tiles) {
     if (tile.resource === undefined || tile.resource.amount >= tile.resource.maxAmount) continue;
-    if (random.next() < 0.18) tile.resource.amount += 1;
+    if (random.next() < resourceRegrowthChance(state, tile)) tile.resource.amount += 1;
   }
 }
 
