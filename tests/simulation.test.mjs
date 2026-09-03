@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyInventory } from "../dist-ts/src/protocol.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
-import { simulate } from "../dist-ts/src/simulation.js";
+import { resourceRegrowthChance, simulate, surfaceMoistureAt } from "../dist-ts/src/simulation.js";
 import { createInitialWorld, getPerception, validateWorldState } from "../dist-ts/src/world.js";
 
 function advance(initial, ticks) {
@@ -13,6 +13,35 @@ function advance(initial, ticks) {
 
 test("same seed produces the same world", () => {
   assert.deepEqual(advance(createInitialWorld({ seed: 123456 }), 160), advance(createInitialWorld({ seed: 123456 }), 160));
+});
+
+test("organic resource regrowth responds to water and vegetation cover", () => {
+  const state = createInitialWorld({ seed: 3030, width: 16, height: 12 });
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") tile.terrain = "plain";
+  }
+
+  const target = state.tiles.find((tile) => tile.x === 8 && tile.y === 6); assert.ok(target);
+  target.terrain = "forest";
+  target.resource = { kind: "wood", amount: 10, maxAmount: 10 };
+  const lushMoisture = surfaceMoistureAt(state, target);
+
+  target.resource.amount = 0;
+  const degradedMoisture = surfaceMoistureAt(state, target);
+  const dryRegrowth = resourceRegrowthChance(state, target);
+  assert.ok(lushMoisture > degradedMoisture);
+
+  const water = state.tiles.find((tile) => tile.x === 8 && tile.y === 5); assert.ok(water);
+  water.terrain = "water";
+  delete water.resource;
+  const wetMoisture = surfaceMoistureAt(state, target);
+  const wetRegrowth = resourceRegrowthChance(state, target);
+  assert.ok(wetMoisture > degradedMoisture);
+  assert.ok(wetRegrowth > dryRegrowth);
+
+  target.terrain = "hill";
+  target.resource = { kind: "stone", amount: 0, maxAmount: 10 };
+  assert.equal(resourceRegrowthChance(state, target), 0.18);
 });
 
 test("autonomous factions complete the settlement loop", () => {
