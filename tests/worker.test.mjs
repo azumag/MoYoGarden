@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RegionDurableObject } from "../dist-ts/src/worker.js";
+import { RegionDurableObject, regionTickDelayMs } from "../dist-ts/src/worker.js";
 class MemoryStorage {
   constructor(){this.values=new Map();this.alarm=null;}
   async get(key){return structuredClone(this.values.get(key));}
@@ -13,7 +13,9 @@ class MemoryState { constructor(storage=new MemoryStorage()){this.storage=storag
 const env={WORLD_SEED:"424242",TICK_MS:"10000",OPEN_COMMANDS:"false",COMMAND_TOKEN:"command-secret",ADMIN_TOKEN:"admin-secret"};
 function request(path,init={}){const headers=new Headers(init.headers);headers.set("x-moyo-region-internal","garden-test");return new Request(`https://moyo.example${path}`,{...init,headers});}
 
-test("new region persists and schedules an alarm",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;assert.equal(ctx.storage.alarm,null);const response=await object.fetch(request("/api/world/snapshot"));const state=await response.json();assert.equal(state.regionId,"garden-test");assert.equal(state.agents.length,12);assert.ok(Number.isFinite(ctx.storage.alarm));assert.equal(ctx.storage.values.get("region").state.regionId,"garden-test");});
+test("inactive regions use a slower bounded tick cadence",()=>{assert.equal(regionTickDelayMs(10000,0),60000);assert.equal(regionTickDelayMs(10000,1),10000);assert.equal(regionTickDelayMs(1000000,0),3600000);});
+
+test("new region persists and schedules an alarm",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;assert.equal(ctx.storage.alarm,null);const before=Date.now();const response=await object.fetch(request("/api/world/snapshot"));const state=await response.json();assert.equal(state.regionId,"garden-test");assert.equal(state.agents.length,12);assert.ok(Number.isFinite(ctx.storage.alarm));assert.ok(ctx.storage.alarm>=before+59000);assert.equal(ctx.storage.values.get("region").state.regionId,"garden-test");const health=await (await object.fetch(request("/api/health"))).json();assert.equal(health.tickMode,"idle");assert.equal(health.effectiveTickMs,60000);});
 
 test("command and admin tokens are separated",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const snapshot=await (await object.fetch(request("/api/world/snapshot"))).json();const agentId=snapshot.agents[0].id;const body=JSON.stringify({id:"worker-goal",type:"set_goal",goal:"Map the western water"});
   assert.equal((await object.fetch(request(`/api/agents/${agentId}/commands`,{method:"POST",headers:{"content-type":"application/json"},body}))).status,401);
