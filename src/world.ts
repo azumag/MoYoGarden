@@ -59,6 +59,51 @@ const ROLE_ORDER: readonly AgentRole[] = [
   "forager",
 ];
 
+const ELEVATION_WATER_RADIUS = 5;
+
+function seededUnit(seed: number, salt: number): number {
+  let value = (seed ^ salt) >>> 0;
+  value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+  value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+  value = (value ^ (value >>> 16)) >>> 0;
+  return value / 0xffff_ffff;
+}
+
+export function ensureTileElevations(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
+): void {
+  if (state.tiles.every((tile) => Number.isFinite(tile.elevation))) return;
+
+  const waterTiles = state.tiles.filter((tile) => tile.terrain === "water");
+  const phaseX = seededUnit(state.seed, 0x1f123bb5) * Math.PI * 2;
+  const phaseY = seededUnit(state.seed, 0x5a17c9e3) * Math.PI * 2;
+  const phaseDiagonal = seededUnit(state.seed, 0x7139a2d1) * Math.PI * 2;
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") {
+      tile.elevation = 0;
+      continue;
+    }
+
+    let nearestWater = ELEVATION_WATER_RADIUS;
+    for (const water of waterTiles) {
+      nearestWater = Math.min(nearestWater, manhattanDistance(tile, water));
+      if (nearestWater <= 1) break;
+    }
+
+    const nx = (tile.x + 0.5) / Math.max(1, state.width);
+    const ny = (tile.y + 0.5) / Math.max(1, state.height);
+    const broad = (
+      Math.sin(nx * Math.PI * 2 + phaseX) +
+      Math.cos(ny * Math.PI * 2 + phaseY)
+    ) * 0.5;
+    const diagonal = Math.sin((nx + ny) * Math.PI * 3 + phaseDiagonal);
+    const waterRise = Math.min(1, nearestWater / ELEVATION_WATER_RADIUS);
+    const elevation = 0.3 + broad * 0.13 + diagonal * 0.07 + waterRise * 0.22;
+    tile.elevation = Math.max(0.03, Math.min(0.95, elevation));
+  }
+}
+
 export function tileIndex(state: Pick<WorldState, "width">, x: number, y: number): number {
   return y * state.width + x;
 }
@@ -269,6 +314,8 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
     }
   }
 
+  ensureTileElevations({ seed, width, height, tiles });
+
   const initialEvent: WorldEvent = {
     id: "event-0-world-started",
     tick: 0,
@@ -352,6 +399,14 @@ export function validateWorldState(state: WorldState): string[] {
   const errors: string[] = [];
   if (state.tiles.length !== state.width * state.height) {
     errors.push("tile count does not match width * height");
+  }
+  for (const tile of state.tiles) {
+    if (
+      tile.elevation !== undefined &&
+      (!Number.isFinite(tile.elevation) || tile.elevation < 0 || tile.elevation > 1)
+    ) {
+      errors.push(`invalid tile elevation: ${tile.x},${tile.y}`);
+    }
   }
   const ids = new Set<string>();
   for (const agent of state.agents) {
