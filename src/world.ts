@@ -72,7 +72,7 @@ function seededUnit(seed: number, salt: number): number {
 export function ensureTileElevations(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
 ): void {
-  if (state.tiles.every((tile) => Number.isFinite(tile.elevation))) return;
+  if (state.tiles.every((tile) => Number.isFinite(tile.elevation ?? Number.NaN))) return;
 
   const waterTiles = state.tiles.filter((tile) => tile.terrain === "water");
   const phaseX = seededUnit(state.seed, 0x1f123bb5) * Math.PI * 2;
@@ -401,9 +401,10 @@ export function validateWorldState(state: WorldState): string[] {
     errors.push("tile count does not match width * height");
   }
   for (const tile of state.tiles) {
+    const elevation = tile.elevation;
     if (
-      tile.elevation !== undefined &&
-      (!Number.isFinite(tile.elevation) || tile.elevation < 0 || tile.elevation > 1)
+      elevation !== undefined &&
+      (!Number.isFinite(elevation) || elevation < 0 || elevation > 1)
     ) {
       errors.push(`invalid tile elevation: ${tile.x},${tile.y}`);
     }
