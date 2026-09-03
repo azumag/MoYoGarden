@@ -126,3 +126,30 @@ test("hungry autonomous agents accept surplus food from a nearby ally", () => {
   assert.equal(rested.status, `resting after ${donor.name} shared food`);
   assert.equal(rested.task, undefined);
 });
+
+test("prolonged starvation can reduce a faction's population", () => {
+  const state = createInitialWorld({ seed: 2028 });
+  const doomed = state.agents[0]; assert.ok(doomed);
+  const initialPopulation = state.agents.length;
+
+  for (const agent of state.agents) agent.inventory.food = 0;
+  for (const faction of state.factions) faction.resources.food = 0;
+  for (const tile of state.tiles) {
+    if (tile.resource?.kind === "food") tile.resource.amount = 0;
+  }
+  for (const structure of state.structures) structure.storage.food = 0;
+
+  doomed.energy = 0;
+  doomed.hp = 2;
+  delete doomed.task;
+
+  const runtime = new WorldRuntime({ state });
+  const first = runtime.tick().state;
+  const starving = first.agents.find((entry) => entry.id === doomed.id); assert.ok(starving);
+  assert.equal(starving.hp, 1);
+  assert.match(starving.status, /^starving;/);
+
+  const second = runtime.tick().state;
+  assert.equal(second.agents.some((entry) => entry.id === doomed.id), false);
+  assert.equal(second.agents.length, initialPopulation - 1);
+});
