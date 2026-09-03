@@ -41,8 +41,15 @@ function environmentalMoisture(stateTile, tile) {
     ? tile.resource.amount / tile.resource.maxAmount
     : 0;
   const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
-  const lowlandRetention = (1 - elevation) * 0.12;
-  return Math.min(1, 0.05 + lowlandRetention + waterInfluence * 0.7 + vegetationCover * 0.16);
+  const drainage = Number.isFinite(tile.drainage)
+    ? Math.max(0, Math.min(1, tile.drainage))
+    : 0;
+  const lowlandRetention = (1 - elevation) * 0.09;
+  const runoffRetention = drainage * 0.14;
+  return Math.min(
+    1,
+    0.04 + lowlandRetention + runoffRetention + waterInfluence * 0.64 + vegetationCover * 0.16,
+  );
 }
 
 function environmentalTerrainColor(stateTile, tile) {
