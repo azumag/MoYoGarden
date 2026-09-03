@@ -60,6 +60,9 @@ const HYDROLOGY_NEIGHBORS: readonly GridPosition[] = [
 
 const WATER_MOISTURE_RADIUS = 4;
 const HYDROLOGY_EPSILON = 1e-6;
+const TERRAIN_EVOLUTION_INTERVAL = 120;
+const EROSION_SLOPE_SCALE = 0.18;
+const MAX_EROSION_TRANSFER = 0.001;
 
 function tileElevation(tile: Tile | undefined): number | undefined {
   const elevation = tile?.elevation;
@@ -144,6 +147,37 @@ export function drainageAt(
   return buildDrainageMap(state).get(positionKey(position)) ?? 0;
 }
 
+export function terrainErosionPressureAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+): number {
+  const tile = getTile(state, position);
+  const elevation = tileElevation(tile);
+  if (tile === undefined || tile.terrain === "water" || elevation === undefined) return 0;
+  const targetPosition = tile.flowTo ?? flowTargetAt(state, position);
+  if (targetPosition === undefined) return 0;
+  const target = getTile(state, targetPosition);
+  const targetElevation = tileElevation(target);
+  if (target === undefined || targetElevation === undefined) return 0;
+
+  const dx = Math.abs(targetPosition.x - position.x);
+  const dy = Math.abs(targetPosition.y - position.y);
+  const distance = dx !== 0 && dy !== 0 ? Math.SQRT2 : 1;
+  const slope = Math.max(0, (elevation - targetElevation) / distance);
+  if (slope <= HYDROLOGY_EPSILON) return 0;
+
+  const vegetationCover =
+    tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
+      ? Math.max(0, Math.min(1, tile.resource.amount / tile.resource.maxAmount))
+      : 0;
+  const exposure = 1 - vegetationCover * 0.8;
+  const drainage = drainageAt(state, position);
+  return Math.max(
+    0,
+    Math.min(1, drainage * Math.min(1, slope / EROSION_SLOPE_SCALE) * exposure),
+  );
+}
+
 export function updateTileHydrology(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
 ): void {
@@ -155,6 +189,53 @@ export function updateTileHydrology(
   }
   const drainage = buildDrainageMap(state);
   for (const tile of state.tiles) tile.drainage = drainage.get(positionKey(tile)) ?? 0;
+  for (const tile of state.tiles) tile.erosionPressure = terrainErosionPressureAt(state, tile);
+}
+
+export function applyTerrainErosion(state: WorldState): number {
+  const elevationDelta = new Map<string, number>();
+  let moved = 0;
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || tile.flowTo === undefined) continue;
+    const sourceElevation = tileElevation(tile);
+    const target = getTile(state, tile.flowTo);
+    const targetElevation = tileElevation(target);
+    if (sourceElevation === undefined || target === undefined || targetElevation === undefined) continue;
+
+    const pressure = Number.isFinite(tile.erosionPressure ?? Number.NaN)
+      ? Math.max(0, Math.min(1, tile.erosionPressure ?? 0))
+      : terrainErosionPressureAt(state, tile);
+    if (pressure <= 0) continue;
+
+    const drop = sourceElevation - targetElevation;
+    if (drop <= HYDROLOGY_EPSILON) continue;
+    const transfer = Math.min(
+      MAX_EROSION_TRANSFER * pressure,
+      drop * 0.2,
+      Math.max(0, sourceElevation - 0.01),
+    );
+    if (transfer <= 0) continue;
+
+    const sourceKey = positionKey(tile);
+    elevationDelta.set(sourceKey, (elevationDelta.get(sourceKey) ?? 0) - transfer);
+    if (target.terrain !== "water") {
+      const targetKey = positionKey(target);
+      elevationDelta.set(targetKey, (elevationDelta.get(targetKey) ?? 0) + transfer);
+    }
+    moved += transfer;
+  }
+
+  if (moved <= 0) return 0;
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") continue;
+    const elevation = tileElevation(tile);
+    const delta = elevationDelta.get(positionKey(tile));
+    if (elevation === undefined || delta === undefined) continue;
+    tile.elevation = Math.max(0.01, Math.min(0.99, elevation + delta));
+  }
+  updateTileHydrology(state);
+  return moved;
 }
 
 export function surfaceMoistureAt(
@@ -887,6 +968,7 @@ export function simulate(
     executeTask(state, agent);
   }
 
+  if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) applyTerrainErosion(state);
   if (state.tick % config.resourceRegrowthInterval === 0) regrowResources(state, random);
   state.rngState = random.state();
   state.events = state.events.slice(-config.eventLimit);

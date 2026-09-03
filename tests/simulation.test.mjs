@@ -3,11 +3,13 @@ import test from "node:test";
 import { emptyInventory } from "../dist-ts/src/protocol.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import {
+  applyTerrainErosion,
   drainageAt,
   flowTargetAt,
   resourceRegrowthChance,
   simulate,
   surfaceMoistureAt,
+  terrainErosionPressureAt,
   updateTileHydrology,
 } from "../dist-ts/src/simulation.js";
 import { createInitialWorld, getPerception, validateWorldState } from "../dist-ts/src/world.js";
@@ -44,10 +46,12 @@ test("continuous elevation is observable, backfilled, and affects lowland moistu
     delete tile.elevation;
     delete tile.flowTo;
     delete tile.drainage;
+    delete tile.erosionPressure;
   }
   const upgraded = simulate(legacy).state;
   assert.ok(upgraded.tiles.every((tile) => Number.isFinite(tile.elevation)));
   assert.ok(upgraded.tiles.every((tile) => Number.isFinite(tile.drainage) && tile.drainage >= 0 && tile.drainage <= 1));
+  assert.ok(upgraded.tiles.every((tile) => Number.isFinite(tile.erosionPressure) && tile.erosionPressure >= 0 && tile.erosionPressure <= 1));
 });
 
 test("downhill flow accumulates drainage and feeds organic regrowth", () => {
@@ -58,6 +62,7 @@ test("downhill flow accumulates drainage and feeds organic regrowth", () => {
     delete tile.resource;
     delete tile.flowTo;
     delete tile.drainage;
+    delete tile.erosionPressure;
   }
 
   const y = 6;
@@ -85,7 +90,45 @@ test("downhill flow accumulates drainage and feeds organic regrowth", () => {
   const perception = getPerception(state, observer.id, 12);
   const visibleChannel = perception.visibleTiles.find((tile) => tile.x === channel.x && tile.y === channel.y); assert.ok(visibleChannel);
   assert.equal(visibleChannel.drainage, channel.drainage);
+  assert.equal(visibleChannel.erosionPressure, channel.erosionPressure);
   assert.deepEqual(visibleChannel.flowTo, channel.flowTo);
+});
+
+test("drainage-driven erosion moves sediment downhill while vegetation protects soil", () => {
+  const state = createInitialWorld({ seed: 3034, width: 16, height: 12 });
+  for (const tile of state.tiles) {
+    tile.terrain = "plain";
+    tile.elevation = 0.4;
+    delete tile.resource;
+    delete tile.flowTo;
+    tile.drainage = 0;
+    tile.erosionPressure = 0;
+  }
+
+  const source = state.tiles.find((tile) => tile.x === 7 && tile.y === 6); assert.ok(source);
+  const target = state.tiles.find((tile) => tile.x === 8 && tile.y === 6); assert.ok(target);
+  source.elevation = 0.6;
+  target.elevation = 0.4;
+  source.flowTo = { x: target.x, y: target.y };
+  source.drainage = 1;
+  source.resource = { kind: "wood", amount: 0, maxAmount: 10 };
+
+  const barePressure = terrainErosionPressureAt(state, source);
+  source.resource.amount = 10;
+  const protectedPressure = terrainErosionPressureAt(state, source);
+  assert.ok(barePressure > protectedPressure);
+
+  source.resource.amount = 0;
+  source.erosionPressure = barePressure;
+  const sourceBefore = source.elevation;
+  const targetBefore = target.elevation;
+  const pairBefore = sourceBefore + targetBefore;
+  const moved = applyTerrainErosion(state);
+
+  assert.ok(moved > 0);
+  assert.ok(source.elevation < sourceBefore);
+  assert.ok(target.elevation > targetBefore);
+  assert.ok(Math.abs((source.elevation + target.elevation) - pairBefore) < 1e-12);
 });
 
 test("organic resource regrowth responds to water and vegetation cover", () => {
