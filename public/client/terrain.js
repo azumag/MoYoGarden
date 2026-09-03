@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { TERRAIN_COLORS, disposeObject, hash2 } from "./shared.js";
 
 const WATER_MOISTURE_RADIUS = 4;
+const STREAM_DRAINAGE_THRESHOLD = 0.58;
 const DRY_GROUND = new THREE.Color(0xa18c68);
 const MOIST_GROUND = new THREE.Color(0x617b58);
 const UPLAND_GROUND = new THREE.Color(0x8d8b78);
@@ -287,6 +288,62 @@ export const terrainMethods = {
         strip.receiveShadow = true;
         detail.add(strip);
       }
+    }
+
+    const streamPositions = [];
+    const streamIndices = [];
+    const appendStreamSegment = (start, end, width) => {
+      const dx = end.x - start.x;
+      const dz = end.z - start.z;
+      const length = Math.hypot(dx, dz);
+      if (length <= 0.001) return;
+      const halfWidth = width * 0.5;
+      const px = -dz / length * halfWidth;
+      const pz = dx / length * halfWidth;
+      const base = streamPositions.length / 3;
+      streamPositions.push(
+        start.x + px, start.y, start.z + pz,
+        start.x - px, start.y, start.z - pz,
+        end.x - px, end.y, end.z - pz,
+        end.x + px, end.y, end.z + pz,
+      );
+      streamIndices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    };
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water" || !tile.flowTo || !Number.isFinite(tile.drainage)) continue;
+      const strength = clamp01((tile.drainage - STREAM_DRAINAGE_THRESHOLD) / (1 - STREAM_DRAINAGE_THRESHOLD));
+      if (strength <= 0) continue;
+      const target = stateTile(tile.flowTo.x, tile.flowTo.y);
+      if (!target) continue;
+      const start = this.worldPosition(tile, 0);
+      const end = this.worldPosition(target, 0);
+      start.y = (surfaceHeights.get(`${tile.x}:${tile.y}`) ?? this.terrainHeight(tile)) + 0.036;
+      end.y = target.terrain === "water"
+        ? this.terrainHeight(target) + 0.045
+        : (surfaceHeights.get(`${target.x}:${target.y}`) ?? this.terrainHeight(target)) + 0.036;
+      appendStreamSegment(start, end, 0.04 + strength * 0.13);
+    }
+    if (streamPositions.length > 0) {
+      const streamGeometry = new THREE.BufferGeometry();
+      streamGeometry.setAttribute("position", new THREE.Float32BufferAttribute(streamPositions, 3));
+      streamGeometry.setIndex(streamIndices);
+      streamGeometry.computeVertexNormals();
+      const streamMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0x5b91a0,
+        roughness: 0.32,
+        metalness: 0.01,
+        transparent: true,
+        opacity: 0.56,
+        clearcoat: 0.42,
+        clearcoatRoughness: 0.28,
+        envMapIntensity: 0.78,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const streams = new THREE.Mesh(streamGeometry, streamMaterial);
+      streams.receiveShadow = false;
+      streams.renderOrder = 3;
+      detail.add(streams);
     }
 
     const clearingMaterial = new THREE.MeshStandardMaterial({
