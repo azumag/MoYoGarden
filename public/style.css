@@ -145,5 +145,18 @@ kbd { color: var(--text); background: rgba(255,255,255,.07); border: 1px solid v
   .sidebar.is-collapsed section { display: none; }
   .sidebar section { min-width: 240px; border-bottom: 0; border-right: 1px solid var(--line); padding-right: 16px; }
   .control-panel { left: 12px; bottom: 12px; right: 12px; overflow-x: auto; }
-  .world-status { display: none; }
+  .world-status {
+    display: flex;
+    top: 12px;
+    left: auto;
+    right: 12px;
+    bottom: auto;
+    width: auto;
+    padding: 8px 10px;
+    gap: 7px;
+    overflow: visible;
+    font-size: 10px;
+  }
+  .world-status > .divider,
+  .world-status > span:not(.connection-dot) { display: none; }
 }
