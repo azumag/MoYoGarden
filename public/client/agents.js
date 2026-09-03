@@ -163,6 +163,22 @@ function fitAuthoredAgent(root, targetHeight = 1.85) {
   return root;
 }
 
+function decorateAuthoredAgent(root, agent, factionColor) {
+  const fitted = fitAuthoredAgent(root);
+  if (!fitted) return null;
+  const wrapper = new THREE.Group();
+  wrapper.name = "MoyoAuthoredAgentRoot";
+  wrapper.userData.moyoAuthoredAgent = true;
+  wrapper.add(fitted);
+
+  const roleGear = new THREE.Group();
+  roleGear.name = "MoyoAuthoredRoleGear";
+  addRoleHeadgear(roleGear, agent.role, factionPalette(factionColor), "high");
+  setShadows(roleGear);
+  wrapper.add(roleGear);
+  return wrapper;
+}
+
 function findClip(clips, patterns) {
   for (const pattern of patterns) {
     const clip = clips.find((value) => pattern.test(value.name || ""));
@@ -249,7 +265,7 @@ export const agentMethods = {
       detail: "high",
     });
     const high = authoredHigh
-      ? fitAuthoredAgent(authoredHigh)
+      ? decorateAuthoredAgent(authoredHigh, agent, faction.color)
       : decorateAgentModel(this.models.clone("settler", {
         factionColor: faction.color,
         role: agent.role,
