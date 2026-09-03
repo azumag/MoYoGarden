@@ -38,6 +38,10 @@ function authoredRockKey(tile) {
   return "authored:rock-large";
 }
 
+function resourceAbundance(tile) {
+  return clamp(tile.resource.amount / Math.max(1, tile.resource.maxAmount), 0, 1);
+}
+
 export const resourceMethods = {
   makeLowTree(tile = { x: 0, y: 0 }) {
     const group = new THREE.Group();
@@ -138,9 +142,10 @@ export const resourceMethods = {
 
   shouldRenderResource(tile, state) {
     if (this.isSettlementClearing(tile, state)) return false;
-    const ratio = clamp(tile.resource.amount / Math.max(1, tile.resource.maxAmount), 0, 1);
-    const threshold = this.resourceVisibilityThreshold(tile.resource.kind)
-      + (ratio > 0.88 ? 0.055 : 0);
+    const ratio = resourceAbundance(tile);
+    const abundanceVisibility = 0.3 + Math.sqrt(ratio) * 0.7;
+    const richBonus = ratio > 0.88 ? 0.055 : 0;
+    const threshold = this.resourceVisibilityThreshold(tile.resource.kind) * abundanceVisibility + richBonus;
     return hash2(tile.x, tile.y, 207) < Math.min(0.62, threshold);
   },
 
@@ -241,7 +246,8 @@ export const resourceMethods = {
         entry = this.createResource(tile);
         this.resourceObjects.set(key, entry);
       }
-      const density = clamp(tile.resource.amount / Math.max(1, tile.resource.maxAmount), 0.22, 1);
+      const abundance = resourceAbundance(tile);
+      const density = clamp(abundance, 0.05, 1);
       const jitterX = (hash2(tile.x, tile.y, 214) - 0.5) * 0.48;
       const jitterZ = (hash2(tile.x, tile.y, 215) - 0.5) * 0.48;
       entry.lod.position.copy(this.worldPosition(tile, 0));
@@ -249,7 +255,7 @@ export const resourceMethods = {
       entry.lod.position.z += jitterZ;
 
       const variation = 0.86 + hash2(tile.x, tile.y, 216) * 0.25;
-      const densityScale = 0.78 + density * 0.2;
+      const densityScale = 0.5 + Math.sqrt(density) * 0.5;
       const authoredScale = entry.authored ? 0.94 : 1;
       if (tile.resource.kind === "wood") {
         const style = Math.floor(hash2(tile.x, tile.y, 603) * 3);
