@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import { TERRAIN_COLORS, disposeObject, hash2 } from "./shared.js";
 
+const WATER_MOISTURE_RADIUS = 4;
+const DRY_GROUND = new THREE.Color(0xa18c68);
+const MOIST_GROUND = new THREE.Color(0x617b58);
+const UPLAND_GROUND = new THREE.Color(0x8d8b78);
+
 function quadNormal(corners) {
   const a = new THREE.Vector3(
     corners[3][0] - corners[0][0],
@@ -13,6 +18,40 @@ function quadNormal(corners) {
     corners[1][2] - corners[0][2],
   );
   return a.cross(b).normalize().toArray();
+}
+
+function environmentalMoisture(stateTile, tile) {
+  if (!tile) return 0;
+  if (tile.terrain === "water") return 1;
+
+  let waterInfluence = 0;
+  for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
+    for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
+      const distance = Math.abs(dx) + Math.abs(dy);
+      if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
+      if (stateTile(tile.x + dx, tile.y + dy)?.terrain !== "water") continue;
+      waterInfluence = Math.max(
+        waterInfluence,
+        (WATER_MOISTURE_RADIUS + 1 - distance) / WATER_MOISTURE_RADIUS,
+      );
+    }
+  }
+
+  const vegetationCover = tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
+    ? tile.resource.amount / tile.resource.maxAmount
+    : 0;
+  const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
+  const lowlandRetention = (1 - elevation) * 0.12;
+  return Math.min(1, 0.05 + lowlandRetention + waterInfluence * 0.7 + vegetationCover * 0.16);
+}
+
+function environmentalTerrainColor(stateTile, tile) {
+  const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
+  const moisture = environmentalMoisture(stateTile, tile);
+  const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
+  const environment = DRY_GROUND.clone().lerp(MOIST_GROUND, moisture);
+  environment.lerp(UPLAND_GROUND, Math.max(0, elevation - 0.52) * 0.5);
+  return color.lerp(environment, 0.34);
 }
 
 export const terrainMethods = {
@@ -71,13 +110,14 @@ export const terrainMethods = {
       const h01 = cornerHeight(tile.x, tile.y + 1, tile);
       topCorners.set(`${tile.x}:${tile.y}`, { h00, h10, h11, h01 });
 
-      const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
+      const color = environmentalTerrainColor(stateTile, tile);
       const averageHeight = (h00 + h10 + h11 + h01) * 0.25;
       surfaceHeights.set(`${tile.x}:${tile.y}`, averageHeight);
+      const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
       color.offsetHSL(
         (hash2(tile.x, tile.y, 1) - 0.5) * 0.018,
         tile.terrain === "forest" ? 0.018 : 0,
-        (hash2(tile.x, tile.y, 2) - 0.5) * 0.035 + averageHeight * 0.035,
+        (hash2(tile.x, tile.y, 2) - 0.5) * 0.035 + (elevation - 0.5) * 0.026,
       );
       const corners = [
         [x, h00, z],
@@ -101,7 +141,7 @@ export const terrainMethods = {
       }
       const heights = topCorners.get(`${tile.x}:${tile.y}`);
       if (!heights) continue;
-      const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone().multiplyScalar(0.72);
+      const color = environmentalTerrainColor(stateTile, tile).multiplyScalar(0.72);
       for (const [dx, dy, edge] of [
         [1, 0, "east"], [-1, 0, "west"], [0, 1, "south"], [0, -1, "north"],
       ]) {
