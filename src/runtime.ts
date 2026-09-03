@@ -33,6 +33,7 @@ export type SnapshotListener = (state: WorldState, receipts: readonly CommandRec
 
 const LOW_ENERGY_THRESHOLD = 18;
 const FOOD_ENERGY_RECOVERY = 35;
+const STARVATION_DAMAGE = 1;
 
 function nearestFoodStorage(state: WorldState, factionId: string, position: { x: number; y: number }) {
   return activeFactionStructures(state, factionId)
@@ -155,6 +156,23 @@ function applyAutonomousNeeds(
   return fedAgents;
 }
 
+function applyStarvation(state: WorldState, starvingAgentIds: ReadonlySet<string>): void {
+  const deadAgentIds = new Set<string>();
+  for (const agentId of starvingAgentIds) {
+    const agent = getAgent(state, agentId);
+    if (agent === undefined) continue;
+    agent.hp = Math.max(0, agent.hp - STARVATION_DAMAGE);
+    if (agent.hp === 0) {
+      deadAgentIds.add(agent.id);
+      continue;
+    }
+    agent.status = agent.status.startsWith("starving") ? agent.status : `starving; ${agent.status}`;
+  }
+  if (deadAgentIds.size > 0) {
+    state.agents = state.agents.filter((agent) => !deadAgentIds.has(agent.id));
+  }
+}
+
 export class WorldRuntime {
   #state: WorldState;
   #pendingCommands: WorldCommand[] = [];
@@ -242,11 +260,17 @@ export class WorldRuntime {
     for (const command of commands) this.#queuedCommandIds.delete(command.id);
     const commandedAgentIds = new Set(commands.map((command) => command.agentId));
     const fedAgents = applyAutonomousNeeds(this.#state, commandedAgentIds);
+    const starvingAgentIds = new Set(
+      this.#state.agents
+        .filter((agent) => agent.autonomy && agent.energy <= 0 && !fedAgents.has(agent.id))
+        .map((agent) => agent.id),
+    );
     const result = simulate(this.#state, commands, this.#simulationConfig);
     for (const [agentId, status] of fedAgents) {
       const agent = getAgent(result.state, agentId);
       if (agent !== undefined) agent.status = status;
     }
+    applyStarvation(result.state, starvingAgentIds);
     this.#state = result.state;
     const snapshot = this.snapshot();
     for (const listener of this.#listeners) listener(snapshot, result.receipts);
