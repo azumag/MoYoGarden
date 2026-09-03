@@ -1,10 +1,14 @@
 import {
   DEFAULT_SIMULATION_CONFIG,
+  emptyInventory,
   manhattanDistance,
   samePosition,
   type Agent,
+  type AgentRole,
   type CommandReceipt,
+  type GridPosition,
   parseCommand,
+  type ResourceKind,
   type SimulationConfig,
   type WorldCommand,
   type WorldState,
@@ -34,6 +38,12 @@ export type SnapshotListener = (state: WorldState, receipts: readonly CommandRec
 const LOW_ENERGY_THRESHOLD = 18;
 const FOOD_ENERGY_RECOVERY = 35;
 const STARVATION_DAMAGE = 1;
+const POPULATION_GROWTH_INTERVAL = 60;
+const POPULATION_FOOD_BUFFER_PER_AGENT = 4;
+const POPULATION_GROWTH_FOOD_COST = 6;
+const POPULATION_HEALTH_THRESHOLD = 70;
+const POPULATION_ENERGY_THRESHOLD = 35;
+const POPULATION_SETTLEMENT_RADIUS = 3;
 
 function nearestFoodStorage(state: WorldState, factionId: string, position: { x: number; y: number }) {
   return activeFactionStructures(state, factionId)
@@ -173,6 +183,113 @@ function applyStarvation(state: WorldState, starvingAgentIds: ReadonlySet<string
   }
 }
 
+function consumeStoredFood(state: WorldState, factionId: string, amount: number): boolean {
+  const faction = getFaction(state, factionId);
+  if (faction === undefined || faction.resources.food < amount) return false;
+  const storages = activeFactionStructures(state, factionId)
+    .filter((structure) => structure.storage.food > 0)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const storedFood = storages.reduce((sum, structure) => sum + structure.storage.food, 0);
+  if (storedFood < amount) return false;
+
+  faction.resources.food -= amount;
+  let remaining = amount;
+  for (const structure of storages) {
+    const taken = Math.min(remaining, structure.storage.food);
+    structure.storage.food -= taken;
+    remaining -= taken;
+    if (remaining === 0) break;
+  }
+  return true;
+}
+
+function settlementGrowthSite(state: WorldState, factionId: string): GridPosition | undefined {
+  const camps = activeFactionStructures(state, factionId)
+    .filter((structure) => structure.type === "camp")
+    .sort((a, b) => a.id.localeCompare(b.id));
+  if (camps.length === 0) return undefined;
+
+  const occupied = new Set([
+    ...state.agents.map((agent) => `${agent.position.x},${agent.position.y}`),
+    ...state.structures.map((structure) => `${structure.position.x},${structure.position.y}`),
+  ]);
+  const candidates = state.tiles
+    .filter((tile) => tile.terrain !== "water" && !occupied.has(`${tile.x},${tile.y}`))
+    .map((tile) => ({
+      tile,
+      distance: Math.min(...camps.map((camp) => manhattanDistance(tile, camp.position))),
+    }))
+    .filter((candidate) => candidate.distance <= POPULATION_SETTLEMENT_RADIUS)
+    .sort((a, b) => a.distance - b.distance || a.tile.y - b.tile.y || a.tile.x - b.tile.x);
+  const candidate = candidates[0]?.tile;
+  return candidate === undefined ? undefined : { x: candidate.x, y: candidate.y };
+}
+
+function populationRole(state: WorldState, factionId: string): AgentRole {
+  const agents = state.agents.filter((agent) => agent.factionId === factionId);
+  if (!agents.some((agent) => agent.role === "builder")) return "builder";
+  const faction = getFaction(state, factionId);
+  if (faction === undefined) return "forager";
+
+  const supplyRoles: ReadonlyArray<{ kind: ResourceKind; role: AgentRole }> = [
+    { kind: "food", role: "forager" },
+    { kind: "wood", role: "woodcutter" },
+    { kind: "stone", role: "miner" },
+  ];
+  return supplyRoles
+    .map(({ kind, role }) => ({
+      role,
+      stockPerWorker: faction.resources[kind] /
+        Math.max(1, agents.filter((agent) => agent.role === role).length),
+    }))
+    .sort((a, b) => a.stockPerWorker - b.stockPerWorker || a.role.localeCompare(b.role))[0]?.role ?? "forager";
+}
+
+function populationGoal(role: AgentRole): string {
+  if (role === "builder") return "Maintain and expand a viable settlement";
+  if (role === "woodcutter") return "Supply wood without exhausting nearby sources";
+  if (role === "miner") return "Supply stone to the settlement";
+  return "Secure food for the growing settlement";
+}
+
+function applyPopulationGrowth(state: WorldState): void {
+  if (state.tick === 0 || state.tick % POPULATION_GROWTH_INTERVAL !== 0) return;
+
+  for (const faction of [...state.factions].sort((a, b) => a.id.localeCompare(b.id))) {
+    const population = state.agents.filter((agent) => agent.factionId === faction.id);
+    if (population.length < 2) continue;
+    const healthyPopulation = population.filter(
+      (agent) => agent.hp >= POPULATION_HEALTH_THRESHOLD && agent.energy >= POPULATION_ENERGY_THRESHOLD,
+    );
+    if (healthyPopulation.length < 2) continue;
+
+    const foodNeeded =
+      population.length * POPULATION_FOOD_BUFFER_PER_AGENT + POPULATION_GROWTH_FOOD_COST;
+    if (faction.resources.food < foodNeeded) continue;
+    const position = settlementGrowthSite(state, faction.id);
+    if (position === undefined) continue;
+    if (!consumeStoredFood(state, faction.id, POPULATION_GROWTH_FOOD_COST)) continue;
+
+    const role = populationRole(state, faction.id);
+    const generation = population.length + 1;
+    const prefix = faction.name.split(/\s+/)[0] || faction.id;
+    state.agents.push({
+      id: `agent-${faction.id}-${role}-generation-${state.tick}-${generation}`,
+      name: `${prefix} ${generation}`,
+      factionId: faction.id,
+      role,
+      position,
+      hp: 100,
+      energy: 70,
+      capacity: role === "builder" ? 32 : 24,
+      inventory: emptyInventory(),
+      autonomy: true,
+      goal: populationGoal(role),
+      status: "new generation settling",
+    });
+  }
+}
+
 export class WorldRuntime {
   #state: WorldState;
   #pendingCommands: WorldCommand[] = [];
@@ -271,6 +388,7 @@ export class WorldRuntime {
       if (agent !== undefined) agent.status = status;
     }
     applyStarvation(result.state, starvingAgentIds);
+    applyPopulationGrowth(result.state);
     this.#state = result.state;
     const snapshot = this.snapshot();
     for (const listener of this.#listeners) listener(snapshot, result.receipts);
