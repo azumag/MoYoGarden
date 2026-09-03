@@ -132,6 +132,8 @@ export class WorldView {
     this.selectedAgentId = null;
     this.keys = new Set();
     this.drag = null;
+    this.touchPointers = new Map();
+    this.touchGesture = null;
     this.lastFrame = performance.now();
     this.lastShadowUpdate = 0;
     this.shadowsEnabled = false;
@@ -404,24 +406,120 @@ export class WorldView {
 
   bindInput() {
     this.canvas.tabIndex = 0;
+    this.canvas.style.touchAction = "none";
+
+    const beginDrag = (pointerId, x, y, mode = "orbit", moved = false) => {
+      this.drag = {
+        mode,
+        pointerId,
+        startX: x,
+        startY: y,
+        lastX: x,
+        lastY: y,
+        moved,
+      };
+    };
+
+    const currentTouchGesture = () => {
+      const points = [...this.touchPointers.values()];
+      if (points.length < 2) return null;
+      const [a, b] = points;
+      return {
+        centerX: (a.x + b.x) * 0.5,
+        centerY: (a.y + b.y) * 0.5,
+        distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+      };
+    };
+
+    const selectAt = (event) => {
+      this.selectedAgentId = this.pickAgent(event);
+      for (const [id, entry] of this.agentObjects) entry.ring.visible = id === this.selectedAgentId;
+      this.onSelect(this.selectedAgentId);
+    };
+
+    const finishTouch = (event, allowSelect) => {
+      if (!this.touchPointers.has(event.pointerId)) return;
+      const hadGesture = this.touchPointers.size > 1 || Boolean(this.touchGesture);
+      const endingDrag = this.drag?.pointerId === event.pointerId ? this.drag : null;
+      this.touchPointers.delete(event.pointerId);
+
+      if (this.touchPointers.size >= 2) {
+        this.drag = null;
+        this.touchGesture = currentTouchGesture();
+        return;
+      }
+
+      if (this.touchPointers.size === 1) {
+        const [pointerId, point] = this.touchPointers.entries().next().value;
+        this.touchGesture = null;
+        beginDrag(pointerId, point.x, point.y, "orbit", true);
+        return;
+      }
+
+      if (allowSelect && !hadGesture && endingDrag?.mode === "orbit" && !endingDrag.moved) {
+        selectAt(event);
+      }
+      this.drag = null;
+      this.touchGesture = null;
+      this.canvas.style.cursor = "default";
+    };
+
     this.canvas.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 && event.button !== 1) return;
       event.preventDefault();
       this.canvas.focus();
       this.canvas.setPointerCapture(event.pointerId);
-      this.drag = {
-        mode: event.button === 1 ? "pan" : "orbit",
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        lastX: event.clientX,
-        lastY: event.clientY,
-        moved: false,
-      };
+
+      if (event.pointerType === "touch") {
+        this.touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (this.touchPointers.size === 1) {
+          beginDrag(event.pointerId, event.clientX, event.clientY);
+        } else if (this.touchPointers.size === 2) {
+          this.drag = null;
+          this.touchGesture = currentTouchGesture();
+        }
+        this.canvas.style.cursor = "grabbing";
+        return;
+      }
+
+      beginDrag(
+        event.pointerId,
+        event.clientX,
+        event.clientY,
+        event.button === 1 ? "pan" : "orbit",
+      );
       this.canvas.style.cursor = "grabbing";
     });
 
     this.canvas.addEventListener("pointermove", (event) => {
+      if (event.pointerType === "touch") {
+        if (!this.touchPointers.has(event.pointerId)) return;
+        this.touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (this.touchPointers.size >= 2) {
+          const next = currentTouchGesture();
+          if (!next) return;
+          if (!this.touchGesture) {
+            this.touchGesture = next;
+            return;
+          }
+          const dx = next.centerX - this.touchGesture.centerX;
+          const dy = next.centerY - this.touchGesture.centerY;
+          const { forward, right } = this.cameraVectors();
+          const amount = Math.max(0.0035, this.cameraState.distance * 0.0018);
+          this.cameraState.target
+            .addScaledVector(right, -dx * amount)
+            .addScaledVector(forward, dy * amount);
+          this.clampTarget();
+          this.cameraState.distance = clamp(
+            this.cameraState.distance * (this.touchGesture.distance / next.distance),
+            6,
+            78,
+          );
+          this.touchGesture = next;
+          return;
+        }
+      }
+
       if (!this.drag || event.pointerId !== this.drag.pointerId) return;
       const dx = event.clientX - this.drag.lastX;
       const dy = event.clientY - this.drag.lastY;
@@ -443,21 +541,30 @@ export class WorldView {
       this.drag.lastY = event.clientY;
     });
 
-    const endDrag = (event) => {
+    const endMouseDrag = (event, allowSelect) => {
       if (!this.drag || event.pointerId !== this.drag.pointerId) return;
-      if (this.drag.mode === "orbit" && !this.drag.moved) {
-        this.selectedAgentId = this.pickAgent(event);
-        for (const [id, entry] of this.agentObjects) entry.ring.visible = id === this.selectedAgentId;
-        this.onSelect(this.selectedAgentId);
-      }
+      if (allowSelect && this.drag.mode === "orbit" && !this.drag.moved) selectAt(event);
       this.drag = null;
       this.canvas.style.cursor = "default";
     };
-    this.canvas.addEventListener("pointerup", endDrag);
-    this.canvas.addEventListener("pointercancel", endDrag);
-    this.canvas.addEventListener("lostpointercapture", () => {
-      this.drag = null;
-      this.canvas.style.cursor = "default";
+
+    this.canvas.addEventListener("pointerup", (event) => {
+      if (event.pointerType === "touch") finishTouch(event, true);
+      else endMouseDrag(event, true);
+    });
+    this.canvas.addEventListener("pointercancel", (event) => {
+      if (event.pointerType === "touch") finishTouch(event, false);
+      else endMouseDrag(event, false);
+    });
+    this.canvas.addEventListener("lostpointercapture", (event) => {
+      if (event.pointerType === "touch" && this.touchPointers.has(event.pointerId)) {
+        finishTouch(event, false);
+        return;
+      }
+      if (this.drag?.pointerId === event.pointerId) {
+        this.drag = null;
+        this.canvas.style.cursor = "default";
+      }
     });
     this.canvas.addEventListener("contextmenu", (event) => {
       event.preventDefault();
