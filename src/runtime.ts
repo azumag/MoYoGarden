@@ -1,5 +1,7 @@
 import {
   DEFAULT_SIMULATION_CONFIG,
+  manhattanDistance,
+  samePosition,
   type CommandReceipt,
   parseCommand,
   type SimulationConfig,
@@ -7,7 +9,15 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { simulate } from "./simulation.js";
-import { createInitialWorld, getAgent, getPerception, inBounds, isPassable } from "./world.js";
+import {
+  activeFactionStructures,
+  createInitialWorld,
+  getAgent,
+  getFaction,
+  getPerception,
+  inBounds,
+  isPassable,
+} from "./world.js";
 
 export interface RuntimeOptions {
   state?: WorldState;
@@ -19,6 +29,96 @@ export interface RuntimeOptions {
 }
 
 export type SnapshotListener = (state: WorldState, receipts: readonly CommandReceipt[]) => void;
+
+const LOW_ENERGY_THRESHOLD = 18;
+const FOOD_ENERGY_RECOVERY = 35;
+
+function nearestFoodStorage(state: WorldState, factionId: string, position: { x: number; y: number }) {
+  return activeFactionStructures(state, factionId)
+    .filter((structure) => structure.storage.food > 0)
+    .sort((a, b) => {
+      const distance = manhattanDistance(a.position, position) - manhattanDistance(b.position, position);
+      return distance || a.id.localeCompare(b.id);
+    })[0];
+}
+
+function nearestFoodTile(state: WorldState, position: { x: number; y: number }) {
+  return state.tiles
+    .filter((tile) => tile.terrain !== "water" && tile.resource?.kind === "food" && tile.resource.amount > 0)
+    .sort((a, b) => {
+      const distance = manhattanDistance(a, position) - manhattanDistance(b, position);
+      return distance || a.y - b.y || a.x - b.x;
+    })[0];
+}
+
+function applyAutonomousNeeds(state: WorldState, commandedAgentIds: ReadonlySet<string>): Set<string> {
+  const fedAgents = new Set<string>();
+  for (const agent of state.agents) {
+    if (
+      !agent.autonomy ||
+      commandedAgentIds.has(agent.id) ||
+      agent.task?.source === "external" ||
+      agent.energy > LOW_ENERGY_THRESHOLD
+    ) {
+      continue;
+    }
+
+    let ate = false;
+    if (agent.inventory.food > 0) {
+      agent.inventory.food -= 1;
+      ate = true;
+    } else {
+      const storage = nearestFoodStorage(state, agent.factionId, agent.position);
+      if (storage !== undefined && samePosition(storage.position, agent.position)) {
+        const faction = getFaction(state, agent.factionId);
+        if (faction !== undefined && faction.resources.food > 0) {
+          storage.storage.food -= 1;
+          faction.resources.food -= 1;
+          ate = true;
+        }
+      } else if (storage !== undefined) {
+        agent.task = {
+          source: "autonomy",
+          issuedAtTick: state.tick,
+          type: "move",
+          target: { ...storage.position },
+        };
+        agent.status = "seeking stored food";
+        continue;
+      }
+    }
+
+    if (ate) {
+      agent.energy = Math.min(100, agent.energy + FOOD_ENERGY_RECOVERY);
+      agent.task = {
+        source: "autonomy",
+        issuedAtTick: state.tick,
+        type: "move",
+        target: { ...agent.position },
+      };
+      agent.status = "resting after a meal";
+      fedAgents.add(agent.id);
+      continue;
+    }
+
+    const foodTile = nearestFoodTile(state, agent.position);
+    if (foodTile !== undefined) {
+      agent.task = {
+        source: "autonomy",
+        issuedAtTick: state.tick,
+        type: "gather",
+        resource: "food",
+        target: { x: foodTile.x, y: foodTile.y },
+      };
+      agent.status = "seeking food";
+      continue;
+    }
+
+    if (agent.task?.source === "autonomy") delete agent.task;
+    agent.status = "hungry; no food available";
+  }
+  return fedAgents;
+}
 
 export class WorldRuntime {
   #state: WorldState;
@@ -105,7 +205,13 @@ export class WorldRuntime {
     const commands = this.#pendingCommands;
     this.#pendingCommands = [];
     for (const command of commands) this.#queuedCommandIds.delete(command.id);
+    const commandedAgentIds = new Set(commands.map((command) => command.agentId));
+    const fedAgents = applyAutonomousNeeds(this.#state, commandedAgentIds);
     const result = simulate(this.#state, commands, this.#simulationConfig);
+    for (const agentId of fedAgents) {
+      const agent = getAgent(result.state, agentId);
+      if (agent !== undefined) agent.status = "resting after a meal";
+    }
     this.#state = result.state;
     const snapshot = this.snapshot();
     for (const listener of this.#listeners) listener(snapshot, result.receipts);
