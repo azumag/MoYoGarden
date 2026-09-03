@@ -53,3 +53,21 @@ test("trade is atomic", () => {
   assert.deepEqual(result.state.agents.find((entry)=>entry.id===buyer.id)?.inventory,{wood:2,stone:2,food:0});
   assert.deepEqual(emptyInventory(),{wood:0,stone:0,food:0});
 });
+
+test("low-energy autonomous agents eat carried food before resuming work", () => {
+  const state = createInitialWorld({ seed: 2026 });
+  const agent = state.agents[0]; assert.ok(agent);
+  agent.energy = 10;
+  agent.inventory.food = 1;
+  delete agent.task;
+
+  const runtime = new WorldRuntime({ state });
+  const next = runtime.tick().state;
+  const rested = next.agents.find((entry) => entry.id === agent.id); assert.ok(rested);
+
+  assert.equal(rested.inventory.food, 0);
+  assert.equal(rested.energy, 45);
+  assert.equal(rested.status, "resting after a meal");
+  assert.equal(rested.autonomy, true);
+  assert.equal(rested.task, undefined);
+});
