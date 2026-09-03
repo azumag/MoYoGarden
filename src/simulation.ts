@@ -24,6 +24,7 @@ import {
 import { createRandom } from "./prng.js";
 import {
   activeFactionStructures,
+  ensureTileElevations,
   getAgent,
   getFaction,
   getStructure,
@@ -73,7 +74,12 @@ export function surfaceMoistureAt(
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
       ? tile.resource.amount / tile.resource.maxAmount
       : 0;
-  return Math.min(1, 0.08 + waterInfluence * 0.72 + vegetationCover * 0.16);
+  const elevation = Number.isFinite(tile.elevation) ? tile.elevation ?? 0.5 : 0.5;
+  const lowlandRetention = (1 - elevation) * 0.12;
+  return Math.min(
+    1,
+    0.05 + lowlandRetention + waterInfluence * 0.7 + vegetationCover * 0.16,
+  );
 }
 
 export function resourceRegrowthChance(state: WorldState, tile: Tile): number {
@@ -506,9 +512,6 @@ function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask,
     data: { resource: task.resource, amount },
   });
 
-  // The founding builder must carry a mixed recipe before storage exists. Stop
-  // gathering each ingredient as soon as its camp requirement is satisfied so
-  // the next autonomy tick can select the next missing resource.
   const hasCamp = state.structures.some(
     (structure) => structure.factionId === agent.factionId && structure.type === "camp",
   );
@@ -758,6 +761,7 @@ export function simulate(
   config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
 ): SimulationResult {
   const state = structuredClone(previousState);
+  ensureTileElevations(state);
   state.tick += 1;
   state.revision += 1;
   const random = createRandom(state.rngState);
