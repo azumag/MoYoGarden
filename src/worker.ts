@@ -37,10 +37,11 @@ const JSON_HEADERS = {
 } as const;
 
 const IDLE_TICK_MULTIPLIER = 6;
+const ACTIVE_GRACE_MULTIPLIER = 6;
 const MAX_IDLE_TICK_MS = 3_600_000;
 
-export function regionTickDelayMs(tickMs: number, websocketClients: number): number {
-  if (websocketClients > 0) return tickMs;
+export function regionTickDelayMs(tickMs: number, active: boolean): number {
+  if (active) return tickMs;
   return Math.min(MAX_IDLE_TICK_MS, tickMs * IDLE_TICK_MULTIPLIER);
 }
 
@@ -153,6 +154,7 @@ export class RegionDurableObject {
   private updatedAt = Date.now();
   private readonly tickMs: number;
   private assigned = false;
+  private lastActivityAt = 0;
 
   constructor(
     private readonly ctx: DurableObjectState,
@@ -230,10 +232,22 @@ export class RegionDurableObject {
     await this.ctx.storage.put("region", stored);
   }
 
-  private async scheduleNextTick(
-    delayMs = regionTickDelayMs(this.tickMs, this.ctx.getWebSockets().length),
-  ): Promise<void> {
+  private active(): boolean {
+    if (this.ctx.getWebSockets().length > 0) return true;
+    const graceMs = Math.min(MAX_IDLE_TICK_MS, this.tickMs * ACTIVE_GRACE_MULTIPLIER);
+    return this.lastActivityAt > 0 && Date.now() - this.lastActivityAt <= graceMs;
+  }
+
+  private async scheduleNextTick(delayMs = regionTickDelayMs(this.tickMs, this.active())): Promise<void> {
     await this.ctx.storage.setAlarm(Date.now() + delayMs);
+  }
+
+  private async markActivity(): Promise<void> {
+    this.lastActivityAt = Date.now();
+    if (!this.assigned || this.paused) return;
+    const scheduled = await this.ctx.storage.getAlarm();
+    const desired = this.lastActivityAt + this.tickMs;
+    if (scheduled === null || scheduled > desired) await this.ctx.storage.setAlarm(desired);
   }
 
   private snapshotEnvelope() {
@@ -276,6 +290,7 @@ export class RegionDurableObject {
 
     const url = new URL(request.url);
     const path = url.pathname;
+    if (path !== "/api/health" && path !== "/api/rules") await this.markActivity();
 
     if (path === "/api/stream") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
@@ -287,6 +302,7 @@ export class RegionDurableObject {
     if (request.method === "GET" && path === "/api/health") {
       const state = this.runtime.snapshot();
       const websocketClients = this.ctx.getWebSockets().length;
+      const active = this.active();
       return json({
         ok: true,
         service: "moyo-garden",
@@ -295,8 +311,8 @@ export class RegionDurableObject {
         revision: state.revision,
         paused: this.paused,
         tickMs: this.tickMs,
-        effectiveTickMs: regionTickDelayMs(this.tickMs, websocketClients),
-        tickMode: websocketClients > 0 ? "active" : "idle",
+        effectiveTickMs: regionTickDelayMs(this.tickMs, active),
+        tickMode: active ? "active" : "idle",
         agents: state.agents.length,
         structures: state.structures.length,
         pendingCommands: this.runtime.pendingCommands().length,
