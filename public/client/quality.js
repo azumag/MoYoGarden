@@ -8,7 +8,7 @@ const PROFILES = Object.freeze({
     shadowRadius: 2.2,
     shadowUpdateIntervalMs: 420,
     environmentSize: 64,
-    modelTimeoutMs: 7_000,
+    modelTimeoutMs: 9_000,
     modelConcurrency: 1,
     detailDensity: 0.62,
     lodScale: 0.86,
