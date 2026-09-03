@@ -10,6 +10,7 @@ import {
   manhattanDistance,
   type GridPosition,
   type Inventory,
+  positionKey,
   type ResourceKind,
   RESOURCE_KINDS,
   samePosition,
@@ -46,7 +47,115 @@ const NEIGHBORS: readonly GridPosition[] = [
   { x: -1, y: 0 },
 ];
 
+const HYDROLOGY_NEIGHBORS: readonly GridPosition[] = [
+  { x: -1, y: -1 },
+  { x: 0, y: -1 },
+  { x: 1, y: -1 },
+  { x: -1, y: 0 },
+  { x: 1, y: 0 },
+  { x: -1, y: 1 },
+  { x: 0, y: 1 },
+  { x: 1, y: 1 },
+];
+
 const WATER_MOISTURE_RADIUS = 4;
+const HYDROLOGY_EPSILON = 1e-6;
+
+function tileElevation(tile: Tile | undefined): number | undefined {
+  const elevation = tile?.elevation;
+  return Number.isFinite(elevation ?? Number.NaN) ? elevation : undefined;
+}
+
+export function flowTargetAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+): GridPosition | undefined {
+  const tile = getTile(state, position);
+  const elevation = tileElevation(tile);
+  if (tile === undefined || tile.terrain === "water" || elevation === undefined) return undefined;
+
+  const candidates = HYDROLOGY_NEIGHBORS.flatMap((delta) => {
+    const target = { x: position.x + delta.x, y: position.y + delta.y };
+    const neighbor = getTile(state, target);
+    const neighborElevation = tileElevation(neighbor);
+    if (neighbor === undefined || neighborElevation === undefined) return [];
+    const drop = elevation - neighborElevation;
+    if (drop <= HYDROLOGY_EPSILON) return [];
+    const distance = delta.x !== 0 && delta.y !== 0 ? Math.SQRT2 : 1;
+    return [{ target, elevation: neighborElevation, gradient: drop / distance }];
+  });
+
+  const best = candidates.sort((a, b) =>
+    b.gradient - a.gradient ||
+    a.elevation - b.elevation ||
+    a.target.y - b.target.y ||
+    a.target.x - b.target.x
+  )[0];
+  return best === undefined ? undefined : best.target;
+}
+
+function buildDrainageMap(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+): Map<string, number> {
+  const catchment = new Map<string, number>();
+  for (const tile of state.tiles) catchment.set(positionKey(tile), 1);
+
+  const ordered = [...state.tiles].sort((a, b) =>
+    (tileElevation(b) ?? 0) - (tileElevation(a) ?? 0) ||
+    a.y - b.y ||
+    a.x - b.x
+  );
+  for (const tile of ordered) {
+    if (tile.terrain === "water") continue;
+    const target = tile.flowTo ?? flowTargetAt(state, tile);
+    if (target === undefined) continue;
+    const sourceKey = positionKey(tile);
+    const targetKey = positionKey(target);
+    catchment.set(targetKey, (catchment.get(targetKey) ?? 1) + (catchment.get(sourceKey) ?? 1));
+  }
+
+  const landMaximum = state.tiles
+    .filter((tile) => tile.terrain !== "water")
+    .reduce((maximum, tile) => Math.max(maximum, catchment.get(positionKey(tile)) ?? 1), 1);
+  const scale = Math.log1p(Math.max(0, landMaximum - 1));
+  const drainage = new Map<string, number>();
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") {
+      drainage.set(positionKey(tile), 1);
+      continue;
+    }
+    const upstream = Math.max(1, catchment.get(positionKey(tile)) ?? 1);
+    drainage.set(
+      positionKey(tile),
+      scale > 0 ? Math.min(1, Math.log1p(upstream - 1) / scale) : 0,
+    );
+  }
+  return drainage;
+}
+
+export function drainageAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+): number {
+  const tile = getTile(state, position);
+  if (tile === undefined) return 0;
+  const stored = tile.drainage;
+  if (Number.isFinite(stored ?? Number.NaN)) return Math.max(0, Math.min(1, stored ?? 0));
+  return buildDrainageMap(state).get(positionKey(position)) ?? 0;
+}
+
+export function updateTileHydrology(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
+): void {
+  ensureTileElevations(state);
+  for (const tile of state.tiles) {
+    const target = flowTargetAt(state, tile);
+    if (target === undefined) delete tile.flowTo;
+    else tile.flowTo = target;
+  }
+  const drainage = buildDrainageMap(state);
+  for (const tile of state.tiles) tile.drainage = drainage.get(positionKey(tile)) ?? 0;
+}
 
 export function surfaceMoistureAt(
   state: Pick<WorldState, "width" | "height" | "tiles">,
@@ -75,10 +184,11 @@ export function surfaceMoistureAt(
       ? tile.resource.amount / tile.resource.maxAmount
       : 0;
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
-  const lowlandRetention = (1 - elevation) * 0.12;
+  const lowlandRetention = (1 - elevation) * 0.09;
+  const runoffRetention = drainageAt(state, position) * 0.14;
   return Math.min(
     1,
-    0.05 + lowlandRetention + waterInfluence * 0.7 + vegetationCover * 0.16,
+    0.04 + lowlandRetention + runoffRetention + waterInfluence * 0.64 + vegetationCover * 0.16,
   );
 }
 
@@ -761,7 +871,7 @@ export function simulate(
   config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
 ): SimulationResult {
   const state = structuredClone(previousState);
-  ensureTileElevations(state);
+  updateTileHydrology(state);
   state.tick += 1;
   state.revision += 1;
   const random = createRandom(state.rngState);

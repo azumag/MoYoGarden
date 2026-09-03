@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyInventory } from "../dist-ts/src/protocol.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
-import { resourceRegrowthChance, simulate, surfaceMoistureAt } from "../dist-ts/src/simulation.js";
+import {
+  drainageAt,
+  flowTargetAt,
+  resourceRegrowthChance,
+  simulate,
+  surfaceMoistureAt,
+  updateTileHydrology,
+} from "../dist-ts/src/simulation.js";
 import { createInitialWorld, getPerception, validateWorldState } from "../dist-ts/src/world.js";
 
 function advance(initial, ticks) {
@@ -33,9 +40,52 @@ test("continuous elevation is observable, backfilled, and affects lowland moistu
   assert.ok(lowlandMoisture > highlandMoisture);
 
   const legacy = createInitialWorld({ seed: 3032, width: 16, height: 12 });
-  for (const tile of legacy.tiles) delete tile.elevation;
+  for (const tile of legacy.tiles) {
+    delete tile.elevation;
+    delete tile.flowTo;
+    delete tile.drainage;
+  }
   const upgraded = simulate(legacy).state;
   assert.ok(upgraded.tiles.every((tile) => Number.isFinite(tile.elevation)));
+  assert.ok(upgraded.tiles.every((tile) => Number.isFinite(tile.drainage) && tile.drainage >= 0 && tile.drainage <= 1));
+});
+
+test("downhill flow accumulates drainage and feeds organic regrowth", () => {
+  const state = createInitialWorld({ seed: 3033, width: 16, height: 12 });
+  for (const tile of state.tiles) {
+    tile.terrain = "plain";
+    tile.elevation = 0.95;
+    delete tile.resource;
+    delete tile.flowTo;
+    delete tile.drainage;
+  }
+
+  const y = 6;
+  for (let x = 3; x <= 9; x += 1) {
+    const tile = state.tiles.find((entry) => entry.x === x && entry.y === y); assert.ok(tile);
+    tile.elevation = 0.8 - (x - 3) * 0.1;
+  }
+  const outlet = state.tiles.find((tile) => tile.x === 10 && tile.y === y); assert.ok(outlet);
+  outlet.terrain = "water";
+  outlet.elevation = 0;
+
+  updateTileHydrology(state);
+  const head = state.tiles.find((tile) => tile.x === 3 && tile.y === y); assert.ok(head);
+  const channel = state.tiles.find((tile) => tile.x === 9 && tile.y === y); assert.ok(channel);
+  assert.deepEqual(flowTargetAt(state, head), { x: 4, y });
+  assert.deepEqual(channel.flowTo, { x: 10, y });
+  assert.ok(drainageAt(state, channel) > drainageAt(state, head));
+
+  head.resource = { kind: "food", amount: 0, maxAmount: 10 };
+  channel.resource = { kind: "food", amount: 0, maxAmount: 10 };
+  assert.ok(surfaceMoistureAt(state, channel) > surfaceMoistureAt(state, head));
+  assert.ok(resourceRegrowthChance(state, channel) > resourceRegrowthChance(state, head));
+
+  const observer = state.agents[0]; assert.ok(observer);
+  const perception = getPerception(state, observer.id, 12);
+  const visibleChannel = perception.visibleTiles.find((tile) => tile.x === channel.x && tile.y === channel.y); assert.ok(visibleChannel);
+  assert.equal(visibleChannel.drainage, channel.drainage);
+  assert.deepEqual(visibleChannel.flowTo, channel.flowTo);
 });
 
 test("organic resource regrowth responds to water and vegetation cover", () => {

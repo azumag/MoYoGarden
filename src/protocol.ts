@@ -35,6 +35,8 @@ export interface Tile {
   y: number;
   terrain: TerrainKind;
   elevation?: number;
+  flowTo?: GridPosition;
+  drainage?: number;
   resource?: ResourceDeposit;
 }
 
