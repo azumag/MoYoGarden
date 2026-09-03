@@ -5,6 +5,11 @@ const WATER_MOISTURE_RADIUS = 4;
 const DRY_GROUND = new THREE.Color(0xa18c68);
 const MOIST_GROUND = new THREE.Color(0x617b58);
 const UPLAND_GROUND = new THREE.Color(0x8d8b78);
+const RUGGED_GROUND = new THREE.Color(0x77766e);
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
 
 function quadNormal(corners) {
   const a = new THREE.Vector3(
@@ -18,6 +23,22 @@ function quadNormal(corners) {
     corners[1][2] - corners[0][2],
   );
   return a.cross(b).normalize().toArray();
+}
+
+function localRelief(stateTile, tile) {
+  if (!tile || tile.terrain === "water" || !Number.isFinite(tile.elevation)) return 0;
+  let minimum = tile.elevation;
+  let maximum = tile.elevation;
+  for (let dy = -1; dy <= 1; dy += 1) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      if (dx === 0 && dy === 0) continue;
+      const neighbor = stateTile(tile.x + dx, tile.y + dy);
+      if (!neighbor || neighbor.terrain === "water" || !Number.isFinite(neighbor.elevation)) continue;
+      minimum = Math.min(minimum, neighbor.elevation);
+      maximum = Math.max(maximum, neighbor.elevation);
+    }
+  }
+  return clamp01((maximum - minimum) / 0.22);
 }
 
 function environmentalMoisture(stateTile, tile) {
@@ -56,9 +77,11 @@ function environmentalTerrainColor(stateTile, tile) {
   const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
   const moisture = environmentalMoisture(stateTile, tile);
   const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
+  const relief = localRelief(stateTile, tile);
   const environment = DRY_GROUND.clone().lerp(MOIST_GROUND, moisture);
   environment.lerp(UPLAND_GROUND, Math.max(0, elevation - 0.52) * 0.5);
-  return color.lerp(environment, 0.34);
+  environment.lerp(RUGGED_GROUND, relief * 0.28);
+  return color.lerp(environment, 0.34 + relief * 0.08);
 }
 
 export const terrainMethods = {
@@ -87,7 +110,10 @@ export const terrainMethods = {
       : null;
     const tileHeight = (tile) => {
       if (!tile || tile.terrain === "water") return this.terrainHeight(tile);
-      if (Number.isFinite(tile.elevation)) return 0.015 + tile.elevation * 0.62;
+      if (Number.isFinite(tile.elevation)) {
+        const shapedElevation = Math.pow(clamp01(tile.elevation), 1.18);
+        return 0.015 + shapedElevation * 0.82;
+      }
       return this.terrainHeight(tile);
     };
 
@@ -102,7 +128,9 @@ export const terrainMethods = {
       const base = samples.length > 0
         ? samples.reduce((sum, value) => sum + value, 0) / samples.length
         : tileHeight(fallbackTile);
-      const noise = (hash2(vertexX, vertexY, 501) - 0.5) * 0.055;
+      const relief = localRelief(stateTile, fallbackTile);
+      const noiseScale = 0.03 + relief * 0.075;
+      const noise = (hash2(vertexX, vertexY, 501) - 0.5) * noiseScale;
       return base + noise;
     };
 
