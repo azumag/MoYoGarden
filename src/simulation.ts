@@ -646,7 +646,7 @@ function executeBuild(state: WorldState, agent: Agent, task: BuildTask): void {
     agent.status = `${structure.type} completed`;
     addEvent(state, {
       kind: "construction_completed",
-      message: `${agent.name} completed a ${task.structureType} for ${agent.factionId}.`,
+      message: `${agent.name} completed a ${structure.type} for ${agent.factionId}.`,
       agentId: agent.id,
       factionId: agent.factionId,
       position: { ...structure.position },
