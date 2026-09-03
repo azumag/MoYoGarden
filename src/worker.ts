@@ -7,6 +7,7 @@ import {
 } from "./protocol.js";
 import { WorldRuntime } from "./runtime.js";
 import { validateWorldState } from "./world.js";
+import { TARGET_WORLD_HEIGHT, TARGET_WORLD_WIDTH } from "./world-scale.js";
 
 interface Env {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -28,6 +29,15 @@ interface StoredRegion {
   updatedAt: number;
 }
 
+export interface RegionLayoutEntry {
+  id: string;
+  index: number;
+  grid: { x: number; y: number };
+  origin: { x: number; y: number };
+  extent: { width: number; height: number };
+  neighbors: { west: string | null; east: string | null };
+}
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
@@ -43,6 +53,24 @@ const MAX_IDLE_TICK_MS = 3_600_000;
 export function regionTickDelayMs(tickMs: number, active: boolean): number {
   if (active) return tickMs;
   return Math.min(MAX_IDLE_TICK_MS, tickMs * IDLE_TICK_MULTIPLIER);
+}
+
+export function regionLayout(
+  regionIds: readonly string[],
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionLayoutEntry[] {
+  return regionIds.map((id, index) => ({
+    id,
+    index,
+    grid: { x: index, y: 0 },
+    origin: { x: index * width, y: 0 },
+    extent: { width, height },
+    neighbors: {
+      west: index > 0 ? regionIds[index - 1] ?? null : null,
+      east: index + 1 < regionIds.length ? regionIds[index + 1] ?? null : null,
+    },
+  }));
 }
 
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
@@ -475,6 +503,11 @@ export default {
         regions,
         defaultRegion: regions[0],
         runtime: "Cloudflare Workers + Durable Objects",
+        world: {
+          coordinateSpace: "global-grid",
+          regionExtent: { width: TARGET_WORLD_WIDTH, height: TARGET_WORLD_HEIGHT },
+          regionLayout: regionLayout(regions),
+        },
       });
     }
 
