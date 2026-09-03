@@ -12,7 +12,7 @@
     "vendor:three": "node scripts/vendor-three.mjs",
     "check:client": "node scripts/check-client.mjs",
     "prepare:runtime": "npm run generate:models && npm run vendor:three && npm run check:client",
-    "build:web": "npm run prepare:runtime && npm run vendor:authored && npm run vendor:authored:buildings && npm run vendor:authored:characters && node scripts/validate-public.mjs && node scripts/validate-authored-buildings.mjs && node scripts/validate-authored-characters.mjs",
+    "build:web": "npm test && npm run prepare:runtime && npm run vendor:authored && npm run vendor:authored:buildings && npm run vendor:authored:characters && node scripts/validate-public.mjs && node scripts/validate-authored-buildings.mjs && node scripts/validate-authored-characters.mjs",
     "build": "npm run check && npm run build:web",
     "dev": "npm run build && wrangler dev",
     "dev:pbr-preview": "npm run build && wrangler dev --config wrangler.pbr.jsonc",
