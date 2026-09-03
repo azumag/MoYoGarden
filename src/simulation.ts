@@ -74,7 +74,7 @@ export function surfaceMoistureAt(
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
       ? tile.resource.amount / tile.resource.maxAmount
       : 0;
-  const elevation = Number.isFinite(tile.elevation) ? tile.elevation ?? 0.5 : 0.5;
+  const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
   const lowlandRetention = (1 - elevation) * 0.12;
   return Math.min(
     1,
