@@ -264,6 +264,9 @@ async function connect() {
     await loadSnapshot();
     connectSocket();
   } catch (error) {
+    if (!app.state) {
+      applyEnvelope({ state: createDemoState(), paused: false, tickMs: 10_000 });
+    }
     setConnection("offline", "OFFLINE DEMO");
     toast(`API未接続: ${error.message}`, true);
     startPolling();
@@ -341,7 +344,7 @@ function bindUi() {
 
 async function initialize() {
   updateRenderStatus();
-  ui.loadingLabel.textContent = "軽量LODでワールドを開始しています";
+  ui.loadingLabel.textContent = "本番ワールドに接続しています";
   ui.loadingDetail.textContent = `${quality.label}プロファイル`;
 
   view = new WorldView(ui.canvas, models, quality);
@@ -370,8 +373,8 @@ async function initialize() {
   };
 
   bindUi();
-  applyEnvelope({ state: createDemoState(), paused: false, tickMs: 10_000 });
-  setConnection("offline", "STARTING");
+  setConnection("", "同期中");
+  await connect();
 
   await new Promise((resolve) => requestAnimationFrame(() => resolve()));
   ui.loading.classList.add("hidden");
@@ -383,7 +386,6 @@ async function initialize() {
   }
 
   view.startEnhancements();
-  void connect();
   setTimeout(() => { void loadHighResolutionModels(); }, 80);
 }
 
