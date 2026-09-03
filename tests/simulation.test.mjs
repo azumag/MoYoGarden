@@ -153,3 +153,43 @@ test("prolonged starvation can reduce a faction's population", () => {
   assert.equal(second.agents.some((entry) => entry.id === doomed.id), false);
   assert.equal(second.agents.length, initialPopulation - 1);
 });
+
+test("food-secure settlements can grow their population when local space is available", () => {
+  const state = createInitialWorld({ seed: 2029 });
+  const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);
+  const members = state.agents.filter((agent) => agent.factionId === faction.id);
+  assert.ok(members.length >= 2);
+  const originalIds = new Set(members.map((agent) => agent.id));
+  const campPosition = { ...members[0].position };
+
+  faction.resources.food = 40;
+  state.structures.push({
+    id: "population-growth-camp",
+    factionId: faction.id,
+    type: "camp",
+    position: campPosition,
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 40 },
+  });
+  for (const member of members) {
+    member.hp = 100;
+    member.energy = 100;
+    delete member.task;
+  }
+  state.tick = 59;
+
+  const runtime = new WorldRuntime({ state });
+  const next = runtime.tick().state;
+  const nextFaction = next.factions.find((entry) => entry.id === faction.id); assert.ok(nextFaction);
+  const nextMembers = next.agents.filter((agent) => agent.factionId === faction.id);
+  const newcomer = nextMembers.find((agent) => !originalIds.has(agent.id)); assert.ok(newcomer);
+  const camp = next.structures.find((structure) => structure.id === "population-growth-camp"); assert.ok(camp);
+
+  assert.equal(nextMembers.length, members.length + 1);
+  assert.equal(nextFaction.resources.food, 34);
+  assert.equal(camp.storage.food, 34);
+  assert.equal(newcomer.status, "new generation settling");
+  assert.ok(Math.abs(newcomer.position.x - campPosition.x) + Math.abs(newcomer.position.y - campPosition.y) <= 3);
+});
