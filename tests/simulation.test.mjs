@@ -15,6 +15,29 @@ test("same seed produces the same world", () => {
   assert.deepEqual(advance(createInitialWorld({ seed: 123456 }), 160), advance(createInitialWorld({ seed: 123456 }), 160));
 });
 
+test("continuous elevation is observable, backfilled, and affects lowland moisture", () => {
+  const state = createInitialWorld({ seed: 3031, width: 16, height: 12 });
+  assert.ok(state.tiles.every((tile) => Number.isFinite(tile.elevation) && tile.elevation >= 0 && tile.elevation <= 1));
+  assert.ok(state.tiles.filter((tile) => tile.terrain === "water").every((tile) => tile.elevation === 0));
+
+  const target = state.tiles.find((tile) => tile.x === 8 && tile.y === 6); assert.ok(target);
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") tile.terrain = "plain";
+  }
+  target.terrain = "plain";
+  delete target.resource;
+  target.elevation = 0.1;
+  const lowlandMoisture = surfaceMoistureAt(state, target);
+  target.elevation = 0.9;
+  const highlandMoisture = surfaceMoistureAt(state, target);
+  assert.ok(lowlandMoisture > highlandMoisture);
+
+  const legacy = createInitialWorld({ seed: 3032, width: 16, height: 12 });
+  for (const tile of legacy.tiles) delete tile.elevation;
+  const upgraded = simulate(legacy).state;
+  assert.ok(upgraded.tiles.every((tile) => Number.isFinite(tile.elevation)));
+});
+
 test("organic resource regrowth responds to water and vegetation cover", () => {
   const state = createInitialWorld({ seed: 3030, width: 16, height: 12 });
   for (const tile of state.tiles) {
