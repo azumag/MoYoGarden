@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.12";
+  const VERSION = "0.3.11";
   const WATCHDOG_MS = 12_000;
   const PRODUCTION_URL = "https://moyo.bluemoon.works/";
   const params = new URLSearchParams(location.search);
