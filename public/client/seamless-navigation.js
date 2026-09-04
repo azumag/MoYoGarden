@@ -159,9 +159,14 @@ function warmRegion(regionId) {
   if (Date.now() - lastWarm < PREFETCH_REFRESH_MS) return;
 
   regionWarmAt.set(regionId, Date.now());
-  const request = fetch(`/api/health?region=${encodeURIComponent(regionId)}`, { cache: "no-store" })
-    .then((response) => {
-      if (!response.ok) throw new Error(`health HTTP ${response.status}`);
+  // /api/health is intentionally passive on the Worker, so it loads the Durable Object
+  // without switching an idle neighbor back to active tick cadence. A normal snapshot
+  // request marks the region active; cancel the body after headers to keep this warm-up
+  // cheap while the existing window prefetch remains responsible for preview state.
+  const request = fetch(`/api/world/snapshot?region=${encodeURIComponent(regionId)}`, { cache: "no-store" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`warm snapshot HTTP ${response.status}`);
+      await response.body?.cancel();
     })
     .catch((error) => {
       regionWarmAt.delete(regionId);
