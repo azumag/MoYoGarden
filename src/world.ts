@@ -233,12 +233,16 @@ function ensureSpawnArea(tiles: Tile[], width: number, height: number, spawn: Gr
       forceTile(tiles, width, position, "plain");
     }
   }
-  const resourceSites = [
-    { step: HEX_GRID_STEPS[0], terrain: "forest" as const, resource: "wood" as const },
-    { step: HEX_GRID_STEPS[3], terrain: "forest" as const, resource: "wood" as const },
-    { step: HEX_GRID_STEPS[1], terrain: "hill" as const, resource: "stone" as const },
-    { step: HEX_GRID_STEPS[4], terrain: "hill" as const, resource: "stone" as const },
-    { step: HEX_GRID_STEPS[5], terrain: "plain" as const, resource: "food" as const },
+  const resourceSites: ReadonlyArray<{
+    step: GridPosition;
+    terrain: Tile["terrain"];
+    resource: ResourceKind;
+  }> = [
+    { step: { x: 1, y: 0 }, terrain: "forest", resource: "wood" },
+    { step: { x: -1, y: 0 }, terrain: "forest", resource: "wood" },
+    { step: { x: 1, y: -1 }, terrain: "hill", resource: "stone" },
+    { step: { x: -1, y: 1 }, terrain: "hill", resource: "stone" },
+    { step: { x: 0, y: 1 }, terrain: "plain", resource: "food" },
   ];
   for (const site of resourceSites) {
     const position = { x: spawn.x + site.step.x * 2, y: spawn.y + site.step.y * 2 };
