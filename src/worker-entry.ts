@@ -1,6 +1,7 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
-import baseWorker, { RegionDurableObject } from "./worker.js";
+import { RegionDurableObject } from "./handoff-region.js";
 import { regionHexTopology } from "./region-topology.js";
+import baseWorker from "./worker.js";
 
 interface WorkerEnv {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -98,10 +99,24 @@ function jsonResponse(response: Response, payload: unknown): Response {
   });
 }
 
+function hiddenInternalEndpoint(): Response {
+  return new Response(JSON.stringify({ error: "not found" }), {
+    status: 404,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    const response = await baseWorker.fetch(request, env);
     const url = new URL(request.url);
+    // Internal handoff endpoints are reachable only through direct Durable Object
+    // stub calls. Never proxy them from the public Worker surface.
+    if (url.pathname.startsWith("/api/internal/handoff/")) return hiddenInternalEndpoint();
+
+    const response = await baseWorker.fetch(request, env);
 
     if (request.method !== "GET" || !response.ok) return response;
 
