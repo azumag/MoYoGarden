@@ -74,7 +74,7 @@ export class RegionDurableObject extends HandoffRegionDurableObject {
     super(state, moveEnv);
   }
 
-  private async ensureAssigned(request: Request): Promise<Response | undefined> {
+  private async ensureMoveAssigned(request: Request): Promise<Response | undefined> {
     const url = new URL(request.url);
     url.pathname = "/api/health";
     url.search = "";
@@ -128,7 +128,7 @@ export class RegionDurableObject extends HandoffRegionDurableObject {
 
     const commandId = typeof raw.id === "string" ? raw.id.trim() : "";
     if (!STABLE_COMMAND_ID.test(commandId)) {
-      const assignmentError = await this.ensureAssigned(request);
+      const assignmentError = await this.ensureMoveAssigned(request);
       if (assignmentError !== undefined) return assignmentError;
       const state = runtimeAccess(this).runtime.snapshot();
       const agent = state.agents.find((entry) => entry.id === agentId);
@@ -147,7 +147,7 @@ export class RegionDurableObject extends HandoffRegionDurableObject {
       return json({ error: "command token required" }, 401);
     }
 
-    const assignmentError = await this.ensureAssigned(request);
+    const assignmentError = await this.ensureMoveAssigned(request);
     if (assignmentError !== undefined) return assignmentError;
     const access = runtimeAccess(this);
     const state: WorldState = access.runtime.snapshot();
