@@ -67,16 +67,16 @@ export function resolveRegionPrefetch(regionLayout, centerRegionId, target, marg
     const east = sameRow
       .filter((entry) => entry.origin.x > center.origin.x)
       .sort((a, b) => a.origin.x - b.origin.x || a.id.localeCompare(b.id));
-    const far = east[1];
-    return far === undefined ? null : { regionId: far.id, direction: "east" };
+    const next = east[0];
+    return next === undefined ? null : { regionId: next.id, direction: "east" };
   }
 
   if (target.x <= -halfWidth + safeMargin) {
     const west = sameRow
       .filter((entry) => entry.origin.x < center.origin.x)
       .sort((a, b) => b.origin.x - a.origin.x || a.id.localeCompare(b.id));
-    const far = west[1];
-    return far === undefined ? null : { regionId: far.id, direction: "west" };
+    const next = west[0];
+    return next === undefined ? null : { regionId: next.id, direction: "west" };
   }
 
   return null;
