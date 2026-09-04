@@ -33,6 +33,7 @@ import {
   getTile,
   inBounds,
   isPassable,
+  migrateWorldToHexGrid,
   nearestFactionStructure,
 } from "./world.js";
 
@@ -934,6 +935,7 @@ export function simulate(
   config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
 ): SimulationResult {
   const state = structuredClone(previousState);
+  migrateWorldToHexGrid(state);
   updateTileHydrology(state);
   state.tick += 1;
   state.revision += 1;
