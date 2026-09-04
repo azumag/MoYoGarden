@@ -4,6 +4,12 @@ import { createRandom } from "./prng.js";
 export const TARGET_WORLD_WIDTH = 40;
 export const TARGET_WORLD_HEIGHT = 24;
 
+export interface WorldCoordinateSpace {
+  worldSeed?: number;
+  originX?: number;
+  originY?: number;
+}
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -22,26 +28,30 @@ function coordinateSeed(seed: number, x: number, y: number): number {
   return (seed ^ xHash ^ yHash ^ 0x27d4eb2d) >>> 0;
 }
 
-function frontierConditions(
-  seed: number,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
+/**
+ * Low-level terrain conditions sampled from a shared world seed and absolute
+ * grid coordinate. The periods are expressed in tiles rather than normalized
+ * by the current extent, so growing or chunking the world never rescales the
+ * underlying landform field.
+ */
+export function sampleWorldConditions(
+  worldSeed: number,
+  globalX: number,
+  globalY: number,
 ): { elevation: number; moisture: number } {
-  const nx = (x + 0.5) / Math.max(1, width);
-  const ny = (y + 0.5) / Math.max(1, height);
-  const phaseA = seededUnit(seed, 0x41c64e6d) * Math.PI * 2;
-  const phaseB = seededUnit(seed, 0x9e3779b9) * Math.PI * 2;
-  const phaseC = seededUnit(seed, 0x7f4a7c15) * Math.PI * 2;
+  const x = globalX + 0.5;
+  const y = globalY + 0.5;
+  const phaseA = seededUnit(worldSeed, 0x41c64e6d) * Math.PI * 2;
+  const phaseB = seededUnit(worldSeed, 0x9e3779b9) * Math.PI * 2;
+  const phaseC = seededUnit(worldSeed, 0x7f4a7c15) * Math.PI * 2;
   const broad = (
-    Math.sin(nx * Math.PI * 2.2 + phaseA) +
-    Math.cos(ny * Math.PI * 2.6 + phaseB)
+    Math.sin((x / 28) * Math.PI * 2 + phaseA) +
+    Math.cos((y / 24) * Math.PI * 2 + phaseB)
   ) * 0.5;
-  const ridge = Math.sin((nx * 1.7 + ny * 1.15) * Math.PI * 3.2 + phaseC);
-  const local = seededUnit(seed, coordinateSeed(seed, x, y)) - 0.5;
+  const ridge = Math.sin((x / 19 + y / 23) * Math.PI * 2 + phaseC);
+  const local = seededUnit(worldSeed, coordinateSeed(worldSeed, globalX, globalY)) - 0.5;
   const elevation = clamp01(0.46 + broad * 0.18 + ridge * 0.1 + local * 0.075);
-  const moistureWave = Math.cos((nx * 0.85 - ny * 1.35) * Math.PI * 2.4 + phaseB);
+  const moistureWave = Math.cos((x / 34 - y / 29) * Math.PI * 2 + phaseB);
   const moisture = clamp01(
     0.43 + moistureWave * 0.17 + (1 - elevation) * 0.31 + local * 0.08,
   );
@@ -49,24 +59,26 @@ function frontierConditions(
 }
 
 function createFrontierTile(
-  seed: number,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
+  localX: number,
+  localY: number,
+  worldSeed: number,
+  originX: number,
+  originY: number,
 ): Tile {
-  const random = createRandom(coordinateSeed(seed, x, y));
-  const conditions = frontierConditions(seed, x, y, width, height);
+  const globalX = originX + localX;
+  const globalY = originY + localY;
+  const random = createRandom(coordinateSeed(worldSeed, globalX, globalY));
+  const conditions = sampleWorldConditions(worldSeed, globalX, globalY);
 
   if (conditions.elevation < 0.245) {
-    return { x, y, terrain: "water", elevation: 0 };
+    return { x: localX, y: localY, terrain: "water", elevation: 0 };
   }
 
   if (conditions.elevation > 0.665) {
     const maxAmount = random.int(18, 34);
     return {
-      x,
-      y,
+      x: localX,
+      y: localY,
       terrain: "hill",
       elevation: Math.max(0.03, conditions.elevation),
       resource: { kind: "stone", amount: maxAmount, maxAmount },
@@ -76,8 +88,8 @@ function createFrontierTile(
   if (conditions.moisture > 0.585) {
     const maxAmount = random.int(20, 38);
     return {
-      x,
-      y,
+      x: localX,
+      y: localY,
       terrain: "forest",
       elevation: Math.max(0.03, conditions.elevation),
       resource: { kind: "wood", amount: maxAmount, maxAmount },
@@ -85,8 +97,8 @@ function createFrontierTile(
   }
 
   const tile: Tile = {
-    x,
-    y,
+    x: localX,
+    y: localY,
     terrain: "plain",
     elevation: Math.max(0.03, conditions.elevation),
   };
@@ -100,14 +112,16 @@ function createFrontierTile(
 
 /**
  * Grow older persisted worlds without moving any existing grid coordinate.
- * The added east/south frontier is deterministic from seed + position, so a
- * repeated migration produces exactly the same land while keeping saved BOT,
- * structure, command and event coordinates valid.
+ * New cells are sampled from an extent-invariant absolute coordinate field.
+ * Callers that split one world into chunks can pass the shared world seed and
+ * each chunk's global origin while persisted BOT, structure, command and event
+ * coordinates remain local and untouched.
  */
 export function ensureWorldExtent(
   state: WorldState,
   targetWidth = TARGET_WORLD_WIDTH,
   targetHeight = TARGET_WORLD_HEIGHT,
+  coordinateSpace: WorldCoordinateSpace = {},
 ): boolean {
   const width = Math.max(state.width, targetWidth);
   const height = Math.max(state.height, targetHeight);
@@ -117,6 +131,9 @@ export function ensureWorldExtent(
   const oldHeight = state.height;
   const oldTiles = state.tiles;
   const tiles: Tile[] = [];
+  const worldSeed = coordinateSpace.worldSeed ?? state.seed;
+  const originX = Math.trunc(coordinateSpace.originX ?? 0);
+  const originY = Math.trunc(coordinateSpace.originY ?? 0);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -127,7 +144,7 @@ export function ensureWorldExtent(
           continue;
         }
       }
-      tiles.push(createFrontierTile(state.seed, x, y, width, height));
+      tiles.push(createFrontierTile(x, y, worldSeed, originX, originY));
     }
   }
 
