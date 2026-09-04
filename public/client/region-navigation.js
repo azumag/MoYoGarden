@@ -67,48 +67,22 @@ export function resolveRegionPrefetch(regionLayout, centerRegionId, target, marg
     : 0;
   if (safeMarginX <= 0 || safeMarginZ <= 0) return null;
 
-  const sameRow = regionLayout
-    .filter((entry) => validEntry(entry) && entry.id !== centerRegionId)
-    .filter((entry) => {
-      const centerMinY = center.origin.y;
-      const centerMaxY = center.origin.y + center.extent.height;
-      const entryMinY = entry.origin.y;
-      const entryMaxY = entry.origin.y + entry.extent.height;
-      return entryMinY < centerMaxY && entryMaxY > centerMinY;
-    });
-
-  // Keep the existing physical east/west handoff warm while the stored regions are
-  // still laid out as rectangles. The four diagonal directions below use the new
-  // logical hex topology and can become physical handoff directions independently.
-  if (target.x >= halfWidth - safeMarginX) {
-    const east = sameRow
-      .filter((entry) => entry.origin.x > center.origin.x)
-      .sort((a, b) => a.origin.x - b.origin.x || a.id.localeCompare(b.id));
-    const next = east[0];
-    return next === undefined ? null : { regionId: next.id, direction: "east" };
+  // All six prewarm directions now resolve through the logical axial topology.
+  // Physical rectangular origins remain a compatibility detail for camera rebase,
+  // but they no longer decide which region is warmed ahead of movement.
+  let direction;
+  if (target.x >= halfWidth - safeMarginX) direction = "east";
+  else if (target.x <= -halfWidth + safeMarginX) direction = "west";
+  else if (target.z <= -halfHeight + safeMarginZ) {
+    direction = target.x >= 0 ? "northEast" : "northWest";
+  } else if (target.z >= halfHeight - safeMarginZ) {
+    direction = target.x >= 0 ? "southEast" : "southWest";
+  } else {
+    return null;
   }
 
-  if (target.x <= -halfWidth + safeMarginX) {
-    const west = sameRow
-      .filter((entry) => entry.origin.x < center.origin.x)
-      .sort((a, b) => b.origin.x - a.origin.x || a.id.localeCompare(b.id));
-    const next = west[0];
-    return next === undefined ? null : { regionId: next.id, direction: "west" };
-  }
-
-  if (target.z <= -halfHeight + safeMarginZ) {
-    const direction = target.x >= 0 ? "northEast" : "northWest";
-    const regionId = resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction);
-    return regionId === null ? null : { regionId, direction };
-  }
-
-  if (target.z >= halfHeight - safeMarginZ) {
-    const direction = target.x >= 0 ? "southEast" : "southWest";
-    const regionId = resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction);
-    return regionId === null ? null : { regionId, direction };
-  }
-
-  return null;
+  const regionId = resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction);
+  return regionId === null ? null : { regionId, direction };
 }
 
 function resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction) {

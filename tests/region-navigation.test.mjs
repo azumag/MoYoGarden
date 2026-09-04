@@ -58,19 +58,16 @@ test("region rebase ignores targets outside every configured chunk", () => {
   assert.equal(resolveRegionRebase(layout, "garden-3", { x: 60.5, z: 0 }), null);
 });
 
-test("region prefetch preserves immediate east/west neighbors during hex migration", () => {
-  assert.equal(resolveRegionPrefetch(extendedLayout, "garden-2", { x: 10, z: 0 }, 6), null);
-  assert.deepEqual(resolveRegionPrefetch(extendedLayout, "garden-2", { x: 14.5, z: 0 }, 6), {
-    regionId: "garden-3",
+test("region prefetch resolves all six directions from the same logical hex topology", () => {
+  assert.equal(resolveRegionPrefetch(hexLayout, "garden-c", { x: 10, z: 0 }, 6), null);
+  assert.deepEqual(resolveRegionPrefetch(hexLayout, "garden-c", { x: 14.5, z: 0 }, 6), {
+    regionId: "garden-e",
     direction: "east",
   });
-  assert.deepEqual(resolveRegionPrefetch(extendedLayout, "garden-2", { x: -14.5, z: 0 }, 6), {
-    regionId: "garden-1",
+  assert.deepEqual(resolveRegionPrefetch(hexLayout, "garden-c", { x: -14.5, z: 0 }, 6), {
+    regionId: "garden-w",
     direction: "west",
   });
-});
-
-test("region prefetch can warm all four diagonal hex neighbors", () => {
   assert.deepEqual(resolveRegionPrefetch(hexLayout, "garden-c", { x: 1, z: -7 }, 6), {
     regionId: "garden-ne",
     direction: "northEast",
@@ -89,27 +86,20 @@ test("region prefetch can warm all four diagonal hex neighbors", () => {
   });
 });
 
-test("region prefetch leaves missing diagonal neighbors cold", () => {
+test("region prefetch no longer uses physical same-row adjacency as a topology fallback", () => {
+  assert.equal(resolveRegionPrefetch(extendedLayout, "garden-2", { x: 14.5, z: 0 }, 6), null);
+  assert.deepEqual(resolveRegionPrefetch(extendedLayout, "garden-2", { x: -14.5, z: 0 }, 6), {
+    regionId: "garden-3",
+    direction: "west",
+  });
+});
+
+test("region prefetch leaves missing hex neighbors cold", () => {
   assert.deepEqual(resolveRegionPrefetch(layout, "garden-1", { x: 1, z: -7 }, 6), {
     regionId: "garden-3",
     direction: "northEast",
   });
   assert.equal(resolveRegionPrefetch(layout, "garden-1", { x: -1, z: -7 }, 6), null);
   assert.equal(resolveRegionPrefetch(layout, "garden-1", { x: 1, z: 7 }, 6), null);
-});
-
-test("region prefetch works at the configured world edges when a physical neighbor exists", () => {
-  assert.deepEqual(resolveRegionPrefetch(layout, "garden-2", { x: 18, z: 0 }, 6), {
-    regionId: "garden-3",
-    direction: "east",
-  });
-  assert.deepEqual(resolveRegionPrefetch(layout, "garden-2", { x: -18, z: 0 }, 6), {
-    regionId: "garden-1",
-    direction: "west",
-  });
-  assert.deepEqual(resolveRegionPrefetch(layout, "garden-1", { x: 18, z: 0 }, 6), {
-    regionId: "garden-2",
-    direction: "east",
-  });
-  assert.equal(resolveRegionPrefetch(layout, "garden-1", { x: -18, z: 0 }, 6), null);
+  assert.equal(resolveRegionPrefetch(layout, "garden-3", { x: 18, z: 0 }, 6), null);
 });
