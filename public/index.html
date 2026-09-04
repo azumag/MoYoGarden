@@ -104,7 +104,11 @@
           <div><p class="eyebrow">CONNECTION</p><h2>操作設定</h2></div>
           <button id="settings-close" class="icon-button" type="button" aria-label="閉じる">×</button>
         </div>
-        <label>Region<select id="region-select"></select></label>
+        <p class="settings-note">Region はワールド内の移動に合わせて自動的に切り替わります。</p>
+        <details id="manual-region-control">
+          <summary>復旧・デバッグ用のRegion指定</summary>
+          <label>Region<select id="region-select"></select></label>
+        </details>
         <label>Bearer token<input id="token-input" type="password" autocomplete="off" placeholder="COMMAND_TOKEN / ADMIN_TOKEN" /></label>
         <p class="settings-note">
           品質はURLの <code>?quality=balanced</code>、<code>?quality=high</code>、<code>?quality=ultra</code> で指定できます。
