@@ -14,7 +14,7 @@ import {
   TARGET_WORLD_HEIGHT,
   TARGET_WORLD_WIDTH,
 } from "./world-scale.js";
-import { HEX_DIRECTIONS, regionHexTopology } from "./region-topology.js";
+import { HEX_DIRECTIONS, hexDistance, regionHexTopology } from "./region-topology.js";
 
 interface Env {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -90,13 +90,16 @@ export function regionWindow(
   height = TARGET_WORLD_HEIGHT,
 ): RegionLayoutEntry[] {
   const layout = regionLayout(regionIds, width, height);
-  const centerIndex = layout.findIndex((entry) => entry.id === centerRegionId);
-  if (centerIndex < 0) return [];
+  const topology = regionHexTopology(regionIds, width, height);
+  const center = topology.find((entry) => entry.id === centerRegionId);
+  if (center === undefined) return [];
   const safeRadius = Math.max(0, Math.min(4, Math.floor(radius)));
-  return layout.slice(
-    Math.max(0, centerIndex - safeRadius),
-    Math.min(layout.length, centerIndex + safeRadius + 1),
+  const visibleIndexes = new Set(
+    topology
+      .filter((entry) => hexDistance(entry.axial, center.axial) <= safeRadius)
+      .map((entry) => entry.index),
   );
+  return layout.filter((entry) => visibleIndexes.has(entry.index));
 }
 
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
