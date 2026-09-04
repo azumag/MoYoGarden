@@ -81,6 +81,7 @@
   preload(`/client/sky-fix.js?v=${VERSION}`);
   preload(`/client/hex-footprint-rendering.js?v=${VERSION}`);
   preload(`/client/seamless-navigation.js?v=${VERSION}`);
+  preload(`/client/hex-neighbor-preview.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
@@ -99,6 +100,11 @@
       await import(`/client/seamless-navigation.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: seamless navigation extension failed; keeping local camera bounds", error);
+    }
+    try {
+      await import(`/client/hex-neighbor-preview.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: hex neighbor preview failed; keeping physical neighbor placement", error);
     }
 
     const moduleScript = document.createElement("script");
