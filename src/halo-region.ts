@@ -109,7 +109,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     };
   }
 
-  private stub(regionId: string): DurableObjectStub {
+  private haloStub(regionId: string): DurableObjectStub {
     return this.haloEnv.REGIONS.get(this.haloEnv.REGIONS.idFromName(regionId));
   }
 
@@ -119,7 +119,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   ): Promise<HexHaloEdgeSnapshot | undefined> {
     const url = new URL("https://moyo.internal/api/internal/halo/edge");
     url.searchParams.set("direction", direction);
-    const response = await this.stub(neighborRegionId).fetch(new Request(url, {
+    const response = await this.haloStub(neighborRegionId).fetch(new Request(url, {
       method: "GET",
       headers: { "x-moyo-region-internal": neighborRegionId },
     }));
