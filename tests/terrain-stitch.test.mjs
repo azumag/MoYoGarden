@@ -21,15 +21,36 @@ test("boundary height collection keeps the visible top edge", () => {
   assert.equal(heights.has(terrainVertexKey(19, -1)), false);
 });
 
-test("preview corners prefer the center-region edge and otherwise average adjacent tiles", () => {
+test("preview corners blend smoothly away from the center-region edge", () => {
+  const tiles = new Map([
+    [terrainVertexKey(20.5, 0.5), 0.4],
+    [terrainVertexKey(20.5, 1.5), 0.6],
+    [terrainVertexKey(21.5, 0.5), 0.8],
+    [terrainVertexKey(21.5, 1.5), 1.0],
+    [terrainVertexKey(22.5, 0.5), 0.2],
+    [terrainVertexKey(22.5, 1.5), 0.4],
+    [terrainVertexKey(23.5, 0.5), 0.6],
+    [terrainVertexKey(23.5, 1.5), 0.8],
+  ]);
+  const boundary = new Map([[terrainVertexKey(20, 1), 0.73]]);
+
+  assert.equal(resolvePreviewCornerHeight(20, 1, tiles, boundary), 0.73);
+
+  const firstInterior = resolvePreviewCornerHeight(21, 1, tiles, boundary);
+  assert.ok(Math.abs(firstInterior - 0.7222222222) < 1e-9);
+  assert.ok(firstInterior > 0.7 && firstInterior < 0.73);
+
+  assert.equal(resolvePreviewCornerHeight(23, 1, tiles, boundary), 0.5);
+});
+
+test("preview seam blending only follows axis-aligned boundary samples", () => {
   const tiles = new Map([
     [terrainVertexKey(20.5, 0.5), 0.4],
     [terrainVertexKey(20.5, 1.5), 0.6],
     [terrainVertexKey(21.5, 0.5), 0.8],
     [terrainVertexKey(21.5, 1.5), 1.0],
   ]);
-  const boundary = new Map([[terrainVertexKey(20, 1), 0.73]]);
+  const unrelatedBoundary = new Map([[terrainVertexKey(20, 5), 0.95]]);
 
-  assert.equal(resolvePreviewCornerHeight(20, 1, tiles, boundary), 0.73);
-  assert.equal(resolvePreviewCornerHeight(21, 1, tiles, boundary), 0.7);
+  assert.equal(resolvePreviewCornerHeight(21, 1, tiles, unrelatedBoundary), 0.7);
 });
