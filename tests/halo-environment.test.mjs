@@ -14,9 +14,9 @@ import { createInitialWorld } from "../dist-ts/src/world.js";
 function fixture() {
   const state = createInitialWorld({ seed: 9301, width: 40, height: 24, regionId: "garden-1" });
   for (const tile of state.tiles) {
-    if (tile.terrain !== "water") tile.terrain = "plain";
+    tile.terrain = "plain";
     delete tile.resource;
-    tile.elevation = tile.terrain === "water" ? 0 : 0.8;
+    tile.elevation = 0.8;
     tile.drainage = 0;
     delete tile.flowTo;
     tile.erosionPressure = 0;
