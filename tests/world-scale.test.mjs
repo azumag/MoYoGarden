@@ -73,6 +73,27 @@ test("world conditions use shared seed plus absolute coordinates", () => {
   assert.deepEqual(a.resource, b.resource);
 });
 
+test("terrain conditions derive bounded slope, convergence and wetness from the same field", () => {
+  const seed = 424242;
+  const samples = [];
+  for (let y = 0; y < 24; y += 3) {
+    for (let x = 0; x < 40; x += 3) {
+      samples.push(sampleWorldConditions(seed, x, y));
+    }
+  }
+
+  for (const sample of samples) {
+    for (const value of [sample.elevation, sample.moisture, sample.slope, sample.convergence, sample.wetness]) {
+      assert.ok(Number.isFinite(value));
+      assert.ok(value >= 0 && value <= 1);
+    }
+  }
+
+  assert.ok(Math.max(...samples.map((sample) => sample.slope)) - Math.min(...samples.map((sample) => sample.slope)) > 0.1);
+  assert.ok(Math.max(...samples.map((sample) => sample.wetness)) - Math.min(...samples.map((sample) => sample.wetness)) > 0.1);
+  assert.ok(samples.some((sample) => Math.abs(sample.wetness - sample.moisture) > 0.01));
+});
+
 test("runtime expands persisted default worlds but respects explicit compact test worlds", () => {
   const persisted = createInitialWorld({ seed: 24680, width: 32, height: 20 });
   const expanded = new WorldRuntime({ state: persisted }).snapshot();

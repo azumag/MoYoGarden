@@ -10,6 +10,14 @@ export interface WorldCoordinateSpace {
   originY?: number;
 }
 
+export interface WorldConditions {
+  elevation: number;
+  moisture: number;
+  slope: number;
+  convergence: number;
+  wetness: number;
+}
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -28,17 +36,7 @@ function coordinateSeed(seed: number, x: number, y: number): number {
   return (seed ^ xHash ^ yHash ^ 0x27d4eb2d) >>> 0;
 }
 
-/**
- * Low-level terrain conditions sampled from a shared world seed and absolute
- * grid coordinate. The periods are expressed in tiles rather than normalized
- * by the current extent, so growing or chunking the world never rescales the
- * underlying landform field.
- */
-export function sampleWorldConditions(
-  worldSeed: number,
-  globalX: number,
-  globalY: number,
-): { elevation: number; moisture: number } {
+function elevationAt(worldSeed: number, globalX: number, globalY: number): number {
   const x = globalX + 0.5;
   const y = globalY + 0.5;
   const phaseA = seededUnit(worldSeed, 0x41c64e6d) * Math.PI * 2;
@@ -50,12 +48,50 @@ export function sampleWorldConditions(
   ) * 0.5;
   const ridge = Math.sin((x / 19 + y / 23) * Math.PI * 2 + phaseC);
   const local = seededUnit(worldSeed, coordinateSeed(worldSeed, globalX, globalY)) - 0.5;
-  const elevation = clamp01(0.46 + broad * 0.18 + ridge * 0.1 + local * 0.075);
+  return clamp01(0.46 + broad * 0.18 + ridge * 0.1 + local * 0.075);
+}
+
+/**
+ * Low-level terrain conditions sampled from a shared world seed and absolute
+ * grid coordinate. The periods are expressed in tiles rather than normalized
+ * by the current extent, so growing or chunking the world never rescales the
+ * underlying landform field.
+ *
+ * `slope`, `convergence` and `wetness` are derived from the same elevation and
+ * moisture fields instead of from named biome categories. They are intentionally
+ * reusable by vegetation, erosion, agriculture and future climate systems.
+ */
+export function sampleWorldConditions(
+  worldSeed: number,
+  globalX: number,
+  globalY: number,
+): WorldConditions {
+  const x = globalX + 0.5;
+  const y = globalY + 0.5;
+  const phaseB = seededUnit(worldSeed, 0x9e3779b9) * Math.PI * 2;
+  const elevation = elevationAt(worldSeed, globalX, globalY);
+  const local = seededUnit(worldSeed, coordinateSeed(worldSeed, globalX, globalY)) - 0.5;
   const moistureWave = Math.cos((x / 34 - y / 29) * Math.PI * 2 + phaseB);
   const moisture = clamp01(
     0.43 + moistureWave * 0.17 + (1 - elevation) * 0.31 + local * 0.08,
   );
-  return { elevation, moisture };
+
+  const west = elevationAt(worldSeed, globalX - 1, globalY);
+  const east = elevationAt(worldSeed, globalX + 1, globalY);
+  const north = elevationAt(worldSeed, globalX, globalY - 1);
+  const south = elevationAt(worldSeed, globalX, globalY + 1);
+  const rawSlope = Math.hypot(east - west, south - north) * 0.5;
+  const slope = clamp01(rawSlope / 0.16);
+  const neighborMean = (west + east + north + south) * 0.25;
+  const convergence = clamp01(0.5 + (neighborMean - elevation) * 6);
+  const wetness = clamp01(
+    moisture +
+      (1 - elevation) * 0.08 +
+      (convergence - 0.5) * 0.16 -
+      slope * 0.12,
+  );
+
+  return { elevation, moisture, slope, convergence, wetness };
 }
 
 function createFrontierTile(
@@ -74,8 +110,11 @@ function createFrontierTile(
     return { x: localX, y: localY, terrain: "water", elevation: 0 };
   }
 
-  if (conditions.elevation > 0.665) {
-    const maxAmount = random.int(18, 34);
+  if (
+    conditions.elevation > 0.665 ||
+    (conditions.elevation > 0.54 && conditions.slope > 0.68)
+  ) {
+    const maxAmount = random.int(18, 34) + Math.round(conditions.slope * 8);
     return {
       x: localX,
       y: localY,
@@ -85,8 +124,8 @@ function createFrontierTile(
     };
   }
 
-  if (conditions.moisture > 0.585) {
-    const maxAmount = random.int(20, 38);
+  if (conditions.wetness > 0.585 && conditions.slope < 0.78) {
+    const maxAmount = random.int(18, 28) + Math.round(conditions.wetness * 10);
     return {
       x: localX,
       y: localY,
@@ -102,9 +141,14 @@ function createFrontierTile(
     terrain: "plain",
     elevation: Math.max(0.03, conditions.elevation),
   };
-  const foodChance = 0.18 + conditions.moisture * 0.34;
+  const foodChance = clamp01(
+    0.1 +
+      conditions.wetness * 0.38 +
+      conditions.convergence * 0.06 -
+      conditions.slope * 0.16,
+  );
   if (random.next() < foodChance) {
-    const maxAmount = random.int(12, 28);
+    const maxAmount = random.int(12, 24) + Math.round(conditions.wetness * 6);
     tile.resource = { kind: "food", amount: maxAmount, maxAmount };
   }
   return tile;
