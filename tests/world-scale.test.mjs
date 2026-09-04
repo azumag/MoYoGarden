@@ -11,9 +11,17 @@ import {
 } from "../dist-ts/src/world-scale.js";
 import { createInitialWorld, validateWorldState } from "../dist-ts/src/world.js";
 
-test("legacy default worlds gain a deterministic hex-compatible frontier", () => {
+function resourceTotals(state) {
+  return state.tiles.reduce((totals, tile) => {
+    if (tile.resource) totals[tile.resource.kind] += tile.resource.amount;
+    return totals;
+  }, { wood: 0, stone: 0, food: 0 });
+}
+
+test("legacy default worlds gain a deterministic hex-compatible frontier without losing old resources", () => {
   const legacy = createInitialWorld({ seed: 98765, width: 32, height: 20 });
   const originalTiles = new Map(legacy.tiles.map((tile) => [`${tile.x}:${tile.y}`, structuredClone(tile)]));
+  const resourcesBefore = resourceTotals(legacy);
 
   assert.equal(ensureWorldExtent(legacy), true);
   assert.equal(legacy.width, TARGET_WORLD_WIDTH);
@@ -23,7 +31,18 @@ test("legacy default worlds gain a deterministic hex-compatible frontier", () =>
   for (const [key, tile] of originalTiles) {
     const [x, y] = key.split(":").map(Number);
     const next = legacy.tiles[y * legacy.width + x];
-    if (isHexGridCell(legacy, { x, y })) assert.deepEqual(next, tile);
+    if (!isHexGridCell(legacy, { x, y })) continue;
+    assert.equal(next.terrain, tile.terrain);
+    assert.equal(next.elevation, tile.elevation);
+    if (tile.resource) {
+      assert.equal(next.resource?.kind, tile.resource.kind);
+      assert.ok((next.resource?.amount ?? 0) >= tile.resource.amount);
+    }
+  }
+
+  const resourcesAfter = resourceTotals(legacy);
+  for (const kind of ["wood", "stone", "food"]) {
+    assert.ok(resourcesAfter[kind] >= resourcesBefore[kind]);
   }
 
   const inactive = legacy.tiles.filter((tile) => !isHexGridCell(legacy, tile));
@@ -72,40 +91,54 @@ test("world conditions use shared seed plus absolute axial coordinates", () => {
   assert.deepEqual(a.resource, b.resource);
 });
 
-test("persisted hex-side elevations migrate toward the shared global frame without replacing terrain", () => {
+test("persisted west/east hex-side elevations migrate toward the shared global frame without replacing terrain", () => {
   const seed = 424242;
   const region = createInitialWorld({ seed: 991, width: 40, height: 24 });
   const y = 11;
-  const edgeX = 8;
+  const westX = 8;
+  const eastX = 30;
   const innerX = 12;
-  const edge = region.tiles[y * region.width + edgeX];
+  const west = region.tiles[y * region.width + westX];
+  const east = region.tiles[y * region.width + eastX];
   const inner = region.tiles[y * region.width + innerX];
-  assert.ok(edge);
+  assert.ok(west);
+  assert.ok(east);
   assert.ok(inner);
-  assert.ok(isHexGridCell(region, edge));
+  assert.ok(isHexGridCell(region, west));
+  assert.ok(isHexGridCell(region, east));
 
-  edge.terrain = "forest";
-  edge.resource = { kind: "wood", amount: 7, maxAmount: 31 };
-  edge.elevation = 0.9;
+  west.terrain = "forest";
+  west.resource = { kind: "wood", amount: 7, maxAmount: 31 };
+  west.elevation = 0.9;
+  east.terrain = "hill";
+  east.resource = { kind: "stone", amount: 5, maxAmount: 29 };
+  east.elevation = 0.88;
   inner.elevation = 0.13;
-  const preservedResource = structuredClone(edge.resource);
+  const preservedWestResource = structuredClone(west.resource);
+  const preservedEastResource = structuredClone(east.resource);
 
   const changed = alignRegionBoundaryElevations(
     region,
     seed,
     40,
     0,
-    { west: true },
+    { west: true, east: true },
     4,
   );
 
   assert.ok(changed > 0);
   assert.equal(
-    edge.elevation,
-    Math.max(0.03, sampleWorldConditions(seed, 40 + edgeX, y).elevation),
+    west.elevation,
+    Math.max(0.03, sampleWorldConditions(seed, 40 + westX, y).elevation),
   );
-  assert.equal(edge.terrain, "forest");
-  assert.deepEqual(edge.resource, preservedResource);
+  assert.equal(
+    east.elevation,
+    Math.max(0.03, sampleWorldConditions(seed, 40 + eastX, y).elevation),
+  );
+  assert.equal(west.terrain, "forest");
+  assert.equal(east.terrain, "hill");
+  assert.deepEqual(west.resource, preservedWestResource);
+  assert.deepEqual(east.resource, preservedEastResource);
   assert.equal(inner.elevation, 0.13);
 });
 
