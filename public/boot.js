@@ -79,6 +79,7 @@
   };
   preload("/vendor/three-r185/build/three.module.min.js");
   preload(`/client/sky-fix.js?v=${VERSION}`);
+  preload(`/client/hex-footprint-rendering.js?v=${VERSION}`);
   preload(`/client/seamless-navigation.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
@@ -88,6 +89,11 @@
       await import(`/client/sky-fix.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: sky backdrop patch failed; continuing with base renderer", error);
+    }
+    try {
+      await import(`/client/hex-footprint-rendering.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: hex footprint clipping failed; keeping rectangular rendering", error);
     }
     try {
       await import(`/client/seamless-navigation.js?v=${VERSION}`);
