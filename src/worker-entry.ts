@@ -1,5 +1,5 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
-import { RegionDurableObject } from "./move-handoff-region.js";
+import { RegionDurableObject } from "./halo-region.js";
 import { regionHexTopology } from "./region-topology.js";
 import baseWorker from "./worker.js";
 
@@ -112,9 +112,14 @@ function hiddenInternalEndpoint(): Response {
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
-    // Internal handoff endpoints are reachable only through direct Durable Object
-    // stub calls. Never proxy them from the public Worker surface.
-    if (url.pathname.startsWith("/api/internal/handoff/")) return hiddenInternalEndpoint();
+    // Internal cross-region endpoints are reachable only through direct Durable
+    // Object stub calls. Never proxy them from the public Worker surface.
+    if (
+      url.pathname.startsWith("/api/internal/handoff/") ||
+      url.pathname.startsWith("/api/internal/halo/")
+    ) {
+      return hiddenInternalEndpoint();
+    }
 
     const response = await baseWorker.fetch(request, env);
 
