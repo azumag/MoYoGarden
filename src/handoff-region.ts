@@ -146,7 +146,7 @@ export class RegionDurableObject extends BaseRegionDurableObject {
     await this.handoffCtx.storage.put(INCOMING_HANDOFF_KEY, structuredClone(records));
   }
 
-  private stub(regionId: string): DurableObjectStub<RegionDurableObject> {
+  private stub(regionId: string): DurableObjectStub {
     return this.handoffEnv.REGIONS.get(this.handoffEnv.REGIONS.idFromName(regionId));
   }
 
@@ -367,7 +367,7 @@ export class RegionDurableObject extends BaseRegionDurableObject {
     return this.continueOutgoing(created.envelope);
   }
 
-  async fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith(INTERNAL_PREFIX) || url.pathname === ADMIN_HANDOFF_PATH) {
       const assignmentError = await this.ensureAssigned(request);
