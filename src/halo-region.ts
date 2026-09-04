@@ -1,7 +1,9 @@
+import { applyHaloRegrowthCompensation } from "./halo-environment.js";
 import {
   buildHexHaloLinks,
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
+  type HexHaloTile,
 } from "./hex-halo.js";
 import {
   HEX_GRID_DIRECTIONS,
@@ -10,6 +12,7 @@ import {
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
+import type { WorldState } from "./protocol.js";
 import { WorldRuntime } from "./runtime.js";
 import { getTile } from "./world.js";
 
@@ -27,6 +30,14 @@ interface HaloEnv {
 
 interface RuntimeAccess {
   runtime: WorldRuntime;
+  persist(): Promise<void>;
+  broadcastSnapshot(): void;
+}
+
+interface HaloMaterialization {
+  links: ReturnType<typeof buildHexHaloLinks>;
+  edges: HexHaloEdgeSnapshot[];
+  halo: HexHaloTile[];
 }
 
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
@@ -128,8 +139,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     return isEdgeSnapshot(value) ? value : undefined;
   }
 
-  private async haloSnapshot(): Promise<Response> {
-    const state = runtimeAccess(this).runtime.snapshot();
+  private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const regionIds = configuredRegionIds(this.haloEnv);
     const links = buildHexHaloLinks(state, regionIds, state.regionId);
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
@@ -148,7 +158,12 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         ),
       )
     ).filter((value): value is HexHaloEdgeSnapshot => value !== undefined);
-    const halo = materializeHexHalo(links, edges);
+    return { links, edges, halo: materializeHexHalo(links, edges) };
+  }
+
+  private async haloSnapshot(): Promise<Response> {
+    const state = runtimeAccess(this).runtime.snapshot();
+    const { links, edges, halo } = await this.materializeHaloForState(state);
 
     return json({
       centerRegion: state.regionId,
@@ -184,5 +199,23 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       return this.haloSnapshot();
     }
     return super.fetch(request);
+  }
+
+  override async alarm(): Promise<void> {
+    const access = runtimeAccess(this);
+    const before = access.runtime.snapshot();
+    const { halo } = await this.materializeHaloForState(before);
+    await super.alarm();
+
+    const after = access.runtime.snapshot();
+    const grown = applyHaloRegrowthCompensation(before, after, halo);
+    if (grown <= 0) return;
+
+    access.runtime = new WorldRuntime({
+      state: after,
+      pendingCommands: access.runtime.pendingCommands(),
+    });
+    await access.persist();
+    access.broadcastSnapshot();
   }
 }
