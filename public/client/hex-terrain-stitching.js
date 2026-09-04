@@ -111,6 +111,8 @@ export function stitchHexNeighborTerrain(view) {
   if (preview.userData.moyoHexTerrainStitchRevision === revision) return false;
 
   const samples = centerHeightSamples(view);
+  if (samples.land.length === 0 && samples.water.length === 0) return false;
+
   const radius = hexCellRadius(width, height);
   const matrix = new THREE.Matrix4();
   let changed = false;
