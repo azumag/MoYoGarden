@@ -40,6 +40,48 @@ export function resolveRegionRebase(regionLayout, centerRegionId, target) {
   return null;
 }
 
+export function resolveRegionPrefetch(regionLayout, centerRegionId, target, margin = 6) {
+  if (!Array.isArray(regionLayout) || !centerRegionId || !target) return null;
+  if (!Number.isFinite(target.x) || !Number.isFinite(target.z)) return null;
+
+  const center = regionLayout.find((entry) => entry?.id === centerRegionId);
+  if (!validEntry(center)) return null;
+
+  const halfWidth = center.extent.width / 2;
+  const safeMargin = Number.isFinite(margin)
+    ? Math.max(0, Math.min(halfWidth, margin))
+    : 0;
+  if (safeMargin <= 0) return null;
+
+  const sameRow = regionLayout
+    .filter((entry) => validEntry(entry) && entry.id !== centerRegionId)
+    .filter((entry) => {
+      const centerMinY = center.origin.y;
+      const centerMaxY = center.origin.y + center.extent.height;
+      const entryMinY = entry.origin.y;
+      const entryMaxY = entry.origin.y + entry.extent.height;
+      return entryMinY < centerMaxY && entryMaxY > centerMinY;
+    });
+
+  if (target.x >= halfWidth - safeMargin) {
+    const east = sameRow
+      .filter((entry) => entry.origin.x > center.origin.x)
+      .sort((a, b) => a.origin.x - b.origin.x || a.id.localeCompare(b.id));
+    const far = east[1];
+    return far === undefined ? null : { regionId: far.id, direction: "east" };
+  }
+
+  if (target.x <= -halfWidth + safeMargin) {
+    const west = sameRow
+      .filter((entry) => entry.origin.x < center.origin.x)
+      .sort((a, b) => b.origin.x - a.origin.x || a.id.localeCompare(b.id));
+    const far = west[1];
+    return far === undefined ? null : { regionId: far.id, direction: "west" };
+  }
+
+  return null;
+}
+
 function validEntry(entry) {
   return Boolean(
     entry?.id
