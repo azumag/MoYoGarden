@@ -25,6 +25,7 @@ export interface RegionHexTopologyEntry {
   id: string;
   index: number;
   axial: HexCoordinate;
+  physicalOrigin: HexWorldOrigin;
   hexOrigin: HexWorldOrigin;
   ring: number;
   neighbors: Record<HexDirection, string | null>;
@@ -44,6 +45,20 @@ export function hexDistance(a: HexCoordinate, b: HexCoordinate = { q: 0, r: 0 })
   const dr = a.r - b.r;
   const ds = -dq - dr;
   return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
+}
+
+/**
+ * Return the persisted rectangular region origin used during the hex migration.
+ * Keeping this explicit lets API clients distinguish storage ownership from the
+ * logical/display hex placement until Durable Object ownership is migrated.
+ */
+export function projectPhysicalRegionOrigin(
+  index: number,
+  width = TARGET_WORLD_WIDTH,
+): HexWorldOrigin {
+  const safeIndex = Number.isInteger(index) && index >= 0 ? index : 0;
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
+  return { x: safeIndex * safeWidth, y: 0 };
 }
 
 /**
@@ -113,6 +128,7 @@ export function regionHexTopology(
       id: regionIds[index] ?? `region-${index}`,
       index,
       axial: coordinate,
+      physicalOrigin: projectPhysicalRegionOrigin(index, width),
       hexOrigin: projectHexCoordinate(coordinate, width, height),
       ring: hexDistance(coordinate),
       neighbors,

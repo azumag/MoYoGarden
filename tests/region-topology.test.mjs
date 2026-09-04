@@ -4,6 +4,7 @@ import {
   HEX_DIRECTIONS,
   hexDistance,
   projectHexCoordinate,
+  projectPhysicalRegionOrigin,
   regionHexTopology,
 } from "../dist-ts/src/region-topology.js";
 
@@ -46,7 +47,7 @@ test("hex region topology gives the first region six equal-distance neighbors", 
   ]);
 });
 
-test("hex topology projects the first ring into two-dimensional global coordinates", () => {
+test("hex topology exposes both persisted physical origins and future hex origins", () => {
   const topology = regionHexTopology([
     "garden-c",
     "garden-e",
@@ -57,6 +58,15 @@ test("hex topology projects the first ring into two-dimensional global coordinat
     "garden-se",
   ], 40, 24);
 
+  assert.deepEqual(topology.map((entry) => entry.physicalOrigin), [
+    { x: 0, y: 0 },
+    { x: 40, y: 0 },
+    { x: 80, y: 0 },
+    { x: 120, y: 0 },
+    { x: 160, y: 0 },
+    { x: 200, y: 0 },
+    { x: 240, y: 0 },
+  ]);
   assert.deepEqual(topology.map((entry) => entry.hexOrigin), [
     { x: 0, y: 0 },
     { x: 40, y: 0 },
@@ -68,7 +78,8 @@ test("hex topology projects the first ring into two-dimensional global coordinat
   ]);
 });
 
-test("hex projection preserves east-west spacing while allowing custom region extents", () => {
+test("physical and hex projections preserve east-west compatibility during migration", () => {
+  assert.deepEqual(projectPhysicalRegionOrigin(2, 64), { x: 128, y: 0 });
   assert.deepEqual(projectHexCoordinate({ q: 1, r: 0 }, 64, 32), { x: 64, y: 0 });
   assert.deepEqual(projectHexCoordinate({ q: 1, r: -1 }, 64, 32), { x: 32, y: -24 });
   assert.deepEqual(projectHexCoordinate({ q: 0, r: 1 }, 64, 32), { x: 32, y: 24 });
