@@ -45,8 +45,8 @@ function nativeCornerHeight(cornerX, cornerZ, tileHeights) {
   return samples > 0 ? total / samples : 0;
 }
 
-function nearestAlignedBoundarySample(cornerX, cornerZ, boundaryHeights, maxDistance) {
-  let best;
+function parseBoundarySamples(boundaryHeights) {
+  const samples = [];
   for (const [key, height] of boundaryHeights) {
     if (!Number.isFinite(height)) continue;
     const separator = key.indexOf(":");
@@ -54,14 +54,68 @@ function nearestAlignedBoundarySample(cornerX, cornerZ, boundaryHeights, maxDist
     const x = Number(key.slice(0, separator));
     const z = Number(key.slice(separator + 1));
     if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    samples.push({ x, z, height });
+  }
+  return samples;
+}
 
-    const dx = Math.abs(cornerX - x);
-    const dz = Math.abs(cornerZ - z);
-    let distance;
-    if (dz <= KEY_EPSILON) distance = dx;
-    else if (dx <= KEY_EPSILON) distance = dz;
-    else continue;
-    if (distance <= KEY_EPSILON || distance >= maxDistance) continue;
+function interpolateLine(samples, coordinate, axis) {
+  let exact;
+  let lower;
+  let upper;
+  for (const sample of samples) {
+    const value = axis === "x" ? sample.x : sample.z;
+    const delta = value - coordinate;
+    if (Math.abs(delta) <= KEY_EPSILON) {
+      exact = sample;
+      break;
+    }
+    if (delta < 0 && (lower === undefined || value > (axis === "x" ? lower.x : lower.z))) {
+      lower = sample;
+    }
+    if (delta > 0 && (upper === undefined || value < (axis === "x" ? upper.x : upper.z))) {
+      upper = sample;
+    }
+  }
+  if (exact !== undefined) return exact.height;
+  if (lower === undefined || upper === undefined) return undefined;
+  const low = axis === "x" ? lower.x : lower.z;
+  const high = axis === "x" ? upper.x : upper.z;
+  if (high - low <= KEY_EPSILON) return (lower.height + upper.height) * 0.5;
+  const t = (coordinate - low) / (high - low);
+  return lower.height * (1 - t) + upper.height * t;
+}
+
+function nearestBoundarySample(cornerX, cornerZ, boundaryHeights, maxDistance) {
+  const samples = parseBoundarySamples(boundaryHeights);
+  if (samples.length === 0) return undefined;
+
+  const verticalLines = new Map();
+  const horizontalLines = new Map();
+  for (const sample of samples) {
+    const xKey = Number(sample.x).toFixed(KEY_PRECISION);
+    const zKey = Number(sample.z).toFixed(KEY_PRECISION);
+    const vertical = verticalLines.get(xKey) ?? [];
+    vertical.push(sample);
+    verticalLines.set(xKey, vertical);
+    const horizontal = horizontalLines.get(zKey) ?? [];
+    horizontal.push(sample);
+    horizontalLines.set(zKey, horizontal);
+  }
+
+  let best;
+  for (const line of verticalLines.values()) {
+    const distance = Math.abs(cornerX - line[0].x);
+    if (distance >= maxDistance) continue;
+    const height = interpolateLine(line, cornerZ, "z");
+    if (!Number.isFinite(height)) continue;
+    if (best === undefined || distance < best.distance) best = { height, distance };
+  }
+  for (const line of horizontalLines.values()) {
+    const distance = Math.abs(cornerZ - line[0].z);
+    if (distance >= maxDistance) continue;
+    const height = interpolateLine(line, cornerX, "x");
+    if (!Number.isFinite(height)) continue;
     if (best === undefined || distance < best.distance) best = { height, distance };
   }
   return best;
@@ -88,13 +142,14 @@ export function resolvePreviewCornerHeight(
     : DEFAULT_EDGE_BLEND_DISTANCE;
   if (safeBlendDistance <= 0) return native;
 
-  const boundary = nearestAlignedBoundarySample(
+  const boundary = nearestBoundarySample(
     cornerX,
     cornerZ,
     boundaryHeights,
     safeBlendDistance,
   );
   if (boundary === undefined) return native;
+  if (boundary.distance <= KEY_EPSILON) return boundary.height;
 
   const nativeWeight = smoothstep(boundary.distance / safeBlendDistance);
   return boundary.height * (1 - nativeWeight) + native * nativeWeight;

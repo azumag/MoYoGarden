@@ -43,7 +43,24 @@ test("preview corners blend smoothly away from the center-region edge", () => {
   assert.equal(resolvePreviewCornerHeight(23, 1, tiles, boundary), 0.5);
 });
 
-test("preview seam blending only follows axis-aligned boundary samples", () => {
+test("preview seam interpolates sparse boundary vertices instead of leaving zipper gaps", () => {
+  const tiles = new Map([
+    [terrainVertexKey(20.5, 0.5), 0.2],
+    [terrainVertexKey(20.5, 1.5), 0.4],
+    [terrainVertexKey(21.5, 0.5), 0.4],
+    [terrainVertexKey(21.5, 1.5), 0.6],
+  ]);
+  const boundary = new Map([
+    [terrainVertexKey(20, 0), 0.6],
+    [terrainVertexKey(20, 2), 0.8],
+  ]);
+
+  assert.ok(Math.abs(resolvePreviewCornerHeight(20, 1, tiles, boundary) - 0.7) < 1e-9);
+  const interior = resolvePreviewCornerHeight(21, 1, tiles, boundary);
+  assert.ok(interior > 0.5 && interior < 0.7);
+});
+
+test("preview seam blending ignores boundary samples that do not bracket the corner", () => {
   const tiles = new Map([
     [terrainVertexKey(20.5, 0.5), 0.4],
     [terrainVertexKey(20.5, 1.5), 0.6],
