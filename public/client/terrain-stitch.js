@@ -154,3 +154,67 @@ export function resolvePreviewCornerHeight(
   const nativeWeight = smoothstep(boundary.distance / safeBlendDistance);
   return boundary.height * (1 - nativeWeight) + native * nativeWeight;
 }
+
+function colorChannel(color, channel, fallback) {
+  const value = Number(color?.[channel]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Build one shared-vertex surface from tile-centered preview entries.
+ * Neighboring quads reuse the same corner vertex, which lets Three.js compute
+ * continuous normals instead of a visible faceted grid. Vertex colors are the
+ * mean of incident tile colors so terrain tint also transitions across tile
+ * boundaries without adding extra draw calls.
+ */
+export function buildWeldedPreviewSurface(entries, resolveHeight) {
+  const vertices = new Map();
+  const indices = [];
+
+  function vertexIndex(x, z, color) {
+    const key = terrainVertexKey(x, z);
+    let vertex = vertices.get(key);
+    if (vertex === undefined) {
+      const resolved = Number(resolveHeight?.(x, z));
+      vertex = {
+        index: vertices.size,
+        x,
+        y: Number.isFinite(resolved) ? resolved : 0,
+        z,
+        r: 0,
+        g: 0,
+        b: 0,
+        samples: 0,
+      };
+      vertices.set(key, vertex);
+    }
+    vertex.r += colorChannel(color, "r", 0.44);
+    vertex.g += colorChannel(color, "g", 0.52);
+    vertex.b += colorChannel(color, "b", 0.35);
+    vertex.samples += 1;
+    return vertex.index;
+  }
+
+  for (const entry of entries ?? []) {
+    if (!Number.isFinite(entry?.x) || !Number.isFinite(entry?.z)) continue;
+    const corners = [
+      [entry.x - 0.5, entry.z - 0.5],
+      [entry.x + 0.5, entry.z - 0.5],
+      [entry.x + 0.5, entry.z + 0.5],
+      [entry.x - 0.5, entry.z + 0.5],
+    ];
+    const face = corners.map(([x, z]) => vertexIndex(x, z, entry.color));
+    indices.push(face[0], face[2], face[1], face[0], face[3], face[2]);
+  }
+
+  const ordered = [...vertices.values()].sort((a, b) => a.index - b.index);
+  const positions = [];
+  const colors = [];
+  for (const vertex of ordered) {
+    positions.push(vertex.x, vertex.y, vertex.z);
+    const samples = Math.max(1, vertex.samples);
+    colors.push(vertex.r / samples, vertex.g / samples, vertex.b / samples);
+  }
+
+  return { positions, colors, indices, vertexCount: ordered.length };
+}

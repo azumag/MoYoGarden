@@ -3,6 +3,7 @@ import { resolveNavigationBounds } from "./navigation-bounds.js";
 import { resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
 import { clamp, disposeObject } from "./shared.js";
 import {
+  buildWeldedPreviewSurface,
   collectBoundaryHeights,
   resolvePreviewCornerHeight,
   terrainVertexKey,
@@ -84,32 +85,19 @@ function stitchNeighborTerrainPreview(view) {
     return;
   }
 
-  const positions = [];
-  const colors = [];
-  const indices = [];
-  for (const entry of entries) {
-    const base = positions.length / 3;
-    const corners = [
-      [entry.x - 0.5, entry.z - 0.5],
-      [entry.x + 0.5, entry.z - 0.5],
-      [entry.x + 0.5, entry.z + 0.5],
-      [entry.x - 0.5, entry.z + 0.5],
-    ];
-    for (const [x, z] of corners) {
-      positions.push(
-        x,
-        resolvePreviewCornerHeight(x, z, tileHeights, boundaryHeights),
-        z,
-      );
-      colors.push(entry.color.r, entry.color.g, entry.color.b);
-    }
-    indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+  const surface = buildWeldedPreviewSurface(
+    entries,
+    (x, z) => resolvePreviewCornerHeight(x, z, tileHeights, boundaryHeights),
+  );
+  if (surface.vertexCount === 0 || surface.indices.length === 0) {
+    preview.userData.moyoTerrainStitched = true;
+    return;
   }
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setIndex(indices);
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(surface.positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(surface.colors, 3));
+  geometry.setIndex(surface.indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 

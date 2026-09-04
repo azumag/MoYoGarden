@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildWeldedPreviewSurface,
   collectBoundaryHeights,
   resolvePreviewCornerHeight,
   terrainVertexKey,
@@ -70,4 +71,21 @@ test("preview seam blending ignores boundary samples that do not bracket the cor
   const unrelatedBoundary = new Map([[terrainVertexKey(20, 5), 0.95]]);
 
   assert.equal(resolvePreviewCornerHeight(21, 1, tiles, unrelatedBoundary), 0.7);
+});
+
+test("stitched preview welds shared corners and averages their terrain tint", () => {
+  const surface = buildWeldedPreviewSurface(
+    [
+      { x: 0, z: 0, color: { r: 1, g: 0, b: 0 } },
+      { x: 1, z: 0, color: { r: 0, g: 0, b: 1 } },
+    ],
+    (x, z) => x * 0.1 + z * 0.05,
+  );
+
+  assert.equal(surface.vertexCount, 6);
+  assert.equal(surface.positions.length, 18);
+  assert.equal(surface.indices.length, 12);
+  assert.deepEqual(surface.indices, [0, 2, 1, 0, 3, 2, 1, 5, 4, 1, 2, 5]);
+  assert.deepEqual(surface.colors.slice(3, 6), [0.5, 0, 0.5]);
+  assert.deepEqual(surface.colors.slice(6, 9), [0.5, 0, 0.5]);
 });
