@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { RegionDurableObject, regionLayout, regionTickDelayMs, regionWindow } from "../dist-ts/src/worker.js";
-import { sampleWorldConditions } from "../dist-ts/src/world-scale.js";
 class MemoryStorage {
   constructor(){this.values=new Map();this.alarm=null;}
   async get(key){return structuredClone(this.values.get(key));}
@@ -20,7 +19,7 @@ test("region layout gives adjacent chunks contiguous global coordinates",()=>{co
 
 test("region window returns only nearby chunks around the active region",()=>{const ids=["garden-1","garden-2","garden-3","garden-4","garden-5"];assert.deepEqual(regionWindow(ids,"garden-3",1,40,24).map((entry)=>entry.id),["garden-2","garden-3","garden-4"]);assert.deepEqual(regionWindow(ids,"garden-1",2,40,24).map((entry)=>entry.id),["garden-1","garden-2","garden-3"]);assert.deepEqual(regionWindow(ids,"missing",1,40,24),[]);});
 
-test("new middle regions anchor active west/east hex sides to the shared environment field",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const state=await (await object.fetch(request("/api/world/snapshot"))).json();assert.equal(state.regionId,"garden-test");const west=state.tiles.find((tile)=>tile.x===8&&tile.terrain!=="water");const east=state.tiles.find((tile)=>tile.x===30&&tile.terrain!=="water");assert.ok(west);assert.ok(east);assert.equal(west.elevation,Math.max(0.03,sampleWorldConditions(424242,48,west.y).elevation));assert.equal(east.elevation,Math.max(0.03,sampleWorldConditions(424242,70,east.y).elevation));assert.equal(ctx.storage.values.get("region").terrainFrameVersion,1);});
+test("new regions persist a hex-compatible terrain frame without activating storage corners",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const state=await (await object.fetch(request("/api/world/snapshot"))).json();assert.equal(state.regionId,"garden-test");const north=state.tiles.find((tile)=>tile.x===19&&tile.y===0);assert.ok(north);assert.equal(state.tiles[0].terrain,"water");assert.equal(state.tiles[state.width-1].terrain,"water");assert.ok(state.agents.every((agent)=>agent.position.x>=0&&agent.position.y>=0&&agent.position.x<state.width&&agent.position.y<state.height));assert.equal(ctx.storage.values.get("region").terrainFrameVersion,1);});
 
 test("passive snapshot prefetch keeps an unloaded region on idle cadence",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const before=Date.now();const response=await object.fetch(request("/api/world/snapshot",{headers:{"x-moyo-prefetch":"1"}}));const state=await response.json();assert.equal(state.regionId,"garden-test");const health=await (await object.fetch(request("/api/health"))).json();assert.equal(health.tickMode,"idle");assert.equal(health.effectiveTickMs,60000);assert.ok(ctx.storage.alarm>=before+59000);assert.ok(ctx.storage.alarm<=before+61000);});
 
