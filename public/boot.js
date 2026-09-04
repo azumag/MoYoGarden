@@ -83,6 +83,7 @@
   preload(`/client/seamless-navigation.js?v=${VERSION}`);
   preload(`/client/hex-neighbor-preview.js?v=${VERSION}`);
   preload(`/client/hex-tile-rendering.js?v=${VERSION}`);
+  preload(`/client/hex-terrain-stitching.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
@@ -111,6 +112,11 @@
       await import(`/client/hex-tile-rendering.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: hex tile rendering failed; keeping legacy tile renderer", error);
+    }
+    try {
+      await import(`/client/hex-terrain-stitching.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: hex terrain boundary stitching failed; keeping native chunk heights", error);
     }
 
     const moduleScript = document.createElement("script");
