@@ -1,7 +1,12 @@
 import * as THREE from "three";
 import { resolveNavigationBounds } from "./navigation-bounds.js";
 import { resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
-import { clamp } from "./shared.js";
+import { clamp, disposeObject } from "./shared.js";
+import {
+  collectBoundaryHeights,
+  resolvePreviewCornerHeight,
+  terrainVertexKey,
+} from "./terrain-stitch.js";
 import { WorldView } from "./world-view.js";
 
 const REBASE_TIMEOUT_MS = 15_000;
@@ -35,6 +40,106 @@ function cachedPreviewBounds(view) {
       };
   view.__moyoNavigationPreview = { root: preview, bounds };
   return bounds;
+}
+
+function stitchNeighborTerrainPreview(view) {
+  const preview = view.worldRoot?.getObjectByName("neighbor-region-preview");
+  if (!preview || preview.userData.moyoTerrainStitched) return;
+
+  const land = preview.children.find((object) =>
+    object.isInstancedMesh && object.geometry?.type === "BoxGeometry"
+  );
+  if (!land || land.count <= 0) {
+    preview.userData.moyoTerrainStitched = true;
+    return;
+  }
+
+  const centerPositions = view.terrainMesh?.geometry?.getAttribute("position")?.array;
+  const boundaryHeights = collectBoundaryHeights(
+    centerPositions,
+    (view.state?.width ?? 0) / 2,
+    (view.state?.height ?? 0) / 2,
+  );
+  const tileHeights = new Map();
+  const entries = [];
+  const matrix = new THREE.Matrix4();
+  const color = new THREE.Color();
+  const boxHeight = Number(land.geometry?.parameters?.height) || 0.08;
+
+  for (let index = 0; index < land.count; index += 1) {
+    land.getMatrixAt(index, matrix);
+    const x = matrix.elements[12];
+    const y = matrix.elements[13] + boxHeight * 0.5;
+    const z = matrix.elements[14];
+    if (![x, y, z].every(Number.isFinite)) continue;
+    const entryColor = land.instanceColor
+      ? (land.getColorAt(index, color), color.clone())
+      : new THREE.Color(0x71845a);
+    tileHeights.set(terrainVertexKey(x, z), y);
+    entries.push({ x, z, color: entryColor });
+  }
+
+  if (entries.length === 0) {
+    preview.userData.moyoTerrainStitched = true;
+    return;
+  }
+
+  const positions = [];
+  const colors = [];
+  const indices = [];
+  for (const entry of entries) {
+    const base = positions.length / 3;
+    const corners = [
+      [entry.x - 0.5, entry.z - 0.5],
+      [entry.x + 0.5, entry.z - 0.5],
+      [entry.x + 0.5, entry.z + 0.5],
+      [entry.x - 0.5, entry.z + 0.5],
+    ];
+    for (const [x, z] of corners) {
+      positions.push(
+        x,
+        resolvePreviewCornerHeight(x, z, tileHeights, boundaryHeights),
+        z,
+      );
+      colors.push(entry.color.r, entry.color.g, entry.color.b);
+    }
+    indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  const material = !Array.isArray(view.terrainMesh?.material) && view.terrainMesh?.material?.clone
+    ? view.terrainMesh.material.clone()
+    : new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.985,
+        metalness: 0,
+        envMapIntensity: 0.3,
+      });
+  material.vertexColors = true;
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "neighbor-terrain-stitched";
+  mesh.receiveShadow = true;
+  preview.add(mesh);
+  disposeObject(land);
+
+  for (const object of preview.children) {
+    if (!object.isInstancedMesh || object.geometry?.type !== "PlaneGeometry") continue;
+    const width = Number(object.geometry?.parameters?.width);
+    const height = Number(object.geometry?.parameters?.height);
+    if (width >= 0.999 && height >= 0.999) continue;
+    object.geometry.dispose?.();
+    object.geometry = new THREE.PlaneGeometry(1, 1);
+    object.computeBoundingSphere?.();
+  }
+
+  preview.userData.moyoTerrainStitched = true;
+  view.__moyoNavigationPreview = undefined;
 }
 
 function clearPendingRebase() {
@@ -130,6 +235,12 @@ function maybeRebase(view) {
   });
   if (transition) beginRegionRebase(view, transition);
 }
+
+const baseMarkShadowsDirty = WorldView.prototype.markShadowsDirty;
+WorldView.prototype.markShadowsDirty = function markShadowsDirtyWithTerrainStitch() {
+  stitchNeighborTerrainPreview(this);
+  baseMarkShadowsDirty.call(this);
+};
 
 const baseSetState = WorldView.prototype.setState;
 WorldView.prototype.setState = function setStateWithRegionRebase(state, tickMs) {
