@@ -51,12 +51,18 @@ function queryValue(name) {
   }
 }
 
+function networkIsConstrained() {
+  const connection = globalThis.navigator?.connection;
+  const effectiveType = String(connection?.effectiveType ?? "").toLowerCase();
+  return Boolean(connection?.saveData) || ["slow-2g", "2g", "3g"].includes(effectiveType);
+}
+
 function automaticProfileId() {
   const memory = Number(globalThis.navigator?.deviceMemory ?? 0);
   const cores = Number(globalThis.navigator?.hardwareConcurrency ?? 0);
   const narrow = Number(globalThis.innerWidth ?? 1280) < 900;
   const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  if (narrow || reducedMotion || (memory > 0 && memory < 6) || (cores > 0 && cores < 6)) {
+  if (networkIsConstrained() || narrow || reducedMotion || (memory > 0 && memory < 6) || (cores > 0 && cores < 6)) {
     return "balanced";
   }
   if (memory >= 12 && cores >= 10) return "ultra";
@@ -64,10 +70,43 @@ function automaticProfileId() {
   return "balanced";
 }
 
+function needsAutoConstraintTuning() {
+  const memory = Number(globalThis.navigator?.deviceMemory ?? 0);
+  const cores = Number(globalThis.navigator?.hardwareConcurrency ?? 0);
+  const touchPoints = Number(globalThis.navigator?.maxTouchPoints ?? 0);
+  const pixelRatio = Number(globalThis.devicePixelRatio ?? 1);
+  const width = Number(globalThis.innerWidth ?? 1280);
+  return (
+    networkIsConstrained() ||
+    (memory > 0 && memory < 4) ||
+    (cores > 0 && cores < 4) ||
+    (touchPoints > 0 && pixelRatio >= 2.5 && width < 1100)
+  );
+}
+
+function tuneAutomaticBalancedProfile(profile, requested) {
+  if (requested !== "auto" || profile.id !== "balanced" || !needsAutoConstraintTuning()) {
+    return { ...profile, requested };
+  }
+  return {
+    ...profile,
+    requested,
+    pixelRatioCap: Math.min(profile.pixelRatioCap, 1.1),
+    antialias: false,
+    shadowSize: Math.min(profile.shadowSize, 512),
+    shadowRadius: Math.min(profile.shadowRadius, 1.8),
+    shadowUpdateIntervalMs: Math.max(profile.shadowUpdateIntervalMs, 650),
+    environmentSize: Math.min(profile.environmentSize, 32),
+    modelTimeoutMs: networkIsConstrained() ? Math.max(profile.modelTimeoutMs, 12_000) : profile.modelTimeoutMs,
+    detailDensity: Math.min(profile.detailDensity, 0.48),
+    lodScale: Math.min(profile.lodScale, 0.74),
+  };
+}
+
 export function resolveQualityProfile() {
   const requested = (queryValue("quality") || "auto").toLowerCase();
   const id = Object.hasOwn(PROFILES, requested) ? requested : automaticProfileId();
-  return { ...PROFILES[id], requested };
+  return tuneAutomaticBalancedProfile(PROFILES[id], requested);
 }
 
 export function qualityProfileIds() {
