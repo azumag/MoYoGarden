@@ -45,6 +45,8 @@ test("nearby allies exchange task-grounded information without conversation spam
   assert.equal(conversation.data?.targetAgentId, second.id);
   assert.equal(conversation.data?.topic, "resource_report");
   assert.equal(conversation.data?.resource, "wood");
+  assert.deepEqual(conversation.data?.reportedTarget, { x: 9, y: 6 });
+  assert.equal(conversation.data?.knowledgeSourceAgentId, first.id);
   assert.equal(conversation.data?.adviceAccepted, undefined);
   assert.match(conversation.message, /gathering wood near 9,6/);
   assert.equal(second.task.resource, "stone");
@@ -67,6 +69,7 @@ test("a useful resource report can retarget an autonomous specialist", () => {
     tile.terrain !== "water" && tile.x > 0 && tile.x < state.width - 1 && tile.y > 0 && tile.y < state.height - 1
   );
   assert.ok(sharedTile);
+  sharedTile.resource = { kind: "wood", amount: 8, maxAmount: 8 };
 
   state.agents = [first, second];
   state.tick = 12;
@@ -171,4 +174,75 @@ test("idle allies can react to a faction supply shortage as shared advice", () =
   assert.equal(second.task?.type, "gather");
   assert.equal(second.task?.resource, "food");
   assert.match(second.status, /helping with food shortage/);
+});
+
+test("resource knowledge can relay through another bot and change a third bot's work", () => {
+  const state = createInitialWorld({ seed: 6064, width: 16, height: 12 });
+  const [first, second, third] = state.agents
+    .filter((agent) => agent.factionId === state.agents[0]?.factionId)
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, 3);
+  assert.ok(first);
+  assert.ok(second);
+  assert.ok(third);
+
+  state.agents = [first, second, third];
+  state.tick = 12;
+  first.position = { x: 5, y: 6 };
+  second.position = { x: 6, y: 6 };
+  third.position = { x: 12, y: 6 };
+  first.energy = 80;
+  second.energy = 80;
+  third.energy = 80;
+  second.role = "miner";
+  third.role = "woodcutter";
+  delete second.task;
+  delete third.task;
+  const faction = state.factions.find((entry) => entry.id === first.factionId);
+  assert.ok(faction);
+  faction.resources = { wood: 20, stone: 20, food: 20 };
+  const reportTarget = { x: 8, y: 6 };
+  const reportTile = state.tiles[reportTarget.y * state.width + reportTarget.x];
+  assert.ok(reportTile);
+  reportTile.terrain = "forest";
+  reportTile.resource = { kind: "wood", amount: 8, maxAmount: 8 };
+  first.task = {
+    source: "autonomy",
+    issuedAtTick: 11,
+    type: "gather",
+    resource: "wood",
+    target: reportTarget,
+  };
+
+  assert.equal(applySocialInteractions(state), 1);
+  const firstReport = state.events.at(-1);
+  assert.equal(firstReport?.data?.targetAgentId, second.id);
+  assert.deepEqual(firstReport?.data?.reportedTarget, reportTarget);
+  assert.equal(firstReport?.data?.knowledgeSourceAgentId, first.id);
+  assert.equal(firstReport?.data?.relayed, undefined);
+  assert.equal(second.task, undefined);
+
+  state.tick = 24;
+  first.position = { x: 0, y: 0 };
+  second.position = { x: 6, y: 6 };
+  third.position = { x: 7, y: 6 };
+
+  assert.equal(applySocialInteractions(state), 1);
+  const relay = state.events.at(-1);
+  assert.equal(relay?.agentId, second.id);
+  assert.equal(relay?.data?.targetAgentId, third.id);
+  assert.equal(relay?.data?.topic, "resource_report");
+  assert.equal(relay?.data?.resource, "wood");
+  assert.deepEqual(relay?.data?.reportedTarget, reportTarget);
+  assert.equal(relay?.data?.knowledgeSourceAgentId, first.id);
+  assert.equal(relay?.data?.relayed, true);
+  assert.equal(relay?.data?.adviceAccepted, true);
+  assert.deepEqual(third.task, {
+    source: "autonomy",
+    issuedAtTick: 24,
+    type: "gather",
+    resource: "wood",
+    target: reportTarget,
+  });
+  assert.match(third.status, /relayed wood report/);
 });

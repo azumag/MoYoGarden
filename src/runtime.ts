@@ -23,6 +23,7 @@ import {
   getAgent,
   getFaction,
   getPerception,
+  getTile,
   inBounds,
   isPassable,
 } from "./world.js";
@@ -52,6 +53,7 @@ const SOCIAL_RADIUS = 2;
 const SOCIAL_PAIR_COOLDOWN = 48;
 const SOCIAL_MAX_CONVERSATIONS_PER_TICK = 2;
 const SOCIAL_ADVICE_ENERGY_THRESHOLD = LOW_ENERGY_THRESHOLD + 7;
+const SOCIAL_KNOWLEDGE_TTL = 96;
 
 type SocialTopic = {
   topic:
@@ -64,6 +66,9 @@ type SocialTopic = {
     | "goal";
   line: string;
   resource?: ResourceKind;
+  target?: GridPosition;
+  knowledgeSourceAgentId?: string;
+  relayed?: boolean;
 };
 
 function nearestFoodStorage(state: WorldState, factionId: string, position: { x: number; y: number }) {
@@ -322,6 +327,61 @@ function factionSupplyShortage(state: WorldState, factionId: string): ResourceKi
   return candidate.kind;
 }
 
+function eventResource(value: unknown): ResourceKind | undefined {
+  return typeof value === "string" && RESOURCE_KINDS.includes(value as ResourceKind)
+    ? value as ResourceKind
+    : undefined;
+}
+
+function eventPosition(value: unknown): GridPosition | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const x = Number((value as { x?: unknown }).x);
+  const y = Number((value as { y?: unknown }).y);
+  return Number.isInteger(x) && Number.isInteger(y) ? { x, y } : undefined;
+}
+
+function heardResourceReport(
+  state: WorldState,
+  speaker: Agent,
+  listener: Agent,
+): SocialTopic | undefined {
+  const cutoff = state.tick - SOCIAL_KNOWLEDGE_TTL;
+  for (let index = state.events.length - 1; index >= 0; index -= 1) {
+    const event = state.events[index];
+    if (event === undefined) continue;
+    if (event.tick < cutoff) break;
+    if (
+      event.kind !== "agent_conversation" ||
+      event.data?.targetAgentId !== speaker.id ||
+      event.data?.topic !== "resource_report"
+    ) {
+      continue;
+    }
+
+    const resource = eventResource(event.data.resource);
+    const target = eventPosition(event.data.reportedTarget);
+    if (resource === undefined || target === undefined || !inBounds(state, target)) continue;
+    const tile = getTile(state, target);
+    if (tile?.resource?.kind !== resource || tile.resource.amount <= 0) continue;
+
+    const knowledgeSourceAgentId =
+      typeof event.data.knowledgeSourceAgentId === "string"
+        ? event.data.knowledgeSourceAgentId
+        : event.agentId;
+    if (knowledgeSourceAgentId === undefined || knowledgeSourceAgentId === listener.id) continue;
+    const sourceName = getAgent(state, knowledgeSourceAgentId)?.name ?? "another ally";
+    return {
+      topic: "resource_report",
+      resource,
+      target,
+      knowledgeSourceAgentId,
+      relayed: true,
+      line: `${sourceName} reported ${resource} near ${target.x},${target.y}.`,
+    };
+  }
+  return undefined;
+}
+
 function socialTopic(state: WorldState, speaker: Agent, listener: Agent): SocialTopic {
   if (speaker.energy <= LOW_ENERGY_THRESHOLD + 7) {
     return {
@@ -337,6 +397,8 @@ function socialTopic(state: WorldState, speaker: Agent, listener: Agent): Social
     return {
       topic: "resource_report",
       resource: task.resource,
+      ...(task.target === undefined ? {} : { target: { ...task.target } }),
+      knowledgeSourceAgentId: speaker.id,
       line: `I'm gathering ${task.resource} ${location}.`,
     };
   }
@@ -359,6 +421,9 @@ function socialTopic(state: WorldState, speaker: Agent, listener: Agent): Social
       line: `I'm trying to trade with ${target?.name ?? task.targetAgentId}.`,
     };
   }
+
+  const heard = heardResourceReport(state, speaker, listener);
+  if (heard !== undefined) return heard;
 
   const shortage = factionSupplyShortage(state, speaker.factionId);
   if (shortage !== undefined) {
@@ -429,14 +494,16 @@ function applySocialAdvice(
   }
 
   if (social.topic === "resource_report" && social.resource !== undefined) {
-    const speakerTask = speaker.task;
+    const sharedTarget = social.target;
     if (
-      speakerTask?.type !== "gather" ||
-      speakerTask.resource !== social.resource ||
-      speakerTask.target === undefined ||
-      !inBounds(state, speakerTask.target) ||
-      !isPassable(state, speakerTask.target)
+      sharedTarget === undefined ||
+      !inBounds(state, sharedTarget) ||
+      !isPassable(state, sharedTarget)
     ) {
+      return undefined;
+    }
+    const sharedTile = getTile(state, sharedTarget);
+    if (sharedTile?.resource?.kind !== social.resource || sharedTile.resource.amount <= 0) {
       return undefined;
     }
 
@@ -448,7 +515,6 @@ function applySocialAdvice(
     if (!relevant) return undefined;
     if (currentTask?.type === "gather" && currentTask.resource !== social.resource) return undefined;
 
-    const sharedTarget = { ...speakerTask.target };
     const sharedDistance = manhattanDistance(listener.position, sharedTarget);
     const currentDistance =
       currentTask?.type === "gather" && currentTask.target !== undefined
@@ -461,10 +527,12 @@ function applySocialAdvice(
       issuedAtTick: state.tick,
       type: "gather",
       resource: social.resource,
-      target: sharedTarget,
+      target: { ...sharedTarget },
     };
-    listener.status = `following ${speaker.name}'s ${social.resource} report`;
-    return sharedTarget;
+    listener.status = social.relayed
+      ? `following ${speaker.name}'s relayed ${social.resource} report`
+      : `following ${speaker.name}'s ${social.resource} report`;
+    return { ...sharedTarget };
   }
 
   if (social.topic === "supply_shortage" && social.resource !== undefined) {
@@ -544,6 +612,11 @@ export function applySocialInteractions(state: WorldState): number {
         speakerRole: speaker.role,
         listenerRole: listener.role,
         ...(social.resource === undefined ? {} : { resource: social.resource }),
+        ...(social.target === undefined ? {} : { reportedTarget: { ...social.target } }),
+        ...(social.knowledgeSourceAgentId === undefined
+          ? {}
+          : { knowledgeSourceAgentId: social.knowledgeSourceAgentId }),
+        ...(social.relayed ? { relayed: true } : {}),
         ...(adviceTarget === undefined ? {} : { adviceAccepted: true, adviceTarget }),
       },
     });
