@@ -157,7 +157,7 @@ export function alignRegionBoundaryElevations(
     const normalized = safeBand <= 1 ? 0 : Math.min(1, distance / safeBand);
     const smooth = normalized * normalized * (3 - 2 * normalized);
     const weight = 1 - smooth;
-    const elevation = current + (target - current) * weight;
+    const elevation = distance === 0 ? target : current + (target - current) * weight;
     if (Math.abs(elevation - current) <= 1e-9) continue;
     tile.elevation = elevation;
     changed += 1;
