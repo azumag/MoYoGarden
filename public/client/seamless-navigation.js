@@ -1,15 +1,19 @@
 import * as THREE from "three";
 import { resolveNavigationBounds } from "./navigation-bounds.js";
-import { resolveRegionRebase } from "./region-navigation.js";
+import { resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
 import { clamp } from "./shared.js";
 import { WorldView } from "./world-view.js";
 
 const REBASE_TIMEOUT_MS = 15_000;
+const PREFETCH_MARGIN_TILES = 6;
+const PREFETCH_REFRESH_MS = 60_000;
 let regionLayout = [];
 let regionLayoutRequest;
 let pendingRebase;
 let pendingRebaseTimer;
 let rebaseInFlight = false;
+const regionWarmAt = new Map();
+const regionWarmRequests = new Map();
 
 function cachedPreviewBounds(view) {
   const preview = view.worldRoot?.getObjectByName("neighbor-region-preview");
@@ -54,6 +58,44 @@ function ensureRegionLayout() {
     .finally(() => {
       regionLayoutRequest = undefined;
     });
+}
+
+function warmRegion(regionId) {
+  if (!regionId || location.protocol === "file:" || regionWarmRequests.has(regionId)) return;
+  const lastWarm = regionWarmAt.get(regionId) ?? 0;
+  if (Date.now() - lastWarm < PREFETCH_REFRESH_MS) return;
+
+  regionWarmAt.set(regionId, Date.now());
+  const request = fetch(`/api/health?region=${encodeURIComponent(regionId)}`, { cache: "no-store" })
+    .then((response) => {
+      if (!response.ok) throw new Error(`health HTTP ${response.status}`);
+    })
+    .catch((error) => {
+      regionWarmAt.delete(regionId);
+      console.debug(`MoYoGarden region prewarm failed for ${regionId}`, error);
+    })
+    .finally(() => {
+      regionWarmRequests.delete(regionId);
+    });
+  regionWarmRequests.set(regionId, request);
+}
+
+function maybeWarmRegionAhead(view) {
+  if (!view.state?.regionId) return;
+  if (regionLayout.length === 0) {
+    ensureRegionLayout();
+    return;
+  }
+  const prefetch = resolveRegionPrefetch(
+    regionLayout,
+    view.state.regionId,
+    {
+      x: view.cameraState.target.x,
+      z: view.cameraState.target.z,
+    },
+    PREFETCH_MARGIN_TILES,
+  );
+  if (prefetch?.regionId) warmRegion(prefetch.regionId);
 }
 
 function beginRegionRebase(view, transition) {
@@ -129,6 +171,7 @@ WorldView.prototype.clampTarget = function clampTargetToLoadedWindow() {
   const bounds = resolveNavigationBounds(this.state, cachedPreviewBounds(this));
   this.cameraState.target.x = clamp(this.cameraState.target.x, bounds.minX, bounds.maxX);
   this.cameraState.target.z = clamp(this.cameraState.target.z, bounds.minZ, bounds.maxZ);
+  maybeWarmRegionAhead(this);
   maybeRebase(this);
 };
 
