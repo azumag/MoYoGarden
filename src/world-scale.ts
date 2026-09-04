@@ -1,4 +1,9 @@
-import { isHexGridCell } from "./hex-grid.js";
+import {
+  HEX_GRID_STEPS,
+  hexGridCenter,
+  hexGridRadius,
+  isHexGridCell,
+} from "./hex-grid.js";
 import type { Tile, WorldState } from "./protocol.js";
 import { createRandom } from "./prng.js";
 import { migrateWorldToHexGrid } from "./world.js";
@@ -61,6 +66,11 @@ function elevationAt(worldSeed: number, globalX: number, globalY: number): numbe
   return clamp01(0.46 + broad * 0.18 + ridge * 0.1 + local * 0.075);
 }
 
+/**
+ * Sample low-level environment state on the same axial coordinate system used by
+ * movement, perception and hydrology. Slope/convergence use all six equidistant
+ * hex neighbors; no square-grid cardinal/diagonal distinction remains.
+ */
 export function sampleWorldConditions(
   worldSeed: number,
   globalX: number,
@@ -85,13 +95,16 @@ export function sampleWorldConditions(
     0.62 + climateBand * 0.16 + continentalWave * 0.07 - elevation * 0.3 + local * 0.04,
   );
 
-  const west = elevationAt(worldSeed, globalX - 1, globalY);
-  const east = elevationAt(worldSeed, globalX + 1, globalY);
-  const north = elevationAt(worldSeed, globalX, globalY - 1);
-  const south = elevationAt(worldSeed, globalX, globalY + 1);
-  const rawSlope = Math.hypot(east - west, south - north) * 0.5;
+  const neighborElevations = HEX_GRID_STEPS.map((step) =>
+    elevationAt(worldSeed, globalX + step.x, globalY + step.y),
+  );
+  const rawSlope = neighborElevations.reduce(
+    (maximum, neighbor) => Math.max(maximum, Math.abs(neighbor - elevation)),
+    0,
+  );
   const slope = clamp01(rawSlope / 0.16);
-  const neighborMean = (west + east + north + south) * 0.25;
+  const neighborMean = neighborElevations.reduce((sum, value) => sum + value, 0) /
+    Math.max(1, neighborElevations.length);
   const convergence = clamp01(0.5 + (neighborMean - elevation) * 6);
   const wetness = clamp01(
     moisture +
@@ -103,6 +116,12 @@ export function sampleWorldConditions(
   return { elevation, moisture, temperature, slope, convergence, wetness };
 }
 
+/**
+ * Preserve the existing four legacy physical-edge flags while measuring their
+ * bands on the active axial hex, not on the rectangular storage envelope.
+ * The two remaining diagonal hex sides are handled by the newer topology/halo
+ * migration path rather than fabricating rectangular edge cells.
+ */
 export function alignRegionBoundaryElevations(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   worldSeed: number,
@@ -112,15 +131,19 @@ export function alignRegionBoundaryElevations(
   bandWidth = 4,
 ): number {
   const safeBand = Math.max(1, Math.min(Math.max(state.width, state.height), Math.floor(bandWidth)));
+  const center = hexGridCenter(state);
+  const radius = hexGridRadius(state);
   let changed = 0;
 
   for (const tile of state.tiles) {
     if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
+    const q = tile.x - center.x;
+    const r = tile.y - center.y;
     const edgeDistances: number[] = [];
-    if (edges.west) edgeDistances.push(tile.x);
-    if (edges.east) edgeDistances.push(state.width - 1 - tile.x);
-    if (edges.north) edgeDistances.push(tile.y);
-    if (edges.south) edgeDistances.push(state.height - 1 - tile.y);
+    if (edges.west) edgeDistances.push(q + radius);
+    if (edges.east) edgeDistances.push(radius - q);
+    if (edges.north) edgeDistances.push(r + radius);
+    if (edges.south) edgeDistances.push(radius - r);
     if (edgeDistances.length === 0) continue;
 
     const distance = Math.min(...edgeDistances);
