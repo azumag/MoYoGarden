@@ -4,6 +4,7 @@ import {
   activeAgentOwnershipCount,
   attachAgentOwnership,
   detachAgentOwnership,
+  globalHandoffAgentId,
 } from "../dist-ts/src/agent-ownership.js";
 import { hexGridBoundaryCells, hexGridHandoffTarget } from "../dist-ts/src/hex-grid.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
@@ -47,7 +48,7 @@ test("detach preserves the complete agent snapshot while removing active ownersh
   assert.ok(source.agents.some((entry) => entry.id === agent.id), "input state must remain immutable");
 });
 
-test("attach preserves identity and inventory but clears source-local task state", () => {
+test("attach promotes a legacy local ID once, preserves inventory, and clears source-local task state", () => {
   const { source, target } = worlds();
   const agent = source.agents[0];
   assert.ok(agent);
@@ -71,41 +72,53 @@ test("attach preserves identity and inventory but clears source-local task state
   const detached = detachAgentOwnership(source, [], agent.id);
   assert.equal(detached.ok, true);
 
-  const attached = attachAgentOwnership(target, [], detached.value.agent, targetCell);
+  const attached = attachAgentOwnership(
+    target,
+    [],
+    detached.value.agent,
+    targetCell,
+    source.regionId,
+  );
   assert.equal(attached.ok, true);
-  const arrived = attached.value.state.agents.find((entry) => entry.id === agent.id);
+  const globalId = globalHandoffAgentId(agent.id, source.regionId);
+  const arrived = attached.value.state.agents.find((entry) => entry.id === globalId);
   assert.ok(arrived);
   assert.deepEqual(arrived.position, targetCell);
   assert.deepEqual(arrived.inventory, { wood: 5, stone: 1, food: 2 });
   assert.equal(arrived.goal, agent.goal);
   assert.equal(arrived.task, undefined);
   assert.equal(arrived.status, "arrived from neighboring region");
+  assert.ok(attached.value.state.agents.some((entry) => entry.id === agent.id), "target legacy local remains distinct");
+  assert.equal(globalHandoffAgentId(globalId, "garden-2"), globalId, "later handoffs keep the global id stable");
 });
 
-test("attach rejects duplicate, impassable, and non-hex ownership targets", () => {
+test("attach rejects duplicate promoted identity, impassable, and non-hex ownership targets", () => {
   const { source, target } = worlds();
   const agent = structuredClone(source.agents[0]);
   assert.ok(agent);
-
-  const duplicate = attachAgentOwnership(target, [], target.agents[0], target.agents[0].position);
-  assert.equal(duplicate.ok, false);
-  assert.match(duplicate.reason, /already active/);
-
   const active = hexGridBoundaryCells(target, "west")[11];
   assert.ok(active);
   const tile = target.tiles[active.y * target.width + active.x];
   assert.ok(tile);
+  tile.terrain = "plain";
+
+  const first = attachAgentOwnership(target, [], agent, active, source.regionId);
+  assert.equal(first.ok, true);
+  const duplicate = attachAgentOwnership(first.value.state, [], agent, active, source.regionId);
+  assert.equal(duplicate.ok, false);
+  assert.match(duplicate.reason, /already active/);
+
   tile.terrain = "water";
-  const water = attachAgentOwnership(target, [], agent, active);
+  const water = attachAgentOwnership(target, [], agent, active, source.regionId);
   assert.equal(water.ok, false);
   assert.match(water.reason, /impassable/);
 
-  const outside = attachAgentOwnership(target, [], agent, { x: 0, y: 0 });
+  const outside = attachAgentOwnership(target, [], agent, { x: 0, y: 0 }, source.regionId);
   assert.equal(outside.ok, false);
   assert.match(outside.reason, /outside the active hex/);
 });
 
-test("detach plus attach moves active ownership from exactly one region to exactly one region", () => {
+test("legacy collisions become unambiguous world-global ownership after the first handoff", () => {
   const { source, target } = worlds();
   const agent = source.agents[0];
   assert.ok(agent);
@@ -118,15 +131,31 @@ test("detach plus attach moves active ownership from exactly one region to exact
   targetTile.terrain = "plain";
 
   agent.position = { ...sourceCell };
-  assert.equal(activeAgentOwnershipCount([source, target], agent.id), 1);
+  assert.equal(
+    activeAgentOwnershipCount([source, target], agent.id),
+    2,
+    "legacy regions begin with ambiguous local ids",
+  );
   const detached = detachAgentOwnership(source, [], agent.id);
   assert.equal(detached.ok, true);
-  assert.equal(activeAgentOwnershipCount([detached.value.snapshot.state, target], agent.id), 0);
+  assert.equal(activeAgentOwnershipCount([detached.value.snapshot.state, target], agent.id), 1);
 
-  const attached = attachAgentOwnership(target, [], detached.value.agent, targetCell);
+  const attached = attachAgentOwnership(
+    target,
+    [],
+    detached.value.agent,
+    targetCell,
+    source.regionId,
+  );
   assert.equal(attached.ok, true);
+  const globalId = globalHandoffAgentId(agent.id, source.regionId);
+  assert.equal(
+    activeAgentOwnershipCount([detached.value.snapshot.state, attached.value.state], globalId),
+    1,
+  );
   assert.equal(
     activeAgentOwnershipCount([detached.value.snapshot.state, attached.value.state], agent.id),
     1,
+    "the unrelated target-local legacy agent remains separate",
   );
 });
