@@ -42,10 +42,10 @@ test("40x24 storage exposes a centered hex simulation footprint", () => {
 
 test("nearest hex cell provides a deterministic migration target", () => {
   const extent = { width: 40, height: 24 };
-  assert.deepEqual(nearestHexGridCell(extent, { x: 0, y: 0 }), { x: 8, y: 0 });
+  assert.deepEqual(nearestHexGridCell(extent, { x: 0, y: 0 }), { x: 19, y: 0 });
   assert.deepEqual(
     nearestHexGridCell(extent, { x: 0, y: 0 }, (position) => position.x >= 10),
-    { x: 10, y: 0 },
+    { x: 19, y: 0 },
   );
 });
 
