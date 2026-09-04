@@ -6,8 +6,14 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { WorldRuntime } from "./runtime.js";
-import { validateWorldState } from "./world.js";
-import { TARGET_WORLD_HEIGHT, TARGET_WORLD_WIDTH } from "./world-scale.js";
+import { updateTileHydrology } from "./simulation.js";
+import { createInitialWorld, validateWorldState } from "./world.js";
+import {
+  alignRegionBoundaryElevations,
+  ensureWorldExtent,
+  TARGET_WORLD_HEIGHT,
+  TARGET_WORLD_WIDTH,
+} from "./world-scale.js";
 
 interface Env {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -23,6 +29,7 @@ interface Env {
 
 interface StoredRegion {
   schemaVersion: 1;
+  terrainFrameVersion?: 1;
   state: WorldState;
   pendingCommands: WorldCommand[];
   paused: boolean;
@@ -49,6 +56,7 @@ const JSON_HEADERS = {
 const IDLE_TICK_MULTIPLIER = 6;
 const ACTIVE_GRACE_MULTIPLIER = 6;
 const MAX_IDLE_TICK_MS = 3_600_000;
+const TERRAIN_FRAME_VERSION = 1;
 
 export function regionTickDelayMs(tickMs: number, active: boolean): number {
   if (active) return tickMs;
@@ -208,12 +216,17 @@ export class RegionDurableObject {
     this.tickMs = integerValue(env.TICK_MS, 10_000, 1_000, 3_600_000);
     this.ctx.blockConcurrencyWhile(async () => {
       const stored = await this.ctx.storage.get<StoredRegion>("region");
+      let migratedTerrainFrame = false;
 
       if (stored !== undefined) {
         try {
           const errors = validateWorldState(stored.state);
           if (stored.schemaVersion !== 1 || errors.length > 0) {
             throw new Error(errors.join("; ") || "unsupported persisted schema");
+          }
+          if (stored.terrainFrameVersion !== TERRAIN_FRAME_VERSION) {
+            this.prepareRegionTerrain(stored.state);
+            migratedTerrainFrame = true;
           }
           this.runtime = new WorldRuntime({
             state: stored.state,
@@ -230,18 +243,50 @@ export class RegionDurableObject {
         this.runtime = this.createRuntime("garden-1");
       }
 
+      if (this.assigned && migratedTerrainFrame) await this.persist();
       if (this.assigned && !this.paused && (await this.ctx.storage.getAlarm()) === null) {
         await this.scheduleNextTick();
       }
     });
   }
 
+  private terrainFrame(regionId: string): {
+    worldSeed: number;
+    entry: RegionLayoutEntry | undefined;
+  } {
+    const worldSeed = integerValue(this.env.WORLD_SEED, 424_242, 1, 0x7fff_ffff);
+    const entry = regionLayout(allowedRegions(this.env)).find((candidate) => candidate.id === regionId);
+    return { worldSeed, entry };
+  }
+
+  private prepareRegionTerrain(state: WorldState): void {
+    const { worldSeed, entry } = this.terrainFrame(state.regionId);
+    const origin = entry?.origin ?? { x: 0, y: 0 };
+    ensureWorldExtent(state, TARGET_WORLD_WIDTH, TARGET_WORLD_HEIGHT, {
+      worldSeed,
+      originX: origin.x,
+      originY: origin.y,
+    });
+    if (entry !== undefined) {
+      alignRegionBoundaryElevations(
+        state,
+        worldSeed,
+        origin.x,
+        origin.y,
+        {
+          west: entry.neighbors.west !== null,
+          east: entry.neighbors.east !== null,
+        },
+      );
+    }
+    updateTileHydrology(state);
+  }
+
   private createRuntime(regionId: string): WorldRuntime {
     const baseSeed = integerValue(this.env.WORLD_SEED, 424_242, 1, 0x7fff_ffff);
     const seed = ((baseSeed ^ hashRegion(regionId)) & 0x7fff_ffff) || baseSeed;
-    const runtime = new WorldRuntime({ seed });
-    const state = runtime.snapshot();
-    state.regionId = regionId;
+    const state = createInitialWorld({ seed, regionId });
+    this.prepareRegionTerrain(state);
     return new WorldRuntime({ state });
   }
 
@@ -269,6 +314,7 @@ export class RegionDurableObject {
     this.updatedAt = Date.now();
     const stored: StoredRegion = {
       schemaVersion: 1,
+      terrainFrameVersion: TERRAIN_FRAME_VERSION,
       state: this.runtime.snapshot(),
       pendingCommands: this.runtime.pendingCommands(),
       paused: this.paused,
@@ -473,7 +519,10 @@ export class RegionDurableObject {
           const seed = Number.isInteger(rawSeed)
             ? Math.max(1, Math.min(0x7fff_ffff, rawSeed))
             : currentSeed;
-          const state = this.runtime.reset(seed);
+          const resetState = this.runtime.reset(seed);
+          this.prepareRegionTerrain(resetState);
+          this.runtime = new WorldRuntime({ state: resetState });
+          const state = this.runtime.snapshot();
           await this.persist();
           if (!this.paused) await this.scheduleNextTick();
           this.broadcastSnapshot();

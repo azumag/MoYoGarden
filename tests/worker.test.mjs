@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { RegionDurableObject, regionLayout, regionTickDelayMs, regionWindow } from "../dist-ts/src/worker.js";
+import { sampleWorldConditions } from "../dist-ts/src/world-scale.js";
 class MemoryStorage {
   constructor(){this.values=new Map();this.alarm=null;}
   async get(key){return structuredClone(this.values.get(key));}
@@ -10,7 +11,7 @@ class MemoryStorage {
   async deleteAlarm(){this.alarm=null;}
 }
 class MemoryState { constructor(storage=new MemoryStorage()){this.storage=storage;this.sockets=[];this.ready=Promise.resolve();} blockConcurrencyWhile(callback){this.ready=callback();return this.ready;} acceptWebSocket(socket){this.sockets.push(socket);} getWebSockets(){return [...this.sockets];} }
-const env={WORLD_SEED:"424242",TICK_MS:"10000",OPEN_COMMANDS:"false",COMMAND_TOKEN:"command-secret",ADMIN_TOKEN:"admin-secret"};
+const env={WORLD_SEED:"424242",REGION_IDS:"garden-1,garden-test,garden-3",TICK_MS:"10000",OPEN_COMMANDS:"false",COMMAND_TOKEN:"command-secret",ADMIN_TOKEN:"admin-secret"};
 function request(path,init={}){const headers=new Headers(init.headers);headers.set("x-moyo-region-internal","garden-test");return new Request(`https://moyo.example${path}`,{...init,headers});}
 
 test("region tick cadence slows only while inactive",()=>{assert.equal(regionTickDelayMs(10000,false),60000);assert.equal(regionTickDelayMs(10000,true),10000);assert.equal(regionTickDelayMs(1000000,false),3600000);});
@@ -18,6 +19,8 @@ test("region tick cadence slows only while inactive",()=>{assert.equal(regionTic
 test("region layout gives adjacent chunks contiguous global coordinates",()=>{const layout=regionLayout(["garden-1","garden-2","garden-3"],40,24);assert.deepEqual(layout.map((entry)=>entry.origin),[{x:0,y:0},{x:40,y:0},{x:80,y:0}]);assert.equal(layout[0].origin.x+layout[0].extent.width,layout[1].origin.x);assert.equal(layout[1].origin.x+layout[1].extent.width,layout[2].origin.x);assert.deepEqual(layout.map((entry)=>entry.neighbors),[{west:null,east:"garden-2"},{west:"garden-1",east:"garden-3"},{west:"garden-2",east:null}]);});
 
 test("region window returns only nearby chunks around the active region",()=>{const ids=["garden-1","garden-2","garden-3","garden-4","garden-5"];assert.deepEqual(regionWindow(ids,"garden-3",1,40,24).map((entry)=>entry.id),["garden-2","garden-3","garden-4"]);assert.deepEqual(regionWindow(ids,"garden-1",2,40,24).map((entry)=>entry.id),["garden-1","garden-2","garden-3"]);assert.deepEqual(regionWindow(ids,"missing",1,40,24),[]);});
+
+test("new middle regions anchor touching edge elevations to shared world coordinates",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const state=await (await object.fetch(request("/api/world/snapshot"))).json();assert.equal(state.regionId,"garden-test");const west=state.tiles.find((tile)=>tile.x===0&&tile.terrain!=="water");const east=state.tiles.find((tile)=>tile.x===state.width-1&&tile.terrain!=="water");assert.ok(west);assert.ok(east);assert.equal(west.elevation,Math.max(0.03,sampleWorldConditions(424242,40,west.y).elevation));assert.equal(east.elevation,Math.max(0.03,sampleWorldConditions(424242,79,east.y).elevation));assert.equal(ctx.storage.values.get("region").terrainFrameVersion,1);});
 
 test("passive snapshot prefetch keeps an unloaded region on idle cadence",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const before=Date.now();const response=await object.fetch(request("/api/world/snapshot",{headers:{"x-moyo-prefetch":"1"}}));const state=await response.json();assert.equal(state.regionId,"garden-test");const health=await (await object.fetch(request("/api/health"))).json();assert.equal(health.tickMode,"idle");assert.equal(health.effectiveTickMs,60000);assert.ok(ctx.storage.alarm>=before+59000);assert.ok(ctx.storage.alarm<=before+61000);});
 

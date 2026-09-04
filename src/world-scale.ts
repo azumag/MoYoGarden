@@ -10,6 +10,13 @@ export interface WorldCoordinateSpace {
   originY?: number;
 }
 
+export interface RegionBoundaryEdges {
+  west?: boolean;
+  east?: boolean;
+  north?: boolean;
+  south?: boolean;
+}
+
 export interface WorldConditions {
   elevation: number;
   moisture: number;
@@ -92,6 +99,53 @@ export function sampleWorldConditions(
   );
 
   return { elevation, moisture, slope, convergence, wetness };
+}
+
+/**
+ * Re-anchor only the edge band that actually touches another loaded region to
+ * the shared absolute-coordinate elevation field. Terrain/resource ownership is
+ * deliberately preserved so migrating a persisted region cannot strand an agent
+ * on newly-created water or erase gathered resources. A smooth interior blend
+ * prevents the migrated edge from becoming a new artificial ridge.
+ */
+export function alignRegionBoundaryElevations(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  worldSeed: number,
+  originX: number,
+  originY: number,
+  edges: RegionBoundaryEdges,
+  bandWidth = 4,
+): number {
+  const safeBand = Math.max(1, Math.min(Math.max(state.width, state.height), Math.floor(bandWidth)));
+  let changed = 0;
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") continue;
+    const edgeDistances: number[] = [];
+    if (edges.west) edgeDistances.push(tile.x);
+    if (edges.east) edgeDistances.push(state.width - 1 - tile.x);
+    if (edges.north) edgeDistances.push(tile.y);
+    if (edges.south) edgeDistances.push(state.height - 1 - tile.y);
+    if (edgeDistances.length === 0) continue;
+
+    const distance = Math.min(...edgeDistances);
+    if (distance < 0 || distance >= safeBand) continue;
+
+    const target = Math.max(
+      0.03,
+      sampleWorldConditions(worldSeed, originX + tile.x, originY + tile.y).elevation,
+    );
+    const current = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? target : target;
+    const normalized = safeBand <= 1 ? 0 : Math.min(1, distance / safeBand);
+    const smooth = normalized * normalized * (3 - 2 * normalized);
+    const weight = 1 - smooth;
+    const elevation = current + (target - current) * weight;
+    if (Math.abs(elevation - current) <= 1e-9) continue;
+    tile.elevation = elevation;
+    changed += 1;
+  }
+
+  return changed;
 }
 
 function createFrontierTile(

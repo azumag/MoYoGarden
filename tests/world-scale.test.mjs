@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import {
+  alignRegionBoundaryElevations,
   ensureWorldExtent,
   sampleWorldConditions,
   TARGET_WORLD_HEIGHT,
@@ -71,6 +72,37 @@ test("world conditions use shared seed plus absolute coordinates", () => {
   assert.equal(a.elevation, b.elevation);
   assert.equal(a.terrain, b.terrain);
   assert.deepEqual(a.resource, b.resource);
+});
+
+test("persisted region edge elevations migrate toward the shared global frame without replacing terrain", () => {
+  const seed = 424242;
+  const region = createInitialWorld({ seed: 991, width: 40, height: 24 });
+  const y = 10;
+  const edge = region.tiles[y * region.width];
+  const inner = region.tiles[y * region.width + 4];
+  assert.ok(edge);
+  assert.ok(inner);
+
+  edge.terrain = "forest";
+  edge.resource = { kind: "wood", amount: 7, maxAmount: 31 };
+  edge.elevation = 0.9;
+  inner.elevation = 0.13;
+  const preservedResource = structuredClone(edge.resource);
+
+  const changed = alignRegionBoundaryElevations(
+    region,
+    seed,
+    40,
+    0,
+    { west: true },
+    4,
+  );
+
+  assert.ok(changed > 0);
+  assert.equal(edge.elevation, Math.max(0.03, sampleWorldConditions(seed, 40, y).elevation));
+  assert.equal(edge.terrain, "forest");
+  assert.deepEqual(edge.resource, preservedResource);
+  assert.equal(inner.elevation, 0.13);
 });
 
 test("terrain conditions derive bounded slope, convergence and wetness from the same field", () => {
