@@ -182,8 +182,8 @@ export const terrainMethods = {
         [1, 0, "east"], [-1, 0, "west"], [0, 1, "south"], [0, -1, "north"],
       ]) {
         const neighbor = stateTile(tile.x + dx, tile.y + dy);
-        if (neighbor && neighbor.terrain !== "water") continue;
-        const bottom = neighbor?.terrain === "water" ? this.terrainHeight(neighbor) + 0.02 : -0.62;
+        if (!neighbor || neighbor.terrain !== "water") continue;
+        const bottom = this.terrainHeight(neighbor) + 0.02;
         if (edge === "east") pushQuad(
           [[x+1,bottom,z],[x+1,bottom,z+1],[x+1,heights.h11,z+1],[x+1,heights.h10,z]],
           [1,0,0], color,
@@ -222,7 +222,7 @@ export const terrainMethods = {
     const detail = new THREE.Group();
 
     const underlay = new THREE.Mesh(
-      new THREE.BoxGeometry(state.width + 2.6, 0.5, state.height + 2.6),
+      new THREE.BoxGeometry(state.width, 0.5, state.height),
       new THREE.MeshStandardMaterial({
         color: 0x5d5c4f,
         roughness: 1,
