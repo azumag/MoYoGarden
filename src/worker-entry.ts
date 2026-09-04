@@ -1,5 +1,5 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
-import { RegionDurableObject } from "./handoff-region.js";
+import { RegionDurableObject } from "./move-handoff-region.js";
 import { regionHexTopology } from "./region-topology.js";
 import baseWorker from "./worker.js";
 
