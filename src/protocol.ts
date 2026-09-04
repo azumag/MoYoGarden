@@ -1,3 +1,5 @@
+import { hexGridDistance } from "./hex-grid.js";
+
 export const RESOURCE_KINDS = ["wood", "stone", "food"] as const;
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 
@@ -457,6 +459,7 @@ export function samePosition(a: GridPosition, b: GridPosition): boolean {
   return a.x === b.x && a.y === b.y;
 }
 
+/** @deprecated The local grid is axial hex now; retained as a compatibility name. */
 export function manhattanDistance(a: GridPosition, b: GridPosition): number {
-  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+  return hexGridDistance(a, b);
 }

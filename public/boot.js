@@ -82,6 +82,7 @@
   preload(`/client/hex-footprint-rendering.js?v=${VERSION}`);
   preload(`/client/seamless-navigation.js?v=${VERSION}`);
   preload(`/client/hex-neighbor-preview.js?v=${VERSION}`);
+  preload(`/client/hex-tile-rendering.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
@@ -105,6 +106,11 @@
       await import(`/client/hex-neighbor-preview.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: hex neighbor preview failed; keeping physical neighbor placement", error);
+    }
+    try {
+      await import(`/client/hex-tile-rendering.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: hex tile rendering failed; keeping legacy tile renderer", error);
     }
 
     const moduleScript = document.createElement("script");

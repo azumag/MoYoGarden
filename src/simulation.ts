@@ -1,3 +1,4 @@
+import { HEX_GRID_STEPS } from "./hex-grid.js";
 import {
   BUILD_RECIPES,
   DEFAULT_SIMULATION_CONFIG,
@@ -32,6 +33,7 @@ import {
   getTile,
   inBounds,
   isPassable,
+  migrateWorldToHexGrid,
   nearestFactionStructure,
 } from "./world.js";
 
@@ -40,23 +42,8 @@ export interface SimulationResult {
   receipts: CommandReceipt[];
 }
 
-const NEIGHBORS: readonly GridPosition[] = [
-  { x: 0, y: -1 },
-  { x: 1, y: 0 },
-  { x: 0, y: 1 },
-  { x: -1, y: 0 },
-];
-
-const HYDROLOGY_NEIGHBORS: readonly GridPosition[] = [
-  { x: -1, y: -1 },
-  { x: 0, y: -1 },
-  { x: 1, y: -1 },
-  { x: -1, y: 0 },
-  { x: 1, y: 0 },
-  { x: -1, y: 1 },
-  { x: 0, y: 1 },
-  { x: 1, y: 1 },
-];
+const NEIGHBORS: readonly GridPosition[] = HEX_GRID_STEPS;
+const HYDROLOGY_NEIGHBORS: readonly GridPosition[] = HEX_GRID_STEPS;
 
 const WATER_MOISTURE_RADIUS = 4;
 const HYDROLOGY_EPSILON = 1e-6;
@@ -84,8 +71,7 @@ export function flowTargetAt(
     if (neighbor === undefined || neighborElevation === undefined) return [];
     const drop = elevation - neighborElevation;
     if (drop <= HYDROLOGY_EPSILON) return [];
-    const distance = delta.x !== 0 && delta.y !== 0 ? Math.SQRT2 : 1;
-    return [{ target, elevation: neighborElevation, gradient: drop / distance }];
+    return [{ target, elevation: neighborElevation, gradient: drop }];
   });
 
   const best = candidates.sort((a, b) =>
@@ -160,10 +146,7 @@ export function terrainErosionPressureAt(
   const targetElevation = tileElevation(target);
   if (target === undefined || targetElevation === undefined) return 0;
 
-  const dx = Math.abs(targetPosition.x - position.x);
-  const dy = Math.abs(targetPosition.y - position.y);
-  const distance = dx !== 0 && dy !== 0 ? Math.SQRT2 : 1;
-  const slope = Math.max(0, (elevation - targetElevation) / distance);
+  const slope = Math.max(0, elevation - targetElevation);
   if (slope <= HYDROLOGY_EPSILON) return 0;
 
   const vegetationCover =
@@ -249,7 +232,7 @@ export function surfaceMoistureAt(
   let waterInfluence = 0;
   for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
     for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
-      const distance = Math.abs(dx) + Math.abs(dy);
+      const distance = manhattanDistance({ x: 0, y: 0 }, { x: dx, y: dy });
       if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
       const neighbor = getTile(state, { x: position.x + dx, y: position.y + dy });
       if (neighbor?.terrain !== "water") continue;
@@ -952,6 +935,7 @@ export function simulate(
   config: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
 ): SimulationResult {
   const state = structuredClone(previousState);
+  migrateWorldToHexGrid(state);
   updateTileHydrology(state);
   state.tick += 1;
   state.revision += 1;

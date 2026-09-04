@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emptyInventory } from "../dist-ts/src/protocol.js";
+import { emptyInventory, manhattanDistance } from "../dist-ts/src/protocol.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import {
   applyTerrainErosion,
@@ -170,14 +170,14 @@ test("autonomous factions complete the settlement loop", () => {
   }
 });
 
-test("perception remains local", () => {
+test("perception remains local on the hex metric", () => {
   const state = createInitialWorld({ seed: 777 });
   const self = state.agents.find((agent) => agent.factionId === "ember");
   assert.ok(self);
   const perception = getPerception(state, self.id, 2);
   assert.equal(perception.radius, 2);
   assert.ok(perception.visibleTiles.length < state.tiles.length);
-  assert.ok(perception.visibleTiles.every((tile) => Math.abs(tile.x-self.position.x)+Math.abs(tile.y-self.position.y) <= 2));
+  assert.ok(perception.visibleTiles.every((tile) => manhattanDistance(tile, self.position) <= 2));
 });
 
 test("pending commands survive hibernation", () => {
@@ -270,7 +270,7 @@ test("prolonged starvation can reduce a faction's population", () => {
   assert.equal(second.agents.length, initialPopulation - 1);
 });
 
-test("food-secure settlements can grow their population when local space is available", () => {
+test("food-secure settlements can grow their population when local hex space is available", () => {
   const state = createInitialWorld({ seed: 2029 });
   const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);
   const members = state.agents.filter((agent) => agent.factionId === faction.id);
@@ -307,5 +307,5 @@ test("food-secure settlements can grow their population when local space is avai
   assert.equal(nextFaction.resources.food, 34);
   assert.equal(camp.storage.food, 34);
   assert.equal(newcomer.status, "new generation settling");
-  assert.ok(Math.abs(newcomer.position.x - campPosition.x) + Math.abs(newcomer.position.y - campPosition.y) <= 3);
+  assert.ok(manhattanDistance(newcomer.position, camp.position) <= 3);
 });
