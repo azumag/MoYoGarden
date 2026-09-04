@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moyo-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+  production:
+    name: Verify production commit
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for Cloudflare production to serve this commit
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          META_URL: https://moyo.bluemoon.works/api/meta
+          HEALTH_URL: https://moyo.bluemoon.works/api/health?region=garden-1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 60); do
+            response="$(
+              curl -fsS --max-time 10 \
+                -H 'cache-control: no-cache' \
+                "${META_URL}?ci_run=${GITHUB_RUN_ID}&attempt=${attempt}" \
+                || true
+            )"
+            actual_sha="$(
+              printf '%s' "$response" |
+                node -e 'let value=""; process.stdin.on("data", chunk => value += chunk).on("end", () => { try { process.stdout.write(JSON.parse(value)?.build?.commit ?? ""); } catch {} });' \
+                || true
+            )"
+
+            if [[ "$actual_sha" == "$EXPECTED_SHA" ]]; then
+              curl -fsS --max-time 10 "$HEALTH_URL" >/dev/null
+              {
+                echo "### Production deployment verified"
+                echo
+                echo "- Commit: \`$EXPECTED_SHA\`"
+                echo "- Endpoint: \`$META_URL\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "Production is serving $EXPECTED_SHA"
+              exit 0
+            fi
+
+            echo "attempt ${attempt}/60: expected=$EXPECTED_SHA actual=${actual_sha:-unavailable}"
+            sleep 10
+          done
+
+          echo "::error::Production did not serve commit $EXPECTED_SHA within 10 minutes."
+          exit 1

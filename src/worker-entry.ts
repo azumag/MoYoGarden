@@ -1,3 +1,4 @@
+import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
 import baseWorker, { RegionDurableObject } from "./worker.js";
 import { regionHexTopology } from "./region-topology.js";
 
@@ -15,7 +16,30 @@ interface WorkerEnv {
 
 type JsonRecord = Record<string, unknown>;
 
+export interface BuildMetadata {
+  commit: string;
+  branch: string;
+  source: string;
+}
+
+const DEFAULT_BUILD_METADATA: BuildMetadata = {
+  commit: BUILD_COMMIT,
+  branch: BUILD_BRANCH,
+  source: BUILD_SOURCE,
+};
+
 export { RegionDurableObject };
+
+export function enrichMetaPayload(
+  payload: unknown,
+  build: BuildMetadata = DEFAULT_BUILD_METADATA,
+): unknown {
+  if (!isRecord(payload)) return payload;
+  return {
+    ...payload,
+    build,
+  };
+}
 
 export function enrichRegionWindowPayload(
   payload: unknown,
@@ -64,26 +88,37 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null;
 }
 
+function jsonResponse(response: Response, payload: unknown): Response {
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(JSON.stringify(payload), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const response = await baseWorker.fetch(request, env);
     const url = new URL(request.url);
-    if (
-      request.method !== "GET"
-      || url.pathname !== "/api/world/window"
-      || !response.ok
-    ) {
-      return response;
+
+    if (request.method !== "GET" || !response.ok) return response;
+
+    if (url.pathname === "/api/meta") {
+      return jsonResponse(response, enrichMetaPayload(await response.json() as unknown));
     }
 
-    const payload = await response.json() as unknown;
-    const enriched = enrichRegionWindowPayload(payload, configuredRegionIds(env));
-    const headers = new Headers(response.headers);
-    headers.delete("content-length");
-    return new Response(JSON.stringify(enriched), {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
+    if (url.pathname === "/api/world/window") {
+      return jsonResponse(
+        response,
+        enrichRegionWindowPayload(
+          await response.json() as unknown,
+          configuredRegionIds(env),
+        ),
+      );
+    }
+
+    return response;
   },
 };
