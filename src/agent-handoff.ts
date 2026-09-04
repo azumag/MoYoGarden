@@ -40,6 +40,10 @@ const OUTGOING_PHASE_ORDER: Record<OutgoingHandoffPhase, number> = {
   committed: 2,
 };
 
+function cloneRecords<T>(records: readonly T[]): T[] {
+  return records.map((record) => structuredClone(record));
+}
+
 function validIdentifier(value: string): boolean {
   return /^[a-z0-9][a-z0-9:._-]{0,159}$/i.test(value);
 }
@@ -93,18 +97,18 @@ export function reserveOutgoingHandoff(
   updatedAtTick = envelope.createdAtTick,
 ): HandoffMutationResult<OutgoingAgentHandoff> {
   const reason = validateAgentHandoffEnvelope(envelope);
-  if (reason !== undefined) return { ok: false, records: structuredClone(records), reason };
+  if (reason !== undefined) return { ok: false, records: cloneRecords(records), reason };
 
   const existing = records.find((record) => record.envelope.transferId === envelope.transferId);
   if (existing !== undefined) {
     if (!sameEnvelope(existing.envelope, envelope)) {
       return {
         ok: false,
-        records: structuredClone(records),
+        records: cloneRecords(records),
         reason: "transfer id already belongs to a different handoff",
       };
     }
-    return { ok: true, records: structuredClone(records), record: structuredClone(existing) };
+    return { ok: true, records: cloneRecords(records), record: structuredClone(existing) };
   }
 
   const conflictingAgent = records.find(
@@ -115,7 +119,7 @@ export function reserveOutgoingHandoff(
   if (conflictingAgent !== undefined) {
     return {
       ok: false,
-      records: structuredClone(records),
+      records: cloneRecords(records),
       reason: "agent already has an in-flight outgoing handoff",
     };
   }
@@ -125,7 +129,7 @@ export function reserveOutgoingHandoff(
     phase: "reserved",
     updatedAtTick,
   };
-  return { ok: true, records: [...structuredClone(records), record], record: structuredClone(record) };
+  return { ok: true, records: [...cloneRecords(records), record], record: structuredClone(record) };
 }
 
 export function advanceOutgoingHandoff(
@@ -135,26 +139,26 @@ export function advanceOutgoingHandoff(
   updatedAtTick: number,
 ): HandoffMutationResult<OutgoingAgentHandoff> {
   const index = records.findIndex((record) => record.envelope.transferId === transferId);
-  if (index < 0) {
-    return { ok: false, records: structuredClone(records), reason: "unknown outgoing handoff" };
+  const current = index >= 0 ? records[index] : undefined;
+  if (current === undefined) {
+    return { ok: false, records: cloneRecords(records), reason: "unknown outgoing handoff" };
   }
-  const current = records[index];
   if (OUTGOING_PHASE_ORDER[phase] < OUTGOING_PHASE_ORDER[current.phase]) {
     return {
       ok: false,
-      records: structuredClone(records),
+      records: cloneRecords(records),
       reason: "outgoing handoff phase cannot move backwards",
     };
   }
   if (phase === current.phase) {
-    return { ok: true, records: structuredClone(records), record: structuredClone(current) };
+    return { ok: true, records: cloneRecords(records), record: structuredClone(current) };
   }
   const next: OutgoingAgentHandoff = {
-    ...structuredClone(current),
+    envelope: cloneEnvelope(current.envelope),
     phase,
     updatedAtTick,
   };
-  const nextRecords = structuredClone(records);
+  const nextRecords = cloneRecords(records);
   nextRecords[index] = next;
   return { ok: true, records: nextRecords, record: structuredClone(next) };
 }
@@ -165,18 +169,18 @@ export function prepareIncomingHandoff(
   updatedAtTick: number,
 ): HandoffMutationResult<IncomingAgentHandoff> {
   const reason = validateAgentHandoffEnvelope(envelope);
-  if (reason !== undefined) return { ok: false, records: structuredClone(records), reason };
+  if (reason !== undefined) return { ok: false, records: cloneRecords(records), reason };
 
   const existing = records.find((record) => record.envelope.transferId === envelope.transferId);
   if (existing !== undefined) {
     if (!sameEnvelope(existing.envelope, envelope)) {
       return {
         ok: false,
-        records: structuredClone(records),
+        records: cloneRecords(records),
         reason: "transfer id already belongs to a different incoming handoff",
       };
     }
-    return { ok: true, records: structuredClone(records), record: structuredClone(existing) };
+    return { ok: true, records: cloneRecords(records), record: structuredClone(existing) };
   }
 
   const conflictingAgent = records.find(
@@ -185,7 +189,7 @@ export function prepareIncomingHandoff(
   if (conflictingAgent !== undefined) {
     return {
       ok: false,
-      records: structuredClone(records),
+      records: cloneRecords(records),
       reason: "agent already has an in-flight incoming handoff",
     };
   }
@@ -195,7 +199,7 @@ export function prepareIncomingHandoff(
     phase: "prepared",
     updatedAtTick,
   };
-  return { ok: true, records: [...structuredClone(records), record], record: structuredClone(record) };
+  return { ok: true, records: [...cloneRecords(records), record], record: structuredClone(record) };
 }
 
 export function commitIncomingHandoff(
@@ -204,19 +208,19 @@ export function commitIncomingHandoff(
   updatedAtTick: number,
 ): HandoffMutationResult<IncomingAgentHandoff> {
   const index = records.findIndex((record) => record.envelope.transferId === transferId);
-  if (index < 0) {
-    return { ok: false, records: structuredClone(records), reason: "unknown incoming handoff" };
+  const current = index >= 0 ? records[index] : undefined;
+  if (current === undefined) {
+    return { ok: false, records: cloneRecords(records), reason: "unknown incoming handoff" };
   }
-  const current = records[index];
   if (current.phase === "committed") {
-    return { ok: true, records: structuredClone(records), record: structuredClone(current) };
+    return { ok: true, records: cloneRecords(records), record: structuredClone(current) };
   }
   const next: IncomingAgentHandoff = {
-    ...structuredClone(current),
+    envelope: cloneEnvelope(current.envelope),
     phase: "committed",
     updatedAtTick,
   };
-  const nextRecords = structuredClone(records);
+  const nextRecords = cloneRecords(records);
   nextRecords[index] = next;
   return { ok: true, records: nextRecords, record: structuredClone(next) };
 }
@@ -224,7 +228,7 @@ export function commitIncomingHandoff(
 export function pendingOutgoingHandoffs(
   records: readonly OutgoingAgentHandoff[],
 ): OutgoingAgentHandoff[] {
-  return structuredClone(records)
+  return cloneRecords(records)
     .filter((record) => record.phase !== "committed")
     .sort((a, b) =>
       a.envelope.createdAtTick - b.envelope.createdAtTick ||
@@ -235,7 +239,7 @@ export function pendingOutgoingHandoffs(
 export function pendingIncomingHandoffs(
   records: readonly IncomingAgentHandoff[],
 ): IncomingAgentHandoff[] {
-  return structuredClone(records)
+  return cloneRecords(records)
     .filter((record) => record.phase !== "committed")
     .sort((a, b) =>
       a.envelope.createdAtTick - b.envelope.createdAtTick ||
