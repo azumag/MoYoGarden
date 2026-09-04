@@ -142,6 +142,29 @@ function ensureRegionLayout() {
     .then(async (response) => {
       if (!response.ok) throw new Error(`meta HTTP ${response.status}`);
       const meta = await response.json();
+      const topology = meta?.world?.regionTopology?.regions;
+      const extent = meta?.world?.regionExtent;
+      if (
+        Array.isArray(topology)
+        && Number.isFinite(extent?.width)
+        && extent.width > 0
+        && Number.isFinite(extent?.height)
+        && extent.height > 0
+      ) {
+        const next = topology
+          .filter((entry) => entry?.id)
+          .map((entry) => ({
+            id: entry.id,
+            origin: entry.physicalOrigin,
+            hexOrigin: entry.hexOrigin,
+            axial: entry.axial,
+            extent: { width: extent.width, height: extent.height },
+          }));
+        if (next.length > 0) {
+          regionLayout = next;
+          return;
+        }
+      }
       const next = meta?.world?.regionLayout;
       if (Array.isArray(next)) regionLayout = next;
     })
