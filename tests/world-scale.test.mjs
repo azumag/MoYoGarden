@@ -105,7 +105,7 @@ test("persisted region edge elevations migrate toward the shared global frame wi
   assert.equal(inner.elevation, 0.13);
 });
 
-test("terrain conditions derive bounded slope, convergence and wetness from the same field", () => {
+test("terrain conditions derive bounded temperature, slope, convergence and wetness from the same field", () => {
   const seed = 424242;
   const samples = [];
   for (let y = 0; y < 24; y += 3) {
@@ -115,7 +115,14 @@ test("terrain conditions derive bounded slope, convergence and wetness from the 
   }
 
   for (const sample of samples) {
-    for (const value of [sample.elevation, sample.moisture, sample.slope, sample.convergence, sample.wetness]) {
+    for (const value of [
+      sample.elevation,
+      sample.moisture,
+      sample.temperature,
+      sample.slope,
+      sample.convergence,
+      sample.wetness,
+    ]) {
       assert.ok(Number.isFinite(value));
       assert.ok(value >= 0 && value <= 1);
     }
@@ -123,7 +130,29 @@ test("terrain conditions derive bounded slope, convergence and wetness from the 
 
   assert.ok(Math.max(...samples.map((sample) => sample.slope)) - Math.min(...samples.map((sample) => sample.slope)) > 0.1);
   assert.ok(Math.max(...samples.map((sample) => sample.wetness)) - Math.min(...samples.map((sample) => sample.wetness)) > 0.1);
+  assert.ok(Math.max(...samples.map((sample) => sample.temperature)) - Math.min(...samples.map((sample) => sample.temperature)) > 0.1);
   assert.ok(samples.some((sample) => Math.abs(sample.wetness - sample.moisture) > 0.01));
+});
+
+test("continuous temperature field stays smooth across future region boundaries", () => {
+  const seed = 424242;
+  const boundaryPairs = [
+    [39, 10, 40, 10],
+    [19, 23, 20, 24],
+    [59, 35, 60, 35],
+  ];
+
+  for (const [ax, ay, bx, by] of boundaryPairs) {
+    const a = sampleWorldConditions(seed, ax, ay);
+    const b = sampleWorldConditions(seed, bx, by);
+    assert.ok(Math.abs(a.temperature - b.temperature) < 0.16);
+  }
+
+  const climateBand = [];
+  for (let y = 0; y <= 256; y += 8) {
+    climateBand.push(sampleWorldConditions(seed, 12, y).temperature);
+  }
+  assert.ok(Math.max(...climateBand) - Math.min(...climateBand) > 0.15);
 });
 
 test("runtime expands persisted default worlds but respects explicit compact test worlds", () => {

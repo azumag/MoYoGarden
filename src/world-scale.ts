@@ -20,6 +20,7 @@ export interface RegionBoundaryEdges {
 export interface WorldConditions {
   elevation: number;
   moisture: number;
+  temperature: number;
   slope: number;
   convergence: number;
   wetness: number;
@@ -64,9 +65,11 @@ function elevationAt(worldSeed: number, globalX: number, globalY: number): numbe
  * by the current extent, so growing or chunking the world never rescales the
  * underlying landform field.
  *
- * `slope`, `convergence` and `wetness` are derived from the same elevation and
- * moisture fields instead of from named biome categories. They are intentionally
- * reusable by vegetation, erosion, agriculture and future climate systems.
+ * `temperature`, `slope`, `convergence` and `wetness` are derived from the same
+ * low-level coordinate fields instead of from named biome categories. The
+ * temperature field combines broad climate bands, continental variation and
+ * an elevation lapse-rate term, so neighboring chunks share the same climate
+ * without persisting a new Tile field yet.
  */
 export function sampleWorldConditions(
   worldSeed: number,
@@ -76,11 +79,20 @@ export function sampleWorldConditions(
   const x = globalX + 0.5;
   const y = globalY + 0.5;
   const phaseB = seededUnit(worldSeed, 0x9e3779b9) * Math.PI * 2;
+  const phaseTemperature = seededUnit(worldSeed, 0x6a09e667) * Math.PI * 2;
   const elevation = elevationAt(worldSeed, globalX, globalY);
   const local = seededUnit(worldSeed, coordinateSeed(worldSeed, globalX, globalY)) - 0.5;
   const moistureWave = Math.cos((x / 34 - y / 29) * Math.PI * 2 + phaseB);
   const moisture = clamp01(
     0.43 + moistureWave * 0.17 + (1 - elevation) * 0.31 + local * 0.08,
+  );
+
+  const climateBand = Math.cos((y / 128) * Math.PI * 2 + phaseTemperature * 0.5);
+  const continentalWave = Math.sin(
+    (x / 96 + y / 132) * Math.PI * 2 + phaseTemperature,
+  );
+  const temperature = clamp01(
+    0.62 + climateBand * 0.16 + continentalWave * 0.07 - elevation * 0.3 + local * 0.04,
   );
 
   const west = elevationAt(worldSeed, globalX - 1, globalY);
@@ -98,7 +110,7 @@ export function sampleWorldConditions(
       slope * 0.12,
   );
 
-  return { elevation, moisture, slope, convergence, wetness };
+  return { elevation, moisture, temperature, slope, convergence, wetness };
 }
 
 /**
@@ -159,6 +171,9 @@ function createFrontierTile(
   const globalY = originY + localY;
   const random = createRandom(coordinateSeed(worldSeed, globalX, globalY));
   const conditions = sampleWorldConditions(worldSeed, globalX, globalY);
+  const temperatureSuitability = clamp01(
+    1 - Math.abs(conditions.temperature - 0.58) / 0.58,
+  );
 
   if (conditions.elevation < 0.245) {
     return { x: localX, y: localY, terrain: "water", elevation: 0 };
@@ -179,7 +194,10 @@ function createFrontierTile(
   }
 
   if (conditions.wetness > 0.585 && conditions.slope < 0.78) {
-    const maxAmount = random.int(18, 28) + Math.round(conditions.wetness * 10);
+    const maxAmount =
+      random.int(18, 28) +
+      Math.round(conditions.wetness * 10) +
+      Math.round(temperatureSuitability * 4);
     return {
       x: localX,
       y: localY,
@@ -199,10 +217,14 @@ function createFrontierTile(
     0.1 +
       conditions.wetness * 0.38 +
       conditions.convergence * 0.06 -
-      conditions.slope * 0.16,
+      conditions.slope * 0.16 +
+      (temperatureSuitability - 0.5) * 0.08,
   );
   if (random.next() < foodChance) {
-    const maxAmount = random.int(12, 24) + Math.round(conditions.wetness * 6);
+    const maxAmount =
+      random.int(12, 24) +
+      Math.round(conditions.wetness * 6) +
+      Math.round(temperatureSuitability * 4);
     tile.resource = { kind: "food", amount: maxAmount, maxAmount };
   }
   return tile;
