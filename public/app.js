@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { createDemoState } from "./client/demo-state.js";
+import { isHexGridCell } from "./client/hex-grid.js";
 import { ModelLibrary } from "./client/model-library.js";
 import { resolveQualityProfile } from "./client/quality.js";
 import { ROLE_LABELS, TERRAIN_COLORS, disposeObject } from "./client/shared.js";
@@ -165,7 +166,10 @@ function buildNeighborPreview(payload) {
     neighborChunks += 1;
     const offsetX = chunk.origin.x - center.origin.x;
     const offsetY = chunk.origin.y - center.origin.y;
+    const chunkWidth = Number(chunk.state.width) || app.state.width;
+    const chunkHeight = Number(chunk.state.height) || app.state.height;
     for (const tile of chunk.state.tiles) {
+      if (!isHexGridCell(tile, chunkWidth, chunkHeight)) continue;
       const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
       const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
       color.offsetHSL(0, 0, (elevation - 0.5) * 0.045);
