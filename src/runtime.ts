@@ -51,6 +51,7 @@ const SOCIAL_INTERVAL = 12;
 const SOCIAL_RADIUS = 2;
 const SOCIAL_PAIR_COOLDOWN = 48;
 const SOCIAL_MAX_CONVERSATIONS_PER_TICK = 2;
+const SOCIAL_ADVICE_ENERGY_THRESHOLD = LOW_ENERGY_THRESHOLD + 7;
 
 type SocialTopic = {
   topic:
@@ -378,6 +379,114 @@ function socialTopic(state: WorldState, speaker: Agent, listener: Agent): Social
   };
 }
 
+function roleResource(role: AgentRole): ResourceKind | undefined {
+  if (role === "woodcutter") return "wood";
+  if (role === "miner") return "stone";
+  if (role === "forager") return "food";
+  return undefined;
+}
+
+function nearestAvailableResource(
+  state: WorldState,
+  origin: GridPosition,
+  resource: ResourceKind,
+): GridPosition | undefined {
+  const tile = state.tiles
+    .filter((candidate) =>
+      candidate.terrain !== "water" &&
+      candidate.resource?.kind === resource &&
+      candidate.resource.amount > 0
+    )
+    .sort((a, b) => {
+      const distance = manhattanDistance(a, origin) - manhattanDistance(b, origin);
+      return distance || a.y - b.y || a.x - b.x;
+    })[0];
+  return tile === undefined ? undefined : { x: tile.x, y: tile.y };
+}
+
+function applySocialAdvice(
+  state: WorldState,
+  speaker: Agent,
+  listener: Agent,
+  social: SocialTopic,
+): GridPosition | undefined {
+  if (
+    !listener.autonomy ||
+    listener.task?.source === "external" ||
+    listener.energy <= SOCIAL_ADVICE_ENERGY_THRESHOLD ||
+    inventoryTotal(listener.inventory) > 0
+  ) {
+    return undefined;
+  }
+
+  const currentTask = listener.task;
+  if (
+    currentTask?.type === "build" ||
+    currentTask?.type === "deposit" ||
+    currentTask?.type === "trade"
+  ) {
+    return undefined;
+  }
+
+  if (social.topic === "resource_report" && social.resource !== undefined) {
+    const speakerTask = speaker.task;
+    if (
+      speakerTask?.type !== "gather" ||
+      speakerTask.resource !== social.resource ||
+      speakerTask.target === undefined ||
+      !inBounds(state, speakerTask.target) ||
+      !isPassable(state, speakerTask.target)
+    ) {
+      return undefined;
+    }
+
+    const shortage = factionSupplyShortage(state, listener.factionId);
+    const relevant =
+      roleResource(listener.role) === social.resource ||
+      shortage === social.resource ||
+      currentTask?.type === "gather" && currentTask.resource === social.resource;
+    if (!relevant) return undefined;
+    if (currentTask?.type === "gather" && currentTask.resource !== social.resource) return undefined;
+
+    const sharedTarget = { ...speakerTask.target };
+    const sharedDistance = manhattanDistance(listener.position, sharedTarget);
+    const currentDistance =
+      currentTask?.type === "gather" && currentTask.target !== undefined
+        ? manhattanDistance(listener.position, currentTask.target)
+        : Number.POSITIVE_INFINITY;
+    if (sharedDistance >= currentDistance) return undefined;
+
+    listener.task = {
+      source: "autonomy",
+      issuedAtTick: state.tick,
+      type: "gather",
+      resource: social.resource,
+      target: sharedTarget,
+    };
+    listener.status = `following ${speaker.name}'s ${social.resource} report`;
+    return sharedTarget;
+  }
+
+  if (social.topic === "supply_shortage" && social.resource !== undefined) {
+    if (currentTask?.type === "gather" && currentTask.resource === social.resource) return undefined;
+    if (listener.role === "builder" && currentTask?.type === "gather") return undefined;
+    const target = nearestAvailableResource(state, listener.position, social.resource);
+    if (target === undefined) return undefined;
+
+    listener.task = {
+      source: "autonomy",
+      issuedAtTick: state.tick,
+      type: "gather",
+      resource: social.resource,
+      target,
+    };
+    listener.status = `helping with ${social.resource} shortage after ${speaker.name}'s advice`;
+    return target;
+  }
+
+  return undefined;
+}
+
 function talkedRecently(state: WorldState, firstId: string, secondId: string): boolean {
   const cutoff = state.tick - SOCIAL_PAIR_COOLDOWN;
   return state.events.some((event) => {
@@ -418,6 +527,7 @@ export function applySocialInteractions(state: WorldState): number {
     if (listener === undefined) continue;
 
     const social = socialTopic(state, speaker, listener);
+    const adviceTarget = applySocialAdvice(state, speaker, listener, social);
     state.events.push({
       id: `event-${state.tick}-${state.events.length + 1}`,
       tick: state.tick,
@@ -434,6 +544,7 @@ export function applySocialInteractions(state: WorldState): number {
         speakerRole: speaker.role,
         listenerRole: listener.role,
         ...(social.resource === undefined ? {} : { resource: social.resource }),
+        ...(adviceTarget === undefined ? {} : { adviceAccepted: true, adviceTarget }),
       },
     });
     engaged.add(speaker.id);
