@@ -21,6 +21,12 @@ export interface HexWorldOrigin {
   y: number;
 }
 
+export interface HexFootprintSize {
+  radius: number;
+  width: number;
+  height: number;
+}
+
 export interface RegionHexTopologyEntry {
   id: string;
   index: number;
@@ -47,6 +53,20 @@ export function hexDistance(a: HexCoordinate, b: HexCoordinate = { q: 0, r: 0 })
   return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
 }
 
+export function regularHexFootprintSize(
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): HexFootprintSize {
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : TARGET_WORLD_HEIGHT;
+  const radius = Math.min(safeHeight / 2, safeWidth / Math.sqrt(3));
+  return {
+    radius,
+    width: radius * Math.sqrt(3),
+    height: radius * 2,
+  };
+}
+
 /**
  * Return the persisted rectangular region origin used during the hex migration.
  * Keeping this explicit lets API clients distinguish storage ownership from the
@@ -62,24 +82,22 @@ export function projectPhysicalRegionOrigin(
 }
 
 /**
- * Project axial coordinates into the current global-grid coordinate space.
+ * Project axial coordinates into the logical pointy-top hex display space.
  *
- * The migration intentionally preserves the existing east/west spacing: an
- * east neighbor remains exactly one current region width away. Diagonal
- * neighbors sit half a region width sideways and three quarters of a region
- * height vertically, matching a pointy-top hex center lattice while keeping
- * the persisted rectangular WorldState untouched.
+ * Physical ownership remains the persisted rectangular 40x24 layout, while the
+ * display lattice uses a regular hex fitted inside that extent. This keeps the
+ * six logical neighbor distances equal and prevents the rendered region from
+ * being horizontally stretched.
  */
 export function projectHexCoordinate(
   coordinate: HexCoordinate,
   width = TARGET_WORLD_WIDTH,
   height = TARGET_WORLD_HEIGHT,
 ): HexWorldOrigin {
-  const safeWidth = Number.isFinite(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
-  const safeHeight = Number.isFinite(height) && height > 0 ? height : TARGET_WORLD_HEIGHT;
+  const footprint = regularHexFootprintSize(width, height);
   return {
-    x: (coordinate.q + coordinate.r * 0.5) * safeWidth,
-    y: coordinate.r * safeHeight * 0.75,
+    x: (coordinate.q + coordinate.r * 0.5) * footprint.width,
+    y: coordinate.r * footprint.height * 0.75,
   };
 }
 

@@ -6,7 +6,17 @@ import {
   projectHexCoordinate,
   projectPhysicalRegionOrigin,
   regionHexTopology,
+  regularHexFootprintSize,
 } from "../dist-ts/src/region-topology.js";
+
+function close(actual, expected, epsilon = 1e-9) {
+  assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
+}
+
+function originClose(actual, expected) {
+  close(actual.x, expected.x);
+  close(actual.y, expected.y);
+}
 
 test("hex region topology gives the first region six equal-distance neighbors", () => {
   const topology = regionHexTopology([
@@ -47,7 +57,7 @@ test("hex region topology gives the first region six equal-distance neighbors", 
   ]);
 });
 
-test("hex topology exposes both persisted physical origins and future hex origins", () => {
+test("hex topology keeps rectangular storage origins while display origins follow a regular hex lattice", () => {
   const topology = regionHexTopology([
     "garden-c",
     "garden-e",
@@ -57,6 +67,7 @@ test("hex topology exposes both persisted physical origins and future hex origin
     "garden-sw",
     "garden-se",
   ], 40, 24);
+  const footprint = regularHexFootprintSize(40, 24);
 
   assert.deepEqual(topology.map((entry) => entry.physicalOrigin), [
     { x: 0, y: 0 },
@@ -67,22 +78,25 @@ test("hex topology exposes both persisted physical origins and future hex origin
     { x: 200, y: 0 },
     { x: 240, y: 0 },
   ]);
-  assert.deepEqual(topology.map((entry) => entry.hexOrigin), [
+  const expected = [
     { x: 0, y: 0 },
-    { x: 40, y: 0 },
-    { x: 20, y: -18 },
-    { x: -20, y: -18 },
-    { x: -40, y: 0 },
-    { x: -20, y: 18 },
-    { x: 20, y: 18 },
-  ]);
+    { x: footprint.width, y: 0 },
+    { x: footprint.width / 2, y: -18 },
+    { x: -footprint.width / 2, y: -18 },
+    { x: -footprint.width, y: 0 },
+    { x: -footprint.width / 2, y: 18 },
+    { x: footprint.width / 2, y: 18 },
+  ];
+  topology.forEach((entry, index) => originClose(entry.hexOrigin, expected[index]));
 });
 
-test("physical and hex projections preserve east-west compatibility during migration", () => {
+test("physical projection remains storage-compatible while hex projection uses one regular radius", () => {
   assert.deepEqual(projectPhysicalRegionOrigin(2, 64), { x: 128, y: 0 });
-  assert.deepEqual(projectHexCoordinate({ q: 1, r: 0 }, 64, 32), { x: 64, y: 0 });
-  assert.deepEqual(projectHexCoordinate({ q: 1, r: -1 }, 64, 32), { x: 32, y: -24 });
-  assert.deepEqual(projectHexCoordinate({ q: 0, r: 1 }, 64, 32), { x: 32, y: 24 });
+  const footprint = regularHexFootprintSize(64, 32);
+  originClose(projectHexCoordinate({ q: 1, r: 0 }, 64, 32), { x: footprint.width, y: 0 });
+  originClose(projectHexCoordinate({ q: 1, r: -1 }, 64, 32), { x: footprint.width / 2, y: -24 });
+  originClose(projectHexCoordinate({ q: 0, r: 1 }, 64, 32), { x: footprint.width / 2, y: 24 });
+  close(footprint.width / footprint.height, Math.sqrt(3) / 2);
 });
 
 test("hex topology fills complete rings before adding farther regions", () => {

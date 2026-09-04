@@ -1,15 +1,30 @@
 const EPSILON = 1e-6;
+const SQRT_THREE = Math.sqrt(3);
 
 function safeExtent(value, fallback = 1) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-export function hexFootprintVertices(width, height, centerX = 0, centerZ = 0) {
+/**
+ * Fit one regular pointy-top hex inside the persisted rectangular extent.
+ * A single radius drives both axes so the hex cannot be stretched horizontally.
+ */
+export function regularHexFootprintSize(width, height) {
   const safeWidth = safeExtent(width);
   const safeHeight = safeExtent(height);
-  const halfWidth = safeWidth / 2;
-  const halfHeight = safeHeight / 2;
-  const quarterHeight = safeHeight / 4;
+  const radius = Math.min(safeHeight / 2, safeWidth / SQRT_THREE);
+  return {
+    radius,
+    width: radius * SQRT_THREE,
+    height: radius * 2,
+  };
+}
+
+export function hexFootprintVertices(width, height, centerX = 0, centerZ = 0) {
+  const footprint = regularHexFootprintSize(width, height);
+  const halfWidth = footprint.width / 2;
+  const halfHeight = footprint.height / 2;
+  const quarterHeight = footprint.height / 4;
   return [
     { x: centerX, z: centerZ - halfHeight },
     { x: centerX + halfWidth, z: centerZ - quarterHeight },
@@ -21,11 +36,10 @@ export function hexFootprintVertices(width, height, centerX = 0, centerZ = 0) {
 }
 
 export function hexFootprintHalfWidthAtZ(z, width, height) {
-  const safeWidth = safeExtent(width);
-  const safeHeight = safeExtent(height);
-  const halfWidth = safeWidth / 2;
-  const halfHeight = safeHeight / 2;
-  const shoulder = safeHeight / 4;
+  const footprint = regularHexFootprintSize(width, height);
+  const halfWidth = footprint.width / 2;
+  const halfHeight = footprint.height / 2;
+  const shoulder = footprint.height / 4;
   const distance = Math.abs(z);
   if (distance > halfHeight) return -1;
   if (distance <= shoulder) return halfWidth;

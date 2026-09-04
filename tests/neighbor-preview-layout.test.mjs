@@ -5,6 +5,7 @@ import {
   resolvePhysicalPreviewPlacement,
 } from "../public/client/neighbor-preview-layout.js";
 
+const regularHexWidth = 12 * Math.sqrt(3);
 const topology = [
   {
     id: "garden-1",
@@ -16,17 +17,17 @@ const topology = [
     id: "garden-2",
     axial: { q: 1, r: 0 },
     physicalOrigin: { x: 40, y: 0 },
-    hexOrigin: { x: 40, y: 0 },
+    hexOrigin: { x: regularHexWidth, y: 0 },
   },
   {
     id: "garden-3",
     axial: { q: 1, r: -1 },
     physicalOrigin: { x: 80, y: 0 },
-    hexOrigin: { x: 20, y: -18 },
+    hexOrigin: { x: regularHexWidth / 2, y: -18 },
   },
 ];
 
-test("neighbor preview separates physical ownership from hex display placement", () => {
+test("neighbor preview separates rectangular ownership from regular-hex display placement", () => {
   const placements = buildNeighborPreviewPlacements(topology, "garden-1");
   assert.deepEqual(placements.map(({ regionId, physicalOffset, hexOffset }) => ({
     regionId,
@@ -36,12 +37,12 @@ test("neighbor preview separates physical ownership from hex display placement",
     {
       regionId: "garden-2",
       physicalOffset: { x: 40, z: 0 },
-      hexOffset: { x: 40, z: 0 },
+      hexOffset: { x: regularHexWidth, z: 0 },
     },
     {
       regionId: "garden-3",
       physicalOffset: { x: 80, z: 0 },
-      hexOffset: { x: 20, z: -18 },
+      hexOffset: { x: regularHexWidth / 2, z: -18 },
     },
   ]);
 });
@@ -54,9 +55,9 @@ test("physical preview instances are assigned back to their source region before
   assert.equal(resolvePhysicalPreviewPlacement(placements, 99.5, 11.5, 40, 24)?.regionId, "garden-3");
 });
 
-test("garden-3 becomes north-west of garden-2 in the logical hex layout", () => {
+test("garden-3 remains north-west of garden-2 after regularizing the hex geometry", () => {
   const placements = buildNeighborPreviewPlacements(topology, "garden-2");
   const garden3 = placements.find((entry) => entry.regionId === "garden-3");
   assert.deepEqual(garden3?.physicalOffset, { x: 40, z: 0 });
-  assert.deepEqual(garden3?.hexOffset, { x: -20, z: -18 });
+  assert.deepEqual(garden3?.hexOffset, { x: -regularHexWidth / 2, z: -18 });
 });

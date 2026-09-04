@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { enrichRegionWindowPayload } from "../dist-ts/src/worker-entry.js";
 
-test("region window exposes both physical and hex placement metadata", () => {
+const regularHexWidth = 12 * Math.sqrt(3);
+
+test("region window exposes both physical and regular-hex placement metadata", () => {
   const payload = enrichRegionWindowPayload({
     coordinateSpace: "global-grid",
     centerRegion: "garden-1",
@@ -32,8 +34,8 @@ test("region window exposes both physical and hex placement metadata", () => {
   ]);
   assert.deepEqual(payload.chunks.map((chunk) => chunk.hexOrigin), [
     { x: 0, y: 0 },
-    { x: 40, y: 0 },
-    { x: 20, y: -18 },
+    { x: regularHexWidth, y: 0 },
+    { x: regularHexWidth / 2, y: -18 },
   ]);
   assert.deepEqual(payload.chunks.map((chunk) => chunk.axial), [
     { q: 0, r: 0 },
