@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
   HEX_GRID_STEPS,
+  hexGridBoundaryCells,
   hexGridCenter,
+  hexGridCrossingDirection,
   hexGridDistance,
+  hexGridHandoffTarget,
   hexGridNeighbors,
   hexGridRadius,
   isHexGridCell,
   nearestHexGridCell,
+  oppositeHexGridDirection,
 } from "../dist-ts/src/hex-grid.js";
 import {
   hexCellRadius,
@@ -38,6 +44,38 @@ test("40x24 storage exposes a centered hex simulation footprint", () => {
   assert.equal(isHexGridCell(extent, { x: 0, y: 0 }), false);
   assert.equal(isHexGridCell(extent, { x: 19, y: 0 }), true);
   assert.equal(isHexGridCell(extent, { x: 30, y: 11 }), true);
+});
+
+test("each logical exit has a deterministic opposite-side handoff bijection", () => {
+  const extent = { width: 40, height: 24 };
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const sourceSide = hexGridBoundaryCells(extent, direction);
+    const opposite = oppositeHexGridDirection(direction);
+    const targetSide = hexGridBoundaryCells(extent, opposite);
+    assert.equal(sourceSide.length, 23, `${direction} source side length`);
+    assert.equal(targetSide.length, sourceSide.length, `${direction} opposite side length`);
+
+    for (const source of sourceSide) {
+      const target = hexGridHandoffTarget(extent, source, direction);
+      assert.ok(target, `${direction} missing target for ${source.x},${source.y}`);
+      assert.ok(isHexGridCell(extent, target));
+      assert.ok(targetSide.some((entry) => entry.x === target.x && entry.y === target.y));
+      assert.deepEqual(hexGridHandoffTarget(extent, target, opposite), source);
+
+      const step = HEX_GRID_DIRECTION_STEPS[direction];
+      const desired = { x: source.x + step.x, y: source.y + step.y };
+      assert.equal(isHexGridCell(extent, desired), false);
+      assert.equal(hexGridCrossingDirection(extent, source, desired), direction);
+    }
+  }
+});
+
+test("handoff mapping rejects interior movement and non-boundary agents", () => {
+  const extent = { width: 40, height: 24 };
+  const center = hexGridCenter(extent);
+  assert.equal(hexGridHandoffTarget(extent, center, "east"), undefined);
+  assert.equal(hexGridCrossingDirection(extent, center, { x: center.x + 1, y: center.y }), undefined);
+  assert.equal(hexGridHandoffTarget(extent, { x: 0, y: 0 }, "west"), undefined);
 });
 
 test("nearest hex cell provides a deterministic migration target", () => {
