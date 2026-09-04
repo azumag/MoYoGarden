@@ -10,6 +10,13 @@ import {
   validateWorldState,
 } from "../dist-ts/src/world.js";
 
+function resourceAmount(state, kind) {
+  return state.tiles.reduce(
+    (total, tile) => total + (tile.resource?.kind === kind ? tile.resource.amount : 0),
+    0,
+  );
+}
+
 test("new worlds keep rectangular storage but only hex cells participate in simulation", () => {
   const state = createInitialWorld({ seed: 6001, width: 40, height: 24 });
   assert.equal(state.tiles.length, 40 * 24);
@@ -23,7 +30,7 @@ test("new worlds keep rectangular storage but only hex cells participate in simu
   assert.deepEqual(validateWorldState(state), []);
 });
 
-test("persisted rectangular corner state migrates deterministically into the active hex", () => {
+test("persisted rectangular corner state migrates deterministically into the active hex without losing resources", () => {
   const state = createInitialWorld({ seed: 6002, width: 40, height: 24 });
   const corner = state.tiles[0];
   assert.ok(corner);
@@ -51,10 +58,16 @@ test("persisted rectangular corner state migrates deterministically into the act
     storage: { wood: 0, stone: 0, food: 0 },
   });
 
+  // Persistence validation must accept the legacy rectangular envelope so the
+  // region is migrated rather than reset before its first hex simulation tick.
+  assert.deepEqual(validateWorldState(state), []);
+  const woodBefore = resourceAmount(state, "wood");
+
   const changed = migrateWorldToHexGrid(state);
   assert.ok(changed > 0);
   assert.equal(corner.terrain, "water");
   assert.equal(corner.resource, undefined);
+  assert.equal(resourceAmount(state, "wood"), woodBefore);
   assert.ok(isHexGridCell(state, agent.position));
   assert.equal(getTile(state, agent.position)?.terrain === "water", false);
   assert.equal(agent.task, undefined);
