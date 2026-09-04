@@ -1,5 +1,7 @@
+import { isHexGridCell } from "./hex-grid.js";
 import type { Tile, WorldState } from "./protocol.js";
 import { createRandom } from "./prng.js";
+import { migrateWorldToHexGrid } from "./world.js";
 
 export const TARGET_WORLD_WIDTH = 40;
 export const TARGET_WORLD_HEIGHT = 24;
@@ -59,18 +61,6 @@ function elevationAt(worldSeed: number, globalX: number, globalY: number): numbe
   return clamp01(0.46 + broad * 0.18 + ridge * 0.1 + local * 0.075);
 }
 
-/**
- * Low-level terrain conditions sampled from a shared world seed and absolute
- * grid coordinate. The periods are expressed in tiles rather than normalized
- * by the current extent, so growing or chunking the world never rescales the
- * underlying landform field.
- *
- * `temperature`, `slope`, `convergence` and `wetness` are derived from the same
- * low-level coordinate fields instead of from named biome categories. The
- * temperature field combines broad climate bands, continental variation and
- * an elevation lapse-rate term, so neighboring chunks share the same climate
- * without persisting a new Tile field yet.
- */
 export function sampleWorldConditions(
   worldSeed: number,
   globalX: number,
@@ -113,13 +103,6 @@ export function sampleWorldConditions(
   return { elevation, moisture, temperature, slope, convergence, wetness };
 }
 
-/**
- * Re-anchor only the edge band that actually touches another loaded region to
- * the shared absolute-coordinate elevation field. Terrain/resource ownership is
- * deliberately preserved so migrating a persisted region cannot strand an agent
- * on newly-created water or erase gathered resources. A smooth interior blend
- * prevents the migrated edge from becoming a new artificial ridge.
- */
 export function alignRegionBoundaryElevations(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   worldSeed: number,
@@ -132,7 +115,7 @@ export function alignRegionBoundaryElevations(
   let changed = 0;
 
   for (const tile of state.tiles) {
-    if (tile.terrain === "water") continue;
+    if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
     const edgeDistances: number[] = [];
     if (edges.west) edgeDistances.push(tile.x);
     if (edges.east) edgeDistances.push(state.width - 1 - tile.x);
@@ -230,13 +213,6 @@ function createFrontierTile(
   return tile;
 }
 
-/**
- * Grow older persisted worlds without moving any existing grid coordinate.
- * New cells are sampled from an extent-invariant absolute coordinate field.
- * Callers that split one world into chunks can pass the shared world seed and
- * each chunk's global origin while persisted BOT, structure, command and event
- * coordinates remain local and untouched.
- */
 export function ensureWorldExtent(
   state: WorldState,
   targetWidth = TARGET_WORLD_WIDTH,
@@ -245,31 +221,35 @@ export function ensureWorldExtent(
 ): boolean {
   const width = Math.max(state.width, targetWidth);
   const height = Math.max(state.height, targetHeight);
-  if (width === state.width && height === state.height) return false;
+  const extentChanged = width !== state.width || height !== state.height;
 
-  const oldWidth = state.width;
-  const oldHeight = state.height;
-  const oldTiles = state.tiles;
-  const tiles: Tile[] = [];
-  const worldSeed = coordinateSpace.worldSeed ?? state.seed;
-  const originX = Math.trunc(coordinateSpace.originX ?? 0);
-  const originY = Math.trunc(coordinateSpace.originY ?? 0);
+  if (extentChanged) {
+    const oldWidth = state.width;
+    const oldHeight = state.height;
+    const oldTiles = state.tiles;
+    const tiles: Tile[] = [];
+    const worldSeed = coordinateSpace.worldSeed ?? state.seed;
+    const originX = Math.trunc(coordinateSpace.originX ?? 0);
+    const originY = Math.trunc(coordinateSpace.originY ?? 0);
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (x < oldWidth && y < oldHeight) {
-        const existing = oldTiles[y * oldWidth + x];
-        if (existing !== undefined) {
-          tiles.push(existing);
-          continue;
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        if (x < oldWidth && y < oldHeight) {
+          const existing = oldTiles[y * oldWidth + x];
+          if (existing !== undefined) {
+            tiles.push(existing);
+            continue;
+          }
         }
+        tiles.push(createFrontierTile(x, y, worldSeed, originX, originY));
       }
-      tiles.push(createFrontierTile(x, y, worldSeed, originX, originY));
     }
+
+    state.width = width;
+    state.height = height;
+    state.tiles = tiles;
   }
 
-  state.width = width;
-  state.height = height;
-  state.tiles = tiles;
-  return true;
+  const migrated = migrateWorldToHexGrid(state);
+  return extentChanged || migrated > 0;
 }
