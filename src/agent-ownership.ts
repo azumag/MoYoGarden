@@ -17,6 +17,8 @@ export interface OwnershipMutationResult<T> {
   reason?: string;
 }
 
+const GLOBAL_AGENT_PREFIX = "agent-global:";
+
 function cloneSnapshot(
   state: WorldState,
   pendingCommands: readonly WorldCommand[],
@@ -25,6 +27,11 @@ function cloneSnapshot(
     state: structuredClone(state),
     pendingCommands: pendingCommands.map((command) => structuredClone(command)),
   };
+}
+
+export function globalHandoffAgentId(agentId: string, originRegionId: string): string {
+  if (agentId.startsWith(GLOBAL_AGENT_PREFIX)) return agentId;
+  return `${GLOBAL_AGENT_PREFIX}${originRegionId}:${agentId}`;
 }
 
 export function detachAgentOwnership(
@@ -54,8 +61,10 @@ export function attachAgentOwnership(
   pendingCommands: readonly WorldCommand[],
   agent: Agent,
   targetPosition: GridPosition,
+  originRegionId: string,
 ): OwnershipMutationResult<RegionOwnershipSnapshot> {
-  if (state.agents.some((entry) => entry.id === agent.id)) {
+  const arrivedId = globalHandoffAgentId(agent.id, originRegionId);
+  if (state.agents.some((entry) => entry.id === arrivedId)) {
     return { ok: false, reason: "agent already active in target region" };
   }
   if (getFaction(state, agent.factionId) === undefined) {
@@ -68,6 +77,12 @@ export function attachAgentOwnership(
 
   const snapshot = cloneSnapshot(state, pendingCommands);
   const arrived = structuredClone(agent);
+  // Legacy persisted worlds used region-local IDs such as `agent-ember-builder`,
+  // so different regions can already contain unrelated agents with that same
+  // local ID. Promote an agent once, at its first cross-region handoff, to a
+  // stable world-global identity derived from its origin region. Already-global
+  // IDs remain unchanged on all later handoffs.
+  arrived.id = arrivedId;
   arrived.position = { ...targetPosition };
   // Tasks reference the source region's local coordinate frame. Cross-region
   // task/transaction continuation is a later protocol layer, so agent ownership
