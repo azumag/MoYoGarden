@@ -43,7 +43,7 @@ const JSON_HEADERS = {
   "cache-control": "no-store",
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,OPTIONS",
-  "access-control-allow-headers": "content-type,authorization,x-moyo-region",
+  "access-control-allow-headers": "content-type,authorization,x-moyo-region,x-moyo-prefetch",
 } as const;
 
 const IDLE_TICK_MULTIPLIER = 6;
@@ -71,6 +71,23 @@ export function regionLayout(
       east: index + 1 < regionIds.length ? regionIds[index + 1] ?? null : null,
     },
   }));
+}
+
+export function regionWindow(
+  regionIds: readonly string[],
+  centerRegionId: string,
+  radius = 1,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionLayoutEntry[] {
+  const layout = regionLayout(regionIds, width, height);
+  const centerIndex = layout.findIndex((entry) => entry.id === centerRegionId);
+  if (centerIndex < 0) return [];
+  const safeRadius = Math.max(0, Math.min(4, Math.floor(radius)));
+  return layout.slice(
+    Math.max(0, centerIndex - safeRadius),
+    Math.min(layout.length, centerIndex + safeRadius + 1),
+  );
 }
 
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
@@ -318,7 +335,13 @@ export class RegionDurableObject {
 
     const url = new URL(request.url);
     const path = url.pathname;
-    if (path !== "/api/health" && path !== "/api/rules") await this.markActivity();
+    const passivePrefetch =
+      request.method === "GET" &&
+      path === "/api/world/snapshot" &&
+      request.headers.get("x-moyo-prefetch") === "1";
+    if (path !== "/api/health" && path !== "/api/rules" && !passivePrefetch) {
+      await this.markActivity();
+    }
 
     if (path === "/api/stream") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
@@ -507,7 +530,47 @@ export default {
           coordinateSpace: "global-grid",
           regionExtent: { width: TARGET_WORLD_WIDTH, height: TARGET_WORLD_HEIGHT },
           regionLayout: regionLayout(regions),
+          windowEndpoint: "/api/world/window?region={regionId}&radius=1",
         },
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/world/window") {
+      const regions = allowedRegions(env);
+      const regionId = resolveRegion(request, env);
+      if (regionId === undefined) return json({ error: "unknown or disabled region" }, 404);
+      const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
+      const entries = regionWindow(regions, regionId, radius);
+      const chunks = await Promise.all(entries.map(async (entry) => {
+        const stub = env.REGIONS.get(env.REGIONS.idFromName(entry.id));
+        const headers = new Headers(request.headers);
+        headers.set("x-moyo-region-internal", entry.id);
+        if (entry.id !== regionId) headers.set("x-moyo-prefetch", "1");
+        else headers.delete("x-moyo-prefetch");
+        const snapshotUrl = new URL(request.url);
+        snapshotUrl.pathname = "/api/world/snapshot";
+        snapshotUrl.search = "";
+        const response = await stub.fetch(new Request(snapshotUrl, { method: "GET", headers }));
+        if (!response.ok) {
+          return {
+            regionId: entry.id,
+            origin: entry.origin,
+            extent: entry.extent,
+            error: `snapshot HTTP ${response.status}`,
+          };
+        }
+        return {
+          regionId: entry.id,
+          origin: entry.origin,
+          extent: entry.extent,
+          state: await response.json(),
+        };
+      }));
+      return json({
+        coordinateSpace: "global-grid",
+        centerRegion: regionId,
+        radius,
+        chunks,
       });
     }
 
