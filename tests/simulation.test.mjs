@@ -307,5 +307,5 @@ test("food-secure settlements can grow their population when local hex space is 
   assert.equal(nextFaction.resources.food, 34);
   assert.equal(camp.storage.food, 34);
   assert.equal(newcomer.status, "new generation settling");
-  assert.ok(manhattanDistance(newcomer.position, campPosition) <= 3);
+  assert.ok(manhattanDistance(newcomer.position, camp.position) <= 3);
 });
