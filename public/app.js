@@ -1,7 +1,8 @@
+import * as THREE from "three";
 import { createDemoState } from "./client/demo-state.js";
 import { ModelLibrary } from "./client/model-library.js";
 import { resolveQualityProfile } from "./client/quality.js";
-import { ROLE_LABELS } from "./client/shared.js";
+import { ROLE_LABELS, TERRAIN_COLORS, disposeObject } from "./client/shared.js";
 import { WorldView } from "./client/world-view.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -56,6 +57,7 @@ const renderState = {
   modelsTotal: models.size,
   environment: false,
   shadows: false,
+  neighborChunks: 0,
 };
 const app = {
   state: null,
@@ -66,12 +68,14 @@ const app = {
   token: sessionStorage.getItem("moyo-token") || "",
   socket: null,
   pollTimer: null,
+  windowTimer: null,
   reconnectTimer: null,
 };
 ui.tokenInput.value = app.token;
 
 let view;
 let toastTimer;
+let neighborPreviewRoot;
 let readyDispatched = false;
 
 function toast(message, error = false) {
@@ -90,6 +94,7 @@ function updateRenderStatus() {
   const parts = [quality.label];
   if (renderState.modelsLoaded > 0) parts.push(`GLB ${renderState.modelsLoaded}/${renderState.modelsTotal}`);
   else parts.push("LOD FALLBACK");
+  if (renderState.neighborChunks > 0) parts.push(`CHUNK +${renderState.neighborChunks}`);
   if (renderState.shadows) parts.push("SHADOW");
   if (renderState.environment) parts.push("IBL");
   if (renderState.modelsFailed > 0) parts.push(`MISS ${renderState.modelsFailed}`);
@@ -125,6 +130,138 @@ async function requestJson(path, options = {}, timeoutMs = 8_000) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function previewTerrainHeight(tile) {
+  if (!tile || tile.terrain === "water") return -0.24;
+  if (Number.isFinite(tile.elevation)) {
+    return 0.015 + Math.pow(Math.max(0, Math.min(1, tile.elevation)), 1.18) * 0.82;
+  }
+  if (tile.terrain === "hill") return 0.54;
+  if (tile.terrain === "forest") return 0.11;
+  return 0.015;
+}
+
+function clearNeighborPreview() {
+  if (neighborPreviewRoot) disposeObject(neighborPreviewRoot);
+  neighborPreviewRoot = undefined;
+  renderState.neighborChunks = 0;
+  updateRenderStatus();
+}
+
+function buildNeighborPreview(payload) {
+  const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
+  const center = chunks.find((chunk) => chunk.regionId === app.region && chunk.state?.tiles);
+  if (!center || !app.state) {
+    clearNeighborPreview();
+    return;
+  }
+
+  const land = [];
+  const water = [];
+  let neighborChunks = 0;
+  for (const chunk of chunks) {
+    if (chunk.regionId === app.region || !chunk.state?.tiles || !chunk.origin) continue;
+    neighborChunks += 1;
+    const offsetX = chunk.origin.x - center.origin.x;
+    const offsetY = chunk.origin.y - center.origin.y;
+    for (const tile of chunk.state.tiles) {
+      const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
+      const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
+      color.offsetHSL(0, 0, (elevation - 0.5) * 0.045);
+      const entry = {
+        x: offsetX + tile.x - app.state.width / 2 + 0.5,
+        z: offsetY + tile.y - app.state.height / 2 + 0.5,
+        y: previewTerrainHeight(tile),
+        color,
+      };
+      if (tile.terrain === "water") water.push(entry);
+      else land.push(entry);
+    }
+  }
+
+  clearNeighborPreview();
+  if (neighborChunks === 0) return;
+
+  const root = new THREE.Group();
+  root.name = "neighbor-region-preview";
+  const matrix = new THREE.Matrix4();
+
+  if (land.length > 0) {
+    const mesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.985, 0.08, 0.985),
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.99,
+        metalness: 0,
+        envMapIntensity: 0.2,
+      }),
+      land.length,
+    );
+    land.forEach((entry, index) => {
+      matrix.makeTranslation(entry.x, entry.y - 0.04, entry.z);
+      mesh.setMatrixAt(index, matrix);
+      mesh.setColorAt(index, entry.color);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.receiveShadow = true;
+    mesh.computeBoundingSphere();
+    root.add(mesh);
+  }
+
+  if (water.length > 0) {
+    const mesh = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(0.985, 0.985),
+      new THREE.MeshPhysicalMaterial({
+        vertexColors: true,
+        roughness: 0.24,
+        metalness: 0.02,
+        transparent: true,
+        opacity: 0.67,
+        depthWrite: false,
+        envMapIntensity: 0.7,
+      }),
+      water.length,
+    );
+    water.forEach((entry, index) => {
+      matrix.makeRotationX(-Math.PI / 2);
+      matrix.setPosition(entry.x, entry.y + 0.035, entry.z);
+      mesh.setMatrixAt(index, matrix);
+      mesh.setColorAt(index, entry.color);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.renderOrder = 1;
+    mesh.computeBoundingSphere();
+    root.add(mesh);
+  }
+
+  neighborPreviewRoot = root;
+  view.worldRoot.add(root);
+  renderState.neighborChunks = neighborChunks;
+  view.markShadowsDirty();
+  updateRenderStatus();
+}
+
+async function loadRegionWindow() {
+  if (!app.state || app.regions.length < 2) {
+    clearNeighborPreview();
+    return;
+  }
+  const requestedRegion = app.region;
+  try {
+    const payload = await requestJson("/api/world/window?radius=1", {}, 10_000);
+    if (requestedRegion !== app.region) return;
+    buildNeighborPreview(payload);
+  } catch (error) {
+    console.debug("MoYoGarden neighbor region prefetch skipped", error);
+  }
+}
+
+function startRegionWindowRefresh() {
+  clearInterval(app.windowTimer);
+  app.windowTimer = setInterval(() => { void loadRegionWindow(); }, 60_000);
 }
 
 function applyEnvelope(value) {
@@ -254,7 +391,9 @@ function populateRegions() {
 
 async function connect() {
   clearInterval(app.pollTimer);
+  clearInterval(app.windowTimer);
   app.socket?.close();
+  clearNeighborPreview();
   setConnection("", "同期中");
   try {
     const meta = await requestJson("/api/meta");
@@ -262,6 +401,8 @@ async function connect() {
     if (!app.regions.includes(app.region)) app.region = meta.defaultRegion || app.regions[0];
     populateRegions();
     await loadSnapshot();
+    void loadRegionWindow();
+    startRegionWindowRefresh();
     connectSocket();
   } catch (error) {
     if (!app.state) {
