@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.11";
+  const VERSION = "0.3.12";
   const WATCHDOG_MS = 12_000;
   const PRODUCTION_URL = "https://moyo.bluemoon.works/";
   const params = new URLSearchParams(location.search);
@@ -79,6 +79,7 @@
   };
   preload("/vendor/three-r185/build/three.module.min.js");
   preload(`/client/sky-fix.js?v=${VERSION}`);
+  preload(`/client/seamless-navigation.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
@@ -87,6 +88,11 @@
       await import(`/client/sky-fix.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: sky backdrop patch failed; continuing with base renderer", error);
+    }
+    try {
+      await import(`/client/seamless-navigation.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: seamless navigation extension failed; keeping local camera bounds", error);
     }
 
     const moduleScript = document.createElement("script");
