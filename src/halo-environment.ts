@@ -1,7 +1,6 @@
 import { createRandom } from "./prng.js";
 import {
   HEX_GRID_DIRECTIONS,
-  HEX_GRID_DIRECTION_STEPS,
   type HexGridDirection,
 } from "./hex-grid.js";
 import { hexHaloKey, hexHaloLookup, type HexHaloTile } from "./hex-halo.js";
@@ -21,14 +20,8 @@ function haloNeighborWaterInfluence(
 ): number {
   const lookup = hexHaloLookup(halo);
   for (const direction of HEX_GRID_DIRECTIONS) {
-    const step = HEX_GRID_DIRECTION_STEPS[direction];
-    const localNeighbor = { x: position.x + step.x, y: position.y + step.y };
-    // If the neighbor exists locally, the ordinary moisture calculation already
-    // sees it. A ghost is only authoritative when this step leaves the local hex.
-    if (lookup.has(hexHaloKey(position, direction)) && localNeighbor) {
-      const ghost = lookup.get(hexHaloKey(position, direction));
-      if (ghost?.tile.terrain === "water") return 1;
-    }
+    const ghost = lookup.get(hexHaloKey(position, direction));
+    if (ghost?.tile.terrain === "water") return 1;
   }
   return 0;
 }
