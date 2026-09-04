@@ -1,4 +1,10 @@
 import {
+  HEX_GRID_STEPS,
+  hexGridNeighbors,
+  isHexGridCell,
+  nearestHexGridCell,
+} from "./hex-grid.js";
+import {
   AGENT_ROLES,
   type Agent,
   type AgentRole,
@@ -72,14 +78,15 @@ function seededUnit(seed: number, salt: number): number {
 export function ensureTileElevations(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
 ): void {
-  if (state.tiles.every((tile) => Number.isFinite(tile.elevation ?? Number.NaN))) return;
+  const activeTiles = state.tiles.filter((tile) => inBounds(state, tile));
+  if (activeTiles.every((tile) => Number.isFinite(tile.elevation ?? Number.NaN))) return;
 
-  const waterTiles = state.tiles.filter((tile) => tile.terrain === "water");
+  const waterTiles = activeTiles.filter((tile) => tile.terrain === "water");
   const phaseX = seededUnit(state.seed, 0x1f123bb5) * Math.PI * 2;
   const phaseY = seededUnit(state.seed, 0x5a17c9e3) * Math.PI * 2;
   const phaseDiagonal = seededUnit(state.seed, 0x7139a2d1) * Math.PI * 2;
 
-  for (const tile of state.tiles) {
+  for (const tile of activeTiles) {
     if (tile.terrain === "water") {
       tile.elevation = 0;
       continue;
@@ -112,12 +119,7 @@ export function inBounds(
   state: Pick<WorldState, "width" | "height">,
   position: GridPosition,
 ): boolean {
-  return (
-    position.x >= 0 &&
-    position.y >= 0 &&
-    position.x < state.width &&
-    position.y < state.height
-  );
+  return isHexGridCell(state, position);
 }
 
 export function getTile(
@@ -223,28 +225,29 @@ function forceTile(
 }
 
 function ensureSpawnArea(tiles: Tile[], width: number, height: number, spawn: GridPosition): void {
-  for (let dy = -2; dy <= 2; dy += 1) {
-    for (let dx = -2; dx <= 2; dx += 1) {
-      const x = spawn.x + dx;
-      const y = spawn.y + dy;
-      if (x < 0 || y < 0 || x >= width || y >= height) continue;
-      forceTile(tiles, width, { x, y }, "plain");
+  const extent = { width, height };
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const position = { x, y };
+      if (!isHexGridCell(extent, position) || manhattanDistance(position, spawn) > 2) continue;
+      forceTile(tiles, width, position, "plain");
     }
   }
-  forceTile(tiles, width, { x: spawn.x + 2, y: spawn.y }, "forest", "wood");
-  forceTile(tiles, width, { x: spawn.x - 2, y: spawn.y }, "forest", "wood");
-  forceTile(tiles, width, { x: spawn.x, y: spawn.y + 2 }, "hill", "stone");
-  forceTile(tiles, width, { x: spawn.x, y: spawn.y - 2 }, "hill", "stone");
-  forceTile(tiles, width, { x: spawn.x + 1, y: spawn.y + 1 }, "plain", "food");
+  const resourceSites = [
+    { step: HEX_GRID_STEPS[0], terrain: "forest" as const, resource: "wood" as const },
+    { step: HEX_GRID_STEPS[3], terrain: "forest" as const, resource: "wood" as const },
+    { step: HEX_GRID_STEPS[1], terrain: "hill" as const, resource: "stone" as const },
+    { step: HEX_GRID_STEPS[4], terrain: "hill" as const, resource: "stone" as const },
+    { step: HEX_GRID_STEPS[5], terrain: "plain" as const, resource: "food" as const },
+  ];
+  for (const site of resourceSites) {
+    const position = { x: spawn.x + site.step.x * 2, y: spawn.y + site.step.y * 2 };
+    if (isHexGridCell(extent, position)) forceTile(tiles, width, position, site.terrain, site.resource);
+  }
 }
 
-function spawnPositions(spawn: GridPosition): GridPosition[] {
-  return [
-    { x: spawn.x, y: spawn.y },
-    { x: spawn.x + 1, y: spawn.y },
-    { x: spawn.x, y: spawn.y + 1 },
-    { x: spawn.x - 1, y: spawn.y },
-  ];
+function spawnPositions(spawn: GridPosition, width: number, height: number): GridPosition[] {
+  return [spawn, ...hexGridNeighbors(spawn).filter((position) => isHexGridCell({ width, height }, position))].slice(0, 4);
 }
 
 function createAgent(
@@ -284,7 +287,11 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
   const tiles: Tile[] = [];
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      tiles.push(createTile(x, y, random));
+      if (!isHexGridCell({ width, height }, { x, y })) {
+        tiles.push({ x, y, terrain: "water", elevation: 0 });
+      } else {
+        tiles.push(createTile(x, y, random));
+      }
     }
   }
 
@@ -292,10 +299,11 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
   const agents: Agent[] = [];
 
   for (const definition of FACTION_DEFINITIONS) {
-    const spawn = {
+    const desired = {
       x: Math.min(width - 3, Math.max(2, definition.spawn.x)),
       y: Math.min(height - 3, Math.max(2, definition.spawn.y)),
     };
+    const spawn = nearestHexGridCell({ width, height }, desired) ?? desired;
     ensureSpawnArea(tiles, width, height, spawn);
     factions.push({
       id: definition.id,
@@ -305,7 +313,7 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
       credits: 0,
     });
 
-    const positions = spawnPositions(spawn);
+    const positions = spawnPositions(spawn, width, height);
     for (let index = 0; index < ROLE_ORDER.length; index += 1) {
       const role = ROLE_ORDER[index] ?? AGENT_ROLES[0];
       const position = positions[index] ?? spawn;
@@ -342,6 +350,73 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
   };
 }
 
+export function migrateWorldToHexGrid(state: WorldState): number {
+  let changed = 0;
+  for (const tile of state.tiles) {
+    if (isHexGridCell(state, tile)) continue;
+    if (
+      tile.terrain !== "water" ||
+      tile.resource !== undefined ||
+      tile.flowTo !== undefined ||
+      tile.elevation !== 0
+    ) changed += 1;
+    tile.terrain = "water";
+    tile.elevation = 0;
+    delete tile.resource;
+    delete tile.flowTo;
+    tile.drainage = 0;
+    tile.erosionPressure = 0;
+  }
+
+  const passable = (position: GridPosition) => {
+    const tile = state.tiles[tileIndex(state, position.x, position.y)];
+    return tile !== undefined && tile.terrain !== "water";
+  };
+  const relocate = (position: GridPosition, predicate = passable) =>
+    nearestHexGridCell(state, position, predicate);
+
+  const occupiedStructures = new Set<string>();
+  for (const structure of [...state.structures].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (!inBounds(state, structure.position) || !passable(structure.position) || occupiedStructures.has(positionKey(structure.position))) {
+      const target = relocate(structure.position, (position) => passable(position) && !occupiedStructures.has(positionKey(position)));
+      if (target !== undefined) {
+        structure.position = target;
+        changed += 1;
+      }
+    }
+    occupiedStructures.add(positionKey(structure.position));
+  }
+
+  for (const agent of state.agents) {
+    if (!inBounds(state, agent.position) || !passable(agent.position)) {
+      const target = relocate(agent.position);
+      if (target !== undefined) {
+        agent.position = target;
+        delete agent.task;
+        agent.status = "replanning after hex-grid migration";
+        changed += 1;
+      }
+    } else if (
+      agent.task !== undefined &&
+      "target" in agent.task &&
+      agent.task.target !== undefined &&
+      !inBounds(state, agent.task.target)
+    ) {
+      delete agent.task;
+      agent.status = "replanning after hex-grid migration";
+      changed += 1;
+    }
+  }
+
+  for (const tile of state.tiles) {
+    if (tile.flowTo !== undefined && !inBounds(state, tile.flowTo)) {
+      delete tile.flowTo;
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
 export function getPerception(state: WorldState, agentId: string, radius = 6): Perception {
   const self = getAgent(state, agentId);
   if (self === undefined) throw new Error(`unknown agent: ${agentId}`);
@@ -350,7 +425,7 @@ export function getPerception(state: WorldState, agentId: string, radius = 6): P
   const safeRadius = Math.max(1, Math.min(12, Math.floor(radius)));
 
   const visibleTiles = state.tiles.filter(
-    (tile) => manhattanDistance(tile, self.position) <= safeRadius,
+    (tile) => inBounds(state, tile) && manhattanDistance(tile, self.position) <= safeRadius,
   );
   const visibleTileKeys = new Set(visibleTiles.map((tile) => positionKey(tile)));
   const visibleAgents = state.agents
