@@ -1,3 +1,5 @@
+import { hexFootprintVertices, isPointInsideHexFootprint, regularHexFootprintSize } from "./hex-footprint.js";
+
 const HEX_DIRECTIONS = ["east", "northEast", "northWest", "west", "southWest", "southEast"];
 const HEX_STEPS = {
   east: { q: 1, r: 0 },
@@ -7,6 +9,14 @@ const HEX_STEPS = {
   southWest: { q: -1, r: 1 },
   southEast: { q: 0, r: 1 },
 };
+const HEX_SIDE_DIRECTIONS = [
+  "northEast",
+  "east",
+  "southEast",
+  "southWest",
+  "west",
+  "northWest",
+];
 
 export function resolveRegionRebase(regionLayout, centerRegionId, target) {
   if (!Array.isArray(regionLayout) || !centerRegionId || !target) return null;
@@ -15,6 +25,42 @@ export function resolveRegionRebase(regionLayout, centerRegionId, target) {
   const center = regionLayout.find((entry) => entry?.id === centerRegionId);
   if (!validEntry(center)) return null;
 
+  if (validHexPlacement(center)) {
+    return resolveHexRegionRebase(regionLayout, center, target);
+  }
+  return resolvePhysicalRegionRebase(regionLayout, center, target);
+}
+
+function resolveHexRegionRebase(regionLayout, center, target) {
+  if (isPointInsideHexFootprint(target.x, target.z, center.extent.width, center.extent.height)) {
+    return null;
+  }
+
+  for (const entry of regionLayout) {
+    if (entry?.id === center.id || !validEntry(entry) || !validHexPlacement(entry)) continue;
+    if (validAxial(center) && validAxial(entry) && axialDistance(center.axial, entry.axial) !== 1) {
+      continue;
+    }
+
+    const offsetX = entry.hexOrigin.x - center.hexOrigin.x;
+    const offsetZ = entry.hexOrigin.y - center.hexOrigin.y;
+    const localX = target.x - offsetX;
+    const localZ = target.z - offsetZ;
+    if (!isPointInsideHexFootprint(localX, localZ, entry.extent.width, entry.extent.height)) {
+      continue;
+    }
+    return {
+      regionId: entry.id,
+      offsetX,
+      offsetZ,
+      target: { x: localX, z: localZ },
+    };
+  }
+
+  return null;
+}
+
+function resolvePhysicalRegionRebase(regionLayout, center, target) {
   const centerHalfWidth = center.extent.width / 2;
   const centerHalfHeight = center.extent.height / 2;
   const centerBounds = {
@@ -26,7 +72,7 @@ export function resolveRegionRebase(regionLayout, centerRegionId, target) {
   if (contains(centerBounds, target)) return null;
 
   for (const entry of regionLayout) {
-    if (entry?.id === centerRegionId || !validEntry(entry)) continue;
+    if (entry?.id === center.id || !validEntry(entry)) continue;
     const offsetX = entry.origin.x - center.origin.x;
     const offsetZ = entry.origin.y - center.origin.y;
     const bounds = {
@@ -57,32 +103,53 @@ export function resolveRegionPrefetch(regionLayout, centerRegionId, target, marg
   const center = regionLayout.find((entry) => entry?.id === centerRegionId);
   if (!validEntry(center)) return null;
 
-  const halfWidth = center.extent.width / 2;
-  const halfHeight = center.extent.height / 2;
-  const safeMarginX = Number.isFinite(margin)
-    ? Math.max(0, Math.min(halfWidth, margin))
+  const footprint = regularHexFootprintSize(center.extent.width, center.extent.height);
+  const safeMargin = Number.isFinite(margin)
+    ? Math.max(0, Math.min(footprint.radius, margin))
     : 0;
-  const safeMarginZ = Number.isFinite(margin)
-    ? Math.max(0, Math.min(halfHeight, margin))
-    : 0;
-  if (safeMarginX <= 0 || safeMarginZ <= 0) return null;
+  if (safeMargin <= 0) return null;
 
-  // All six prewarm directions now resolve through the logical axial topology.
-  // Physical rectangular origins remain a compatibility detail for camera rebase,
-  // but they no longer decide which region is warmed ahead of movement.
-  let direction;
-  if (target.x >= halfWidth - safeMarginX) direction = "east";
-  else if (target.x <= -halfWidth + safeMarginX) direction = "west";
-  else if (target.z <= -halfHeight + safeMarginZ) {
-    direction = target.x >= 0 ? "northEast" : "northWest";
-  } else if (target.z >= halfHeight - safeMarginZ) {
-    direction = target.x >= 0 ? "southEast" : "southWest";
-  } else {
-    return null;
-  }
+  const direction = nearestHexBoundaryDirection(
+    target,
+    center.extent.width,
+    center.extent.height,
+    safeMargin,
+  );
+  if (direction === null) return null;
 
   const regionId = resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction);
   return regionId === null ? null : { regionId, direction };
+}
+
+function nearestHexBoundaryDirection(target, width, height, margin) {
+  const vertices = hexFootprintVertices(width, height);
+  let nearest = null;
+
+  for (let index = 0; index < vertices.length; index += 1) {
+    const start = vertices[index];
+    const end = vertices[(index + 1) % vertices.length];
+    const edgeX = end.x - start.x;
+    const edgeZ = end.z - start.z;
+    const length = Math.hypot(edgeX, edgeZ);
+    if (length <= 0) continue;
+
+    let normalX = -edgeZ / length;
+    let normalZ = edgeX / length;
+    if ((-start.x) * normalX + (-start.z) * normalZ < 0) {
+      normalX *= -1;
+      normalZ *= -1;
+    }
+    const signedDistance =
+      (target.x - start.x) * normalX + (target.z - start.z) * normalZ;
+    if (nearest === null || signedDistance < nearest.distance) {
+      nearest = {
+        direction: HEX_SIDE_DIRECTIONS[index],
+        distance: signedDistance,
+      };
+    }
+  }
+
+  return nearest !== null && nearest.distance <= margin ? nearest.direction : null;
 }
 
 function resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction) {
@@ -91,10 +158,21 @@ function resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction) {
   const centerIndex = entries.findIndex((entry) => entry.id === centerRegionId);
   if (centerIndex < 0) return null;
 
+  const step = HEX_STEPS[direction];
+  const center = entries[centerIndex];
+  if (!step || !center) return null;
+
+  if (validAxial(center)) {
+    const targetKey = coordinateKey(center.axial.q + step.q, center.axial.r + step.r);
+    const neighbor = entries.find(
+      (entry) => validAxial(entry) && coordinateKey(entry.axial.q, entry.axial.r) === targetKey,
+    );
+    return neighbor?.id ?? null;
+  }
+
   const coordinates = hexCoordinates(entries.length);
   const centerCoordinate = coordinates[centerIndex];
-  const step = HEX_STEPS[direction];
-  if (!centerCoordinate || !step) return null;
+  if (!centerCoordinate) return null;
 
   const targetKey = coordinateKey(centerCoordinate.q + step.q, centerCoordinate.r + step.r);
   for (let index = 0; index < entries.length; index += 1) {
@@ -129,6 +207,21 @@ function hexCoordinates(count) {
 
 function coordinateKey(q, r) {
   return `${q},${r}`;
+}
+
+function axialDistance(a, b) {
+  const dq = a.q - b.q;
+  const dr = a.r - b.r;
+  const ds = -dq - dr;
+  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
+}
+
+function validAxial(entry) {
+  return Number.isInteger(entry?.axial?.q) && Number.isInteger(entry?.axial?.r);
+}
+
+function validHexPlacement(entry) {
+  return Number.isFinite(entry?.hexOrigin?.x) && Number.isFinite(entry?.hexOrigin?.y);
 }
 
 function validEntry(entry) {
