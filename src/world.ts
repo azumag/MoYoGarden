@@ -115,6 +115,18 @@ export function tileIndex(state: Pick<WorldState, "width">, x: number, y: number
   return y * state.width + x;
 }
 
+function inStorageBounds(
+  state: Pick<WorldState, "width" | "height">,
+  position: GridPosition,
+): boolean {
+  return Number.isInteger(position.x)
+    && Number.isInteger(position.y)
+    && position.x >= 0
+    && position.y >= 0
+    && position.x < state.width
+    && position.y < state.height;
+}
+
 export function inBounds(
   state: Pick<WorldState, "width" | "height">,
   position: GridPosition,
@@ -355,14 +367,27 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
 }
 
 export function migrateWorldToHexGrid(state: WorldState): number {
+  const displacedResources: Array<{
+    position: GridPosition;
+    resource: NonNullable<Tile["resource"]>;
+  }> = [];
   let changed = 0;
+
   for (const tile of state.tiles) {
     if (isHexGridCell(state, tile)) continue;
+    if (tile.resource !== undefined) {
+      displacedResources.push({
+        position: { x: tile.x, y: tile.y },
+        resource: { ...tile.resource },
+      });
+    }
     if (
       tile.terrain !== "water" ||
       tile.resource !== undefined ||
       tile.flowTo !== undefined ||
-      tile.elevation !== 0
+      tile.elevation !== 0 ||
+      tile.drainage !== 0 ||
+      tile.erosionPressure !== 0
     ) changed += 1;
     tile.terrain = "water";
     tile.elevation = 0;
@@ -370,6 +395,24 @@ export function migrateWorldToHexGrid(state: WorldState): number {
     delete tile.flowTo;
     tile.drainage = 0;
     tile.erosionPressure = 0;
+  }
+
+  for (const displaced of displacedResources) {
+    const target = nearestHexGridCell(state, displaced.position, (position) => {
+      const tile = state.tiles[tileIndex(state, position.x, position.y)];
+      return tile !== undefined
+        && tile.terrain !== "water"
+        && (tile.resource === undefined || tile.resource.kind === displaced.resource.kind);
+    });
+    if (target === undefined) continue;
+    const tile = state.tiles[tileIndex(state, target.x, target.y)];
+    if (tile === undefined) continue;
+    if (tile.resource?.kind === displaced.resource.kind) {
+      tile.resource.amount += displaced.resource.amount;
+      tile.resource.maxAmount += displaced.resource.maxAmount;
+    } else {
+      tile.resource = { ...displaced.resource };
+    }
   }
 
   const passable = (position: GridPosition) => {
@@ -474,6 +517,12 @@ export function getPerception(state: WorldState, agentId: string, radius = 6): P
   };
 }
 
+/**
+ * Persistence validation intentionally checks the rectangular storage envelope.
+ * Pre-hex production states must remain loadable so the deterministic migration
+ * can relocate their entities/resources instead of resetting the whole region.
+ * Simulation APIs use `inBounds`, which is strictly hexagonal.
+ */
 export function validateWorldState(state: WorldState): string[] {
   const errors: string[] = [];
   if (state.tiles.length !== state.width * state.height) {
@@ -492,14 +541,18 @@ export function validateWorldState(state: WorldState): string[] {
   for (const agent of state.agents) {
     if (ids.has(agent.id)) errors.push(`duplicate agent id: ${agent.id}`);
     ids.add(agent.id);
-    if (!inBounds(state, agent.position)) errors.push(`agent out of bounds: ${agent.id}`);
-    if (!isPassable(state, agent.position)) errors.push(`agent on water: ${agent.id}`);
+    if (!inStorageBounds(state, agent.position)) {
+      errors.push(`agent out of storage bounds: ${agent.id}`);
+    } else {
+      const tile = state.tiles[tileIndex(state, agent.position.x, agent.position.y)];
+      if (!isPassableTile(tile)) errors.push(`agent on water: ${agent.id}`);
+    }
   }
   for (const structure of state.structures) {
     if (ids.has(structure.id)) errors.push(`duplicate structure id: ${structure.id}`);
     ids.add(structure.id);
-    if (!inBounds(state, structure.position)) {
-      errors.push(`structure out of bounds: ${structure.id}`);
+    if (!inStorageBounds(state, structure.position)) {
+      errors.push(`structure out of storage bounds: ${structure.id}`);
     }
   }
   return errors;
