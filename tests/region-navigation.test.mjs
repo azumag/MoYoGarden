@@ -44,23 +44,30 @@ test("region rebase ignores targets outside every configured chunk", () => {
   assert.equal(resolveRegionRebase(layout, "garden-3", { x: 60.5, z: 0 }), null);
 });
 
-test("region prefetch warms the second chunk ahead only when the camera nears an edge", () => {
+test("region prefetch warms the immediate neighbor only when the camera nears an edge", () => {
   assert.equal(resolveRegionPrefetch(extendedLayout, "garden-2", { x: 10, z: 0 }, 6), null);
   assert.deepEqual(resolveRegionPrefetch(extendedLayout, "garden-2", { x: 14.5, z: 0 }, 6), {
-    regionId: "garden-4",
+    regionId: "garden-3",
     direction: "east",
   });
   assert.deepEqual(resolveRegionPrefetch(extendedLayout, "garden-2", { x: -14.5, z: 0 }, 6), {
-    regionId: "garden-0",
+    regionId: "garden-1",
     direction: "west",
   });
 });
 
-test("region prefetch stays idle when there is no second chunk beyond the loaded neighbor", () => {
-  assert.equal(resolveRegionPrefetch(layout, "garden-2", { x: 18, z: 0 }, 6), null);
-  assert.equal(resolveRegionPrefetch(layout, "garden-2", { x: -18, z: 0 }, 6), null);
-  assert.deepEqual(resolveRegionPrefetch(layout, "garden-1", { x: 18, z: 0 }, 6), {
+test("region prefetch works at the configured world edges when a neighbor exists", () => {
+  assert.deepEqual(resolveRegionPrefetch(layout, "garden-2", { x: 18, z: 0 }, 6), {
     regionId: "garden-3",
     direction: "east",
   });
+  assert.deepEqual(resolveRegionPrefetch(layout, "garden-2", { x: -18, z: 0 }, 6), {
+    regionId: "garden-1",
+    direction: "west",
+  });
+  assert.deepEqual(resolveRegionPrefetch(layout, "garden-1", { x: 18, z: 0 }, 6), {
+    regionId: "garden-2",
+    direction: "east",
+  });
+  assert.equal(resolveRegionPrefetch(layout, "garden-1", { x: -18, z: 0 }, 6), null);
 });
