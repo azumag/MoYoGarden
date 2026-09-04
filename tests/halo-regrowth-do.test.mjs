@@ -70,9 +70,10 @@ function environment() {
   return env;
 }
 
-async function snapshot(env, regionId) {
+async function snapshot(env, regionId, passive = false) {
   const response = await worker.fetch(new Request(
     `https://moyo.example/api/world/snapshot?region=${regionId}`,
+    passive ? { headers: { "x-moyo-prefetch": "1" } } : undefined,
   ), env);
   assert.equal(response.status, 200);
   return response.json();
@@ -81,7 +82,7 @@ async function snapshot(env, regionId) {
 test("scheduled region tick lets neighbor ghost water raise actual organic regrowth", async () => {
   const env = environment();
   await snapshot(env, "garden-1");
-  await snapshot(env, "garden-2");
+  await snapshot(env, "garden-2", true);
   const sourceEntry = env.REGIONS.entries.get("garden-1");
   const targetEntry = env.REGIONS.entries.get("garden-2");
   assert.ok(sourceEntry);
