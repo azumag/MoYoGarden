@@ -1,6 +1,7 @@
 import {
   DEFAULT_SIMULATION_CONFIG,
   emptyInventory,
+  inventoryTotal,
   manhattanDistance,
   samePosition,
   type Agent,
@@ -9,6 +10,7 @@ import {
   type GridPosition,
   parseCommand,
   type ResourceKind,
+  RESOURCE_KINDS,
   type SimulationConfig,
   type WorldCommand,
   type WorldState,
@@ -45,6 +47,23 @@ const POPULATION_GROWTH_FOOD_COST = 6;
 const POPULATION_HEALTH_THRESHOLD = 70;
 const POPULATION_ENERGY_THRESHOLD = 35;
 const POPULATION_SETTLEMENT_RADIUS = 3;
+const SOCIAL_INTERVAL = 12;
+const SOCIAL_RADIUS = 2;
+const SOCIAL_PAIR_COOLDOWN = 48;
+const SOCIAL_MAX_CONVERSATIONS_PER_TICK = 2;
+
+type SocialTopic = {
+  topic:
+    | "warning"
+    | "resource_report"
+    | "construction"
+    | "logistics"
+    | "trade"
+    | "supply_shortage"
+    | "goal";
+  line: string;
+  resource?: ResourceKind;
+};
 
 function nearestFoodStorage(state: WorldState, factionId: string, position: { x: number; y: number }) {
   return activeFactionStructures(state, factionId)
@@ -291,6 +310,141 @@ function applyPopulationGrowth(state: WorldState): void {
   }
 }
 
+function factionSupplyShortage(state: WorldState, factionId: string): ResourceKind | undefined {
+  const faction = getFaction(state, factionId);
+  if (faction === undefined) return undefined;
+  const population = Math.max(1, state.agents.filter((agent) => agent.factionId === factionId).length);
+  const candidate = RESOURCE_KINDS
+    .map((kind) => ({ kind, perCapita: faction.resources[kind] / population }))
+    .sort((a, b) => a.perCapita - b.perCapita || a.kind.localeCompare(b.kind))[0];
+  if (candidate === undefined || candidate.perCapita >= 4) return undefined;
+  return candidate.kind;
+}
+
+function socialTopic(state: WorldState, speaker: Agent, listener: Agent): SocialTopic {
+  if (speaker.energy <= LOW_ENERGY_THRESHOLD + 7) {
+    return {
+      topic: "warning",
+      resource: "food",
+      line: "I'm running low on energy; nearby food access is becoming important.",
+    };
+  }
+
+  const task = speaker.task;
+  if (task?.type === "gather") {
+    const location = task.target === undefined ? "nearby" : `near ${task.target.x},${task.target.y}`;
+    return {
+      topic: "resource_report",
+      resource: task.resource,
+      line: `I'm gathering ${task.resource} ${location}.`,
+    };
+  }
+  if (task?.type === "build") {
+    return {
+      topic: "construction",
+      line: `I'm working on the ${task.structureType} at ${task.target.x},${task.target.y}.`,
+    };
+  }
+  if (task?.type === "deposit") {
+    return {
+      topic: "logistics",
+      line: `I'm carrying ${inventoryTotal(speaker.inventory)} supplies back to storage.`,
+    };
+  }
+  if (task?.type === "trade") {
+    const target = getAgent(state, task.targetAgentId);
+    return {
+      topic: "trade",
+      line: `I'm trying to trade with ${target?.name ?? task.targetAgentId}.`,
+    };
+  }
+
+  const shortage = factionSupplyShortage(state, speaker.factionId);
+  if (shortage !== undefined) {
+    const specialistRole: AgentRole =
+      shortage === "wood" ? "woodcutter" : shortage === "stone" ? "miner" : "forager";
+    return {
+      topic: "supply_shortage",
+      resource: shortage,
+      line: listener.role === specialistRole
+        ? `We're short on ${shortage}; your ${specialistRole} work is especially useful now.`
+        : `We're short on ${shortage}; keep that in mind while you work.`,
+    };
+  }
+
+  return {
+    topic: "goal",
+    line: `My current goal is ${speaker.goal.slice(0, 100)}.`,
+  };
+}
+
+function talkedRecently(state: WorldState, firstId: string, secondId: string): boolean {
+  const cutoff = state.tick - SOCIAL_PAIR_COOLDOWN;
+  return state.events.some((event) => {
+    if (event.kind !== "agent_conversation" || event.tick > state.tick || event.tick > cutoff === false) {
+      return false;
+    }
+    const targetAgentId = event.data?.targetAgentId;
+    return (
+      (event.agentId === firstId && targetAgentId === secondId) ||
+      (event.agentId === secondId && targetAgentId === firstId)
+    );
+  });
+}
+
+export function applySocialInteractions(state: WorldState): number {
+  if (state.tick === 0 || state.tick % SOCIAL_INTERVAL !== 0) return 0;
+
+  const agents = [...state.agents]
+    .filter((agent) => agent.hp > 0)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const engaged = new Set<string>();
+  let conversations = 0;
+
+  for (const speaker of agents) {
+    if (engaged.has(speaker.id)) continue;
+    const listener = agents
+      .filter((candidate) =>
+        candidate.id !== speaker.id &&
+        candidate.factionId === speaker.factionId &&
+        !engaged.has(candidate.id) &&
+        manhattanDistance(candidate.position, speaker.position) <= SOCIAL_RADIUS &&
+        !talkedRecently(state, speaker.id, candidate.id)
+      )
+      .sort((a, b) =>
+        manhattanDistance(a.position, speaker.position) - manhattanDistance(b.position, speaker.position) ||
+        a.id.localeCompare(b.id)
+      )[0];
+    if (listener === undefined) continue;
+
+    const social = socialTopic(state, speaker, listener);
+    state.events.push({
+      id: `event-${state.tick}-${state.events.length + 1}`,
+      tick: state.tick,
+      kind: "agent_conversation",
+      message: `${speaker.name} to ${listener.name}: "${social.line}"`,
+      agentId: speaker.id,
+      factionId: speaker.factionId,
+      position: { ...speaker.position },
+      data: {
+        targetAgentId: listener.id,
+        targetAgentName: listener.name,
+        topic: social.topic,
+        line: social.line,
+        speakerRole: speaker.role,
+        listenerRole: listener.role,
+        ...(social.resource === undefined ? {} : { resource: social.resource }),
+      },
+    });
+    engaged.add(speaker.id);
+    engaged.add(listener.id);
+    conversations += 1;
+    if (conversations >= SOCIAL_MAX_CONVERSATIONS_PER_TICK) break;
+  }
+
+  return conversations;
+}
+
 export class WorldRuntime {
   #state: WorldState;
   #pendingCommands: WorldCommand[] = [];
@@ -396,6 +550,8 @@ export class WorldRuntime {
     }
     applyStarvation(result.state, starvingAgentIds);
     applyPopulationGrowth(result.state);
+    applySocialInteractions(result.state);
+    result.state.events = result.state.events.slice(-this.#simulationConfig.eventLimit);
     this.#state = result.state;
     const snapshot = this.snapshot();
     for (const listener of this.#listeners) listener(snapshot, result.receipts);

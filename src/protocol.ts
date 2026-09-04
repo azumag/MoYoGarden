@@ -127,6 +127,7 @@ export type EventKind =
   | "trade_completed"
   | "trade_failed"
   | "agent_moved"
+  | "agent_conversation"
   | "autonomy_changed"
   | "goal_changed";
 
