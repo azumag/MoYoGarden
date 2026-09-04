@@ -14,6 +14,7 @@ import {
   TARGET_WORLD_HEIGHT,
   TARGET_WORLD_WIDTH,
 } from "./world-scale.js";
+import { HEX_DIRECTIONS, regionHexTopology } from "./region-topology.js";
 
 interface Env {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -579,6 +580,11 @@ export default {
           coordinateSpace: "global-grid",
           regionExtent: { width: TARGET_WORLD_WIDTH, height: TARGET_WORLD_HEIGHT },
           regionLayout: regionLayout(regions),
+          regionTopology: {
+            kind: "hex-axial",
+            directions: HEX_DIRECTIONS,
+            regions: regionHexTopology(regions),
+          },
           windowEndpoint: "/api/world/window?region={regionId}&radius=1",
         },
       });
