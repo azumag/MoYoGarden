@@ -1,3 +1,5 @@
+import { TARGET_WORLD_HEIGHT, TARGET_WORLD_WIDTH } from "./world-scale.js";
+
 export const HEX_DIRECTIONS = [
   "east",
   "northEast",
@@ -14,10 +16,16 @@ export interface HexCoordinate {
   r: number;
 }
 
+export interface HexWorldOrigin {
+  x: number;
+  y: number;
+}
+
 export interface RegionHexTopologyEntry {
   id: string;
   index: number;
   axial: HexCoordinate;
+  hexOrigin: HexWorldOrigin;
   ring: number;
   neighbors: Record<HexDirection, string | null>;
 }
@@ -38,7 +46,33 @@ export function hexDistance(a: HexCoordinate, b: HexCoordinate = { q: 0, r: 0 })
   return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
 }
 
-export function regionHexTopology(regionIds: readonly string[]): RegionHexTopologyEntry[] {
+/**
+ * Project axial coordinates into the current global-grid coordinate space.
+ *
+ * The migration intentionally preserves the existing east/west spacing: an
+ * east neighbor remains exactly one current region width away. Diagonal
+ * neighbors sit half a region width sideways and three quarters of a region
+ * height vertically, matching a pointy-top hex center lattice while keeping
+ * the persisted rectangular WorldState untouched.
+ */
+export function projectHexCoordinate(
+  coordinate: HexCoordinate,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): HexWorldOrigin {
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : TARGET_WORLD_HEIGHT;
+  return {
+    x: (coordinate.q + coordinate.r * 0.5) * safeWidth,
+    y: coordinate.r * safeHeight * 0.75,
+  };
+}
+
+export function regionHexTopology(
+  regionIds: readonly string[],
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionHexTopologyEntry[] {
   if (regionIds.length === 0) return [];
 
   const coordinates: HexCoordinate[] = [];
@@ -79,6 +113,7 @@ export function regionHexTopology(regionIds: readonly string[]): RegionHexTopolo
       id: regionIds[index] ?? `region-${index}`,
       index,
       axial: coordinate,
+      hexOrigin: projectHexCoordinate(coordinate, width, height),
       ring: hexDistance(coordinate),
       neighbors,
     };
