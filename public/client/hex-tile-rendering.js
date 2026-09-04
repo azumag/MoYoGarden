@@ -45,7 +45,7 @@ function appendHexFace(positions, colors, indices, center, y, radius, color) {
     colors.push(color.r, color.g, color.b);
   }
   for (let index = 0; index < 6; index += 1) {
-    indices.push(base, base + 1 + index, base + 1 + ((index + 1) % 6));
+    indices.push(base, base + 1 + ((index + 1) % 6), base + 1 + index);
   }
 }
 
