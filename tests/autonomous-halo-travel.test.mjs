@@ -156,6 +156,36 @@ test("interior autonomy preserves its low-energy reserve when planning region tr
   assert.equal(affordable.direction, "east");
 });
 
+test("interior autonomy budgets the actual passable path around terrain obstacles", () => {
+  const { state, agent } = depletedInteriorWoodcutter();
+  for (const tile of state.tiles) {
+    if (isHexGridCell(state, tile)) tile.terrain = "plain";
+  }
+
+  const eastCells = hexGridBoundaryCells(state, "east");
+  const eastIndex = eastCells.findIndex((cell) => cell.y === agent.position.y);
+  assert.notEqual(eastIndex, -1);
+  const east = haloResource(state, "east", eastIndex, "garden-2");
+
+  const directStep = { x: agent.position.x + 1, y: agent.position.y };
+  const blocked = state.tiles[directStep.y * state.width + directStep.x];
+  assert.ok(blocked);
+  blocked.terrain = "water";
+
+  agent.energy = 29;
+  assert.equal(
+    planAutonomousHaloTravel(state, [east]),
+    undefined,
+    "11 points of travel energy must not fund the 12-step passable detour",
+  );
+
+  agent.energy = 30;
+  const affordable = planAutonomousHaloTravel(state, [east]);
+  assert.ok(affordable);
+  assert.equal(affordable.direction, "east");
+  assert.deepEqual(affordable.boundaryTarget, east.sourcePosition);
+});
+
 test("interior autonomy gives the single travel slot to the most efficient eligible agent", () => {
   const { state } = depletedInteriorWoodcutter();
   const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
