@@ -23,6 +23,13 @@ test("visual patch applies the darker decayed world grade", () => {
   assert.match(skyFixSource, /offsetHSL\(0,\s*-0\.18,\s*-0\.08\)/);
 });
 
+test("deferred IBL initialization cannot restore the brighter environment intensity", () => {
+  assert.match(
+    skyFixSource,
+    /}\n\n\s*view\.scene\.environmentIntensity\s*=\s*0\.42;\n\n\s*const now = performance\.now\(\)/,
+  );
+});
+
 test("terrain adds instanced deadwood, rubble, and mud dressing", () => {
   assert.match(decayDressingSource, /MoyoDecayDressing/);
   assert.match(decayDressingSource, /MoyoDecayDeadwood/);
@@ -38,7 +45,8 @@ test("buildings receive deterministic broken and rusted decay details", () => {
   assert.match(decayDressingSource, /hash2\(structure\.position\.x/);
 });
 
-test("boot loads decay dressing as an optional renderer extension", () => {
+test("boot loads decay dressing after hex terrain patches", () => {
   assert.match(bootSource, /decay-dressing\.js/);
   assert.match(bootSource, /decay dressing failed/);
+  assert.ok(bootSource.lastIndexOf("hex-terrain-stitching.js") < bootSource.lastIndexOf("decay-dressing.js"));
 });
