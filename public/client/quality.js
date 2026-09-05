@@ -1,3 +1,5 @@
+const HIGH_DPR_TOUCH_WIDTH_LIMIT = 1_400;
+
 const PROFILES = Object.freeze({
   balanced: Object.freeze({
     id: "balanced",
@@ -63,12 +65,19 @@ function safeModeRequested() {
   return quality === "low" || renderer === "compat" || queryValue("safe") === "1";
 }
 
+function highDprTouchDevice() {
+  const touchPoints = Number(globalThis.navigator?.maxTouchPoints ?? 0);
+  const pixelRatio = Number(globalThis.devicePixelRatio ?? 1);
+  const width = Number(globalThis.innerWidth ?? 1280);
+  return touchPoints > 0 && pixelRatio >= 2 && width < HIGH_DPR_TOUCH_WIDTH_LIMIT;
+}
+
 function automaticProfileId() {
   const memory = Number(globalThis.navigator?.deviceMemory ?? 0);
   const cores = Number(globalThis.navigator?.hardwareConcurrency ?? 0);
   const narrow = Number(globalThis.innerWidth ?? 1280) < 900;
   const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  if (networkIsConstrained() || narrow || reducedMotion || (memory > 0 && memory < 6) || (cores > 0 && cores < 6)) {
+  if (networkIsConstrained() || narrow || reducedMotion || highDprTouchDevice() || (memory > 0 && memory < 6) || (cores > 0 && cores < 6)) {
     return "balanced";
   }
   if (memory >= 12 && cores >= 10) return "ultra";
@@ -79,14 +88,11 @@ function automaticProfileId() {
 function needsAutoConstraintTuning() {
   const memory = Number(globalThis.navigator?.deviceMemory ?? 0);
   const cores = Number(globalThis.navigator?.hardwareConcurrency ?? 0);
-  const touchPoints = Number(globalThis.navigator?.maxTouchPoints ?? 0);
-  const pixelRatio = Number(globalThis.devicePixelRatio ?? 1);
-  const width = Number(globalThis.innerWidth ?? 1280);
   return (
     networkIsConstrained() ||
     (memory > 0 && memory < 4) ||
     (cores > 0 && cores < 4) ||
-    (touchPoints > 0 && pixelRatio >= 2 && width < 1100)
+    highDprTouchDevice()
   );
 }
 

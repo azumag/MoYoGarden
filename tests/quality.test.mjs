@@ -62,8 +62,19 @@ test("auto quality also trims common 2x-DPR touch phones", () => {
   });
 });
 
+test("auto quality trims wide 2x-DPR touch tablets in landscape", () => {
+  withDevice({ width: 1366, pixelRatio: 2, touchPoints: 5 }, () => {
+    const quality = resolveQualityProfile();
+    assert.equal(quality.id, "balanced");
+    assert.equal(quality.pixelRatioCap, 1.1);
+    assert.equal(quality.antialias, false);
+    assert.equal(quality.shadowSize, 512);
+    assert.equal(quality.detailDensity, 0.48);
+  });
+});
+
 test("2x-DPR non-touch desktops keep the normal automatic profile", () => {
-  withDevice({ width: 1440, pixelRatio: 2, touchPoints: 0, memory: 8, cores: 8 }, () => {
+  withDevice({ width: 1366, pixelRatio: 2, touchPoints: 0, memory: 8, cores: 8 }, () => {
     const quality = resolveQualityProfile();
     assert.equal(quality.id, "high");
     assert.equal(quality.pixelRatioCap, 1.65);
