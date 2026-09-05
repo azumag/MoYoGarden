@@ -40,7 +40,7 @@ assert.match(modelLibrary, /this\.skeletonClone\s*=\s*SkeletonUtils\.clone/);
 assert.match(modelLibrary, /this\.animations\s*=\s*new Map/);
 assert.match(modelLibrary, /clips\(name\)/);
 assert.match(modelLibrary, /authored:agent-.*return "settler"/s);
-assert.match(modelLibrary, /Math\.max\(timeoutMs,\s*6_500\)/);
+assert.match(modelLibrary, /isAuthoredKey\(key\)\s*\?\s*Math\.max\(timeoutMs,\s*12_000\)/);
 
 assert.match(agents, /AUTHORED_AGENT_BY_ROLE/);
 assert.match(agents, /authored:agent-worker/);
