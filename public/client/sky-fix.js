@@ -39,7 +39,6 @@ function applyDecayedWorldGrade(view) {
     view.scene.background.set(0x666b64);
     view.scene.fog.color.set(0x656a63);
     view.scene.fog.density = 0.0148;
-    view.scene.environmentIntensity = 0.42;
 
     view.hemi.color.set(0xb7b9aa);
     view.hemi.groundColor.set(0x343934);
@@ -55,6 +54,8 @@ function applyDecayedWorldGrade(view) {
     uniforms?.groundColor?.value?.set?.(0x474c44);
     uniforms?.sunColor?.value?.set?.(0xbfa77e);
   }
+
+  view.scene.environmentIntensity = 0.42;
 
   const now = performance.now();
   if (now < (view.moyoNextDecaySweep || 0)) return;

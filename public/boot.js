@@ -80,13 +80,14 @@
   preload(`/client/hex-neighbor-preview.js?v=${VERSION}`);
   preload(`/client/hex-tile-rendering.js?v=${VERSION}`);
   preload(`/client/hex-terrain-stitching.js?v=${VERSION}`);
+  preload(`/client/decay-dressing.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
     if (compatibilityRequested) {
       setMessage("軽量セーフモードで起動しています", "描画負荷を抑えて3Dワールドを起動します");
     } else {
-      setMessage("3Dレンダラーを起動しています", "軽量表示の後、authored BOT・建物・自然物・PBR・影を段階的に追加します");
+      setMessage("3Dレンダラーを起動しています", "軽量表示の後、退廃ディテール・authored BOT・建物・自然物・PBR・影を段階的に追加します");
     }
     try {
       await import(`/client/sky-fix.js?v=${VERSION}`);
@@ -117,6 +118,11 @@
       await import(`/client/hex-terrain-stitching.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: hex terrain boundary stitching failed; keeping native chunk heights", error);
+    }
+    try {
+      await import(`/client/decay-dressing.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: decay dressing failed; continuing without ruined-world details", error);
     }
 
     const moduleScript = document.createElement("script");
