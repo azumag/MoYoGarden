@@ -75,12 +75,12 @@
   };
   preload("/vendor/three-r185/build/three.module.min.js");
   preload(`/client/sky-fix.js?v=${VERSION}`);
-  preload(`/client/decay-dressing.js?v=${VERSION}`);
   preload(`/client/hex-footprint-rendering.js?v=${VERSION}`);
   preload(`/client/seamless-navigation.js?v=${VERSION}`);
   preload(`/client/hex-neighbor-preview.js?v=${VERSION}`);
   preload(`/client/hex-tile-rendering.js?v=${VERSION}`);
   preload(`/client/hex-terrain-stitching.js?v=${VERSION}`);
+  preload(`/client/decay-dressing.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
@@ -93,11 +93,6 @@
       await import(`/client/sky-fix.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: sky backdrop patch failed; continuing with base renderer", error);
-    }
-    try {
-      await import(`/client/decay-dressing.js?v=${VERSION}`);
-    } catch (error) {
-      console.warn("MoYoGarden: decay dressing failed; continuing without ruined-world details", error);
     }
     try {
       await import(`/client/hex-footprint-rendering.js?v=${VERSION}`);
@@ -123,6 +118,11 @@
       await import(`/client/hex-terrain-stitching.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: hex terrain boundary stitching failed; keeping native chunk heights", error);
+    }
+    try {
+      await import(`/client/decay-dressing.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: decay dressing failed; continuing without ruined-world details", error);
     }
 
     const moduleScript = document.createElement("script");
