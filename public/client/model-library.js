@@ -4,6 +4,7 @@ const MODEL_VERSION = "0.3.4";
 const AUTHORED_VERSION = "0.3.7";
 const AUTHORED_BUILDING_VERSION = "0.3.10";
 const AUTHORED_CHARACTER_VERSION = "0.3.11";
+const AUTHORED_DECAY_VERSION = "0.3.11-q1";
 const MODEL_MANIFEST = Object.freeze([
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
@@ -20,6 +21,9 @@ const MODEL_MANIFEST = Object.freeze([
   ["authored:rock-large", `/assets/authored/kenney/rock_large.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-medium", `/assets/authored/kenney/rock_medium.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-small", `/assets/authored/kenney/rock_small.glb?v=${AUTHORED_VERSION}`],
+  ["authored:decay-rubble", `/assets/authored/quaternius-decay/rubble.glb?v=${AUTHORED_DECAY_VERSION}`],
+  ["authored:decay-support", `/assets/authored/quaternius-decay/support.glb?v=${AUTHORED_DECAY_VERSION}`],
+  ["authored:decay-fence", `/assets/authored/quaternius-decay/fence.glb?v=${AUTHORED_DECAY_VERSION}`],
 ]);
 const MAX_MODEL_BYTES = 8 * 1024 * 1024;
 const AUTHORED_BUILDING_BY_CHILD = Object.freeze({
@@ -44,6 +48,7 @@ function isAuthoredAgentKey(key) {
 }
 
 function refreshKeyFor(key) {
+  if (key.startsWith("authored:decay-")) return "decay";
   if (key.startsWith("authored:agent-")) return "settler";
   if (key.startsWith("authored:building-")) return "buildings";
   if (key.startsWith("authored:tree-")) return "tree";
