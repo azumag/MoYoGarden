@@ -71,6 +71,17 @@ test("autonomy does not re-dispatch into neighbor supply claimed by an earlier e
   assert.ok(withoutClaim);
   assert.equal(withoutClaim.direction, "west");
 
+  const expiredClaim = planAutonomousHaloTravel(state, [east, west], [{
+    claimId: "expired-expedition",
+    resource: "wood",
+    direction: "west",
+    neighborRegionId: "garden-4",
+    amount: 10,
+    expiresAtTick: state.tick,
+  }]);
+  assert.ok(expiredClaim);
+  assert.equal(expiredClaim.direction, "west");
+
   const withClaim = planAutonomousHaloTravel(state, [east, west], [{
     claimId: "prior-expedition",
     resource: "wood",
