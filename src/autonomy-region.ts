@@ -200,8 +200,16 @@ export function planAutonomousHaloTravel(
   state: WorldState,
   halo: readonly HexHaloTile[],
 ): AutonomousHaloTravelPlan | undefined {
-  const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
-  for (const agent of agents) {
+  const expeditions: Array<{
+    agent: Agent;
+    resource: ResourceKind;
+    candidate: HexHaloTile;
+    visibleSupply: number;
+    travelDistance: number;
+    costPerUnit: number;
+  }> = [];
+
+  for (const agent of state.agents) {
     if (!agent.autonomy || isBoundaryPosition(state, agent.position)) continue;
     const resource = resourceIntent(state, agent);
     if (resource === undefined || localResourceAvailable(state, resource)) continue;
@@ -224,43 +232,64 @@ export function planAutonomousHaloTravel(
     }
 
     const candidate = candidates
-      .sort((a, b) => {
-        const aDistance = hexGridDistance(agent.position, a.sourcePosition);
-        const bDistance = hexGridDistance(agent.position, b.sourcePosition);
-        const aSupply = Math.min(
+      .map((entry) => {
+        const travelDistance = hexGridDistance(agent.position, entry.sourcePosition);
+        const supply = Math.min(
           capacityLeft,
-          visibleSupply.get(haloSupplyKey(a.direction, a.neighborRegionId)) ?? 0,
+          visibleSupply.get(haloSupplyKey(entry.direction, entry.neighborRegionId)) ?? 0,
         );
-        const bSupply = Math.min(
-          capacityLeft,
-          visibleSupply.get(haloSupplyKey(b.direction, b.neighborRegionId)) ?? 0,
-        );
-        const aCostPerUnit = aDistance / Math.max(1, aSupply);
-        const bCostPerUnit = bDistance / Math.max(1, bSupply);
-        return aCostPerUnit - bCostPerUnit
-          || bSupply - aSupply
-          || aDistance - bDistance
-          || directionRank(a.direction) - directionRank(b.direction)
-          || a.neighborRegionId.localeCompare(b.neighborRegionId)
-          || a.sourcePosition.y - b.sourcePosition.y
-          || a.sourcePosition.x - b.sourcePosition.x;
-      })[0];
+        return {
+          entry,
+          travelDistance,
+          visibleSupply: supply,
+          costPerUnit: travelDistance / Math.max(1, supply),
+        };
+      })
+      .sort((a, b) =>
+        a.costPerUnit - b.costPerUnit
+        || b.visibleSupply - a.visibleSupply
+        || a.travelDistance - b.travelDistance
+        || directionRank(a.entry.direction) - directionRank(b.entry.direction)
+        || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
+        || a.entry.sourcePosition.y - b.entry.sourcePosition.y
+        || a.entry.sourcePosition.x - b.entry.sourcePosition.x
+      )[0];
     if (candidate === undefined) continue;
 
-    const issuedAtTick = agent.task?.source === "autonomy" && agent.task.type === "gather"
-      ? agent.task.issuedAtTick
-      : state.tick;
-    return {
-      agentId: agent.id,
+    expeditions.push({
+      agent,
       resource,
-      direction: candidate.direction,
-      neighborRegionId: candidate.neighborRegionId,
-      boundaryTarget: { ...candidate.sourcePosition },
-      issuedAtTick,
-      startedAtTick: state.tick,
-    };
+      candidate: candidate.entry,
+      visibleSupply: candidate.visibleSupply,
+      travelDistance: candidate.travelDistance,
+      costPerUnit: candidate.costPerUnit,
+    });
   }
-  return undefined;
+
+  const expedition = expeditions.sort((a, b) =>
+    a.costPerUnit - b.costPerUnit
+    || b.visibleSupply - a.visibleSupply
+    || a.travelDistance - b.travelDistance
+    || a.agent.id.localeCompare(b.agent.id)
+    || directionRank(a.candidate.direction) - directionRank(b.candidate.direction)
+    || a.candidate.neighborRegionId.localeCompare(b.candidate.neighborRegionId)
+    || a.candidate.sourcePosition.y - b.candidate.sourcePosition.y
+    || a.candidate.sourcePosition.x - b.candidate.sourcePosition.x
+  )[0];
+  if (expedition === undefined) return undefined;
+
+  const issuedAtTick = expedition.agent.task?.source === "autonomy" && expedition.agent.task.type === "gather"
+    ? expedition.agent.task.issuedAtTick
+    : state.tick;
+  return {
+    agentId: expedition.agent.id,
+    resource: expedition.resource,
+    direction: expedition.candidate.direction,
+    neighborRegionId: expedition.candidate.neighborRegionId,
+    boundaryTarget: { ...expedition.candidate.sourcePosition },
+    issuedAtTick,
+    startedAtTick: state.tick,
+  };
 }
 
 export function planAutonomousHaloHandoff(
