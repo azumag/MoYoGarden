@@ -83,6 +83,24 @@ test("2x-DPR non-touch desktops keep the normal automatic profile", () => {
   });
 });
 
+test("auto quality does not demote capable desktops when deviceMemory is unavailable", () => {
+  withDevice({ width: 1440, memory: 0, cores: 8, touchPoints: 0 }, () => {
+    const quality = resolveQualityProfile();
+    assert.equal(quality.id, "high");
+    assert.equal(quality.antialias, true);
+    assert.equal(quality.shadowSize, 2048);
+  });
+});
+
+test("auto quality can select ultra from CPU capacity when deviceMemory is unavailable", () => {
+  withDevice({ width: 1920, memory: 0, cores: 12, touchPoints: 0 }, () => {
+    const quality = resolveQualityProfile();
+    assert.equal(quality.id, "ultra");
+    assert.equal(quality.pixelRatioCap, 2);
+    assert.equal(quality.detailDensity, 1);
+  });
+});
+
 test("auto quality honors save-data or slow-network hints even on powerful desktops", () => {
   withDevice({ width: 1440, memory: 16, cores: 12, saveData: true }, () => {
     const quality = resolveQualityProfile();
