@@ -88,7 +88,7 @@ async function assignRegion(env, regionId) {
 function depleteWood(state) {
   for (const tile of state.tiles) {
     if (tile.resource?.kind === "wood") tile.resource.amount = 0;
-    if (isHexGridCell(state, tile) && tile.terrain !== "water") tile.terrain = "plain";
+    if (isHexGridCell(state, tile)) tile.terrain = "plain";
   }
 }
 
