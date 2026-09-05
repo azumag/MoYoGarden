@@ -117,3 +117,49 @@ test("autonomy samples only halo directions that a depleted worker can actually 
     crossingDirections(state, westPosition),
   );
 });
+
+test("boundary autonomy honors neighbor supply claims without blocking the claim owner", () => {
+  const { state, agent, halo } = stateWithBoundaryWoodIntent();
+  state.tick = 24;
+
+  const reservedByAnotherAgent = {
+    claimId: "reserved-east",
+    agentId: "agent-other",
+    resource: "wood",
+    direction: "east",
+    neighborRegionId: "garden-2",
+    amount: 8,
+    expiresAtTick: 84,
+  };
+  assert.equal(
+    planAutonomousHaloHandoff(state, halo, [reservedByAnotherAgent]),
+    undefined,
+    "a seam handoff must not consume supply fully reserved by another expedition",
+  );
+
+  const ownReservation = {
+    ...reservedByAnotherAgent,
+    claimId: "own-east",
+    agentId: agent.id,
+  };
+  const ownPlan = planAutonomousHaloHandoff(state, halo, [ownReservation]);
+  assert.ok(ownPlan, "the expedition that owns the reservation must be allowed through its seam");
+  assert.equal(ownPlan.agentId, agent.id);
+
+  const legacyReservation = { ...reservedByAnotherAgent };
+  delete legacyReservation.agentId;
+  assert.equal(
+    planAutonomousHaloHandoff(state, halo, [legacyReservation]),
+    undefined,
+    "legacy ownerless claims stay conservative until they expire",
+  );
+
+  const expiredReservation = {
+    ...reservedByAnotherAgent,
+    expiresAtTick: state.tick,
+  };
+  assert.ok(
+    planAutonomousHaloHandoff(state, halo, [expiredReservation]),
+    "expired reservations must not block a seam handoff",
+  );
+});

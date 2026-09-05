@@ -59,6 +59,7 @@ interface PendingAutonomousTravel {
 
 export interface AutonomousSupplyClaim {
   claimId: string;
+  agentId?: string;
   resource: ResourceKind;
   direction: HexGridDirection;
   neighborRegionId: string;
@@ -114,6 +115,7 @@ function isResourceKind(value: unknown): value is ResourceKind {
 function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim {
   return isRecord(value)
     && typeof value.claimId === "string"
+    && (value.agentId === undefined || typeof value.agentId === "string")
     && isResourceKind(value.resource)
     && typeof value.direction === "string"
     && HEX_GRID_DIRECTIONS.includes(value.direction as HexGridDirection)
@@ -218,6 +220,45 @@ function remainingInventoryCapacity(agent: Agent): number {
 
 function haloSupplyKey(direction: HexGridDirection, neighborRegionId: string): string {
   return `${direction}:${neighborRegionId}`;
+}
+
+function availableHaloSupplyForAgent(
+  state: Pick<WorldState, "tick">,
+  halo: readonly HexHaloTile[],
+  claims: readonly AutonomousSupplyClaim[],
+  agentId: string,
+  resource: ResourceKind,
+  direction: HexGridDirection,
+  neighborRegionId: string,
+): number {
+  let visibleSupply = 0;
+  for (const entry of halo) {
+    if (
+      entry.direction !== direction ||
+      entry.neighborRegionId !== neighborRegionId ||
+      entry.tile.terrain === "water" ||
+      entry.tile.resource?.kind !== resource ||
+      entry.tile.resource.amount <= 0
+    ) {
+      continue;
+    }
+    visibleSupply += entry.tile.resource.amount;
+  }
+
+  let claimedSupply = 0;
+  for (const claim of claims) {
+    if (
+      claim.resource !== resource ||
+      claim.direction !== direction ||
+      claim.neighborRegionId !== neighborRegionId ||
+      claim.expiresAtTick <= state.tick ||
+      claim.agentId === agentId
+    ) {
+      continue;
+    }
+    claimedSupply += claim.amount;
+  }
+  return Math.max(0, visibleSupply - claimedSupply);
 }
 
 function isMatchingTravelTask(agent: Agent, pending: PendingAutonomousTravel): boolean {
@@ -361,6 +402,7 @@ export function planAutonomousHaloTravel(
 export function planAutonomousHaloHandoff(
   state: WorldState,
   halo: readonly HexHaloTile[],
+  claims: readonly AutonomousSupplyClaim[] = [],
 ): AutonomousHaloHandoffPlan | undefined {
   const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
   for (const agent of agents) {
@@ -374,7 +416,16 @@ export function planAutonomousHaloHandoff(
         samePosition(entry.sourcePosition, agent.position) &&
         entry.tile.terrain !== "water" &&
         entry.tile.resource?.kind === resource &&
-        entry.tile.resource.amount > 0
+        entry.tile.resource.amount > 0 &&
+        availableHaloSupplyForAgent(
+          state,
+          halo,
+          claims,
+          agent.id,
+          resource,
+          entry.direction,
+          entry.neighborRegionId,
+        ) > 0
       )
       .sort((a, b) =>
         directionRank(a.direction) - directionRank(b.direction) ||
@@ -585,6 +636,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     if (claimedSupply > 0) {
       await this.persistAutonomousSupplyClaim({
         claimId,
+        agentId: plan.agentId,
         resource: plan.resource,
         direction: plan.direction,
         neighborRegionId: plan.neighborRegionId,
@@ -616,7 +668,8 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     let halo: HexHaloTile[] = [];
     if (directions.length > 0) {
       halo = await this.materializeAutonomyHalo(state, directions);
-      const plan = planAutonomousHaloHandoff(state, halo);
+      const claims = await this.activeAutonomousSupplyClaims(state.tick);
+      const plan = planAutonomousHaloHandoff(state, halo, claims);
       if (plan !== undefined) {
         const pendingPlan: PendingAutonomousHandoff = {
           transferId: plan.transferId,
