@@ -111,7 +111,7 @@ test("halo edge sampling does not promote passive neighbors to active tick caden
   for (const regionId of ["garden-2", "garden-3"]) {
     const health = await call(env, `/api/health?region=${regionId}`);
     assert.equal(health.response.status, 200);
-    assert.equal(health.body.tickMode, "idle");
-    assert.equal(health.body.effectiveTickMs, 60000);
+    assert.equal(health.body.tickMode, "cold");
+    assert.equal(health.body.effectiveTickMs, 600000);
   }
 });

@@ -160,5 +160,5 @@ test("scheduled region tick lets neighbor ghost water raise actual organic regro
     "https://moyo.example/api/health?region=garden-2",
   ), env);
   const health = await targetHealth.json();
-  assert.equal(health.tickMode, "idle", "halo environmental sampling must keep neighbor passive");
+  assert.equal(health.tickMode, "warm", "hex-window prefetch should keep the neighbor warm without promoting it to active");
 });
