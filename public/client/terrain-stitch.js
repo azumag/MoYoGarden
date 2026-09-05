@@ -218,3 +218,86 @@ export function buildWeldedPreviewSurface(entries, resolveHeight) {
 
   return { positions, colors, indices, vertexCount: ordered.length };
 }
+
+/**
+ * Build a pointy-top hex surface whose adjacent cells literally reuse their
+ * shared edge vertices. Corner heights and colors are averaged from every
+ * incident cell, turning discrete simulation elevations into a continuous
+ * rendered slope while keeping each cell center anchored to its native value.
+ */
+export function buildWeldedHexSurface(entries, radius) {
+  const safeRadius = Number(radius);
+  if (!Number.isFinite(safeRadius) || safeRadius <= 0) {
+    return { positions: [], colors: [], indices: [], vertexCount: 0 };
+  }
+
+  const vertices = new Map();
+  const indices = [];
+
+  function vertexIndex(x, z, height, color) {
+    const key = terrainVertexKey(x, z);
+    let vertex = vertices.get(key);
+    if (vertex === undefined) {
+      vertex = {
+        index: vertices.size,
+        x,
+        z,
+        heightTotal: 0,
+        heightSamples: 0,
+        r: 0,
+        g: 0,
+        b: 0,
+        colorSamples: 0,
+      };
+      vertices.set(key, vertex);
+    }
+    const numericHeight = Number(height);
+    if (Number.isFinite(numericHeight)) {
+      vertex.heightTotal += numericHeight;
+      vertex.heightSamples += 1;
+    }
+    vertex.r += colorChannel(color, "r", 0.44);
+    vertex.g += colorChannel(color, "g", 0.52);
+    vertex.b += colorChannel(color, "b", 0.35);
+    vertex.colorSamples += 1;
+    return vertex.index;
+  }
+
+  for (const entry of entries ?? []) {
+    const x = Number(entry?.x);
+    const z = Number(entry?.z);
+    const height = Number(entry?.height);
+    if (![x, z, height].every(Number.isFinite)) continue;
+
+    const center = vertexIndex(x, z, height, entry.color);
+    const corners = [];
+    for (let index = 0; index < 6; index += 1) {
+      const angle = index * Math.PI / 3;
+      corners.push(vertexIndex(
+        x + Math.cos(angle) * safeRadius,
+        z + Math.sin(angle) * safeRadius,
+        height,
+        entry.color,
+      ));
+    }
+    for (let index = 0; index < 6; index += 1) {
+      indices.push(center, corners[(index + 1) % 6], corners[index]);
+    }
+  }
+
+  const ordered = [...vertices.values()].sort((a, b) => a.index - b.index);
+  const positions = [];
+  const colors = [];
+  for (const vertex of ordered) {
+    const heightSamples = Math.max(1, vertex.heightSamples);
+    const colorSamples = Math.max(1, vertex.colorSamples);
+    positions.push(vertex.x, vertex.heightTotal / heightSamples, vertex.z);
+    colors.push(
+      vertex.r / colorSamples,
+      vertex.g / colorSamples,
+      vertex.b / colorSamples,
+    );
+  }
+
+  return { positions, colors, indices, vertexCount: ordered.length };
+}
