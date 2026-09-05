@@ -95,3 +95,8 @@ test("decay dressing prefers authored prop geometry and preserves procedural fal
   assert.match(decayDressingSource, /MoyoDecayDressing/);
   assert.match(decayDressingSource, /refreshModelType.*decay/s);
 });
+
+test("procedural support and fence fallbacks are grounded at y=0", () => {
+  assert.match(decayDressingSource, /BoxGeometry\(0\.075,\s*0\.82,\s*0\.075\)\.translate\(0,\s*0\.41,\s*0\)/);
+  assert.match(decayDressingSource, /BoxGeometry\(0\.92,\s*0\.42,\s*0\.06\)\.translate\(0,\s*0\.21,\s*0\)/);
+});
