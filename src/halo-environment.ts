@@ -10,9 +10,16 @@ import { getTile } from "./world.js";
 
 const WATER_MOISTURE_RADIUS = 4;
 const HALO_VEGETATION_PROPAGULE_BONUS = 0.05;
+const HALO_HYDROLOGY_EPSILON = 1e-6;
+const HALO_RUNOFF_SLOPE_SCALE = 0.18;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function tileElevation(tile: Tile | undefined): number | undefined {
+  const elevation = tile?.elevation;
+  return Number.isFinite(elevation ?? Number.NaN) ? elevation : undefined;
 }
 
 function haloNeighborWaterInfluence(
@@ -39,6 +46,47 @@ function haloNeighborVegetationInfluence(
     influence = Math.max(influence, clamp01(resource.amount / resource.maxAmount));
   }
   return influence;
+}
+
+/**
+ * Recover the first conservative piece of cross-region catchment continuity.
+ * A ghost boundary tile with no local flowTo is a sink only because its region
+ * could not see across the Durable Object boundary. If the paired local cell is
+ * lower, treat the ghost tile's already-computed drainage as passive runoff
+ * entering this cell. Ghost tiles that already drain locally are left alone so
+ * we do not redirect or double-count an established local flow path.
+ */
+export function haloDrainageInflowAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  halo: readonly HexHaloTile[] = [],
+): number {
+  const tile = getTile(state, position);
+  const elevation = tileElevation(tile);
+  if (tile === undefined || tile.terrain === "water" || elevation === undefined) return 0;
+
+  const lookup = hexHaloLookup(halo);
+  let inflow = 0;
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const ghost = lookup.get(hexHaloKey(position, direction));
+    if (ghost === undefined || ghost.tile.terrain === "water" || ghost.tile.flowTo !== undefined) {
+      continue;
+    }
+    const ghostElevation = tileElevation(ghost.tile);
+    const ghostDrainage = Number.isFinite(ghost.tile.drainage ?? Number.NaN)
+      ? clamp01(ghost.tile.drainage ?? 0)
+      : 0;
+    if (
+      ghostElevation === undefined ||
+      ghostDrainage <= 0 ||
+      ghostElevation - elevation <= HALO_HYDROLOGY_EPSILON
+    ) {
+      continue;
+    }
+    const slope = clamp01((ghostElevation - elevation) / HALO_RUNOFF_SLOPE_SCALE);
+    inflow = Math.max(inflow, ghostDrainage * slope);
+  }
+  return inflow;
 }
 
 export function surfaceMoistureWithHaloAt(
@@ -71,7 +119,8 @@ export function surfaceMoistureWithHaloAt(
       : 0;
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
   const lowlandRetention = (1 - elevation) * 0.09;
-  const runoffRetention = drainageAt(state, position) * 0.14;
+  const runoff = Math.max(drainageAt(state, position), haloDrainageInflowAt(state, position, halo));
+  const runoffRetention = runoff * 0.14;
   return Math.min(
     1,
     0.04 + lowlandRetention + runoffRetention + waterInfluence * 0.64 + vegetationCover * 0.16,

@@ -3,6 +3,7 @@ import test from "node:test";
 import { createRandom } from "../dist-ts/src/prng.js";
 import {
   applyHaloRegrowthCompensation,
+  haloDrainageInflowAt,
   haloWaterDirectionsAt,
   resourceRegrowthChanceWithHalo,
   surfaceMoistureWithHaloAt,
@@ -53,6 +54,30 @@ test("immediate ghost water raises boundary surface moisture exactly as distance
   assert.ok(haloAware > local + 0.5, `${haloAware} should materially exceed ${local}`);
   assert.deepEqual(haloWaterDirectionsAt(tile, halo), ["east"]);
   assert.ok(resourceRegrowthChanceWithHalo(state, tile, halo) > resourceRegrowthChance(state, tile));
+});
+
+test("unresolved upstream ghost catchment contributes runoff across the boundary", () => {
+  const { state, tile, halo } = fixture();
+  halo[0].tile = {
+    x: halo[0].neighborPosition.x,
+    y: halo[0].neighborPosition.y,
+    terrain: "plain",
+    elevation: 0.99,
+    drainage: 0.75,
+  };
+
+  const local = surfaceMoistureAt(state, tile);
+  assert.equal(haloDrainageInflowAt(state, tile, halo), 0.75);
+  assert.ok(surfaceMoistureWithHaloAt(state, tile, halo) > local + 0.09);
+
+  halo[0].tile.flowTo = { x: halo[0].neighborPosition.x - 1, y: halo[0].neighborPosition.y };
+  assert.equal(haloDrainageInflowAt(state, tile, halo), 0);
+  assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), local);
+
+  delete halo[0].tile.flowTo;
+  halo[0].tile.elevation = 0.7;
+  assert.equal(haloDrainageInflowAt(state, tile, halo), 0);
+  assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), local);
 });
 
 test("neighboring ghost woodland boosts depleted boundary forest regrowth without fabricating moisture", () => {
