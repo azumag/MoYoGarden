@@ -7,7 +7,7 @@ const OUT = resolve(ROOT, "public/assets/authored/quaternius-buildings");
 const UPSTREAM_REPO = "agentkaerf/FreeModels";
 const UPSTREAM_COMMIT = "db3df04d1e4714298a09510b26fb6de6645138a2";
 const SOURCE_ROOT = "Medieval Village MegaKit[Standard]/glTF";
-const VERSION = "0.3.11-q2";
+const VERSION = "0.3.11-q3";
 const REQUIRE = process.env.MOYO_REQUIRE_QUATERNIUS_BUILDINGS === "1";
 const SKIP = process.env.MOYO_SKIP_QUATERNIUS_BUILDINGS === "1";
 
@@ -52,6 +52,14 @@ const MATERIALS = Object.freeze([
   Object.freeze({ name: "MoyoShell_WornWood", color: [0.135, 0.105, 0.078, 1], roughness: 1 }),
 ]);
 
+const SILHOUETTE_NODE_NAMES = Object.freeze({
+  "open-side": "MoyoSilhouetteOpenSide",
+  annex: "MoyoSilhouetteAnnex",
+  canopy: "MoyoSilhouetteCanopy",
+  stack: "MoyoSilhouetteStack",
+  "variant-roof": "MoyoSilhouetteRoof",
+});
+
 const BUILDINGS = Object.freeze([
   Object.freeze({
     key: "authored:building-shell-camp",
@@ -60,9 +68,9 @@ const BUILDINGS = Object.freeze([
       ["door", 0, 0, 1.15, 0],
       ["plaster", 0, 0, -1.15, Math.PI],
       ["plaster", -1.0, 0, 0, -Math.PI / 2, 1.16],
-      ["window", 1.0, 0, 0, Math.PI / 2, 1.16],
-      ["roof", 0, 3.0, 0, 0, 1.02],
-      ["roof", 0, 3.0, 0, Math.PI, 1.02],
+      ["window", -1.05, 0, 0.72, -Math.PI / 2, 0.62, "open-side", 2],
+      ["roof", -0.22, 3.0, 0, 0, 1.08, "open-side", 0],
+      ["roof", 0.38, 2.88, 0, Math.PI, 1.13, "open-side", 1],
     ]),
   }),
   Object.freeze({
@@ -75,26 +83,29 @@ const BUILDINGS = Object.freeze([
       ["plaster", 1.0, 0, -1.25, Math.PI],
       ["brick", -2.0, 0, 0, -Math.PI / 2, 1.25],
       ["plaster", 2.0, 0, 0, Math.PI / 2, 1.25],
-      ["roof", -1.0, 3.0, 0, 0, 1.04],
-      ["roof", -1.0, 3.0, 0, Math.PI, 1.04],
-      ["roof", 1.0, 3.0, 0, 0, 1.04],
-      ["roof", 1.0, 3.0, 0, Math.PI, 1.04],
+      ["roof", -1.0, 3.0, 0, 0, 1.04, "variant-roof"],
+      ["roof", -1.0, 3.0, 0, Math.PI, 1.04, "variant-roof"],
+      ["roof", 1.0, 3.0, 0, 0, 1.04, "variant-roof"],
+      ["roof", 1.0, 3.0, 0, Math.PI, 1.04, "variant-roof"],
+      ["plaster", 2.7, 0, 0.72, Math.PI / 2, 0.7, "annex", 2],
+      ["brick", 2.7, 0, -0.72, Math.PI / 2, 0.7, "annex"],
+      ["roof", 2.55, 2.72, 0, 0, 0.72, "annex", 1],
     ]),
   }),
   Object.freeze({
     key: "authored:building-shell-market",
     file: "market.glb",
     parts: Object.freeze([
-      ["door", -1.0, 0, 1.4, 0],
-      ["door", 1.0, 0, 1.4, 0],
       ["window", -1.0, 0, -1.4, Math.PI],
       ["plaster", 1.0, 0, -1.4, Math.PI],
       ["plaster", -2.0, 0, 0, -Math.PI / 2, 1.38],
       ["window", 2.0, 0, 0, Math.PI / 2, 1.38],
-      ["roof", -1.0, 3.0, 0, 0, 1.12],
-      ["roof", -1.0, 3.0, 0, Math.PI, 1.12],
-      ["roof", 1.0, 3.0, 0, 0, 1.12],
-      ["roof", 1.0, 3.0, 0, Math.PI, 1.12],
+      ["roof", -1.0, 3.0, 0, 0, 1.12, "variant-roof"],
+      ["roof", -1.0, 3.0, 0, Math.PI, 1.12, "variant-roof"],
+      ["roof", 1.0, 3.0, 0, 0, 1.12, "variant-roof"],
+      ["roof", 1.0, 3.0, 0, Math.PI, 1.12, "variant-roof"],
+      ["roof", -0.65, 2.78, 1.45, 0, 0.78, "canopy", 0],
+      ["roof", 0.65, 2.74, 1.45, Math.PI, 0.78, "canopy", 1],
     ]),
   }),
   Object.freeze({
@@ -107,10 +118,12 @@ const BUILDINGS = Object.freeze([
       ["brick", 1.0, 0, -1.25, Math.PI],
       ["window", -2.0, 0, 0, -Math.PI / 2, 1.25],
       ["brick", 2.0, 0, 0, Math.PI / 2, 1.25],
-      ["roof", -1.0, 3.0, 0, 0, 1.04],
-      ["roof", -1.0, 3.0, 0, Math.PI, 1.04],
-      ["roof", 1.0, 3.0, 0, 0, 1.04],
-      ["roof", 1.0, 3.0, 0, Math.PI, 1.04],
+      ["roof", -1.0, 3.0, 0, 0, 1.04, "variant-roof"],
+      ["roof", -1.0, 3.0, 0, Math.PI, 1.04, "variant-roof"],
+      ["roof", 1.0, 3.0, 0, 0, 1.04, "variant-roof"],
+      ["roof", 1.0, 3.0, 0, Math.PI, 1.04, "variant-roof"],
+      ["brick", 2.4, 1.25, -0.6, -Math.PI / 2, 0.34, "stack", 2],
+      ["brick", 2.4, 1.25, -0.6, 0, 0.34, "stack"],
     ]),
   }),
 ]);
@@ -315,17 +328,33 @@ function createShellDocument(building, sources) {
 
   const nodes = [];
   const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-  for (const [sourceName, x, y, z, angle = 0, horizontalScale = 1] of building.parts) {
+  for (const [
+    sourceName,
+    x,
+    y,
+    z,
+    angle = 0,
+    horizontalScale = 1,
+    silhouetteRole = null,
+    damageSlot = null,
+  ] of building.parts) {
     const prepared = sources.get(sourceName);
     if (!prepared) throw new Error(`${building.file} references unknown source ${sourceName}`);
     const scale = [horizontalScale, 1, horizontalScale];
     const translation = [x, y, z];
+    const roleName = SILHOUETTE_NODE_NAMES[silhouetteRole];
     nodes.push({
-      name: `${building.key}:${sourceName}:${nodes.length}`,
+      name: roleName ? `${roleName}:${nodes.length}` : `${building.key}:${sourceName}:${nodes.length}`,
       mesh: target.meshIndex.get(sourceName),
       translation,
       rotation: yQuaternion(angle),
       scale,
+      ...(silhouetteRole ? {
+        extras: {
+          silhouetteRole,
+          ...(Number.isInteger(damageSlot) ? { damageSlot } : {}),
+        },
+      } : {}),
     });
     includePartBounds(bounds, prepared.bounds, translation, angle, scale);
   }
@@ -427,7 +456,8 @@ const notice = [
   `Pinned mirror: https://github.com/${UPSTREAM_REPO}/tree/${UPSTREAM_COMMIT}`,
   "",
   "Only geometry is retained. Upstream texture/image/sampler references are removed.",
-  "MoYoGarden composes four exterior shells and supplies its own muted PBR material factors.",
+  "MoYoGarden composes four asymmetric exterior shells and supplies its own muted PBR material factors.",
+  "Silhouette role metadata lets HIGH LOD instances vary deterministically without changing MID/fallback models.",
   "",
   ...Object.values(SOURCES).map((spec) => `${spec.gltf} + ${spec.bin} | ${spec.gltfSha} / ${spec.binSha}`),
   "",

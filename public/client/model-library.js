@@ -1,11 +1,12 @@
 import * as THREE from "three";
+import { buildingSilhouetteVariant } from "./shared.js";
 
 const MODEL_VERSION = "0.3.4";
 const AUTHORED_VERSION = "0.3.7";
 const AUTHORED_BUILDING_VERSION = "0.3.10";
 const AUTHORED_CHARACTER_VERSION = "0.3.11";
 const AUTHORED_DECAY_VERSION = "0.3.11-q1";
-const AUTHORED_BUILDING_SHELL_VERSION = "0.3.11-q2";
+const AUTHORED_BUILDING_SHELL_VERSION = "0.3.11-q3";
 const MODEL_MANIFEST = Object.freeze([
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
@@ -143,6 +144,43 @@ function authoredStandardMaterial(material, detail) {
   });
   copy.userData = { ...(material.userData || {}), moyoPromotedFromUnlit: true };
   return copy;
+}
+
+function applyBuildingSilhouetteVariant(root, childName, position) {
+  if (!root) return root;
+  const type = String(childName || "storehouse").toLowerCase();
+  const variant = buildingSilhouetteVariant(type, position);
+  root.userData.moyoSilhouetteVariant = variant;
+
+  root.traverse((object) => {
+    const role = object.userData?.silhouetteRole;
+    if (!role) return;
+
+    if (role === "open-side") {
+      object.position.x = Math.abs(object.position.x) * variant.side;
+      object.position.z += variant.offset * 0.35;
+      object.rotation.z += variant.roofTilt;
+    } else if (role === "annex") {
+      object.position.x = Math.abs(object.position.x) * variant.side;
+      object.position.z += variant.offset;
+      object.rotation.z += variant.roofTilt * 0.45;
+    } else if (role === "canopy") {
+      object.position.x += variant.side * (0.08 + Math.abs(variant.offset) * 0.4);
+      object.position.z += variant.offset * 0.45;
+      object.rotation.z += variant.roofTilt * 0.8;
+    } else if (role === "stack") {
+      object.position.x = Math.abs(object.position.x) * variant.side;
+      object.position.z += variant.offset * 0.4;
+      object.rotation.z += variant.roofTilt * 0.18;
+    } else if (role === "variant-roof") {
+      object.rotation.z += variant.roofTilt;
+      object.position.x += variant.side * variant.offset * 0.35;
+    }
+
+    const damageSlot = Number(object.userData?.damageSlot);
+    if (Number.isInteger(damageSlot) && damageSlot === variant.damageIndex) object.visible = false;
+  });
+  return root;
 }
 
 function fitAuthoredBuilding(root, sourceName) {
@@ -291,7 +329,7 @@ export class ModelLibrary {
     return childName ? root.getObjectByName(childName) : root;
   }
 
-  clone(name, { childName, factionColor, role, detail = "high" } = {}) {
+  clone(name, { childName, factionColor, role, detail = "high", variantPosition } = {}) {
     const sourceName = this.resolveCloneSourceName(name, childName, detail);
     const root = this.templates.get(sourceName);
     const source = sourceName === name && childName ? root?.getObjectByName(childName) : root;
@@ -331,6 +369,9 @@ export class ModelLibrary {
     });
 
     clone.userData.moyoModelKey = sourceName;
+    if (detail === "high" && sourceName.startsWith("authored:building-shell-")) {
+      applyBuildingSilhouetteVariant(clone, childName, variantPosition);
+    }
     if (sourceName.startsWith("authored:building-")) fitAuthoredBuilding(clone, sourceName);
     if (isAuthoredAgentKey(sourceName)) clone.userData.moyoAuthoredAgent = true;
     return clone;

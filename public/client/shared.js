@@ -34,6 +34,28 @@ export function hash2(x, y, salt = 0) {
   return ((value ^ (value >>> 16)) >>> 0) / 4294967295;
 }
 
+const BUILDING_SILHOUETTE_PROFILE = Object.freeze({
+  camp: Object.freeze({ profile: "open-side", salt: 1301 }),
+  storehouse: Object.freeze({ profile: "annex", salt: 1401 }),
+  market: Object.freeze({ profile: "canopy", salt: 1501 }),
+  workshop: Object.freeze({ profile: "stack", salt: 1601 }),
+});
+
+export function buildingSilhouetteVariant(type, position = {}) {
+  const key = String(type || "storehouse").toLowerCase();
+  const spec = BUILDING_SILHOUETTE_PROFILE[key] || BUILDING_SILHOUETTE_PROFILE.storehouse;
+  const x = Number.isFinite(Number(position.x)) ? Number(position.x) : 0;
+  const y = Number.isFinite(Number(position.y)) ? Number(position.y) : 0;
+  const side = hash2(x, y, spec.salt) >= 0.5 ? 1 : -1;
+  return Object.freeze({
+    profile: spec.profile,
+    side,
+    roofTilt: (hash2(x, y, spec.salt + 1) - 0.5) * 0.14,
+    offset: (hash2(x, y, spec.salt + 2) - 0.5) * 0.18,
+    damageIndex: Math.min(2, Math.floor(hash2(x, y, spec.salt + 3) * 3)),
+  });
+}
+
 export function disposeObject(root) {
   const geometries = new Set();
   const materials = new Set();
