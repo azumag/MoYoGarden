@@ -47,9 +47,13 @@ function haloNeighborPropaguleInfluence(
   for (const direction of HEX_GRID_DIRECTIONS) {
     const resource = lookup.get(hexHaloKey(position, direction))?.tile.resource;
     if (resource?.kind !== resourceKind || resource.maxAmount <= 0) continue;
-    influence = Math.max(influence, clamp01(resource.amount / resource.maxAmount));
+    const cover = clamp01(resource.amount / resource.maxAmount);
+    // Independent neighboring stands provide additional seed/propagule sources.
+    // Combine them as a bounded union so extra directions matter without ever
+    // exceeding the existing normalized influence scale.
+    influence = 1 - (1 - influence) * (1 - cover);
   }
-  return influence;
+  return clamp01(influence);
 }
 
 /**

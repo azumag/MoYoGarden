@@ -40,8 +40,15 @@ interface HaloMaterialization {
   halo: HexHaloTile[];
 }
 
+type RegionActivityTier = "active" | "warm" | "cold";
+
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
 const PUBLIC_HALO_PATH = "/api/world/halo";
+const ACTIVE_GRACE_MULTIPLIER = 6;
+const WARM_GRACE_MULTIPLIER = 12;
+const WARM_TICK_MULTIPLIER = 6;
+const COLD_TICK_MULTIPLIER = 60;
+const MAX_ACTIVITY_TICK_MS = 3_600_000;
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -86,12 +93,90 @@ function isEdgeSnapshot(value: unknown): value is HexHaloEdgeSnapshot {
     && Array.isArray(value.tiles);
 }
 
+function tickMsValue(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed >= 1_000 && parsed <= 3_600_000 ? parsed : 10_000;
+}
+
+function activityDelayMs(tickMs: number, tier: RegionActivityTier): number {
+  if (tier === "active") return tickMs;
+  const multiplier = tier === "warm" ? WARM_TICK_MULTIPLIER : COLD_TICK_MULTIPLIER;
+  return Math.min(MAX_ACTIVITY_TICK_MS, tickMs * multiplier);
+}
+
 export class RegionDurableObject extends MoveRegionDurableObject {
+  private readonly activityTickMs: number;
+  private lastDirectActivityAt = 0;
+  private lastWarmActivityAt = 0;
+
   constructor(
-    state: DurableObjectState,
+    private readonly activityState: DurableObjectState,
     private readonly haloEnv: HaloEnv,
   ) {
-    super(state, haloEnv);
+    super(activityState, haloEnv);
+    this.activityTickMs = tickMsValue(haloEnv.TICK_MS);
+  }
+
+  private activityTier(now = Date.now()): RegionActivityTier {
+    if (this.activityState.getWebSockets().length > 0) return "active";
+    const activeGraceMs = Math.min(
+      MAX_ACTIVITY_TICK_MS,
+      this.activityTickMs * ACTIVE_GRACE_MULTIPLIER,
+    );
+    if (
+      this.lastDirectActivityAt > 0 &&
+      now - this.lastDirectActivityAt <= activeGraceMs
+    ) {
+      return "active";
+    }
+    const warmGraceMs = Math.min(
+      MAX_ACTIVITY_TICK_MS,
+      this.activityTickMs * WARM_GRACE_MULTIPLIER,
+    );
+    if (
+      this.lastWarmActivityAt > 0 &&
+      now - this.lastWarmActivityAt <= warmGraceMs
+    ) {
+      return "warm";
+    }
+    return "cold";
+  }
+
+  private noteRequestActivity(request: Request): boolean {
+    const url = new URL(request.url);
+    const passivePrefetch =
+      request.method === "GET" &&
+      url.pathname === "/api/world/snapshot" &&
+      request.headers.get("x-moyo-prefetch") === "1";
+    const now = Date.now();
+    if (passivePrefetch) {
+      this.lastWarmActivityAt = now;
+      return true;
+    }
+    if (
+      url.pathname === "/api/health" ||
+      url.pathname === "/api/rules" ||
+      url.pathname === INTERNAL_EDGE_PATH
+    ) {
+      return false;
+    }
+    this.lastDirectActivityAt = now;
+    this.lastWarmActivityAt = now;
+    return true;
+  }
+
+  private async shortenAlarmForActivity(): Promise<void> {
+    const scheduled = await this.activityState.storage.getAlarm();
+    if (scheduled === null) return;
+    const desired = Date.now() + activityDelayMs(this.activityTickMs, this.activityTier());
+    if (scheduled > desired) await this.activityState.storage.setAlarm(desired);
+  }
+
+  private async applyAlarmTierAfterTick(): Promise<void> {
+    if ((await this.activityState.storage.getAlarm()) === null) return;
+    await this.activityState.storage.setAlarm(
+      Date.now() + activityDelayMs(this.activityTickMs, this.activityTier()),
+    );
   }
 
   private async ensureHaloAssigned(request: Request): Promise<Response | undefined> {
@@ -184,7 +269,9 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    const touchedActivity = this.noteRequestActivity(request);
     const url = new URL(request.url);
+    let response: Response;
     if (url.pathname === INTERNAL_EDGE_PATH || url.pathname === PUBLIC_HALO_PATH) {
       const assignmentError = await this.ensureHaloAssigned(request);
       if (assignmentError !== undefined) return assignmentError;
@@ -192,13 +279,28 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
     if (request.method === "GET" && url.pathname === INTERNAL_EDGE_PATH) {
       const direction = directionValue(url.searchParams.get("direction"));
-      if (direction === undefined) return json({ error: "valid hex direction is required" }, 400);
-      return json(this.edgeSnapshot(direction));
+      response = direction === undefined
+        ? json({ error: "valid hex direction is required" }, 400)
+        : json(this.edgeSnapshot(direction));
+    } else if (request.method === "GET" && url.pathname === PUBLIC_HALO_PATH) {
+      response = await this.haloSnapshot();
+    } else {
+      response = await super.fetch(request);
     }
-    if (request.method === "GET" && url.pathname === PUBLIC_HALO_PATH) {
-      return this.haloSnapshot();
+
+    if (touchedActivity && response.ok) await this.shortenAlarmForActivity();
+
+    if (request.method === "GET" && url.pathname === "/api/health" && response.ok) {
+      const payload = await response.json() as unknown;
+      if (!isRecord(payload)) return response;
+      const tier = this.activityTier();
+      return json({
+        ...payload,
+        effectiveTickMs: activityDelayMs(this.activityTickMs, tier),
+        tickMode: tier,
+      });
     }
-    return super.fetch(request);
+    return response;
   }
 
   override async alarm(): Promise<void> {
@@ -209,13 +311,14 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
     const after = access.runtime.snapshot();
     const grown = applyHaloRegrowthCompensation(before, after, halo);
-    if (grown <= 0) return;
-
-    access.runtime = new WorldRuntime({
-      state: after,
-      pendingCommands: access.runtime.pendingCommands(),
-    });
-    await access.persist();
-    access.broadcastSnapshot();
+    if (grown > 0) {
+      access.runtime = new WorldRuntime({
+        state: after,
+        pendingCommands: access.runtime.pendingCommands(),
+      });
+      await access.persist();
+      access.broadcastSnapshot();
+    }
+    await this.applyAlarmTierAfterTick();
   }
 }

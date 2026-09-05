@@ -149,6 +149,40 @@ test("neighboring ghost forage seeds matching boundary food regrowth without fab
   assert.equal(resourceRegrowthChanceWithHalo(state, tile, halo), localChance);
 });
 
+test("independent matching ghost stands combine bounded propagule pressure", () => {
+  const { state, tile, halo } = fixture();
+  tile.terrain = "plain";
+  tile.resource = { kind: "food", amount: 0, maxAmount: 10 };
+  halo[0].tile = {
+    x: halo[0].neighborPosition.x,
+    y: halo[0].neighborPosition.y,
+    terrain: "plain",
+    elevation: 0.8,
+    resource: { kind: "food", amount: 5, maxAmount: 10 },
+  };
+  const second = {
+    ...structuredClone(halo[0]),
+    direction: "northEast",
+    tile: {
+      x: halo[0].neighborPosition.x,
+      y: halo[0].neighborPosition.y,
+      terrain: "plain",
+      elevation: 0.8,
+      resource: { kind: "food", amount: 5, maxAmount: 10 },
+    },
+  };
+
+  const local = resourceRegrowthChance(state, tile);
+  const oneStand = resourceRegrowthChanceWithHalo(state, tile, halo);
+  const twoStands = resourceRegrowthChanceWithHalo(state, tile, [...halo, second]);
+  assert.ok(oneStand > local);
+  assert.ok(twoStands > oneStand);
+  assert.ok(twoStands <= local + 0.04 + 1e-12);
+
+  second.tile.resource = { kind: "wood", amount: 10, maxAmount: 10 };
+  assert.equal(resourceRegrowthChanceWithHalo(state, tile, [...halo, second]), oneStand);
+});
+
 test("halo moisture does not affect an interior cell with no directional ghost link", () => {
   const { state, halo } = fixture();
   const interior = state.tiles[11 * state.width + 19];
