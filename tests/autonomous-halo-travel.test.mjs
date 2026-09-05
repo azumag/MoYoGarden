@@ -23,6 +23,7 @@ function depletedInteriorWoodcutter() {
   assert.ok(agent);
   for (const tile of state.tiles) {
     if (tile.resource?.kind === "wood") tile.resource.amount = 0;
+    if (isHexGridCell(state, tile)) tile.terrain = "plain";
   }
   for (const candidate of state.agents) candidate.autonomy = candidate.id === agent.id;
   state.tick = 24;
@@ -158,10 +159,6 @@ test("interior autonomy preserves its low-energy reserve when planning region tr
 
 test("interior autonomy budgets the actual passable path around terrain obstacles", () => {
   const { state, agent } = depletedInteriorWoodcutter();
-  for (const tile of state.tiles) {
-    if (isHexGridCell(state, tile)) tile.terrain = "plain";
-  }
-
   const eastCells = hexGridBoundaryCells(state, "east");
   const eastIndex = eastCells.findIndex((cell) => cell.y === agent.position.y);
   assert.notEqual(eastIndex, -1);
