@@ -196,6 +196,7 @@ export const structureMethods = {
       childName,
       factionColor: faction.color,
       detail: "high",
+      variantPosition: structure.position,
     }), structure.type, faction.color, "high");
     const medium = decorateBuildingModel(this.models.clone("buildings", {
       childName,
