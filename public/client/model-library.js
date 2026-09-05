@@ -208,9 +208,7 @@ export class ModelLibrary {
         const [key, url] = queue.shift();
         try {
           const loader = await this.getLoader();
-          const itemTimeoutMs = isAuthoredAgentKey(key)
-            ? Math.min(Math.max(timeoutMs, 6_500), 9_000)
-            : isAuthoredKey(key) ? Math.min(timeoutMs, 2_500) : timeoutMs;
+          const itemTimeoutMs = isAuthoredKey(key) ? Math.max(timeoutMs, 12_000) : timeoutMs;
           const gltf = await loadWithTimeout(loader, key, url, itemTimeoutMs);
           if (isAuthoredAgentKey(key)) await this.ensureSkeletonClone();
           this.templates.set(key, this.prepareTemplate(gltf.scene));
