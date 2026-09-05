@@ -33,16 +33,23 @@ function arrivalTaskAfterHandoff(agent: Agent, targetTick: number): Agent["task"
   const task = agent.task;
   if (task?.source !== "autonomy") return undefined;
 
-  // A gather task without a target is an intent (find this resource locally),
-  // unlike move/build/trade targets whose coordinates or identities belong to
-  // the source region. Preserve that intent while deliberately discarding the
-  // source-local target so the target region can choose a valid deposit again.
+  // Some autonomous tasks express region-independent intent while their
+  // resolved targets belong to one Region Durable Object. Preserve only the
+  // intent and deliberately discard source-local coordinates/IDs so the target
+  // region can resolve its own valid resource or storage target.
   if (task.type === "gather") {
     return {
       source: "autonomy",
       issuedAtTick: targetTick,
       type: "gather",
       resource: task.resource,
+    };
+  }
+  if (task.type === "deposit") {
+    return {
+      source: "autonomy",
+      issuedAtTick: targetTick,
+      type: "deposit",
     };
   }
   return undefined;
@@ -104,15 +111,16 @@ export function attachAgentOwnership(
   arrived.id = arrivedId;
   arrived.position = { ...targetPosition };
   // Coordinate-bound tasks still belong to the source region and must be
-  // cleared. Autonomous gather is the first safe exception: its resource kind
-  // is a high-level intent, so strip only the old target and let the target
-  // region's ordinary gather executor select a new local deposit.
+  // cleared. Region-independent autonomous intent can survive only after its
+  // source-local target has been stripped and will be re-resolved on arrival.
   const arrivalTask = arrivalTaskAfterHandoff(arrived, snapshot.state.tick);
   if (arrivalTask === undefined) delete arrived.task;
   else arrived.task = arrivalTask;
   arrived.status = arrivalTask?.type === "gather"
     ? `arrived from neighboring region; replanning ${arrivalTask.resource} search`
-    : "arrived from neighboring region";
+    : arrivalTask?.type === "deposit"
+      ? "arrived from neighboring region; replanning storage return"
+      : "arrived from neighboring region";
   snapshot.state.agents.push(arrived);
   snapshot.state.agents.sort((a, b) => a.id.localeCompare(b.id));
   return { ok: true, value: snapshot };

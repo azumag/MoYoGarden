@@ -138,6 +138,52 @@ test("attach keeps autonomous gather intent but drops its source-local target", 
   assert.equal(arrived.status, "arrived from neighboring region; replanning wood search");
 });
 
+test("attach keeps autonomous deposit intent but drops its source-local structure", () => {
+  const { source, target } = worlds();
+  const agent = source.agents[0];
+  assert.ok(agent);
+  const sourceCell = hexGridBoundaryCells(source, "east")[11];
+  assert.ok(sourceCell);
+  const targetCell = hexGridHandoffTarget(source, sourceCell, "east");
+  assert.ok(targetCell);
+  const targetTile = target.tiles[targetCell.y * target.width + targetCell.x];
+  assert.ok(targetTile);
+  targetTile.terrain = "plain";
+  target.tick = 53;
+
+  agent.position = { ...sourceCell };
+  agent.inventory = { wood: 4, stone: 2, food: 1 };
+  agent.goal = "return supplies to whichever settlement owns this region";
+  agent.task = {
+    source: "autonomy",
+    issuedAtTick: source.tick,
+    type: "deposit",
+    structureId: "structure-source-only",
+  };
+  const detached = detachAgentOwnership(source, [], agent.id);
+  assert.equal(detached.ok, true);
+
+  const attached = attachAgentOwnership(
+    target,
+    [],
+    detached.value.agent,
+    targetCell,
+    source.regionId,
+  );
+  assert.equal(attached.ok, true);
+  const globalId = globalHandoffAgentId(agent.id, source.regionId);
+  const arrived = attached.value.state.agents.find((entry) => entry.id === globalId);
+  assert.ok(arrived);
+  assert.deepEqual(arrived.inventory, { wood: 4, stone: 2, food: 1 });
+  assert.equal(arrived.goal, agent.goal);
+  assert.deepEqual(arrived.task, {
+    source: "autonomy",
+    issuedAtTick: target.tick,
+    type: "deposit",
+  });
+  assert.equal(arrived.status, "arrived from neighboring region; replanning storage return");
+});
+
 test("attach rejects duplicate promoted identity, impassable, and non-hex ownership targets", () => {
   const { source, target } = worlds();
   const agent = structuredClone(source.agents[0]);
