@@ -97,6 +97,27 @@ test("neighboring ghost woodland boosts depleted boundary forest regrowth withou
   assert.equal(resourceRegrowthChanceWithHalo(state, tile, halo), resourceRegrowthChance(state, tile));
 });
 
+test("neighboring ghost forage seeds matching boundary food regrowth without fabricating moisture", () => {
+  const { state, tile, halo } = fixture();
+  tile.terrain = "plain";
+  tile.resource = { kind: "food", amount: 0, maxAmount: 10 };
+  halo[0].tile = {
+    x: halo[0].neighborPosition.x,
+    y: halo[0].neighborPosition.y,
+    terrain: "plain",
+    elevation: 0.8,
+    resource: { kind: "food", amount: 8, maxAmount: 10 },
+  };
+
+  const localMoisture = surfaceMoistureAt(state, tile);
+  const localChance = resourceRegrowthChance(state, tile);
+  assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), localMoisture);
+  assert.ok(resourceRegrowthChanceWithHalo(state, tile, halo) > localChance);
+
+  halo[0].tile.resource = { kind: "wood", amount: 10, maxAmount: 10 };
+  assert.equal(resourceRegrowthChanceWithHalo(state, tile, halo), localChance);
+});
+
 test("halo moisture does not affect an interior cell with no directional ghost link", () => {
   const { state, halo } = fixture();
   const interior = state.tiles[11 * state.width + 19];
