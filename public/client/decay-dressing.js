@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { isHexGridCell } from "./hex-grid.js";
 import { hash2, setShadows } from "./shared.js";
 import { WorldView } from "./world-view.js";
 
@@ -69,7 +70,8 @@ const DECAY_MATERIAL = Object.freeze({
 
 function tileAt(state, x, y) {
   if (x < 0 || y < 0 || x >= state.width || y >= state.height) return null;
-  return state.tiles[y * state.width + x] || null;
+  const tile = state.tiles[y * state.width + x] || null;
+  return isHexGridCell(tile, state.width, state.height) ? tile : null;
 }
 
 function wetnessHint(state, tile) {
@@ -109,10 +111,11 @@ function addTerrainDecay(view, state) {
   if (!view.detailRoot || !state?.tiles?.length) return;
   const density = view.quality?.detailDensity ?? 0.62;
   const castMicroShadows = view.quality?.id !== "balanced";
+  const renderableTiles = state.tiles.filter((tile) => isHexGridCell(tile, state.width, state.height));
   const group = new THREE.Group();
   group.name = "MoyoDecayDressing";
 
-  const deadwoodTiles = state.tiles.filter((tile) => (
+  const deadwoodTiles = renderableTiles.filter((tile) => (
     tile.terrain !== "water"
     && !nearSettlement(state, tile)
     && (tile.terrain === "forest" || tile.resource?.kind === "wood")
@@ -146,7 +149,7 @@ function addTerrainDecay(view, state) {
     group.add(deadwood);
   }
 
-  const naturalRubble = state.tiles.filter((tile) => (
+  const naturalRubble = renderableTiles.filter((tile) => (
     tile.terrain === "hill"
     && !tile.resource
     && hash2(tile.x, tile.y, 920) > 0.985 - density * 0.018
@@ -212,7 +215,7 @@ function addTerrainDecay(view, state) {
     group.add(rubble);
   }
 
-  const mudTiles = state.tiles.filter((tile) => (
+  const mudTiles = renderableTiles.filter((tile) => (
     tile.terrain !== "water"
     && !nearSettlement(state, tile, 1.05)
     && wetnessHint(state, tile) >= 0.38
