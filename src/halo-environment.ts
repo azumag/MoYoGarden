@@ -9,6 +9,7 @@ import { drainageAt, resourceRegrowthChance } from "./simulation.js";
 import { getTile } from "./world.js";
 
 const WATER_MOISTURE_RADIUS = 4;
+const HALO_VEGETATION_PROPAGULE_BONUS = 0.05;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -24,6 +25,20 @@ function haloNeighborWaterInfluence(
     if (ghost?.tile.terrain === "water") return 1;
   }
   return 0;
+}
+
+function haloNeighborVegetationInfluence(
+  position: GridPosition,
+  halo: readonly HexHaloTile[],
+): number {
+  const lookup = hexHaloLookup(halo);
+  let influence = 0;
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const resource = lookup.get(hexHaloKey(position, direction))?.tile.resource;
+    if (resource?.kind !== "wood" || resource.maxAmount <= 0) continue;
+    influence = Math.max(influence, clamp01(resource.amount / resource.maxAmount));
+  }
+  return influence;
 }
 
 export function surfaceMoistureWithHaloAt(
@@ -70,18 +85,24 @@ export function resourceRegrowthChanceWithHalo(
 ): number {
   if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
   const moisture = surfaceMoistureWithHaloAt(state, tile, halo);
+  const vegetationInfluence = tile.resource.kind === "wood"
+    ? haloNeighborVegetationInfluence(tile, halo)
+    : 0;
   return tile.resource.kind === "wood"
-    ? Math.min(0.32, 0.08 + moisture * 0.22)
+    ? Math.min(
+        0.32,
+        0.08 + moisture * 0.22 + vegetationInfluence * HALO_VEGETATION_PROPAGULE_BONUS,
+      )
     : Math.min(0.34, 0.06 + moisture * 0.26);
 }
 
 /**
  * The core simulation has already performed its ordinary local regrowth draw.
- * If halo water raises p0 to p1, a second draw with probability
- * `(p1-p0)/(1-p0)` conditioned on the first draw having failed produces the
- * exact combined probability p1 without allowing two growth increments in the
- * same tick. The before/after snapshots tell us whether the base draw already
- * succeeded.
+ * If halo water or neighboring vegetation raises p0 to p1, a second draw with
+ * probability `(p1-p0)/(1-p0)` conditioned on the first draw having failed
+ * produces the exact combined probability p1 without allowing two growth
+ * increments in the same tick. The before/after snapshots tell us whether the
+ * base draw already succeeded.
  */
 export function applyHaloRegrowthCompensation(
   before: WorldState,

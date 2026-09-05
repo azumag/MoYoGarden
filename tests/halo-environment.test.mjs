@@ -55,6 +55,23 @@ test("immediate ghost water raises boundary surface moisture exactly as distance
   assert.ok(resourceRegrowthChanceWithHalo(state, tile, halo) > resourceRegrowthChance(state, tile));
 });
 
+test("neighboring ghost woodland boosts depleted boundary forest regrowth without fabricating moisture", () => {
+  const { state, tile, halo } = fixture();
+  halo[0].tile = {
+    x: halo[0].neighborPosition.x,
+    y: halo[0].neighborPosition.y,
+    terrain: "forest",
+    elevation: 0.8,
+    resource: { kind: "wood", amount: 10, maxAmount: 10 },
+  };
+
+  assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), surfaceMoistureAt(state, tile));
+  assert.ok(resourceRegrowthChanceWithHalo(state, tile, halo) > resourceRegrowthChance(state, tile));
+
+  halo[0].tile.resource.amount = 0;
+  assert.equal(resourceRegrowthChanceWithHalo(state, tile, halo), resourceRegrowthChance(state, tile));
+});
+
 test("halo moisture does not affect an interior cell with no directional ghost link", () => {
   const { state, halo } = fixture();
   const interior = state.tiles[11 * state.width + 19];
