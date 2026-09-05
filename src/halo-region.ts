@@ -49,6 +49,7 @@ const WARM_GRACE_MULTIPLIER = 12;
 const WARM_TICK_MULTIPLIER = 6;
 const COLD_TICK_MULTIPLIER = 60;
 const MAX_ACTIVITY_TICK_MS = 3_600_000;
+const HALO_REGROWTH_INTERVAL = 30;
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -102,6 +103,11 @@ function activityDelayMs(tickMs: number, tier: RegionActivityTier): number {
   if (tier === "active") return tickMs;
   const multiplier = tier === "warm" ? WARM_TICK_MULTIPLIER : COLD_TICK_MULTIPLIER;
   return Math.min(MAX_ACTIVITY_TICK_MS, tickMs * multiplier);
+}
+
+export function shouldMaterializeHaloForTick(currentTick: number): boolean {
+  const nextTick = currentTick + 1;
+  return nextTick > 0 && nextTick % HALO_REGROWTH_INTERVAL === 0;
 }
 
 export class RegionDurableObject extends MoveRegionDurableObject {
@@ -306,11 +312,13 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   override async alarm(): Promise<void> {
     const access = runtimeAccess(this);
     const before = access.runtime.snapshot();
-    const { halo } = await this.materializeHaloForState(before);
+    const halo = shouldMaterializeHaloForTick(before.tick)
+      ? (await this.materializeHaloForState(before)).halo
+      : [];
     await super.alarm();
 
     const after = access.runtime.snapshot();
-    const grown = applyHaloRegrowthCompensation(before, after, halo);
+    const grown = applyHaloRegrowthCompensation(before, after, halo, HALO_REGROWTH_INTERVAL);
     if (grown > 0) {
       access.runtime = new WorldRuntime({
         state: after,
