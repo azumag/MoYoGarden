@@ -24,10 +24,10 @@ function depletedInteriorWoodcutter() {
   for (const tile of state.tiles) {
     if (tile.resource?.kind === "wood") tile.resource.amount = 0;
   }
+  for (const candidate of state.agents) candidate.autonomy = candidate.id === agent.id;
   state.tick = 24;
   agent.position = hexGridCenter(state);
   agent.role = "woodcutter";
-  agent.autonomy = true;
   agent.task = {
     source: "autonomy",
     issuedAtTick: 19,
