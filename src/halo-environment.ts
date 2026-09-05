@@ -18,6 +18,15 @@ const HALO_RUNOFF_SLOPE_SCALE = 0.18;
 
 type HaloLookup = ReturnType<typeof hexHaloLookup>;
 
+export interface HaloFlowOutlet {
+  direction: HexGridDirection;
+  neighborRegionId: string;
+  neighborPosition: GridPosition;
+  elevation: number;
+  drop: number;
+  slope: number;
+}
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -54,6 +63,60 @@ function haloNeighborPropaguleInfluence(
     influence = 1 - (1 - influence) * (1 - cover);
   }
   return clamp01(influence);
+}
+
+/**
+ * Resolve a read-only cross-region outlet for a local boundary sink.
+ *
+ * Local flowTo remains authoritative. Only a land tile that has no local target
+ * may consider a lower ghost tile, so this cannot steal or rewrite an existing
+ * in-region path. The strongest downhill ghost becomes a transient candidate;
+ * no neighbor Durable Object state is mutated and no cross-DO ownership is
+ * persisted yet.
+ */
+function haloFlowOutletFromLookup(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  lookup: HaloLookup,
+): HaloFlowOutlet | undefined {
+  const tile = getTile(state, position);
+  const elevation = tileElevation(tile);
+  if (
+    tile === undefined ||
+    tile.terrain === "water" ||
+    tile.flowTo !== undefined ||
+    elevation === undefined
+  ) {
+    return undefined;
+  }
+
+  let best: HaloFlowOutlet | undefined;
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const ghost = lookup.get(hexHaloKey(position, direction));
+    if (ghost === undefined) continue;
+    const ghostElevation = tileElevation(ghost.tile);
+    if (ghostElevation === undefined) continue;
+    const drop = elevation - ghostElevation;
+    if (drop <= HALO_HYDROLOGY_EPSILON) continue;
+    if (best !== undefined && drop <= best.drop + HALO_HYDROLOGY_EPSILON) continue;
+    best = {
+      direction,
+      neighborRegionId: ghost.neighborRegionId,
+      neighborPosition: { ...ghost.neighborPosition },
+      elevation: ghostElevation,
+      drop,
+      slope: clamp01(drop / HALO_RUNOFF_SLOPE_SCALE),
+    };
+  }
+  return best;
+}
+
+export function haloFlowOutletAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  halo: readonly HexHaloTile[] = [],
+): HaloFlowOutlet | undefined {
+  return haloFlowOutletFromLookup(state, position, hexHaloLookup(halo));
 }
 
 /**
@@ -140,10 +203,13 @@ function surfaceMoistureWithHaloLookup(
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
   const lowlandRetention = (1 - elevation) * 0.09;
   // Local catchment and unresolved cross-region tributaries are distinct upstream
-  // contributions. Add them before applying the normalized runoff cap instead of
-  // letting the stronger side hide the weaker one at a region boundary.
+  // contributions. If this tile is only a local sink because the lower outlet
+  // lives in the halo, let a slope-weighted share pass through instead of
+  // retaining the entire catchment at the Durable Object boundary.
+  const outlet = haloFlowOutletFromLookup(state, position, lookup);
   const runoff = clamp01(
-    drainageAt(state, position) + haloDrainageInflowFromLookup(state, position, lookup),
+    (drainageAt(state, position) + haloDrainageInflowFromLookup(state, position, lookup)) *
+      (1 - (outlet?.slope ?? 0)),
   );
   const runoffRetention = runoff * 0.14;
   return Math.min(
