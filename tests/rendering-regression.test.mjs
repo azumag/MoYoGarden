@@ -38,6 +38,11 @@ test("terrain adds instanced deadwood, rubble, and mud dressing", () => {
   assert.match(decayDressingSource, /InstancedMesh/);
 });
 
+test("decay dressing respects the active hex region footprint", () => {
+  assert.match(decayDressingSource, /isHexGridCell/);
+  assert.match(decayDressingSource, /isHexGridCell\(tile,\s*state\.width,\s*state\.height\)/);
+});
+
 test("buildings receive deterministic broken and rusted decay details", () => {
   assert.match(decayDressingSource, /MoyoDecayArchitecture/);
   assert.match(decayDressingSource, /MoyoBrokenPlank/);
