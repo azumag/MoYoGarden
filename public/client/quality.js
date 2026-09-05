@@ -86,7 +86,7 @@ function needsAutoConstraintTuning() {
     networkIsConstrained() ||
     (memory > 0 && memory < 4) ||
     (cores > 0 && cores < 4) ||
-    (touchPoints > 0 && pixelRatio >= 2.5 && width < 1100)
+    (touchPoints > 0 && pixelRatio >= 2 && width < 1100)
   );
 }
 
