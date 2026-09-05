@@ -37,7 +37,7 @@ function depletedInteriorWoodcutter() {
   return { state, agent };
 }
 
-function haloResource(state, direction, index, regionId, kind = "wood") {
+function haloResource(state, direction, index, regionId, kind = "wood", amount = 6) {
   const cells = hexGridBoundaryCells(state, direction);
   const sourcePosition = cells[index];
   assert.ok(sourcePosition);
@@ -56,7 +56,7 @@ function haloResource(state, direction, index, regionId, kind = "wood") {
       x: neighborPosition.x,
       y: neighborPosition.y,
       terrain: "forest",
-      resource: { kind, amount: 6, maxAmount: 8 },
+      resource: { kind, amount, maxAmount: Math.max(8, amount) },
     },
   };
 }
@@ -100,4 +100,58 @@ test("interior autonomy chooses a reachable seam with matching neighbor supply",
   assert.ok(fallback);
   assert.equal(fallback.direction, "west");
   assert.deepEqual(fallback.boundaryTarget, west.sourcePosition);
+});
+
+test("interior autonomy weighs visible supply against travel cost and carrying capacity", () => {
+  const { state, agent } = depletedInteriorWoodcutter();
+  const eastCells = hexGridBoundaryCells(state, "east");
+  const westCells = hexGridBoundaryCells(state, "west");
+  const east = haloResource(
+    state,
+    "east",
+    Math.floor(eastCells.length / 2),
+    "garden-2",
+    "wood",
+    2,
+  );
+  const westA = haloResource(
+    state,
+    "west",
+    Math.floor(westCells.length / 2),
+    "garden-4",
+    "wood",
+    6,
+  );
+  const westB = haloResource(
+    state,
+    "west",
+    Math.min(westCells.length - 1, Math.floor(westCells.length / 2) + 1),
+    "garden-4",
+    "wood",
+    6,
+  );
+
+  const richerPlan = planAutonomousHaloTravel(state, [east, westA, westB]);
+  assert.ok(richerPlan);
+  assert.equal(richerPlan.direction, "west");
+  assert.equal(richerPlan.neighborRegionId, "garden-4");
+
+  agent.inventory.wood = agent.capacity - 2;
+  const capacityLimitedPlan = planAutonomousHaloTravel(state, [east, westA, westB]);
+  assert.ok(capacityLimitedPlan);
+  assert.equal(capacityLimitedPlan.direction, "east");
+});
+
+test("interior autonomy preserves its low-energy reserve when planning region travel", () => {
+  const { state, agent } = depletedInteriorWoodcutter();
+  const eastCells = hexGridBoundaryCells(state, "east");
+  const east = haloResource(state, "east", Math.floor(eastCells.length / 2), "garden-2");
+
+  agent.energy = 28;
+  assert.equal(planAutonomousHaloTravel(state, [east]), undefined);
+
+  agent.energy = 29;
+  const affordable = planAutonomousHaloTravel(state, [east]);
+  assert.ok(affordable);
+  assert.equal(affordable.direction, "east");
 });

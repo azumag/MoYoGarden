@@ -162,6 +162,14 @@ function localTilePassable(state: WorldState, position: GridPosition): boolean {
     && tile.terrain !== "water";
 }
 
+function remainingInventoryCapacity(agent: Agent): number {
+  return Math.max(0, agent.capacity - inventoryAmount(agent));
+}
+
+function haloSupplyKey(direction: HexGridDirection, neighborRegionId: string): string {
+  return `${direction}:${neighborRegionId}`;
+}
+
 function isMatchingTravelTask(agent: Agent, pending: PendingAutonomousTravel): boolean {
   return agent.task?.source === "autonomy"
     && agent.task.type === "move"
@@ -198,20 +206,45 @@ export function planAutonomousHaloTravel(
     const resource = resourceIntent(state, agent);
     if (resource === undefined || localResourceAvailable(state, resource)) continue;
 
-    const candidate = halo
-      .filter((entry) =>
-        localTilePassable(state, entry.sourcePosition) &&
-        entry.tile.terrain !== "water" &&
-        entry.tile.resource?.kind === resource &&
-        entry.tile.resource.amount > 0
-      )
-      .sort((a, b) =>
-        hexGridDistance(agent.position, a.sourcePosition) - hexGridDistance(agent.position, b.sourcePosition) ||
-        directionRank(a.direction) - directionRank(b.direction) ||
-        a.neighborRegionId.localeCompare(b.neighborRegionId) ||
-        a.sourcePosition.y - b.sourcePosition.y ||
-        a.sourcePosition.x - b.sourcePosition.x
-      )[0];
+    const capacityLeft = remainingInventoryCapacity(agent);
+    if (capacityLeft <= 0) continue;
+    const travelEnergyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);
+    const candidates = halo.filter((entry) => {
+      const travelDistance = hexGridDistance(agent.position, entry.sourcePosition);
+      return travelDistance <= travelEnergyBudget
+        && localTilePassable(state, entry.sourcePosition)
+        && entry.tile.terrain !== "water"
+        && entry.tile.resource?.kind === resource
+        && entry.tile.resource.amount > 0;
+    });
+    const visibleSupply = new Map<string, number>();
+    for (const entry of candidates) {
+      const key = haloSupplyKey(entry.direction, entry.neighborRegionId);
+      visibleSupply.set(key, (visibleSupply.get(key) ?? 0) + (entry.tile.resource?.amount ?? 0));
+    }
+
+    const candidate = candidates
+      .sort((a, b) => {
+        const aDistance = hexGridDistance(agent.position, a.sourcePosition);
+        const bDistance = hexGridDistance(agent.position, b.sourcePosition);
+        const aSupply = Math.min(
+          capacityLeft,
+          visibleSupply.get(haloSupplyKey(a.direction, a.neighborRegionId)) ?? 0,
+        );
+        const bSupply = Math.min(
+          capacityLeft,
+          visibleSupply.get(haloSupplyKey(b.direction, b.neighborRegionId)) ?? 0,
+        );
+        const aCostPerUnit = aDistance / Math.max(1, aSupply);
+        const bCostPerUnit = bDistance / Math.max(1, bSupply);
+        return aCostPerUnit - bCostPerUnit
+          || bSupply - aSupply
+          || aDistance - bDistance
+          || directionRank(a.direction) - directionRank(b.direction)
+          || a.neighborRegionId.localeCompare(b.neighborRegionId)
+          || a.sourcePosition.y - b.sourcePosition.y
+          || a.sourcePosition.x - b.sourcePosition.x;
+      })[0];
     if (candidate === undefined) continue;
 
     const issuedAtTick = agent.task?.source === "autonomy" && agent.task.type === "gather"
