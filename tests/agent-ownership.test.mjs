@@ -48,7 +48,7 @@ test("detach preserves the complete agent snapshot while removing active ownersh
   assert.ok(source.agents.some((entry) => entry.id === agent.id), "input state must remain immutable");
 });
 
-test("attach promotes a legacy local ID once, preserves inventory, and clears source-local task state", () => {
+test("attach promotes a legacy local ID once, preserves inventory, and clears source-local move state", () => {
   const { source, target } = worlds();
   const agent = source.agents[0];
   assert.ok(agent);
@@ -90,6 +90,52 @@ test("attach promotes a legacy local ID once, preserves inventory, and clears so
   assert.equal(arrived.status, "arrived from neighboring region");
   assert.ok(attached.value.state.agents.some((entry) => entry.id === agent.id), "target legacy local remains distinct");
   assert.equal(globalHandoffAgentId(globalId, "garden-2"), globalId, "later handoffs keep the global id stable");
+});
+
+test("attach keeps autonomous gather intent but drops its source-local target", () => {
+  const { source, target } = worlds();
+  const agent = source.agents[0];
+  assert.ok(agent);
+  const sourceCell = hexGridBoundaryCells(source, "east")[11];
+  assert.ok(sourceCell);
+  const targetCell = hexGridHandoffTarget(source, sourceCell, "east");
+  assert.ok(targetCell);
+  const targetTile = target.tiles[targetCell.y * target.width + targetCell.x];
+  assert.ok(targetTile);
+  targetTile.terrain = "plain";
+  target.tick = 47;
+
+  agent.position = { ...sourceCell };
+  agent.goal = "keep supplying wood wherever the settlement expands";
+  agent.task = {
+    source: "autonomy",
+    issuedAtTick: source.tick,
+    type: "gather",
+    resource: "wood",
+    target: { ...sourceCell },
+  };
+  const detached = detachAgentOwnership(source, [], agent.id);
+  assert.equal(detached.ok, true);
+
+  const attached = attachAgentOwnership(
+    target,
+    [],
+    detached.value.agent,
+    targetCell,
+    source.regionId,
+  );
+  assert.equal(attached.ok, true);
+  const globalId = globalHandoffAgentId(agent.id, source.regionId);
+  const arrived = attached.value.state.agents.find((entry) => entry.id === globalId);
+  assert.ok(arrived);
+  assert.equal(arrived.goal, agent.goal);
+  assert.deepEqual(arrived.task, {
+    source: "autonomy",
+    issuedAtTick: target.tick,
+    type: "gather",
+    resource: "wood",
+  });
+  assert.equal(arrived.status, "arrived from neighboring region; replanning wood search");
 });
 
 test("attach rejects duplicate promoted identity, impassable, and non-hex ownership targets", () => {

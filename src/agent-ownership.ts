@@ -29,6 +29,25 @@ function cloneSnapshot(
   };
 }
 
+function arrivalTaskAfterHandoff(agent: Agent, targetTick: number): Agent["task"] | undefined {
+  const task = agent.task;
+  if (task?.source !== "autonomy") return undefined;
+
+  // A gather task without a target is an intent (find this resource locally),
+  // unlike move/build/trade targets whose coordinates or identities belong to
+  // the source region. Preserve that intent while deliberately discarding the
+  // source-local target so the target region can choose a valid deposit again.
+  if (task.type === "gather") {
+    return {
+      source: "autonomy",
+      issuedAtTick: targetTick,
+      type: "gather",
+      resource: task.resource,
+    };
+  }
+  return undefined;
+}
+
 export function globalHandoffAgentId(agentId: string, originRegionId: string): string {
   if (agentId.startsWith(GLOBAL_AGENT_PREFIX)) return agentId;
   return `${GLOBAL_AGENT_PREFIX}${originRegionId}:${agentId}`;
@@ -84,11 +103,16 @@ export function attachAgentOwnership(
   // IDs remain unchanged on all later handoffs.
   arrived.id = arrivedId;
   arrived.position = { ...targetPosition };
-  // Tasks reference the source region's local coordinate frame. Cross-region
-  // task/transaction continuation is a later protocol layer, so agent ownership
-  // handoff intentionally preserves goals/inventory but forces local replanning.
-  delete arrived.task;
-  arrived.status = "arrived from neighboring region";
+  // Coordinate-bound tasks still belong to the source region and must be
+  // cleared. Autonomous gather is the first safe exception: its resource kind
+  // is a high-level intent, so strip only the old target and let the target
+  // region's ordinary gather executor select a new local deposit.
+  const arrivalTask = arrivalTaskAfterHandoff(arrived, snapshot.state.tick);
+  if (arrivalTask === undefined) delete arrived.task;
+  else arrived.task = arrivalTask;
+  arrived.status = arrivalTask?.type === "gather"
+    ? `arrived from neighboring region; replanning ${arrivalTask.resource} search`
+    : "arrived from neighboring region";
   snapshot.state.agents.push(arrived);
   snapshot.state.agents.sort((a, b) => a.id.localeCompare(b.id));
   return { ok: true, value: snapshot };
