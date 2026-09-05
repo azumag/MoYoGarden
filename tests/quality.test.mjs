@@ -69,3 +69,32 @@ test("explicit quality selection remains an override for constrained devices", (
     assert.equal(quality.detailDensity, 0.62);
   });
 });
+
+test("legacy low quality launches a real constrained renderer profile", () => {
+  withDevice({ search: "?quality=low", width: 1440, memory: 16, cores: 12 }, () => {
+    const quality = resolveQualityProfile();
+    assert.equal(quality.id, "balanced");
+    assert.equal(quality.requested, "low");
+    assert.equal(quality.label, "SAFE");
+    assert.equal(quality.pixelRatioCap, 1);
+    assert.equal(quality.antialias, false);
+    assert.equal(quality.shadowSize, 512);
+    assert.equal(quality.environmentSize, 16);
+    assert.equal(quality.modelConcurrency, 1);
+    assert.equal(quality.detailDensity, 0.32);
+    assert.equal(quality.lodScale, 0.64);
+  });
+});
+
+test("compat and safe aliases use the same constrained renderer instead of a dead-end fallback", () => {
+  for (const search of ["?renderer=compat", "?safe=1", "?quality=ultra&safe=1"]) {
+    withDevice({ search, width: 1440, memory: 16, cores: 12 }, () => {
+      const quality = resolveQualityProfile();
+      assert.equal(quality.id, "balanced");
+      assert.equal(quality.requested, "safe");
+      assert.equal(quality.label, "SAFE");
+      assert.equal(quality.antialias, false);
+      assert.equal(quality.detailDensity, 0.32);
+    });
+  }
+});

@@ -50,10 +50,6 @@
   const compatibilityRequested = params.get("renderer") === "compat"
     || params.get("quality") === "low"
     || params.get("safe") === "1";
-  if (compatibilityRequested) {
-    stableFallback("compatibility mode requested");
-    return;
-  }
 
   window.__MOYO_PBR_BOOT__ = Object.freeze({ version: VERSION, startedAt: performance.now() });
   window.addEventListener("moyo:pbr-ready", () => {
@@ -87,7 +83,11 @@
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
-    setMessage("3Dレンダラーを起動しています", "軽量表示の後、authored BOT・建物・自然物・PBR・影を段階的に追加します");
+    if (compatibilityRequested) {
+      setMessage("軽量セーフモードで起動しています", "描画負荷を抑えて3Dワールドを起動します");
+    } else {
+      setMessage("3Dレンダラーを起動しています", "軽量表示の後、authored BOT・建物・自然物・PBR・影を段階的に追加します");
+    }
     try {
       await import(`/client/sky-fix.js?v=${VERSION}`);
     } catch (error) {

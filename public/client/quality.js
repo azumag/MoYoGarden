@@ -57,6 +57,12 @@ function networkIsConstrained() {
   return Boolean(connection?.saveData) || ["slow-2g", "2g", "3g"].includes(effectiveType);
 }
 
+function safeModeRequested() {
+  const quality = String(queryValue("quality") ?? "").toLowerCase();
+  const renderer = String(queryValue("renderer") ?? "").toLowerCase();
+  return quality === "low" || renderer === "compat" || queryValue("safe") === "1";
+}
+
 function automaticProfileId() {
   const memory = Number(globalThis.navigator?.deviceMemory ?? 0);
   const cores = Number(globalThis.navigator?.hardwareConcurrency ?? 0);
@@ -103,8 +109,29 @@ function tuneAutomaticBalancedProfile(profile, requested) {
   };
 }
 
+function tuneSafeBalancedProfile(profile, requested) {
+  return {
+    ...profile,
+    requested,
+    label: "SAFE",
+    pixelRatioCap: 1,
+    antialias: false,
+    shadowSize: 512,
+    shadowRadius: 1.6,
+    shadowUpdateIntervalMs: 900,
+    environmentSize: 16,
+    modelTimeoutMs: Math.max(profile.modelTimeoutMs, 12_000),
+    modelConcurrency: 1,
+    detailDensity: 0.32,
+    lodScale: 0.64,
+  };
+}
+
 export function resolveQualityProfile() {
   const requested = (queryValue("quality") || "auto").toLowerCase();
+  if (safeModeRequested()) {
+    return tuneSafeBalancedProfile(PROFILES.balanced, requested === "low" ? "low" : "safe");
+  }
   const id = Object.hasOwn(PROFILES, requested) ? requested : automaticProfileId();
   return tuneAutomaticBalancedProfile(PROFILES[id], requested);
 }
