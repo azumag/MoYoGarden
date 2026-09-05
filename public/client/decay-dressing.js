@@ -18,6 +18,8 @@ const DECAY_GEOMETRY = Object.freeze({
   deadwood: sharedGeometry(new THREE.CylinderGeometry(0.04, 0.065, 0.78, 7)),
   rubble: sharedGeometry(new THREE.DodecahedronGeometry(0.11, 0)),
   mud: sharedGeometry(new THREE.CircleGeometry(0.28, 14)),
+  support: sharedGeometry(new THREE.BoxGeometry(0.075, 0.82, 0.075)),
+  fence: sharedGeometry(new THREE.BoxGeometry(0.92, 0.42, 0.06)),
   plank: sharedGeometry(new THREE.BoxGeometry(0.68, 0.055, 0.075)),
   brace: sharedGeometry(new THREE.BoxGeometry(0.78, 0.05, 0.065)),
   patch: sharedGeometry(new THREE.BoxGeometry(0.44, 0.026, 0.29)),
@@ -107,6 +109,52 @@ function setStaticInstances(mesh, entries, makeMatrix) {
   mesh.computeBoundingSphere();
 }
 
+function authoredDecayMesh(view, key, fallbackGeometry, fallbackMaterial, targetExtent) {
+  const source = view.models?.source?.(key);
+  if (!source) return { geometry: fallbackGeometry, material: fallbackMaterial, authored: false };
+
+  view.moyoAuthoredDecayMeshes ||= new Map();
+  const cached = view.moyoAuthoredDecayMeshes.get(key);
+  if (cached) return cached;
+
+  let sourceMesh = null;
+  source.traverse((object) => {
+    if (!sourceMesh && object.isMesh && object.geometry) sourceMesh = object;
+  });
+  if (!sourceMesh) return { geometry: fallbackGeometry, material: fallbackMaterial, authored: false };
+
+  const geometry = sourceMesh.geometry.clone();
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const extent = Math.max(size.x, size.y, size.z);
+  if (!Number.isFinite(extent) || extent <= 0.0001) {
+    geometry.dispose();
+    return { geometry: fallbackGeometry, material: fallbackMaterial, authored: false };
+  }
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  geometry.translate(-center.x, -box.min.y, -center.z);
+  const scale = targetExtent / extent;
+  geometry.scale(scale, scale, scale);
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  geometry.userData.moyoShared = true;
+
+  const sourceMaterial = Array.isArray(sourceMesh.material) ? sourceMesh.material[0] : sourceMesh.material;
+  const material = sourceMaterial?.clone?.() || fallbackMaterial.clone();
+  material.userData = { ...(material.userData || {}), moyoShared: true, moyoAuthoredDecay: true };
+  material.roughness = Math.max(material.roughness ?? 0.9, 0.9);
+  material.metalness = Math.min(material.metalness ?? 0, 0.08);
+  material.envMapIntensity = Math.min(material.envMapIntensity ?? 0.16, 0.18);
+  material.needsUpdate = true;
+
+  const resolved = { geometry, material, authored: true };
+  view.moyoAuthoredDecayMeshes.set(key, resolved);
+  return resolved;
+}
+
 function addTerrainDecay(view, state) {
   if (!view.detailRoot || !state?.tiles?.length) return;
   const density = view.quality?.detailDensity ?? 0.62;
@@ -163,12 +211,20 @@ function addTerrainDecay(view, state) {
   }
   const rubbleCount = naturalRubble.length + settlementRubble.length;
   if (rubbleCount > 0) {
-    const rubble = new THREE.InstancedMesh(
+    const rubbleAsset = authoredDecayMesh(
+      view,
+      "authored:decay-rubble",
       DECAY_GEOMETRY.rubble,
       DECAY_MATERIAL.rubble,
+      0.25,
+    );
+    const rubble = new THREE.InstancedMesh(
+      rubbleAsset.geometry,
+      rubbleAsset.material,
       rubbleCount,
     );
     rubble.name = "MoyoDecayRubble";
+    rubble.userData.moyoAuthored = rubbleAsset.authored;
     let cursor = 0;
     for (const tile of naturalRubble) {
       const position = view.worldPosition(tile, 0.07);
@@ -213,6 +269,85 @@ function addTerrainDecay(view, state) {
     rubble.castShadow = castMicroShadows;
     rubble.receiveShadow = true;
     group.add(rubble);
+  }
+
+  const supportEntries = state.structures.filter((structure) => (
+    hash2(structure.position.x, structure.position.y, 970) > 0.38 + (1 - density) * 0.14
+  ));
+  if (supportEntries.length > 0) {
+    const supportAsset = authoredDecayMesh(
+      view,
+      "authored:decay-support",
+      DECAY_GEOMETRY.support,
+      DECAY_MATERIAL.rottenWood,
+      0.92,
+    );
+    const supports = new THREE.InstancedMesh(
+      supportAsset.geometry,
+      supportAsset.material,
+      supportEntries.length,
+    );
+    supports.name = "MoyoDecaySupport";
+    supports.userData.moyoAuthored = supportAsset.authored;
+    setStaticInstances(supports, supportEntries, (structure, index) => {
+      const seed = 971 + index * 3;
+      const position = view.worldPosition(structure.position, 0.03);
+      const angle = hash2(structure.position.x, structure.position.y, seed) * Math.PI * 2;
+      const radius = 0.82 + hash2(structure.position.x, structure.position.y, seed + 1) * 0.34;
+      position.x += Math.cos(angle) * radius;
+      position.z += Math.sin(angle) * radius;
+      const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        0.08 + hash2(structure.position.x, structure.position.y, seed + 2) * 0.18,
+        angle + Math.PI * 0.5,
+        (hash2(structure.position.x, structure.position.y, seed + 3) - 0.5) * 0.3,
+      ));
+      return new THREE.Matrix4().compose(position, rotation, new THREE.Vector3(1, 1, 1));
+    });
+    supports.castShadow = castMicroShadows;
+    supports.receiveShadow = true;
+    group.add(supports);
+  }
+
+  const fenceEntries = state.structures.filter((structure) => (
+    hash2(structure.position.x, structure.position.y, 976) > 0.52 + (1 - density) * 0.16
+  ));
+  if (fenceEntries.length > 0) {
+    const fenceAsset = authoredDecayMesh(
+      view,
+      "authored:decay-fence",
+      DECAY_GEOMETRY.fence,
+      DECAY_MATERIAL.rottenWood,
+      1.02,
+    );
+    const fences = new THREE.InstancedMesh(
+      fenceAsset.geometry,
+      fenceAsset.material,
+      fenceEntries.length,
+    );
+    fences.name = "MoyoDecayFence";
+    fences.userData.moyoAuthored = fenceAsset.authored;
+    setStaticInstances(fences, fenceEntries, (structure, index) => {
+      const seed = 977 + index * 4;
+      const position = view.worldPosition(structure.position, 0.025);
+      const angle = hash2(structure.position.x, structure.position.y, seed) * Math.PI * 2;
+      const radius = 1.05 + hash2(structure.position.x, structure.position.y, seed + 1) * 0.28;
+      position.x += Math.cos(angle) * radius;
+      position.z += Math.sin(angle) * radius;
+      const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        0,
+        angle + Math.PI * 0.5,
+        (hash2(structure.position.x, structure.position.y, seed + 2) - 0.5) * 0.16,
+      ));
+      const scale = new THREE.Vector3(
+        0.82 + hash2(structure.position.x, structure.position.y, seed + 3) * 0.24,
+        0.84 + hash2(structure.position.x, structure.position.y, seed + 4) * 0.22,
+        1,
+      );
+      return new THREE.Matrix4().compose(position, rotation, scale);
+    });
+    fences.castShadow = castMicroShadows;
+    fences.receiveShadow = true;
+    group.add(fences);
   }
 
   const mudTiles = renderableTiles.filter((tile) => (
@@ -316,6 +451,12 @@ function decorateStructureDecay(root, structure, detail) {
   setShadows(group, true, true);
 }
 
+function rebuildDecayDressing(view) {
+  const existing = view.detailRoot?.getObjectByName("MoyoDecayDressing");
+  existing?.removeFromParent();
+  if (view.state && view.detailRoot) addTerrainDecay(view, view.state);
+}
+
 const originalBuildTerrain = WorldView.prototype.buildTerrain;
 WorldView.prototype.buildTerrain = function buildTerrainWithDecayDressing(state) {
   originalBuildTerrain.call(this, state);
@@ -329,4 +470,12 @@ WorldView.prototype.createStructure = function createStructureWithDecayDressing(
   decorateStructureDecay(entry?.medium, structure, "mid");
   decorateStructureDecay(entry?.low, structure, "low");
   return entry;
+};
+
+const originalRefreshModelType = WorldView.prototype.refreshModelType;
+WorldView.prototype.refreshModelType = function refreshModelTypeWithDecay(key) {
+  originalRefreshModelType.call(this, key);
+  if (key !== "decay") return;
+  rebuildDecayDressing(this);
+  this.markShadowsDirty();
 };
