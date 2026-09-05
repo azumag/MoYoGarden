@@ -7,14 +7,20 @@ import {
 import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
-  hexGridDistance,
   isHexGridCell,
   oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as HaloRegionDurableObject } from "./halo-region.js";
-import type { Agent, GridPosition, ResourceKind, WorldState } from "./protocol.js";
+import {
+  positionKey,
+  type Agent,
+  type GridPosition,
+  type ResourceKind,
+  type WorldState,
+} from "./protocol.js";
 import { WorldRuntime } from "./runtime.js";
+import { isPassable } from "./world.js";
 
 interface AutonomyEnv {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -154,12 +160,25 @@ function directionRank(direction: HexGridDirection): number {
   return HEX_GRID_DIRECTIONS.indexOf(direction);
 }
 
-function localTilePassable(state: WorldState, position: GridPosition): boolean {
-  const tile = state.tiles[position.y * state.width + position.x];
-  return tile !== undefined
-    && tile.x === position.x
-    && tile.y === position.y
-    && tile.terrain !== "water";
+function localPathDistances(state: WorldState, start: GridPosition): Map<string, number> {
+  const distances = new Map<string, number>([[positionKey(start), 0]]);
+  const queue: GridPosition[] = [{ ...start }];
+
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor];
+    if (current === undefined) break;
+    const currentDistance = distances.get(positionKey(current)) ?? 0;
+    for (const direction of HEX_GRID_DIRECTIONS) {
+      const step = HEX_GRID_DIRECTION_STEPS[direction];
+      const next = { x: current.x + step.x, y: current.y + step.y };
+      const key = positionKey(next);
+      if (distances.has(key) || !isPassable(state, next)) continue;
+      distances.set(key, currentDistance + 1);
+      queue.push(next);
+    }
+  }
+
+  return distances;
 }
 
 function remainingInventoryCapacity(agent: Agent): number {
@@ -217,23 +236,28 @@ export function planAutonomousHaloTravel(
     const capacityLeft = remainingInventoryCapacity(agent);
     if (capacityLeft <= 0) continue;
     const travelEnergyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);
-    const candidates = halo.filter((entry) => {
-      const travelDistance = hexGridDistance(agent.position, entry.sourcePosition);
-      return travelDistance <= travelEnergyBudget
-        && localTilePassable(state, entry.sourcePosition)
-        && entry.tile.terrain !== "water"
-        && entry.tile.resource?.kind === resource
-        && entry.tile.resource.amount > 0;
+    const pathDistances = localPathDistances(state, agent.position);
+    const candidates = halo.flatMap((entry) => {
+      const travelDistance = pathDistances.get(positionKey(entry.sourcePosition));
+      if (
+        travelDistance === undefined ||
+        travelDistance > travelEnergyBudget ||
+        entry.tile.terrain === "water" ||
+        entry.tile.resource?.kind !== resource ||
+        entry.tile.resource.amount <= 0
+      ) {
+        return [];
+      }
+      return [{ entry, travelDistance }];
     });
     const visibleSupply = new Map<string, number>();
-    for (const entry of candidates) {
+    for (const { entry } of candidates) {
       const key = haloSupplyKey(entry.direction, entry.neighborRegionId);
       visibleSupply.set(key, (visibleSupply.get(key) ?? 0) + (entry.tile.resource?.amount ?? 0));
     }
 
     const candidate = candidates
-      .map((entry) => {
-        const travelDistance = hexGridDistance(agent.position, entry.sourcePosition);
+      .map(({ entry, travelDistance }) => {
         const supply = Math.min(
           capacityLeft,
           visibleSupply.get(haloSupplyKey(entry.direction, entry.neighborRegionId)) ?? 0,
