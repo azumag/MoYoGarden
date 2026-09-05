@@ -3,7 +3,7 @@ import test from "node:test";
 import { shouldMaterializeHaloForTick } from "../dist-ts/src/halo-region.js";
 
 test("scheduled alarms fetch halo edges only for ticks that can apply regrowth compensation", () => {
-  for (const tick of [0, 1, 27, 30, 58, 60, 119]) {
+  for (const tick of [0, 1, 27, 30, 58, 60, 120]) {
     assert.equal(
       shouldMaterializeHaloForTick(tick),
       false,
@@ -11,7 +11,7 @@ test("scheduled alarms fetch halo edges only for ticks that can apply regrowth c
     );
   }
 
-  for (const tick of [29, 59, 89, 1199]) {
+  for (const tick of [29, 59, 89, 119, 1199]) {
     assert.equal(
       shouldMaterializeHaloForTick(tick),
       true,
