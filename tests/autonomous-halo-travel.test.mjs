@@ -155,3 +155,56 @@ test("interior autonomy preserves its low-energy reserve when planning region tr
   assert.ok(affordable);
   assert.equal(affordable.direction, "east");
 });
+
+test("interior autonomy gives the single travel slot to the most efficient eligible agent", () => {
+  const { state } = depletedInteriorWoodcutter();
+  const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
+  const firstById = agents[0];
+  const secondById = agents[1];
+  assert.ok(firstById);
+  assert.ok(secondById);
+
+  for (const agent of state.agents) agent.autonomy = false;
+  const center = hexGridCenter(state);
+  for (const [index, agent] of [firstById, secondById].entries()) {
+    agent.autonomy = true;
+    agent.position = { ...center };
+    agent.role = "woodcutter";
+    agent.energy = 100;
+    agent.inventory = { wood: 0, stone: 0, food: 0 };
+    agent.task = {
+      source: "autonomy",
+      issuedAtTick: 20 + index,
+      type: "gather",
+      resource: "wood",
+    };
+  }
+
+  firstById.inventory.wood = firstById.capacity - 1;
+  const eastCells = hexGridBoundaryCells(state, "east");
+  const east = haloResource(
+    state,
+    "east",
+    Math.floor(eastCells.length / 2),
+    "garden-2",
+    "wood",
+    8,
+  );
+
+  const efficientPlan = planAutonomousHaloTravel(state, [east]);
+  assert.ok(efficientPlan);
+  assert.equal(
+    efficientPlan.agentId,
+    secondById.id,
+    "the planner should not reserve the only travel slot for a lower-capacity agent just because its id sorts first",
+  );
+
+  secondById.inventory.wood = secondById.capacity - 1;
+  const tiedPlan = planAutonomousHaloTravel(state, [east]);
+  assert.ok(tiedPlan);
+  assert.equal(
+    tiedPlan.agentId,
+    firstById.id,
+    "equal expedition costs should retain a deterministic agent-id tie break",
+  );
+});
