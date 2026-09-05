@@ -5,6 +5,7 @@ const AUTHORED_VERSION = "0.3.7";
 const AUTHORED_BUILDING_VERSION = "0.3.10";
 const AUTHORED_CHARACTER_VERSION = "0.3.11";
 const AUTHORED_DECAY_VERSION = "0.3.11-q1";
+const AUTHORED_BUILDING_SHELL_VERSION = "0.3.11-q2";
 const MODEL_MANIFEST = Object.freeze([
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
@@ -14,6 +15,10 @@ const MODEL_MANIFEST = Object.freeze([
   ["authored:building-storehouse", `/assets/authored/kaykit/storehouse.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-market", `/assets/authored/kaykit/market.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-workshop", `/assets/authored/kaykit/workshop.glb?v=${AUTHORED_BUILDING_VERSION}`],
+  ["authored:building-shell-camp", `/assets/authored/quaternius-buildings/camp.glb?v=${AUTHORED_BUILDING_SHELL_VERSION}`],
+  ["authored:building-shell-storehouse", `/assets/authored/quaternius-buildings/storehouse.glb?v=${AUTHORED_BUILDING_SHELL_VERSION}`],
+  ["authored:building-shell-market", `/assets/authored/quaternius-buildings/market.glb?v=${AUTHORED_BUILDING_SHELL_VERSION}`],
+  ["authored:building-shell-workshop", `/assets/authored/quaternius-buildings/workshop.glb?v=${AUTHORED_BUILDING_SHELL_VERSION}`],
   ["authored:agent-worker", `/assets/authored/kaykit-adventurers/worker.glb?v=${AUTHORED_CHARACTER_VERSION}`],
   ["authored:agent-roamer", `/assets/authored/kaykit-adventurers/roamer.glb?v=${AUTHORED_CHARACTER_VERSION}`],
   ["authored:tree-oak", `/assets/authored/kenney/tree_oak.glb?v=${AUTHORED_VERSION}`],
@@ -32,7 +37,17 @@ const AUTHORED_BUILDING_BY_CHILD = Object.freeze({
   Market: "authored:building-market",
   Workshop: "authored:building-workshop",
 });
+const AUTHORED_BUILDING_SHELL_BY_CHILD = Object.freeze({
+  Camp: "authored:building-shell-camp",
+  Storehouse: "authored:building-shell-storehouse",
+  Market: "authored:building-shell-market",
+  Workshop: "authored:building-shell-workshop",
+});
 const AUTHORED_BUILDING_HEIGHT = Object.freeze({
+  "authored:building-shell-camp": 1.62,
+  "authored:building-shell-storehouse": 1.82,
+  "authored:building-shell-market": 1.72,
+  "authored:building-shell-workshop": 1.88,
   "authored:building-camp": 1.62,
   "authored:building-storehouse": 1.82,
   "authored:building-market": 1.72,
@@ -50,6 +65,7 @@ function isAuthoredAgentKey(key) {
 function refreshKeyFor(key) {
   if (key.startsWith("authored:decay-")) return "decay";
   if (key.startsWith("authored:agent-")) return "settler";
+  if (key.startsWith("authored:building-shell-")) return "buildings";
   if (key.startsWith("authored:building-")) return "buildings";
   if (key.startsWith("authored:tree-")) return "tree";
   if (key.startsWith("authored:rock-")) return "rock";
@@ -259,6 +275,14 @@ export class ModelLibrary {
     return name;
   }
 
+  resolveCloneSourceName(name, childName, detail) {
+    if (name === "buildings" && childName && detail === "high") {
+      const shellKey = AUTHORED_BUILDING_SHELL_BY_CHILD[childName];
+      if (shellKey && this.templates.has(shellKey)) return shellKey;
+    }
+    return this.resolveSourceName(name, childName);
+  }
+
   source(name, childName) {
     const sourceName = this.resolveSourceName(name, childName);
     const root = this.templates.get(sourceName);
@@ -268,8 +292,9 @@ export class ModelLibrary {
   }
 
   clone(name, { childName, factionColor, role, detail = "high" } = {}) {
-    const sourceName = this.resolveSourceName(name, childName);
-    const source = this.source(name, childName);
+    const sourceName = this.resolveCloneSourceName(name, childName, detail);
+    const root = this.templates.get(sourceName);
+    const source = sourceName === name && childName ? root?.getObjectByName(childName) : root;
     if (!source) return null;
     const needsSkeletonClone = isAuthoredAgentKey(sourceName) && typeof this.skeletonClone === "function";
     const clone = needsSkeletonClone ? this.skeletonClone(source) : source.clone(true);
