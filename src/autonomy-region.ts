@@ -187,17 +187,17 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     super(autonomyState, autonomyEnv);
   }
 
-  private stub(regionId: string): DurableObjectStub {
+  private autonomyStub(regionId: string): DurableObjectStub {
     return this.autonomyEnv.REGIONS.get(this.autonomyEnv.REGIONS.idFromName(regionId));
   }
 
-  private async fetchNeighborEdge(
+  private async fetchAutonomyNeighborEdge(
     neighborRegionId: string,
     direction: HexGridDirection,
   ): Promise<HexHaloEdgeSnapshot | undefined> {
     const url = new URL(`https://moyo.internal${INTERNAL_EDGE_PATH}`);
     url.searchParams.set("direction", direction);
-    const response = await this.stub(neighborRegionId).fetch(new Request(url, {
+    const response = await this.autonomyStub(neighborRegionId).fetch(new Request(url, {
       method: "GET",
       headers: { "x-moyo-region-internal": neighborRegionId },
     }));
@@ -206,7 +206,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return isEdgeSnapshot(value) ? value : undefined;
   }
 
-  private async materializeHalo(state: WorldState): Promise<HexHaloTile[]> {
+  private async materializeAutonomyHalo(state: WorldState): Promise<HexHaloTile[]> {
     const links = buildHexHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId);
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
@@ -219,14 +219,14 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const edges = (
       await Promise.all(
         [...requested.values()].map(({ regionId, direction }) =>
-          this.fetchNeighborEdge(regionId, direction)
+          this.fetchAutonomyNeighborEdge(regionId, direction)
         ),
       )
     ).filter((value): value is HexHaloEdgeSnapshot => value !== undefined);
     return materializeHexHalo(links, edges);
   }
 
-  private handoffRequest(pending: PendingAutonomousHandoff): Request {
+  private autonomousHandoffRequest(pending: PendingAutonomousHandoff): Request {
     return new Request("http://localhost/api/admin/handoff", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -239,21 +239,21 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   }
 
   private async attemptPendingHandoff(pending: PendingAutonomousHandoff): Promise<void> {
-    const response = await super.fetch(this.handoffRequest(pending));
+    const response = await super.fetch(this.autonomousHandoffRequest(pending));
     if (response.ok || response.status < 500) {
-      await this.autonomyState.storage.delete(AUTONOMOUS_HANDOFF_KEY);
+      await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, null);
     }
   }
 
   private async resumeOrPlanAutonomousHandoff(state: WorldState): Promise<void> {
-    const pending = await this.autonomyState.storage.get<PendingAutonomousHandoff>(AUTONOMOUS_HANDOFF_KEY);
-    if (pending !== undefined) {
+    const pending = await this.autonomyState.storage.get<PendingAutonomousHandoff | null>(AUTONOMOUS_HANDOFF_KEY);
+    if (pending !== undefined && pending !== null) {
       await this.attemptPendingHandoff(pending);
       return;
     }
     if (!needsHaloPlanning(state)) return;
 
-    const halo = await this.materializeHalo(state);
+    const halo = await this.materializeAutonomyHalo(state);
     const plan = planAutonomousHaloHandoff(state, halo);
     if (plan === undefined) return;
 
