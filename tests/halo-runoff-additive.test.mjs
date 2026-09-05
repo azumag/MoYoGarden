@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  haloCatchmentContributionAt,
   haloDrainageInflowAt,
   surfaceMoistureWithHaloAt,
 } from "../dist-ts/src/halo-environment.js";
@@ -55,4 +56,36 @@ test("local catchment and cross-region tributary accumulate before runoff normal
   const saturatedLocal = surfaceMoistureAt(state, tile);
   const saturatedHaloAware = surfaceMoistureWithHaloAt(state, tile, halo);
   assert.ok(Math.abs((saturatedHaloAware - saturatedLocal) - 0.028) < 1e-12);
+});
+
+test("cross-region catchment continues downhill through owned local flow edges", () => {
+  const { state, tile, halo } = fixture();
+  const downstream = state.tiles[tile.y * state.width + tile.x - 1];
+  const lowerDownstream = state.tiles[tile.y * state.width + tile.x - 2];
+  assert.ok(downstream);
+  assert.ok(lowerDownstream);
+
+  tile.elevation = 0.8;
+  downstream.elevation = 0.62;
+  lowerDownstream.elevation = 0.44;
+  tile.flowTo = { x: downstream.x, y: downstream.y };
+  downstream.flowTo = { x: lowerDownstream.x, y: lowerDownstream.y };
+  downstream.drainage = 0;
+  lowerDownstream.drainage = 0;
+
+  assert.equal(haloDrainageInflowAt(state, downstream, halo), 0, "downstream cell has no direct ghost inflow");
+  assert.equal(haloCatchmentContributionAt(state, tile, halo), 0.5);
+  assert.equal(haloCatchmentContributionAt(state, downstream, halo), 0.5);
+  assert.equal(haloCatchmentContributionAt(state, lowerDownstream, halo), 0.5);
+
+  const local = surfaceMoistureAt(state, lowerDownstream);
+  const haloAware = surfaceMoistureWithHaloAt(state, lowerDownstream, halo);
+  assert.ok(Math.abs((haloAware - local) - 0.07) < 1e-12);
+
+  delete tile.flowTo;
+  assert.equal(
+    haloCatchmentContributionAt(state, downstream, halo),
+    0,
+    "without an owned local flow edge the cross-region contribution must not jump inward",
+  );
 });

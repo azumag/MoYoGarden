@@ -4,7 +4,14 @@ import {
   type HexGridDirection,
 } from "./hex-grid.js";
 import { hexHaloKey, hexHaloLookup, type HexHaloTile } from "./hex-halo.js";
-import { manhattanDistance, type GridPosition, type ResourceKind, type Tile, type WorldState } from "./protocol.js";
+import {
+  manhattanDistance,
+  positionKey,
+  type GridPosition,
+  type ResourceKind,
+  type Tile,
+  type WorldState,
+} from "./protocol.js";
 import { drainageAt, resourceRegrowthChance } from "./simulation.js";
 import { getTile } from "./world.js";
 
@@ -172,10 +179,73 @@ export function haloDrainageInflowAt(
   return haloDrainageInflowFromLookup(state, position, hexHaloLookup(halo));
 }
 
+/**
+ * Propagate passive cross-region catchment input through the existing local
+ * flow graph without persisting any cross-DO flow target. Direct halo inflow is
+ * injected at boundary cells, then carried downhill only along already-owned
+ * local flowTo edges. This lets upstream catchment mass influence downstream
+ * moisture inside the receiving region while keeping ownership unchanged.
+ */
+function haloCatchmentContributionMapFromLookup(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  lookup: HaloLookup,
+): Map<string, number> {
+  const contribution = new Map<string, number>();
+  if (lookup.size === 0) return contribution;
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") continue;
+    const inflow = haloDrainageInflowFromLookup(state, tile, lookup);
+    if (inflow > 0) contribution.set(positionKey(tile), inflow);
+  }
+
+  const ordered = [...state.tiles].sort((a, b) =>
+    (tileElevation(b) ?? 0) - (tileElevation(a) ?? 0) ||
+    a.y - b.y ||
+    a.x - b.x
+  );
+  for (const tile of ordered) {
+    if (tile.terrain === "water" || tile.flowTo === undefined) continue;
+    const sourceContribution = contribution.get(positionKey(tile)) ?? 0;
+    if (sourceContribution <= 0) continue;
+
+    const sourceElevation = tileElevation(tile);
+    const target = getTile(state, tile.flowTo);
+    const targetElevation = tileElevation(target);
+    if (
+      sourceElevation === undefined ||
+      target === undefined ||
+      target.terrain === "water" ||
+      targetElevation === undefined ||
+      sourceElevation - targetElevation <= HALO_HYDROLOGY_EPSILON
+    ) {
+      continue;
+    }
+
+    const targetKey = positionKey(target);
+    contribution.set(
+      targetKey,
+      clamp01((contribution.get(targetKey) ?? 0) + sourceContribution),
+    );
+  }
+
+  return contribution;
+}
+
+export function haloCatchmentContributionAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  halo: readonly HexHaloTile[] = [],
+): number {
+  const lookup = hexHaloLookup(halo);
+  return haloCatchmentContributionMapFromLookup(state, lookup).get(positionKey(position)) ?? 0;
+}
+
 function surfaceMoistureWithHaloLookup(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
   lookup: HaloLookup,
+  catchmentContribution?: ReadonlyMap<string, number>,
 ): number {
   const tile = getTile(state, position);
   if (tile === undefined) return 0;
@@ -202,13 +272,16 @@ function surfaceMoistureWithHaloLookup(
       : 0;
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
   const lowlandRetention = (1 - elevation) * 0.09;
-  // Local catchment and unresolved cross-region tributaries are distinct upstream
-  // contributions. If this tile is only a local sink because the lower outlet
-  // lives in the halo, let a slope-weighted share pass through instead of
-  // retaining the entire catchment at the Durable Object boundary.
+  // Local catchment and cross-region tributaries are distinct upstream
+  // contributions. Halo input is propagated through the receiving region's
+  // existing local flow graph, while a read-only halo outlet lets a boundary
+  // sink release a slope-weighted share instead of retaining it all locally.
   const outlet = haloFlowOutletFromLookup(state, position, lookup);
+  const haloCatchment = (
+    catchmentContribution ?? haloCatchmentContributionMapFromLookup(state, lookup)
+  ).get(positionKey(position)) ?? 0;
   const runoff = clamp01(
-    (drainageAt(state, position) + haloDrainageInflowFromLookup(state, position, lookup)) *
+    (drainageAt(state, position) + haloCatchment) *
       (1 - (outlet?.slope ?? 0)),
   );
   const runoffRetention = runoff * 0.14;
@@ -223,16 +296,19 @@ export function surfaceMoistureWithHaloAt(
   position: GridPosition,
   halo: readonly HexHaloTile[] = [],
 ): number {
-  return surfaceMoistureWithHaloLookup(state, position, hexHaloLookup(halo));
+  const lookup = hexHaloLookup(halo);
+  const catchmentContribution = haloCatchmentContributionMapFromLookup(state, lookup);
+  return surfaceMoistureWithHaloLookup(state, position, lookup, catchmentContribution);
 }
 
 function resourceRegrowthChanceWithHaloLookup(
   state: WorldState,
   tile: Tile,
   lookup: HaloLookup,
+  catchmentContribution?: ReadonlyMap<string, number>,
 ): number {
   if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
-  const moisture = surfaceMoistureWithHaloLookup(state, tile, lookup);
+  const moisture = surfaceMoistureWithHaloLookup(state, tile, lookup, catchmentContribution);
   const propaguleInfluence = haloNeighborPropaguleInfluence(tile, tile.resource.kind, lookup);
   const propaguleBonus = propaguleInfluence * HALO_ORGANIC_PROPAGULE_BONUS[tile.resource.kind];
   return tile.resource.kind === "wood"
@@ -245,7 +321,9 @@ export function resourceRegrowthChanceWithHalo(
   tile: Tile,
   halo: readonly HexHaloTile[] = [],
 ): number {
-  return resourceRegrowthChanceWithHaloLookup(state, tile, hexHaloLookup(halo));
+  const lookup = hexHaloLookup(halo);
+  const catchmentContribution = haloCatchmentContributionMapFromLookup(state, lookup);
+  return resourceRegrowthChanceWithHaloLookup(state, tile, lookup, catchmentContribution);
 }
 
 /**
@@ -268,6 +346,7 @@ export function applyHaloRegrowthCompensation(
 
   const beforeTiles = new Map(before.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
   const lookup = hexHaloLookup(halo);
+  const catchmentContribution = haloCatchmentContributionMapFromLookup(after, lookup);
   const random = createRandom(after.rngState);
   let grown = 0;
 
@@ -289,7 +368,12 @@ export function applyHaloRegrowthCompensation(
     }
 
     const localChance = resourceRegrowthChance(after, tile);
-    const haloChance = resourceRegrowthChanceWithHaloLookup(after, tile, lookup);
+    const haloChance = resourceRegrowthChanceWithHaloLookup(
+      after,
+      tile,
+      lookup,
+      catchmentContribution,
+    );
     if (haloChance <= localChance) continue;
     const conditional = clamp01((haloChance - localChance) / Math.max(1e-9, 1 - localChance));
     if (random.next() < conditional) {
