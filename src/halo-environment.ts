@@ -132,7 +132,12 @@ export function surfaceMoistureWithHaloAt(
       : 0;
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
   const lowlandRetention = (1 - elevation) * 0.09;
-  const runoff = Math.max(drainageAt(state, position), haloDrainageInflowAt(state, position, halo));
+  // Local catchment and unresolved cross-region tributaries are distinct upstream
+  // contributions. Add them before applying the normalized runoff cap instead of
+  // letting the stronger side hide the weaker one at a region boundary.
+  const runoff = clamp01(
+    drainageAt(state, position) + haloDrainageInflowAt(state, position, halo),
+  );
   const runoffRetention = runoff * 0.14;
   return Math.min(
     1,
