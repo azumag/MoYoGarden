@@ -427,9 +427,20 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return true;
   }
 
-  private async startAutonomousTravel(state: WorldState): Promise<boolean> {
+  private async startAutonomousTravel(
+    state: WorldState,
+    cachedHalo: readonly HexHaloTile[] = [],
+    cachedDirections: readonly HexGridDirection[] = [],
+  ): Promise<boolean> {
     if (!shouldScoutAutonomyHalo(state)) return false;
-    const halo = await this.materializeAutonomyHalo(state, HEX_GRID_DIRECTIONS);
+    const loadedDirections = new Set(cachedDirections);
+    const missingDirections = HEX_GRID_DIRECTIONS.filter((direction) => !loadedDirections.has(direction));
+    const halo = missingDirections.length === 0
+      ? [...cachedHalo]
+      : [
+          ...cachedHalo,
+          ...(await this.materializeAutonomyHalo(state, missingDirections)),
+        ];
     const plan = planAutonomousHaloTravel(state, halo);
     if (plan === undefined) return false;
 
@@ -456,8 +467,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     if (await this.resumeAutonomousTravel(state)) return;
 
     const directions = autonomyHaloPlanningDirections(state);
+    let halo: HexHaloTile[] = [];
     if (directions.length > 0) {
-      const halo = await this.materializeAutonomyHalo(state, directions);
+      halo = await this.materializeAutonomyHalo(state, directions);
       const plan = planAutonomousHaloHandoff(state, halo);
       if (plan !== undefined) {
         const pendingPlan: PendingAutonomousHandoff = {
@@ -472,7 +484,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       }
     }
 
-    await this.startAutonomousTravel(state);
+    await this.startAutonomousTravel(state, halo, directions);
   }
 
   override async alarm(): Promise<void> {
