@@ -53,6 +53,17 @@ interface PendingAutonomousTravel {
   boundaryTarget: GridPosition;
   issuedAtTick: number;
   startedAtTick: number;
+  claimId?: string;
+  claimedSupply?: number;
+}
+
+export interface AutonomousSupplyClaim {
+  claimId: string;
+  resource: ResourceKind;
+  direction: HexGridDirection;
+  neighborRegionId: string;
+  amount: number;
+  expiresAtTick: number;
 }
 
 export interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {
@@ -63,10 +74,12 @@ export interface AutonomousHaloTravelPlan extends PendingAutonomousTravel {}
 
 const AUTONOMOUS_HANDOFF_KEY = "handoff:autonomy:v1";
 const AUTONOMOUS_TRAVEL_KEY = "handoff:autonomy:travel:v1";
+const AUTONOMOUS_SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
 const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
+const AUTONOMOUS_SUPPLY_CLAIM_TTL = AUTONOMOUS_TRAVEL_TTL + AUTONOMOUS_SCOUT_INTERVAL;
 
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
@@ -92,6 +105,24 @@ function isEdgeSnapshot(value: unknown): value is HexHaloEdgeSnapshot {
     && Number.isInteger(value.revision)
     && Number.isInteger(value.tick)
     && Array.isArray(value.tiles);
+}
+
+function isResourceKind(value: unknown): value is ResourceKind {
+  return value === "wood" || value === "stone" || value === "food";
+}
+
+function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim {
+  return isRecord(value)
+    && typeof value.claimId === "string"
+    && isResourceKind(value.resource)
+    && typeof value.direction === "string"
+    && HEX_GRID_DIRECTIONS.includes(value.direction as HexGridDirection)
+    && typeof value.neighborRegionId === "string"
+    && typeof value.amount === "number"
+    && Number.isFinite(value.amount)
+    && value.amount > 0
+    && typeof value.expiresAtTick === "number"
+    && Number.isInteger(value.expiresAtTick);
 }
 
 function inventoryAmount(agent: Agent): number {
@@ -218,6 +249,7 @@ export function shouldScoutAutonomyHalo(state: WorldState): boolean {
 export function planAutonomousHaloTravel(
   state: WorldState,
   halo: readonly HexHaloTile[],
+  claims: readonly AutonomousSupplyClaim[] = [],
 ): AutonomousHaloTravelPlan | undefined {
   const expeditions: Array<{
     agent: Agent;
@@ -255,19 +287,28 @@ export function planAutonomousHaloTravel(
       const key = haloSupplyKey(entry.direction, entry.neighborRegionId);
       visibleSupply.set(key, (visibleSupply.get(key) ?? 0) + (entry.tile.resource?.amount ?? 0));
     }
+    const claimedSupply = new Map<string, number>();
+    for (const claim of claims) {
+      if (claim.resource !== resource || claim.expiresAtTick <= state.tick) continue;
+      const key = haloSupplyKey(claim.direction, claim.neighborRegionId);
+      claimedSupply.set(key, (claimedSupply.get(key) ?? 0) + claim.amount);
+    }
 
     const candidate = candidates
-      .map(({ entry, travelDistance }) => {
-        const supply = Math.min(
-          capacityLeft,
-          visibleSupply.get(haloSupplyKey(entry.direction, entry.neighborRegionId)) ?? 0,
+      .flatMap(({ entry, travelDistance }) => {
+        const key = haloSupplyKey(entry.direction, entry.neighborRegionId);
+        const availableSupply = Math.max(
+          0,
+          (visibleSupply.get(key) ?? 0) - (claimedSupply.get(key) ?? 0),
         );
-        return {
+        const supply = Math.min(capacityLeft, availableSupply);
+        if (supply <= 0) return [];
+        return [{
           entry,
           travelDistance,
           visibleSupply: supply,
-          costPerUnit: travelDistance / Math.max(1, supply),
-        };
+          costPerUnit: travelDistance / supply,
+        }];
       })
       .sort((a, b) =>
         a.costPerUnit - b.costPerUnit
@@ -313,6 +354,7 @@ export function planAutonomousHaloTravel(
     boundaryTarget: { ...expedition.candidate.sourcePosition },
     issuedAtTick,
     startedAtTick: state.tick,
+    claimedSupply: expedition.visibleSupply,
   };
 }
 
@@ -406,6 +448,38 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return materializeHexHalo(links, edges);
   }
 
+  private async activeAutonomousSupplyClaims(tick: number): Promise<AutonomousSupplyClaim[]> {
+    const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_SUPPLY_CLAIMS_KEY);
+    const valid = Array.isArray(stored)
+      ? stored.filter(isAutonomousSupplyClaim)
+      : [];
+    const active = valid.filter((claim) => claim.expiresAtTick > tick);
+    if (!Array.isArray(stored) || active.length !== stored.length) {
+      await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, active);
+    }
+    return active;
+  }
+
+  private async persistAutonomousSupplyClaim(claim: AutonomousSupplyClaim, tick: number): Promise<void> {
+    const active = await this.activeAutonomousSupplyClaims(tick);
+    await this.autonomyState.storage.put(
+      AUTONOMOUS_SUPPLY_CLAIMS_KEY,
+      [...active.filter((entry) => entry.claimId !== claim.claimId), claim],
+    );
+  }
+
+  private async releaseAutonomousSupplyClaim(claimId: string | undefined): Promise<void> {
+    if (claimId === undefined) return;
+    const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_SUPPLY_CLAIMS_KEY);
+    if (!Array.isArray(stored)) return;
+    const next = stored
+      .filter(isAutonomousSupplyClaim)
+      .filter((claim) => claim.claimId !== claimId);
+    if (next.length !== stored.length) {
+      await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, next);
+    }
+  }
+
   private replaceRuntimeState(state: WorldState): void {
     const access = runtimeAccess(this);
     access.runtime = new WorldRuntime({
@@ -439,6 +513,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
 
     const agent = state.agents.find((entry) => entry.id === pending.agentId);
     if (agent === undefined || !agent.autonomy || agent.task?.source === "external") {
+      await this.releaseAutonomousSupplyClaim(pending.claimId);
       await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
       return false;
     }
@@ -449,6 +524,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       state.tick - pending.startedAtTick > AUTONOMOUS_TRAVEL_TTL
     ) {
       if (isMatchingTravelTask(agent, pending)) delete agent.task;
+      await this.releaseAutonomousSupplyClaim(pending.claimId);
       await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
       this.replaceRuntimeState(state);
       return false;
@@ -494,11 +570,28 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           ...cachedHalo,
           ...(await this.materializeAutonomyHalo(state, missingDirections)),
         ];
-    const plan = planAutonomousHaloTravel(state, halo);
+    const claims = await this.activeAutonomousSupplyClaims(state.tick);
+    const plan = planAutonomousHaloTravel(state, halo, claims);
     if (plan === undefined) return false;
 
     const agent = state.agents.find((entry) => entry.id === plan.agentId);
     if (agent === undefined) return false;
+    const claimId = `autonomy-claim:${state.regionId}:${plan.agentId}:${state.tick}:${plan.direction}:${plan.neighborRegionId}`;
+    const pendingPlan: PendingAutonomousTravel = {
+      ...plan,
+      claimId,
+    };
+    const claimedSupply = plan.claimedSupply ?? 0;
+    if (claimedSupply > 0) {
+      await this.persistAutonomousSupplyClaim({
+        claimId,
+        resource: plan.resource,
+        direction: plan.direction,
+        neighborRegionId: plan.neighborRegionId,
+        amount: claimedSupply,
+        expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
+      }, state.tick);
+    }
     agent.task = {
       source: "autonomy",
       issuedAtTick: plan.issuedAtTick,
@@ -506,7 +599,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       target: { ...plan.boundaryTarget },
     };
     agent.status = `traveling toward ${plan.neighborRegionId} for ${plan.resource}`;
-    await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, plan);
+    await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, pendingPlan);
     this.replaceRuntimeState(state);
     return true;
   }
