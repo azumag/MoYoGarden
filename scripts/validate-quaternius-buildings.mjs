@@ -7,7 +7,7 @@ const EXPECTED = ["camp.glb", "storehouse.glb", "market.glb", "workshop.glb"];
 const manifest = JSON.parse(await readFile(join(ROOT, "manifest.json"), "utf8"));
 const notice = await readFile(join(ROOT, "NOTICE.txt"), "utf8");
 
-assert.equal(manifest.version, "0.3.11-q2");
+assert.equal(manifest.version, "0.3.11-q3");
 assert.equal(manifest.upstreamRepo, "agentkaerf/FreeModels");
 assert.equal(manifest.upstreamCommit, "db3df04d1e4714298a09510b26fb6de6645138a2");
 assert.equal(manifest.license, "CC0-1.0");
@@ -44,6 +44,7 @@ for (const asset of manifest.loaded) {
   assert.ok(document.nodes?.length >= 6, `${asset.file} lacks modular shell nodes`);
   assert.ok(document.meshes?.length >= 5, `${asset.file} lacks shared modular meshes`);
   assert.ok(document.materials?.length >= 4, `${asset.file} lacks decayed PBR materials`);
+  assert.ok(document.nodes.some((node) => node.extras?.silhouetteRole), `${asset.file} lacks silhouette role metadata`);
 
   const minY = Number(document.extras?.moyoBounds?.minY);
   const maxY = Number(document.extras?.moyoBounds?.maxY);
