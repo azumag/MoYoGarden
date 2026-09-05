@@ -16,6 +16,8 @@ const HALO_ORGANIC_PROPAGULE_BONUS: Readonly<Record<Exclude<ResourceKind, "stone
 const HALO_HYDROLOGY_EPSILON = 1e-6;
 const HALO_RUNOFF_SLOPE_SCALE = 0.18;
 
+type HaloLookup = ReturnType<typeof hexHaloLookup>;
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -27,9 +29,8 @@ function tileElevation(tile: Tile | undefined): number | undefined {
 
 function haloNeighborWaterInfluence(
   position: GridPosition,
-  halo: readonly HexHaloTile[],
+  lookup: HaloLookup,
 ): number {
-  const lookup = hexHaloLookup(halo);
   for (const direction of HEX_GRID_DIRECTIONS) {
     const ghost = lookup.get(hexHaloKey(position, direction));
     if (ghost?.tile.terrain === "water") return 1;
@@ -40,9 +41,8 @@ function haloNeighborWaterInfluence(
 function haloNeighborPropaguleInfluence(
   position: GridPosition,
   resourceKind: Exclude<ResourceKind, "stone">,
-  halo: readonly HexHaloTile[],
+  lookup: HaloLookup,
 ): number {
-  const lookup = hexHaloLookup(halo);
   let influence = 0;
   for (const direction of HEX_GRID_DIRECTIONS) {
     const resource = lookup.get(hexHaloKey(position, direction))?.tile.resource;
@@ -69,16 +69,15 @@ function haloNeighborPropaguleInfluence(
  * weighted runoff instead of keeping only the strongest one. Drainage remains
  * normalized to [0,1], preserving the existing moisture scale.
  */
-export function haloDrainageInflowAt(
+function haloDrainageInflowFromLookup(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
-  halo: readonly HexHaloTile[] = [],
+  lookup: HaloLookup,
 ): number {
   const tile = getTile(state, position);
   const elevation = tileElevation(tile);
   if (tile === undefined || tile.terrain === "water" || elevation === undefined) return 0;
 
-  const lookup = hexHaloLookup(halo);
   let inflow = 0;
   for (const direction of HEX_GRID_DIRECTIONS) {
     const ghost = lookup.get(hexHaloKey(position, direction));
@@ -102,10 +101,18 @@ export function haloDrainageInflowAt(
   return inflow;
 }
 
-export function surfaceMoistureWithHaloAt(
+export function haloDrainageInflowAt(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
   halo: readonly HexHaloTile[] = [],
+): number {
+  return haloDrainageInflowFromLookup(state, position, hexHaloLookup(halo));
+}
+
+function surfaceMoistureWithHaloLookup(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  lookup: HaloLookup,
 ): number {
   const tile = getTile(state, position);
   if (tile === undefined) return 0;
@@ -125,7 +132,7 @@ export function surfaceMoistureWithHaloAt(
     }
   }
 
-  waterInfluence = Math.max(waterInfluence, haloNeighborWaterInfluence(position, halo));
+  waterInfluence = Math.max(waterInfluence, haloNeighborWaterInfluence(position, lookup));
   const vegetationCover =
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
       ? tile.resource.amount / tile.resource.maxAmount
@@ -136,7 +143,7 @@ export function surfaceMoistureWithHaloAt(
   // contributions. Add them before applying the normalized runoff cap instead of
   // letting the stronger side hide the weaker one at a region boundary.
   const runoff = clamp01(
-    drainageAt(state, position) + haloDrainageInflowAt(state, position, halo),
+    drainageAt(state, position) + haloDrainageInflowFromLookup(state, position, lookup),
   );
   const runoffRetention = runoff * 0.14;
   return Math.min(
@@ -145,18 +152,34 @@ export function surfaceMoistureWithHaloAt(
   );
 }
 
+export function surfaceMoistureWithHaloAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  halo: readonly HexHaloTile[] = [],
+): number {
+  return surfaceMoistureWithHaloLookup(state, position, hexHaloLookup(halo));
+}
+
+function resourceRegrowthChanceWithHaloLookup(
+  state: WorldState,
+  tile: Tile,
+  lookup: HaloLookup,
+): number {
+  if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
+  const moisture = surfaceMoistureWithHaloLookup(state, tile, lookup);
+  const propaguleInfluence = haloNeighborPropaguleInfluence(tile, tile.resource.kind, lookup);
+  const propaguleBonus = propaguleInfluence * HALO_ORGANIC_PROPAGULE_BONUS[tile.resource.kind];
+  return tile.resource.kind === "wood"
+    ? Math.min(0.32, 0.08 + moisture * 0.22 + propaguleBonus)
+    : Math.min(0.34, 0.06 + moisture * 0.26 + propaguleBonus);
+}
+
 export function resourceRegrowthChanceWithHalo(
   state: WorldState,
   tile: Tile,
   halo: readonly HexHaloTile[] = [],
 ): number {
-  if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
-  const moisture = surfaceMoistureWithHaloAt(state, tile, halo);
-  const propaguleInfluence = haloNeighborPropaguleInfluence(tile, tile.resource.kind, halo);
-  const propaguleBonus = propaguleInfluence * HALO_ORGANIC_PROPAGULE_BONUS[tile.resource.kind];
-  return tile.resource.kind === "wood"
-    ? Math.min(0.32, 0.08 + moisture * 0.22 + propaguleBonus)
-    : Math.min(0.34, 0.06 + moisture * 0.26 + propaguleBonus);
+  return resourceRegrowthChanceWithHaloLookup(state, tile, hexHaloLookup(halo));
 }
 
 /**
@@ -178,6 +201,7 @@ export function applyHaloRegrowthCompensation(
   }
 
   const beforeTiles = new Map(before.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
+  const lookup = hexHaloLookup(halo);
   const random = createRandom(after.rngState);
   let grown = 0;
 
@@ -199,7 +223,7 @@ export function applyHaloRegrowthCompensation(
     }
 
     const localChance = resourceRegrowthChance(after, tile);
-    const haloChance = resourceRegrowthChanceWithHalo(after, tile, halo);
+    const haloChance = resourceRegrowthChanceWithHaloLookup(after, tile, lookup);
     if (haloChance <= localChance) continue;
     const conditional = clamp01((haloChance - localChance) / Math.max(1e-9, 1 - localChance));
     if (random.next() < conditional) {
