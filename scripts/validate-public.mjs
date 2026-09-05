@@ -95,6 +95,8 @@ assert.match(skyFix, /sky\.position\.copy\(this\.camera\.position\)/);
 assert.match(skyFix, /horizonGlow/);
 assert.doesNotMatch(skyFix, /pow\(sunDot,\s*620/);
 assert.match(skyFix, /material\.depthTest\s*=\s*false/);
+assert.match(skyFix, /toneMappingExposure\s*=\s*0\.78/);
+assert.match(skyFix, /moyoDecayStyled/);
 
 assert.match(app, /createDemoState\(\)/);
 assert.match(app, /loadHighResolutionModels/);
@@ -119,8 +121,8 @@ assert.match(modelLibrary, /SkeletonUtils\.js/);
 assert.match(modelLibrary, /SkeletonUtils\.clone/);
 assert.match(modelLibrary, /this\.animations\s*=\s*new Map/);
 assert.match(modelLibrary, /clips\(name\)/);
-assert.match(modelLibrary, /Math\.max\(timeoutMs,\s*6_500\)/);
-assert.match(modelLibrary, /Math\.min\(timeoutMs,\s*2_500\)/);
+assert.match(modelLibrary, /isAuthoredKey\(key\)\s*\?\s*Math\.max\(timeoutMs,\s*12_000\)/);
+assert.doesNotMatch(modelLibrary, /Math\.min\(timeoutMs,\s*2_500\)/);
 assert.ok(modelLibrary.indexOf('["settler"') < modelLibrary.indexOf('["authored:agent-worker"'));
 assert.ok(modelLibrary.indexOf('["buildings"') < modelLibrary.indexOf('["authored:building-camp"'));
 

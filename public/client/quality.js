@@ -80,6 +80,10 @@ function automaticProfileId() {
   if (networkIsConstrained() || narrow || reducedMotion || highDprTouchDevice() || (memory > 0 && memory < 6) || (cores > 0 && cores < 6)) {
     return "balanced";
   }
+  if (memory <= 0) {
+    if (cores >= 12) return "ultra";
+    if (cores >= 8) return "high";
+  }
   if (memory >= 12 && cores >= 10) return "ultra";
   if (memory >= 8 && cores >= 8) return "high";
   return "balanced";
