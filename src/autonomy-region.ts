@@ -109,15 +109,22 @@ function localResourceAvailable(state: WorldState, resource: ResourceKind): bool
   );
 }
 
-function isBoundaryPosition(state: WorldState, position: Agent["position"]): boolean {
-  if (!isHexGridCell(state, position)) return false;
-  return HEX_GRID_DIRECTIONS.some((direction) => {
+function boundaryDirections(
+  state: WorldState,
+  position: Agent["position"],
+): HexGridDirection[] {
+  if (!isHexGridCell(state, position)) return [];
+  return HEX_GRID_DIRECTIONS.filter((direction) => {
     const step = HEX_GRID_DIRECTION_STEPS[direction];
     return !isHexGridCell(state, {
       x: position.x + step.x,
       y: position.y + step.y,
     });
   });
+}
+
+function isBoundaryPosition(state: WorldState, position: Agent["position"]): boolean {
+  return boundaryDirections(state, position).length > 0;
 }
 
 function samePosition(
@@ -129,6 +136,17 @@ function samePosition(
 
 function directionRank(direction: HexGridDirection): number {
   return HEX_GRID_DIRECTIONS.indexOf(direction);
+}
+
+export function autonomyHaloPlanningDirections(state: WorldState): HexGridDirection[] {
+  const needed = new Set<HexGridDirection>();
+  for (const agent of state.agents) {
+    if (!agent.autonomy) continue;
+    const resource = resourceIntent(state, agent);
+    if (resource === undefined || localResourceAvailable(state, resource)) continue;
+    for (const direction of boundaryDirections(state, agent.position)) needed.add(direction);
+  }
+  return HEX_GRID_DIRECTIONS.filter((direction) => needed.has(direction));
 }
 
 export function planAutonomousHaloHandoff(
@@ -169,16 +187,6 @@ export function planAutonomousHaloHandoff(
   return undefined;
 }
 
-function needsHaloPlanning(state: WorldState): boolean {
-  return state.agents.some((agent) => {
-    if (!agent.autonomy) return false;
-    const resource = resourceIntent(state, agent);
-    return resource !== undefined &&
-      !localResourceAvailable(state, resource) &&
-      isBoundaryPosition(state, agent.position);
-  });
-}
-
 export class RegionDurableObject extends HaloRegionDurableObject {
   constructor(
     private readonly autonomyState: DurableObjectState,
@@ -206,8 +214,13 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return isEdgeSnapshot(value) ? value : undefined;
   }
 
-  private async materializeAutonomyHalo(state: WorldState): Promise<HexHaloTile[]> {
-    const links = buildHexHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId);
+  private async materializeAutonomyHalo(
+    state: WorldState,
+    directions: readonly HexGridDirection[],
+  ): Promise<HexHaloTile[]> {
+    const needed = new Set(directions);
+    const links = buildHexHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId)
+      .filter((link) => needed.has(link.direction));
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
       const direction = oppositeHexGridDirection(link.direction);
@@ -251,9 +264,10 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       await this.attemptPendingHandoff(pending);
       return;
     }
-    if (!needsHaloPlanning(state)) return;
+    const directions = autonomyHaloPlanningDirections(state);
+    if (directions.length === 0) return;
 
-    const halo = await this.materializeAutonomyHalo(state);
+    const halo = await this.materializeAutonomyHalo(state, directions);
     const plan = planAutonomousHaloHandoff(state, halo);
     if (plan === undefined) return;
 

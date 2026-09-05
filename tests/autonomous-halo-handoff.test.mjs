@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { planAutonomousHaloHandoff } from "../dist-ts/src/autonomy-region.js";
+import {
+  autonomyHaloPlanningDirections,
+  planAutonomousHaloHandoff,
+} from "../dist-ts/src/autonomy-region.js";
 import {
   hexGridBoundaryCells,
+  hexGridCenter,
   hexGridHandoffTarget,
 } from "../dist-ts/src/hex-grid.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
@@ -80,4 +84,17 @@ test("idle resource specialists can cross after depletion without inventing a di
 
   halo[0].tile.resource = { kind: "food", amount: 8, maxAmount: 8 };
   assert.equal(planAutonomousHaloHandoff(state, halo), undefined);
+});
+
+test("autonomy samples only halo directions that a depleted worker can actually cross", () => {
+  const { state, agent } = stateWithBoundaryWoodIntent();
+  assert.deepEqual(autonomyHaloPlanningDirections(state), ["east"]);
+
+  agent.position = hexGridCenter(state);
+  assert.deepEqual(autonomyHaloPlanningDirections(state), []);
+
+  const westPosition = hexGridBoundaryCells(state, "west")[5];
+  assert.ok(westPosition);
+  agent.position = { ...westPosition };
+  assert.deepEqual(autonomyHaloPlanningDirections(state), ["west"]);
 });
