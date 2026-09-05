@@ -14,6 +14,14 @@ const quaterniusVendorSource = await readFile(
   new URL("../scripts/vendor-quaternius-decay.mjs", import.meta.url),
   "utf8",
 ).catch(() => "");
+const quaterniusBuildingVendorSource = await readFile(
+  new URL("../scripts/vendor-quaternius-buildings.mjs", import.meta.url),
+  "utf8",
+).catch(() => "");
+const quaterniusBuildingValidatorSource = await readFile(
+  new URL("../scripts/validate-quaternius-buildings.mjs", import.meta.url),
+  "utf8",
+).catch(() => "");
 
 test("authored models keep a useful loading window instead of a 2.5 second cap", () => {
   assert.doesNotMatch(modelLibrarySource, /Math\.min\(timeoutMs,\s*2_500\)/);
@@ -99,4 +107,50 @@ test("decay dressing prefers authored prop geometry and preserves procedural fal
 test("procedural support and fence fallbacks are grounded at y=0", () => {
   assert.match(decayDressingSource, /BoxGeometry\(0\.075,\s*0\.82,\s*0\.075\)\.translate\(0,\s*0\.41,\s*0\)/);
   assert.match(decayDressingSource, /BoxGeometry\(0\.92,\s*0\.42,\s*0\.06\)\.translate\(0,\s*0\.21,\s*0\)/);
+});
+
+test("Quaternius building shell vendor composes pinned texture-free modular architecture", () => {
+  assert.match(quaterniusBuildingVendorSource, /db3df04d1e4714298a09510b26fb6de6645138a2/);
+  assert.match(quaterniusBuildingVendorSource, /Wall_Plaster_Straight\.gltf/);
+  assert.match(quaterniusBuildingVendorSource, /Wall_Plaster_Door_Flat\.gltf/);
+  assert.match(quaterniusBuildingVendorSource, /Wall_Plaster_Window_Wide_Flat\.gltf/);
+  assert.match(quaterniusBuildingVendorSource, /Wall_UnevenBrick_Straight\.gltf/);
+  assert.match(quaterniusBuildingVendorSource, /Roof_Wooden_2x1\.gltf/);
+  assert.match(quaterniusBuildingVendorSource, /gitBlobSha/);
+  assert.match(quaterniusBuildingVendorSource, /packGlb/);
+  assert.match(quaterniusBuildingVendorSource, /delete source\.images/);
+  assert.match(quaterniusBuildingVendorSource, /delete source\.textures/);
+  assert.match(quaterniusBuildingVendorSource, /delete source\.samplers/);
+});
+
+test("web build vendors and validates four Quaternius high LOD building shells", () => {
+  const packageJson = JSON.parse(packageSource);
+  assert.match(packageJson.scripts["vendor:authored:quaternius-buildings"], /vendor-quaternius-buildings\.mjs/);
+  assert.match(packageJson.scripts["build:web"], /vendor:authored:quaternius-buildings/);
+  assert.match(packageJson.scripts["build:web"], /validate-quaternius-buildings\.mjs/);
+  assert.match(quaterniusBuildingValidatorSource, /camp\.glb/);
+  assert.match(quaterniusBuildingValidatorSource, /storehouse\.glb/);
+  assert.match(quaterniusBuildingValidatorSource, /market\.glb/);
+  assert.match(quaterniusBuildingValidatorSource, /workshop\.glb/);
+  assert.match(quaterniusBuildingValidatorSource, /256 \* 1024/);
+  assert.match(quaterniusBuildingValidatorSource, /minY/);
+});
+
+test("high detail buildings prefer Quaternius shells while medium keeps KayKit fallback", () => {
+  assert.match(modelLibrarySource, /AUTHORED_BUILDING_SHELL_BY_CHILD/);
+  assert.match(modelLibrarySource, /authored:building-shell-camp/);
+  assert.match(modelLibrarySource, /authored:building-shell-storehouse/);
+  assert.match(modelLibrarySource, /authored:building-shell-market/);
+  assert.match(modelLibrarySource, /authored:building-shell-workshop/);
+  assert.match(modelLibrarySource, /detail === "high"[\s\S]*AUTHORED_BUILDING_SHELL_BY_CHILD/);
+  assert.match(modelLibrarySource, /AUTHORED_BUILDING_BY_CHILD\[childName\]/);
+  assert.match(modelLibrarySource, /resolveCloneSourceName/);
+});
+
+test("Quaternius shell loads refresh buildings and fit the existing building height contract", () => {
+  assert.match(modelLibrarySource, /authored:building-shell-.*return "buildings"/s);
+  assert.match(modelLibrarySource, /authored:building-shell-camp[\s\S]*1\.62/);
+  assert.match(modelLibrarySource, /authored:building-shell-storehouse[\s\S]*1\.82/);
+  assert.match(modelLibrarySource, /authored:building-shell-market[\s\S]*1\.72/);
+  assert.match(modelLibrarySource, /authored:building-shell-workshop[\s\S]*1\.88/);
 });
