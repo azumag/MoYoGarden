@@ -159,4 +159,15 @@ test("persisted supply claims keep the next scout from double-booking the same n
     "garden-3",
     "the persisted east claim should leave the north-east supply as the better available expedition",
   );
+
+  const claims = await source.state.storage.get(CLAIMS_KEY);
+  assert.ok(Array.isArray(claims));
+  const newClaim = claims.find((claim) =>
+    claim.claimId !== "prior-east-expedition" &&
+    claim.neighborRegionId === "garden-3" &&
+    claim.resource === "wood"
+  );
+  assert.ok(newClaim, "starting the new expedition must persist its own short-lived supply claim");
+  assert.equal(newClaim.amount, 4);
+  assert.equal(newClaim.expiresAtTick, 84);
 });
