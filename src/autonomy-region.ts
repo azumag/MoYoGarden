@@ -7,12 +7,13 @@ import {
 import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
+  hexGridDistance,
   isHexGridCell,
   oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as HaloRegionDurableObject } from "./halo-region.js";
-import type { Agent, ResourceKind, WorldState } from "./protocol.js";
+import type { Agent, GridPosition, ResourceKind, WorldState } from "./protocol.js";
 import { WorldRuntime } from "./runtime.js";
 
 interface AutonomyEnv {
@@ -38,13 +39,28 @@ interface PendingAutonomousHandoff {
   resource: ResourceKind;
 }
 
+interface PendingAutonomousTravel {
+  agentId: string;
+  resource: ResourceKind;
+  direction: HexGridDirection;
+  neighborRegionId: string;
+  boundaryTarget: GridPosition;
+  issuedAtTick: number;
+  startedAtTick: number;
+}
+
 export interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {
   neighborRegionId: string;
 }
 
+export interface AutonomousHaloTravelPlan extends PendingAutonomousTravel {}
+
 const AUTONOMOUS_HANDOFF_KEY = "handoff:autonomy:v1";
+const AUTONOMOUS_TRAVEL_KEY = "handoff:autonomy:travel:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
 const LOW_ENERGY_THRESHOLD = 18;
+const AUTONOMOUS_SCOUT_INTERVAL = 12;
+const AUTONOMOUS_TRAVEL_TTL = 48;
 
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
@@ -138,6 +154,20 @@ function directionRank(direction: HexGridDirection): number {
   return HEX_GRID_DIRECTIONS.indexOf(direction);
 }
 
+function localTilePassable(state: WorldState, position: GridPosition): boolean {
+  const tile = state.tiles[position.y * state.width + position.x];
+  return tile !== undefined
+    && tile.x === position.x
+    && tile.y === position.y
+    && tile.terrain !== "water";
+}
+
+function isMatchingTravelTask(agent: Agent, pending: PendingAutonomousTravel): boolean {
+  return agent.task?.source === "autonomy"
+    && agent.task.type === "move"
+    && samePosition(agent.task.target, pending.boundaryTarget);
+}
+
 export function autonomyHaloPlanningDirections(state: WorldState): HexGridDirection[] {
   const needed = new Set<HexGridDirection>();
   for (const agent of state.agents) {
@@ -147,6 +177,57 @@ export function autonomyHaloPlanningDirections(state: WorldState): HexGridDirect
     for (const direction of boundaryDirections(state, agent.position)) needed.add(direction);
   }
   return HEX_GRID_DIRECTIONS.filter((direction) => needed.has(direction));
+}
+
+export function shouldScoutAutonomyHalo(state: WorldState): boolean {
+  if (state.tick % AUTONOMOUS_SCOUT_INTERVAL !== 0) return false;
+  return state.agents.some((agent) => {
+    if (!agent.autonomy || isBoundaryPosition(state, agent.position)) return false;
+    const resource = resourceIntent(state, agent);
+    return resource !== undefined && !localResourceAvailable(state, resource);
+  });
+}
+
+export function planAutonomousHaloTravel(
+  state: WorldState,
+  halo: readonly HexHaloTile[],
+): AutonomousHaloTravelPlan | undefined {
+  const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
+  for (const agent of agents) {
+    if (!agent.autonomy || isBoundaryPosition(state, agent.position)) continue;
+    const resource = resourceIntent(state, agent);
+    if (resource === undefined || localResourceAvailable(state, resource)) continue;
+
+    const candidate = halo
+      .filter((entry) =>
+        localTilePassable(state, entry.sourcePosition) &&
+        entry.tile.terrain !== "water" &&
+        entry.tile.resource?.kind === resource &&
+        entry.tile.resource.amount > 0
+      )
+      .sort((a, b) =>
+        hexGridDistance(agent.position, a.sourcePosition) - hexGridDistance(agent.position, b.sourcePosition) ||
+        directionRank(a.direction) - directionRank(b.direction) ||
+        a.neighborRegionId.localeCompare(b.neighborRegionId) ||
+        a.sourcePosition.y - b.sourcePosition.y ||
+        a.sourcePosition.x - b.sourcePosition.x
+      )[0];
+    if (candidate === undefined) continue;
+
+    const issuedAtTick = agent.task?.source === "autonomy" && agent.task.type === "gather"
+      ? agent.task.issuedAtTick
+      : state.tick;
+    return {
+      agentId: agent.id,
+      resource,
+      direction: candidate.direction,
+      neighborRegionId: candidate.neighborRegionId,
+      boundaryTarget: { ...candidate.sourcePosition },
+      issuedAtTick,
+      startedAtTick: state.tick,
+    };
+  }
+  return undefined;
 }
 
 export function planAutonomousHaloHandoff(
@@ -239,6 +320,14 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return materializeHexHalo(links, edges);
   }
 
+  private replaceRuntimeState(state: WorldState): void {
+    const access = runtimeAccess(this);
+    access.runtime = new WorldRuntime({
+      state,
+      pendingCommands: access.runtime.pendingCommands(),
+    });
+  }
+
   private autonomousHandoffRequest(pending: PendingAutonomousHandoff): Request {
     return new Request("http://localhost/api/admin/handoff", {
       method: "POST",
@@ -258,27 +347,99 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     }
   }
 
+  private async resumeAutonomousTravel(state: WorldState): Promise<boolean> {
+    const pending = await this.autonomyState.storage.get<PendingAutonomousTravel | null>(AUTONOMOUS_TRAVEL_KEY);
+    if (pending === undefined || pending === null) return false;
+
+    const agent = state.agents.find((entry) => entry.id === pending.agentId);
+    if (agent === undefined || !agent.autonomy || agent.task?.source === "external") {
+      await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
+      return false;
+    }
+
+    if (
+      agent.energy <= LOW_ENERGY_THRESHOLD ||
+      localResourceAvailable(state, pending.resource) ||
+      state.tick - pending.startedAtTick > AUTONOMOUS_TRAVEL_TTL
+    ) {
+      if (isMatchingTravelTask(agent, pending)) delete agent.task;
+      await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
+      this.replaceRuntimeState(state);
+      return false;
+    }
+
+    if (samePosition(agent.position, pending.boundaryTarget)) {
+      agent.task = {
+        source: "autonomy",
+        issuedAtTick: pending.issuedAtTick,
+        type: "gather",
+        resource: pending.resource,
+      };
+      agent.status = `scouting ${pending.neighborRegionId} for ${pending.resource}`;
+      await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
+      this.replaceRuntimeState(state);
+      return false;
+    }
+
+    if (!isMatchingTravelTask(agent, pending)) {
+      agent.task = {
+        source: "autonomy",
+        issuedAtTick: pending.issuedAtTick,
+        type: "move",
+        target: { ...pending.boundaryTarget },
+      };
+      agent.status = `traveling toward ${pending.neighborRegionId} for ${pending.resource}`;
+      this.replaceRuntimeState(state);
+    }
+    return true;
+  }
+
+  private async startAutonomousTravel(state: WorldState): Promise<boolean> {
+    if (!shouldScoutAutonomyHalo(state)) return false;
+    const halo = await this.materializeAutonomyHalo(state, HEX_GRID_DIRECTIONS);
+    const plan = planAutonomousHaloTravel(state, halo);
+    if (plan === undefined) return false;
+
+    const agent = state.agents.find((entry) => entry.id === plan.agentId);
+    if (agent === undefined) return false;
+    agent.task = {
+      source: "autonomy",
+      issuedAtTick: plan.issuedAtTick,
+      type: "move",
+      target: { ...plan.boundaryTarget },
+    };
+    agent.status = `traveling toward ${plan.neighborRegionId} for ${plan.resource}`;
+    await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, plan);
+    this.replaceRuntimeState(state);
+    return true;
+  }
+
   private async resumeOrPlanAutonomousHandoff(state: WorldState): Promise<void> {
     const pending = await this.autonomyState.storage.get<PendingAutonomousHandoff | null>(AUTONOMOUS_HANDOFF_KEY);
     if (pending !== undefined && pending !== null) {
       await this.attemptPendingHandoff(pending);
       return;
     }
+    if (await this.resumeAutonomousTravel(state)) return;
+
     const directions = autonomyHaloPlanningDirections(state);
-    if (directions.length === 0) return;
+    if (directions.length > 0) {
+      const halo = await this.materializeAutonomyHalo(state, directions);
+      const plan = planAutonomousHaloHandoff(state, halo);
+      if (plan !== undefined) {
+        const pendingPlan: PendingAutonomousHandoff = {
+          transferId: plan.transferId,
+          agentId: plan.agentId,
+          direction: plan.direction,
+          resource: plan.resource,
+        };
+        await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pendingPlan);
+        await this.attemptPendingHandoff(pendingPlan);
+        return;
+      }
+    }
 
-    const halo = await this.materializeAutonomyHalo(state, directions);
-    const plan = planAutonomousHaloHandoff(state, halo);
-    if (plan === undefined) return;
-
-    const pendingPlan: PendingAutonomousHandoff = {
-      transferId: plan.transferId,
-      agentId: plan.agentId,
-      direction: plan.direction,
-      resource: plan.resource,
-    };
-    await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pendingPlan);
-    await this.attemptPendingHandoff(pendingPlan);
+    await this.startAutonomousTravel(state);
   }
 
   override async alarm(): Promise<void> {
