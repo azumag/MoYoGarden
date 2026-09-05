@@ -80,6 +80,37 @@ test("unresolved upstream ghost catchment contributes runoff across the boundary
   assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), local);
 });
 
+test("independent upstream ghost tributaries combine at the same hex boundary cell", () => {
+  const { state, tile, halo } = fixture();
+  tile.elevation = 0.7;
+  halo[0].tile = {
+    x: halo[0].neighborPosition.x,
+    y: halo[0].neighborPosition.y,
+    terrain: "plain",
+    elevation: 0.9,
+    drainage: 0.35,
+  };
+  const second = {
+    ...structuredClone(halo[0]),
+    direction: "northEast",
+    tile: {
+      x: halo[0].neighborPosition.x,
+      y: halo[0].neighborPosition.y,
+      terrain: "plain",
+      elevation: 0.95,
+      drainage: 0.4,
+    },
+  };
+
+  const strongestOnly = haloDrainageInflowAt(state, tile, halo);
+  const combinedHalo = [...halo, second];
+  const combined = haloDrainageInflowAt(state, tile, combinedHalo);
+  assert.equal(strongestOnly, 0.35);
+  assert.equal(combined, 0.75);
+  assert.ok(surfaceMoistureWithHaloAt(state, tile, combinedHalo) > surfaceMoistureWithHaloAt(state, tile, halo));
+  assert.ok(resourceRegrowthChanceWithHalo(state, tile, combinedHalo) > resourceRegrowthChanceWithHalo(state, tile, halo));
+});
+
 test("neighboring ghost woodland boosts depleted boundary forest regrowth without fabricating moisture", () => {
   const { state, tile, halo } = fixture();
   halo[0].tile = {

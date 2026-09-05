@@ -59,6 +59,11 @@ function haloNeighborPropaguleInfluence(
  * lower, treat the ghost tile's already-computed drainage as passive runoff
  * entering this cell. Ghost tiles that already drain locally are left alone so
  * we do not redirect or double-count an established local flow path.
+ *
+ * Multiple unresolved ghost sinks can meet the same corner/edge cell on a hex.
+ * Their catchments are independent tributaries, so accumulate their slope-
+ * weighted runoff instead of keeping only the strongest one. Drainage remains
+ * normalized to [0,1], preserving the existing moisture scale.
  */
 export function haloDrainageInflowAt(
   state: Pick<WorldState, "width" | "height" | "tiles">,
@@ -88,7 +93,7 @@ export function haloDrainageInflowAt(
       continue;
     }
     const slope = clamp01((ghostElevation - elevation) / HALO_RUNOFF_SLOPE_SCALE);
-    inflow = Math.max(inflow, ghostDrainage * slope);
+    inflow = clamp01(inflow + ghostDrainage * slope);
   }
   return inflow;
 }
