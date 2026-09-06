@@ -1,8 +1,11 @@
 import {
+  HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
   HEX_GRID_STEPS,
   hexGridCenter,
   hexGridRadius,
   isHexGridCell,
+  type HexGridDirection,
 } from "./hex-grid.js";
 import type { Tile, WorldState } from "./protocol.js";
 import { createRandom } from "./prng.js";
@@ -24,6 +27,11 @@ export interface RegionBoundaryEdges {
   south?: boolean;
 }
 
+export interface WorldWind {
+  direction: HexGridDirection;
+  strength: number;
+}
+
 export interface WorldConditions {
   elevation: number;
   moisture: number;
@@ -31,6 +39,8 @@ export interface WorldConditions {
   slope: number;
   convergence: number;
   wetness: number;
+  windDirection: HexGridDirection;
+  windStrength: number;
 }
 
 function clamp01(value: number): number {
@@ -67,6 +77,36 @@ function elevationAt(worldSeed: number, globalX: number, globalY: number): numbe
 }
 
 /**
+ * Sample a deterministic prevailing wind on the same six-direction axial grid
+ * used by movement and halo exchange. The field varies only at broad spatial
+ * scales, so adjacent regions share the same low-level wind instead of inventing
+ * independent per-region weather categories.
+ */
+export function sampleWorldWind(
+  worldSeed: number,
+  globalX: number,
+  globalY: number,
+): WorldWind {
+  const x = globalX + 0.5;
+  const y = globalY + 0.5;
+  const phase = seededUnit(worldSeed, 0xbb67ae85) * Math.PI * 2;
+  const angle =
+    phase +
+    Math.sin((x / 176 + y / 224) * Math.PI * 2 + phase * 0.43) * 0.78 +
+    Math.cos((x / 293 - y / 241) * Math.PI * 2 + phase * 0.71) * 0.31;
+  const sector = Math.PI / 3;
+  const index = ((Math.round(angle / sector) % HEX_GRID_DIRECTIONS.length) + HEX_GRID_DIRECTIONS.length) %
+    HEX_GRID_DIRECTIONS.length;
+  const direction = HEX_GRID_DIRECTIONS[index] ?? "east";
+  const strength = clamp01(
+    0.34 +
+    Math.sin((x / 137 - y / 151) * Math.PI * 2 + phase) * 0.18 +
+    Math.cos((x / 311 + y / 283) * Math.PI * 2 + phase * 0.37) * 0.12,
+  );
+  return { direction, strength };
+}
+
+/**
  * Sample low-level environment state on the same axial coordinate system used by
  * movement, perception and hydrology. Slope/convergence use all six equidistant
  * hex neighbors; no square-grid cardinal/diagonal distinction remains.
@@ -83,8 +123,20 @@ export function sampleWorldConditions(
   const elevation = elevationAt(worldSeed, globalX, globalY);
   const local = seededUnit(worldSeed, coordinateSeed(worldSeed, globalX, globalY)) - 0.5;
   const moistureWave = Math.cos((x / 34 - y / 29) * Math.PI * 2 + phaseB);
+  const wind = sampleWorldWind(worldSeed, globalX, globalY);
+  const windStep = HEX_GRID_DIRECTION_STEPS[wind.direction];
+  const upwindElevation = elevationAt(
+    worldSeed,
+    globalX - windStep.x,
+    globalY - windStep.y,
+  );
+  const orographicMoisture = (elevation - upwindElevation) * 0.24 * wind.strength;
   const moisture = clamp01(
-    0.43 + moistureWave * 0.17 + (1 - elevation) * 0.31 + local * 0.08,
+    0.43 +
+    moistureWave * 0.17 +
+    (1 - elevation) * 0.31 +
+    local * 0.08 +
+    orographicMoisture,
   );
 
   const climateBand = Math.cos((y / 128) * Math.PI * 2 + phaseTemperature * 0.5);
@@ -113,7 +165,16 @@ export function sampleWorldConditions(
       slope * 0.12,
   );
 
-  return { elevation, moisture, temperature, slope, convergence, wetness };
+  return {
+    elevation,
+    moisture,
+    temperature,
+    slope,
+    convergence,
+    wetness,
+    windDirection: wind.direction,
+    windStrength: wind.strength,
+  };
 }
 
 /**
