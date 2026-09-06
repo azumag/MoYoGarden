@@ -469,10 +469,14 @@ function nextStepTowards(state: WorldState, start: GridPosition, target: GridPos
   for (let cursor = 0; cursor < queue.length && !found; cursor += 1) {
     const current = queue[cursor];
     if (current === undefined) break;
-    for (const delta of NEIGHBORS) {
+    const candidates = NEIGHBORS.flatMap((delta, order) => {
       const next = { x: current.x + delta.x, y: current.y + delta.y };
       const key = `${next.x},${next.y}`;
-      if (visited.has(key) || !isPassable(state, next)) continue;
+      if (visited.has(key) || !isPassable(state, next)) return [];
+      return [{ next, key, order, crowding: agentCrowdingAt(state, next) }];
+    }).sort((a, b) => a.crowding - b.crowding || a.order - b.order);
+
+    for (const { next, key } of candidates) {
       visited.add(key);
       previous.set(key, current);
       if (samePosition(next, target)) {
