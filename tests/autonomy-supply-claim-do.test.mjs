@@ -206,3 +206,75 @@ test("terminal autonomous handoff rejection releases its reserved neighbor suppl
   assert.equal(await source.state.storage.get(HANDOFF_KEY), null);
   assert.deepEqual(await source.state.storage.get(CLAIMS_KEY), []);
 });
+
+
+test("autonomous seam handoff reaches the neighbor through the internal region route", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  const east = await assignRegion(env, "garden-2");
+
+  const sourceState = source.object.runtime.snapshot();
+  depleteWood(sourceState);
+  for (const candidate of sourceState.agents) candidate.autonomy = false;
+  const agent = sourceState.agents[0];
+  assert.ok(agent);
+  const eastBoundary = hexGridBoundaryCells(sourceState, "east");
+  const sourcePosition = eastBoundary[Math.floor(eastBoundary.length / 2)];
+  assert.ok(sourcePosition);
+  sourceState.tick = 24;
+  agent.autonomy = true;
+  agent.position = { ...sourcePosition };
+  agent.role = "woodcutter";
+  agent.capacity = 12;
+  agent.inventory = { wood: 0, stone: 0, food: 0 };
+  agent.energy = 100;
+  agent.task = {
+    source: "autonomy",
+    issuedAtTick: 20,
+    type: "gather",
+    resource: "wood",
+  };
+  source.object.runtime = new WorldRuntime({ state: sourceState });
+  await source.object.persist();
+
+  const eastState = east.object.runtime.snapshot();
+  depleteWood(eastState);
+  placeBoundaryWood(eastState, "west", 8);
+  east.object.runtime = new WorldRuntime({ state: eastState });
+  await east.object.persist();
+
+  await source.state.storage.put(CLAIMS_KEY, [{
+    claimId: "owned-east-claim",
+    agentId: agent.id,
+    resource: "wood",
+    direction: "east",
+    neighborRegionId: "garden-2",
+    amount: 8,
+    expiresAtTick: 84,
+  }]);
+
+  await source.object.alarm();
+
+  assert.equal(await source.state.storage.get(HANDOFF_KEY), null);
+  const sourceAfter = source.object.runtime.snapshot();
+  assert.equal(
+    sourceAfter.agents.some((entry) => entry.id === agent.id),
+    false,
+    "a successful autonomous handoff must detach the source-owned agent",
+  );
+  const targetAfter = east.object.runtime.snapshot();
+  const transferred = targetAfter.agents.find((entry) =>
+    entry.id !== agent.id && entry.id.endsWith(`:${agent.id}`)
+  );
+  assert.ok(transferred, "the neighbor must commit a globally-owned copy of the autonomous agent");
+  assert.equal(transferred.task?.source, "autonomy");
+  assert.equal(transferred.task?.type, "gather");
+  assert.equal(transferred.task?.resource, "wood");
+
+  const claims = await source.state.storage.get(CLAIMS_KEY);
+  assert.ok(Array.isArray(claims));
+  assert.ok(
+    claims.some((claim) => claim.claimId === "owned-east-claim"),
+    "successful transfer keeps the short-lived supply claim for arrival-side reconciliation",
+  );
+});

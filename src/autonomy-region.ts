@@ -553,9 +553,13 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   }
 
   private autonomousHandoffRequest(pending: PendingAutonomousHandoff): Request {
+    const regionId = runtimeAccess(this).runtime.snapshot().regionId;
     return new Request("http://localhost/api/admin/handoff", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-moyo-region-internal": regionId,
+      },
       body: JSON.stringify({
         transferId: pending.transferId,
         agentId: pending.agentId,
