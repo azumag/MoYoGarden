@@ -185,6 +185,51 @@ test("public Worker hides autonomy claim reconciliation routes", async () => {
 });
 
 
+test("source claim settlement is cumulative and idempotent", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  const state = source.object.runtime.snapshot();
+  state.tick = 24;
+  source.object.runtime = new WorldRuntime({ state });
+  await source.object.persist();
+
+  await source.state.storage.put(CLAIMS_KEY, [{
+    claimId: "settled-east-claim",
+    agentId: "agent-1",
+    resource: "wood",
+    direction: "east",
+    neighborRegionId: "garden-2",
+    amount: 4,
+    expiresAtTick: 84,
+  }]);
+
+  const settle = async (settledAmount) => source.object.fetch(new Request(
+    "https://moyo.internal/api/internal/autonomy/claim/settle",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-moyo-region-internal": "garden-1",
+      },
+      body: JSON.stringify({ claimId: "settled-east-claim", settledAmount }),
+    },
+  ));
+
+  assert.equal((await settle(2)).status, 200);
+  let claims = await source.state.storage.get(CLAIMS_KEY);
+  assert.equal(claims[0].amount, 2);
+  assert.equal(claims[0].settledAmount, 2);
+
+  assert.equal((await settle(2)).status, 200);
+  claims = await source.state.storage.get(CLAIMS_KEY);
+  assert.equal(claims[0].amount, 2, "retrying the same cumulative settlement must not consume twice");
+  assert.equal(claims[0].settledAmount, 2);
+
+  assert.equal((await settle(4)).status, 200);
+  assert.deepEqual(await source.state.storage.get(CLAIMS_KEY), []);
+});
+
+
 test("terminal autonomous handoff rejection releases its reserved neighbor supply", async () => {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
@@ -300,10 +345,14 @@ test("autonomous seam handoff reaches the neighbor through the internal region r
   assert.equal(arrivalTile?.resource?.amount, 4);
 
   await east.object.alarm();
-  assert.ok(
-    (await source.state.storage.get(CLAIMS_KEY)).some((claim) => claim.claimId === "owned-east-claim"),
-    "the reservation must remain while the arrival gather is still consuming its supply",
-  );
+  const partiallySettledClaims = await source.state.storage.get(CLAIMS_KEY);
+  const partiallySettled = partiallySettledClaims.find((claim) => claim.claimId === "owned-east-claim");
+  assert.ok(partiallySettled, "the reservation must remain while the arrival gather is still consuming its supply");
+  assert.equal(partiallySettled.amount, 2, "the first 2 gathered wood must reduce the remaining reservation");
+  assert.equal(partiallySettled.settledAmount, 2);
+  const partiallyReconciledArrival = await east.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.equal(partiallyReconciledArrival[0].gatheredAmount, 2);
+  assert.equal(partiallyReconciledArrival[0].settledAmount, 2);
 
   await east.object.alarm();
 

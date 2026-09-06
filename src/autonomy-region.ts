@@ -65,6 +65,7 @@ export interface AutonomousSupplyClaim {
   direction: HexGridDirection;
   neighborRegionId: string;
   amount: number;
+  settledAmount?: number;
   expiresAtTick: number;
 }
 
@@ -74,6 +75,8 @@ interface AutonomousArrivalClaim {
   agentId: string;
   resource: ResourceKind;
   registeredAtTick: number;
+  gatheredAmount?: number;
+  settledAmount?: number;
 }
 
 export interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {
@@ -89,6 +92,7 @@ const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
 const INTERNAL_AUTONOMY_PREFIX = "/api/internal/autonomy/";
 const INTERNAL_CLAIM_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/register`;
+const INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;
 const INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;
 const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
@@ -136,6 +140,11 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
     && typeof value.amount === "number"
     && Number.isFinite(value.amount)
     && value.amount > 0
+    && (value.settledAmount === undefined || (
+      typeof value.settledAmount === "number"
+      && Number.isFinite(value.settledAmount)
+      && value.settledAmount >= 0
+    ))
     && typeof value.expiresAtTick === "number"
     && Number.isInteger(value.expiresAtTick);
 }
@@ -146,7 +155,17 @@ function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalCla
     && typeof value.sourceRegionId === "string"
     && typeof value.agentId === "string"
     && isResourceKind(value.resource)
-    && Number.isInteger(value.registeredAtTick);
+    && Number.isInteger(value.registeredAtTick)
+    && (value.gatheredAmount === undefined || (
+      typeof value.gatheredAmount === "number"
+      && Number.isFinite(value.gatheredAmount)
+      && value.gatheredAmount >= 0
+    ))
+    && (value.settledAmount === undefined || (
+      typeof value.settledAmount === "number"
+      && Number.isFinite(value.settledAmount)
+      && value.settledAmount >= 0
+    ));
 }
 
 function inventoryAmount(agent: Agent): number {
@@ -619,19 +638,76 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         status: 409,
       });
     }
+    const claims = await this.arrivalClaims();
+    const existing = claims.find((entry) => entry.claimId === body.claimId);
     const claim: AutonomousArrivalClaim = {
       claimId: body.claimId,
       sourceRegionId: body.sourceRegionId,
       agentId: body.agentId,
       resource: body.resource,
-      registeredAtTick: state.tick,
+      registeredAtTick: existing?.registeredAtTick ?? state.tick,
+      gatheredAmount: existing?.gatheredAmount ?? 0,
+      settledAmount: existing?.settledAmount ?? 0,
     };
-    const claims = await this.arrivalClaims();
     await this.autonomyState.storage.put(
       AUTONOMOUS_ARRIVAL_CLAIMS_KEY,
       [...claims.filter((entry) => entry.claimId !== claim.claimId), claim],
     );
     return new Response(JSON.stringify({ ok: true, claimId: claim.claimId }), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+
+  private async settleArrivalSourceClaim(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+    }
+    if (
+      !isRecord(body) ||
+      typeof body.claimId !== "string" ||
+      body.claimId.trim() === "" ||
+      typeof body.settledAmount !== "number" ||
+      !Number.isFinite(body.settledAmount) ||
+      body.settledAmount < 0
+    ) {
+      return new Response(JSON.stringify({ error: "claimId and non-negative settledAmount are required" }), {
+        status: 400,
+      });
+    }
+
+    const tick = runtimeAccess(this).runtime.snapshot().tick;
+    const claims = await this.activeAutonomousSupplyClaims(tick);
+    const claim = claims.find((entry) => entry.claimId === body.claimId);
+    if (claim === undefined) {
+      return new Response(JSON.stringify({
+        ok: true,
+        claimId: body.claimId,
+        settledAmount: body.settledAmount,
+        remainingAmount: 0,
+      }), {
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    }
+
+    const previousSettled = claim.settledAmount ?? 0;
+    const settledAmount = Math.max(previousSettled, body.settledAmount);
+    const newlySettled = Math.max(0, settledAmount - previousSettled);
+    const remainingAmount = Math.max(0, claim.amount - newlySettled);
+    const next = remainingAmount > 0
+      ? claims.map((entry) => entry.claimId === claim.claimId
+        ? { ...entry, amount: remainingAmount, settledAmount }
+        : entry)
+      : claims.filter((entry) => entry.claimId !== claim.claimId);
+    await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, next);
+    return new Response(JSON.stringify({
+      ok: true,
+      claimId: claim.claimId,
+      settledAmount,
+      remainingAmount,
+    }), {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
@@ -692,19 +768,77 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     }
   }
 
-  private async reconcileArrivalClaims(after: WorldState): Promise<void> {
+  private async reconcileArrivalClaims(before: WorldState, after: WorldState): Promise<void> {
     const claims = await this.arrivalClaims();
     if (claims.length === 0) return;
     const keep: AutonomousArrivalClaim[] = [];
+    let dirty = false;
     for (const claim of claims) {
+      const beforeAgent = before.agents.find((entry) => entry.id === claim.agentId);
       const agent = after.agents.find((entry) => entry.id === claim.agentId);
+      const wasGathering =
+        beforeAgent?.autonomy === true &&
+        beforeAgent.task?.source === "autonomy" &&
+        beforeAgent.task.type === "gather" &&
+        beforeAgent.task.resource === claim.resource;
+      const gatheredThisTick = wasGathering && agent !== undefined
+        ? Math.max(0, agent.inventory[claim.resource] - beforeAgent.inventory[claim.resource])
+        : 0;
+      const gatheredAmount = (claim.gatheredAmount ?? 0) + gatheredThisTick;
+      let settledAmount = Math.min(claim.settledAmount ?? 0, gatheredAmount);
+      let reservationExhausted = false;
+      if (gatheredThisTick > 0) dirty = true;
+
+      if (gatheredAmount > settledAmount) {
+        try {
+          const response = await this.autonomyStub(claim.sourceRegionId).fetch(new Request(
+            `https://moyo.internal${INTERNAL_CLAIM_SETTLE_PATH}`,
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-moyo-region-internal": claim.sourceRegionId,
+              },
+              body: JSON.stringify({ claimId: claim.claimId, settledAmount: gatheredAmount }),
+            },
+          ));
+          if (response.ok) {
+            settledAmount = gatheredAmount;
+            dirty = true;
+            try {
+              const payload = await response.json() as unknown;
+              reservationExhausted =
+                isRecord(payload) &&
+                typeof payload.remainingAmount === "number" &&
+                payload.remainingAmount <= 0;
+            } catch {
+              // A successful settlement without a parseable body is still
+              // confirmed; final release remains the conservative fallback.
+            }
+          }
+        } catch {
+          // Preserve the cumulative observed amount and retry idempotently on
+          // the next Alarm if the source DO was temporarily unavailable.
+        }
+      }
+
+      const updatedClaim: AutonomousArrivalClaim = {
+        ...claim,
+        gatheredAmount,
+        settledAmount,
+      };
+      if (reservationExhausted) {
+        dirty = true;
+        continue;
+      }
+
       const stillGathering =
         agent?.autonomy === true &&
         agent.task?.source === "autonomy" &&
         agent.task.type === "gather" &&
         agent.task.resource === claim.resource;
       if (stillGathering) {
-        keep.push(claim);
+        keep.push(updatedClaim);
         continue;
       }
 
@@ -720,12 +854,12 @@ export class RegionDurableObject extends HaloRegionDurableObject {
             body: JSON.stringify({ claimId: claim.claimId }),
           },
         ));
-        if (!response.ok) keep.push(claim);
+        if (!response.ok) keep.push(updatedClaim);
       } catch {
-        keep.push(claim);
+        keep.push(updatedClaim);
       }
     }
-    if (keep.length !== claims.length) {
+    if (dirty || keep.length !== claims.length) {
       await this.autonomyState.storage.put(AUTONOMOUS_ARRIVAL_CLAIMS_KEY, keep);
     }
   }
@@ -921,6 +1055,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {
         return this.registerArrivalClaim(request);
       }
+      if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_SETTLE_PATH) {
+        return this.settleArrivalSourceClaim(request);
+      }
       if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_RELEASE_PATH) {
         return this.releaseArrivalSourceClaim(request);
       }
@@ -932,7 +1069,11 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   override async alarm(): Promise<void> {
     const before = runtimeAccess(this).runtime.snapshot();
     await this.resumeOrPlanAutonomousHandoff(before);
+    const simulationBefore = runtimeAccess(this).runtime.snapshot();
     await super.alarm();
-    await this.reconcileArrivalClaims(runtimeAccess(this).runtime.snapshot());
+    await this.reconcileArrivalClaims(
+      simulationBefore,
+      runtimeAccess(this).runtime.snapshot(),
+    );
   }
 }
