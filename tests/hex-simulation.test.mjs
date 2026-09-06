@@ -106,6 +106,49 @@ test("movement reaches an axial diagonal neighbor in one simulation tick", () =>
   assert.equal(hexGridDistance(center, target), 1);
 });
 
+test("equal-length movement paths avoid an already crowded first hex", () => {
+  const state = createInitialWorld({ seed: 6006, width: 40, height: 24 });
+  for (const tile of state.tiles) {
+    if (!isHexGridCell(state, tile)) continue;
+    tile.terrain = "plain";
+    delete tile.resource;
+  }
+
+  const mover = state.agents[0];
+  const crowd = state.agents[1];
+  assert.ok(mover && crowd);
+  const start = { x: 19, y: 11 };
+  const crowdedNorthEast = { x: 20, y: 10 };
+  const openNorthWest = { x: 19, y: 10 };
+  const target = { x: 20, y: 9 };
+  assert.equal(hexGridDistance(start, target), 2);
+  assert.equal(hexGridDistance(crowdedNorthEast, target), 1);
+  assert.equal(hexGridDistance(openNorthWest, target), 1);
+
+  for (const agent of state.agents) {
+    agent.autonomy = false;
+    delete agent.task;
+    agent.position = { x: 18, y: 11 };
+  }
+  mover.position = start;
+  crowd.position = crowdedNorthEast;
+
+  const result = simulate(state, [{
+    id: "hex-uncrowded-shortest-path",
+    agentId: mover.id,
+    submittedAtTick: state.tick,
+    type: "move",
+    target,
+  }]);
+  const moved = result.state.agents.find((entry) => entry.id === mover.id);
+  assert.ok(moved);
+  assert.deepEqual(
+    moved.position,
+    openNorthWest,
+    "crowding should only break a tie between equally short first steps",
+  );
+});
+
 test("hydrology chooses only one of the six equidistant hex neighbors", () => {
   const state = createInitialWorld({ seed: 6004, width: 40, height: 24 });
   const center = { x: 19, y: 11 };
