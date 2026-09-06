@@ -244,6 +244,7 @@ export class RegionDurableObject {
   private readonly tickMs: number;
   private assigned = false;
   private lastActivityAt = 0;
+  private alarmRescheduleDeferred = false;
 
   constructor(
     private readonly ctx: DurableObjectState,
@@ -393,6 +394,14 @@ export class RegionDurableObject {
     if (this.virtualCatchUpPlan(now).dueTicks > 0) {
       await this.ctx.storage.setAlarm(now + this.tickMs);
     }
+  }
+
+  protected setAlarmRescheduleDeferred(deferred: boolean): void {
+    this.alarmRescheduleDeferred = deferred;
+  }
+
+  protected isAlarmRescheduleDeferred(): boolean {
+    return this.alarmRescheduleDeferred;
   }
 
   private async markActivity(): Promise<void> {
@@ -624,7 +633,7 @@ export class RegionDurableObject {
     this.lastSimulatedAt = nextSimulatedAt;
     await this.persist();
     this.broadcastSnapshot();
-    await this.scheduleNextTick();
+    if (!this.isAlarmRescheduleDeferred()) await this.scheduleNextTick();
   }
 
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {

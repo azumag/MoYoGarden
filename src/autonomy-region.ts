@@ -1089,8 +1089,16 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   override async alarm(): Promise<void> {
     const now = Date.now();
     const ticks = this.virtualTicksForAlarm(now);
-    for (let index = 0; index < ticks; index += 1) {
-      await this.runSingleAlarmTick();
+    let completed = false;
+    try {
+      for (let index = 0; index < ticks; index += 1) {
+        this.setAlarmRescheduleDeferred(index + 1 < ticks);
+        await this.runSingleAlarmTick();
+      }
+      completed = true;
+    } finally {
+      this.setAlarmRescheduleDeferred(false);
+      if (!completed) await this.scheduleCatchUpIfBehind(Date.now());
     }
     await this.scheduleCatchUpIfBehind(Date.now());
   }

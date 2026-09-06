@@ -3,11 +3,14 @@ import test from "node:test";
 import { RegionDurableObject } from "../dist-ts/src/autonomy-region.js";
 
 class MemoryStorage {
-  constructor() { this.values = new Map(); this.alarm = null; }
+  constructor() { this.values = new Map(); this.alarm = null; this.alarmSetCount = 0; }
   async get(key) { return structuredClone(this.values.get(key)); }
   async put(key, value) { this.values.set(key, structuredClone(value)); }
   async getAlarm() { return this.alarm; }
-  async setAlarm(value) { this.alarm = value instanceof Date ? value.getTime() : value; }
+  async setAlarm(value) {
+    this.alarmSetCount += 1;
+    this.alarm = value instanceof Date ? value.getTime() : value;
+  }
   async deleteAlarm() { this.alarm = null; }
 }
 
@@ -49,8 +52,10 @@ test("cold alarm catches up bounded virtual ticks without skipping simulation ca
     const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
     assert.equal(assignedAt, now);
 
+    ctx.storage.alarmSetCount = 0;
     now += 600_000;
     await object.alarm();
+    const alarmSetsAfterCatchUp = ctx.storage.alarmSetCount;
 
     const state = await (await object.fetch(request("/api/world/snapshot"))).json();
     assert.equal(state.tick, 60, "ten cold minutes should execute sixty 10-second virtual ticks");
@@ -58,6 +63,11 @@ test("cold alarm catches up bounded virtual ticks without skipping simulation ca
     const health = await (await object.fetch(request("/api/health"))).json();
     assert.equal(health.virtualTicksDue, 0);
     assert.equal(health.virtualTicksRunnable, 0);
+    assert.equal(
+      alarmSetsAfterCatchUp,
+      2,
+      "catch-up should reschedule only on the final virtual tick (base + activity tier)",
+    );
   } finally {
     Date.now = originalNow;
   }

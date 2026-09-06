@@ -381,6 +381,6 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       await access.persist();
       access.broadcastSnapshot();
     }
-    await this.applyAlarmTierAfterTick();
+    if (!this.isAlarmRescheduleDeferred()) await this.applyAlarmTierAfterTick();
   }
 }
