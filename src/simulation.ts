@@ -34,7 +34,6 @@ import {
   inBounds,
   isPassable,
   migrateWorldToHexGrid,
-  nearestFactionStructure,
 } from "./world.js";
 
 export interface SimulationResult {
@@ -521,6 +520,28 @@ function agentCrowdingAt(state: Pick<WorldState, "agents">, position: GridPositi
   );
 }
 
+function depositCongestionAt(state: Pick<WorldState, "agents">, structure: Structure): number {
+  return state.agents.reduce((count, agent) => {
+    const occupying = samePosition(agent.position, structure.position);
+    const inbound = agent.task?.type === "deposit" && agent.task.structureId === structure.id;
+    return count + (occupying || inbound ? 1 : 0);
+  }, 0);
+}
+
+function nearestDepositStructure(
+  state: WorldState,
+  factionId: string,
+  position: GridPosition,
+): Structure | undefined {
+  return activeFactionStructures(state, factionId)
+    .sort((a, b) => {
+      const distance = manhattanDistance(a.position, position) - manhattanDistance(b.position, position);
+      if (distance !== 0) return distance;
+      const congestion = depositCongestionAt(state, a) - depositCongestionAt(state, b);
+      return congestion || a.id.localeCompare(b.id);
+    })[0];
+}
+
 function nearestResource(
   state: WorldState,
   origin: GridPosition,
@@ -725,7 +746,7 @@ function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask
     structure.factionId !== agent.factionId ||
     structure.status !== "active"
   ) {
-    structure = nearestFactionStructure(state, agent.factionId, agent.position);
+    structure = nearestDepositStructure(state, agent.factionId, agent.position);
   }
   if (structure === undefined) {
     delete agent.task;
