@@ -48,6 +48,19 @@ const HEX_STEPS: Readonly<Record<HexDirection, HexCoordinate>> = {
 
 const AXIAL_REGION_ID_PATTERN = /^hex-q(-?(?:0|[1-9]\d*))-r(-?(?:0|[1-9]\d*))$/;
 
+const LEGACY_REGION_AXIAL_ALIASES: ReadonlyMap<string, HexCoordinate> = new Map([
+  ["garden-1", { q: 0, r: 0 }],
+  ["garden-2", { q: 1, r: 0 }],
+  ["garden-3", { q: 1, r: -1 }],
+]);
+
+const LEGACY_REGION_ID_BY_COORDINATE: ReadonlyMap<string, string> = new Map(
+  [...LEGACY_REGION_AXIAL_ALIASES].map(([regionId, coordinate]) => [
+    `${coordinate.q},${coordinate.r}`,
+    regionId,
+  ]),
+);
+
 function assertSafeAxialCoordinate(coordinate: HexCoordinate): void {
   if (!Number.isSafeInteger(coordinate.q) || !Number.isSafeInteger(coordinate.r)) {
     throw new RangeError("axial region coordinates must be safe integers");
@@ -74,6 +87,24 @@ export function parseAxialRegionId(regionId: string): HexCoordinate | undefined 
   return axialRegionId(coordinate) === regionId ? coordinate : undefined;
 }
 
+function legacyRegionAxialCoordinate(regionId: string): HexCoordinate | undefined {
+  const coordinate = LEGACY_REGION_AXIAL_ALIASES.get(regionId);
+  return coordinate === undefined ? undefined : { ...coordinate };
+}
+
+/**
+ * Resolve either a canonical axial region id or one of the persisted production
+ * garden aliases into its logical axial identity. Unknown legacy names remain
+ * unresolved so the compatibility layer cannot silently invent ownership.
+ */
+export function regionAxialCoordinate(regionId: string): HexCoordinate | undefined {
+  return parseAxialRegionId(regionId) ?? legacyRegionAxialCoordinate(regionId);
+}
+
+function legacyRegionIdAtCoordinate(coordinate: HexCoordinate): string | undefined {
+  return LEGACY_REGION_ID_BY_COORDINATE.get(coordinateKey(coordinate.q, coordinate.r));
+}
+
 export function hexNeighborCoordinate(
   coordinate: HexCoordinate,
   direction: HexDirection,
@@ -89,10 +120,17 @@ export function axialRegionNeighborId(
   regionId: string,
   direction: HexDirection,
 ): string | undefined {
-  const coordinate = parseAxialRegionId(regionId);
-  return coordinate === undefined
-    ? undefined
-    : axialRegionId(hexNeighborCoordinate(coordinate, direction));
+  const canonicalCoordinate = parseAxialRegionId(regionId);
+  const coordinate = canonicalCoordinate ?? legacyRegionAxialCoordinate(regionId);
+  if (coordinate === undefined) return undefined;
+  const neighbor = hexNeighborCoordinate(coordinate, direction);
+
+  // Canonical dynamic ids stay canonical. Legacy production aliases retain
+  // their existing names where the destination is one of garden-1/2/3, and
+  // fall through to the canonical id outside that persisted compatibility set.
+  return canonicalCoordinate !== undefined
+    ? axialRegionId(neighbor)
+    : legacyRegionIdAtCoordinate(neighbor) ?? axialRegionId(neighbor);
 }
 
 export function hexDistance(a: HexCoordinate, b: HexCoordinate = { q: 0, r: 0 }): number {
@@ -150,21 +188,16 @@ export function projectHexCoordinate(
   };
 }
 
-export function regionHexTopology(
-  regionIds: readonly string[],
-  width = TARGET_WORLD_WIDTH,
-  height = TARGET_WORLD_HEIGHT,
-): RegionHexTopologyEntry[] {
-  if (regionIds.length === 0) return [];
-
-  const coordinates: HexCoordinate[] = [];
-  const queue: HexCoordinate[] = [{ q: 0, r: 0 }];
-  const seen = new Set([coordinateKey(0, 0)]);
-
-  while (coordinates.length < regionIds.length) {
+function nextAvailableCoordinate(
+  queue: HexCoordinate[],
+  seen: Set<string>,
+  occupied: Set<string>,
+): HexCoordinate {
+  while (true) {
     const coordinate = queue.shift();
-    if (coordinate === undefined) break;
-    coordinates.push(coordinate);
+    if (coordinate === undefined) {
+      throw new Error("failed to allocate hex region coordinate");
+    }
 
     for (const direction of HEX_DIRECTIONS) {
       const step = HEX_STEPS[direction];
@@ -174,7 +207,37 @@ export function regionHexTopology(
       seen.add(key);
       queue.push(next);
     }
+
+    const key = coordinateKey(coordinate.q, coordinate.r);
+    if (occupied.has(key)) continue;
+    occupied.add(key);
+    return coordinate;
   }
+}
+
+export function regionHexTopology(
+  regionIds: readonly string[],
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionHexTopologyEntry[] {
+  if (regionIds.length === 0) return [];
+
+  // garden-1/2/3 already own persisted production Durable Objects. Their
+  // logical axial identities must therefore stay fixed even when a temporary
+  // configuration exposes only a subset of those aliases. Unknown legacy ids
+  // continue to use the historical ring-order allocation until the later
+  // sparse-window migration replaces REGION_IDS enumeration altogether.
+  const fixedCoordinates = regionIds.map((regionId) => legacyRegionAxialCoordinate(regionId));
+  const occupied = new Set(
+    fixedCoordinates.flatMap((coordinate) => coordinate === undefined
+      ? []
+      : [coordinateKey(coordinate.q, coordinate.r)]),
+  );
+  const queue: HexCoordinate[] = [{ q: 0, r: 0 }];
+  const seen = new Set([coordinateKey(0, 0)]);
+  const coordinates = fixedCoordinates.map((coordinate) =>
+    coordinate ?? nextAvailableCoordinate(queue, seen, occupied)
+  );
 
   const idByCoordinate = new Map<string, string>();
   coordinates.forEach((coordinate, index) => {
