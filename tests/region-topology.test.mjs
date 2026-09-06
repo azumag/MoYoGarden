@@ -9,6 +9,7 @@ import {
   parseAxialRegionId,
   projectHexCoordinate,
   projectPhysicalRegionOrigin,
+  regionAxialCoordinate,
   regionHexTopology,
   regularHexFootprintSize,
 } from "../dist-ts/src/region-topology.js";
@@ -132,6 +133,26 @@ test("axial region ids round-trip signed coordinates in a canonical routing-safe
   assert.throws(() => axialRegionId({ q: 0.5, r: 0 }), RangeError);
 });
 
+test("legacy garden aliases resolve to stable axial identities without depending on list position", () => {
+  assert.deepEqual(regionAxialCoordinate("garden-1"), { q: 0, r: 0 });
+  assert.deepEqual(regionAxialCoordinate("garden-2"), { q: 1, r: 0 });
+  assert.deepEqual(regionAxialCoordinate("garden-3"), { q: 1, r: -1 });
+  assert.deepEqual(regionAxialCoordinate("hex-q-2-r3"), { q: -2, r: 3 });
+  assert.equal(regionAxialCoordinate("garden-4"), undefined);
+
+  const sparse = regionHexTopology(["garden-1", "garden-3"]);
+  assert.deepEqual(sparse.map(({ id, axial }) => ({ id, axial })), [
+    { id: "garden-1", axial: { q: 0, r: 0 } },
+    { id: "garden-3", axial: { q: 1, r: -1 } },
+  ]);
+  assert.equal(sparse[0].neighbors.east, null);
+  assert.equal(sparse[0].neighbors.northEast, "garden-3");
+
+  assert.equal(axialRegionNeighborId("garden-1", "east"), "garden-2");
+  assert.equal(axialRegionNeighborId("garden-1", "northEast"), "garden-3");
+  assert.equal(axialRegionNeighborId("garden-1", "northWest"), "hex-q0-r-1");
+});
+
 test("dynamic axial ids resolve all six neighbors without a global region list", () => {
   const expected = [
     { q: 1, r: 0 },
@@ -150,7 +171,6 @@ test("dynamic axial ids resolve all six neighbors without a global region list",
     HEX_DIRECTIONS.map((direction) => axialRegionNeighborId("hex-q0-r0", direction)),
     expected.map((coordinate) => axialRegionId(coordinate)),
   );
-  assert.equal(axialRegionNeighborId("garden-1", "east"), undefined);
   assert.throws(
     () => hexNeighborCoordinate({ q: Number.MAX_SAFE_INTEGER, r: 0 }, "east"),
     RangeError,
