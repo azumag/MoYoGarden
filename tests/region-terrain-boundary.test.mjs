@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { hexCellRadius, hexTileWorldXZ, isHexGridCell } from "../public/client/hex-grid.js";
-import { regularHexFootprintSize } from "../public/client/hex-footprint.js";
+import { hexFootprintVertices, regularHexFootprintSize } from "../public/client/hex-footprint.js";
 import { buildWeldedHexSurface, terrainVertexKey } from "../public/client/terrain-stitch.js";
 
 function activeEntries(width, height) {
@@ -32,25 +32,18 @@ function sharedCount(left, right) {
   return count;
 }
 
-test("welded local terrain reaches the exact regular-hex footprint on every axis", () => {
+test("welded local terrain contains every canonical regular-hex region corner", () => {
   const width = 40;
   const height = 24;
-  const footprint = regularHexFootprintSize(width, height);
   const surface = buildWeldedHexSurface(
     activeEntries(width, height),
     hexCellRadius(width, height),
     { footprintWidth: width, footprintHeight: height },
   );
-  const xs = [];
-  const zs = [];
-  for (let index = 0; index < surface.positions.length; index += 3) {
-    xs.push(surface.positions[index]);
-    zs.push(surface.positions[index + 2]);
+  const keys = surfaceKeys(surface);
+  for (const corner of hexFootprintVertices(width, height)) {
+    assert.ok(keys.has(terrainVertexKey(corner.x, corner.z)), `missing macro corner ${corner.x},${corner.z}`);
   }
-  assert.ok(Math.abs(Math.max(...xs) - footprint.width / 2) < 1e-6);
-  assert.ok(Math.abs(Math.min(...xs) + footprint.width / 2) < 1e-6);
-  assert.ok(Math.abs(Math.max(...zs) - footprint.height / 2) < 1e-6);
-  assert.ok(Math.abs(Math.min(...zs) + footprint.height / 2) < 1e-6);
 });
 
 test("all six adjacent region placements share real world-space boundary vertices", () => {
