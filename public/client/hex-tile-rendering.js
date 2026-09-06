@@ -55,8 +55,15 @@ function cloneSurfaceMaterial(material, fallback = null) {
       envMapIntensity: 0.3,
     });
   cloned.vertexColors = true;
+  cloned.clippingPlanes = null;
+  cloned.clipShadows = false;
+  if (cloned.userData) delete cloned.userData.moyoHexClipKey;
   cloned.needsUpdate = true;
   return cloned;
+}
+
+function regionSurfaceOptions(width, height) {
+  return { footprintWidth: width, footprintHeight: height };
 }
 
 WorldView.prototype.worldPosition = function worldPositionHex(position, lift = 0) {
@@ -91,6 +98,7 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
   const waterEntries = [];
   const surfaceHeights = new Map();
   const radius = hexCellRadius(state.width, state.height);
+  const surfaceOptions = regionSurfaceOptions(state.width, state.height);
 
   for (const tile of state.tiles) {
     if (!isHexGridCell(tile, state.width, state.height)) continue;
@@ -105,7 +113,7 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
   }
   this.surfaceHeightMap = surfaceHeights;
 
-  const terrainSurface = buildWeldedHexSurface(terrainEntries, radius);
+  const terrainSurface = buildWeldedHexSurface(terrainEntries, radius, surfaceOptions);
   const terrainGeometry = buildSurfaceGeometry(terrainSurface);
   this.terrainMesh = new THREE.Mesh(
     terrainGeometry,
@@ -122,7 +130,7 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
   this.worldRoot.add(this.terrainMesh);
 
   if (waterEntries.length > 0) {
-    const waterSurface = buildWeldedHexSurface(waterEntries, radius);
+    const waterSurface = buildWeldedHexSurface(waterEntries, radius, surfaceOptions);
     const waterGeometry = buildSurfaceGeometry(waterSurface);
     this.waterMesh = new THREE.Mesh(
       waterGeometry,
@@ -171,6 +179,7 @@ function previewSourceKind(source) {
 
 function buildWeldedNeighborSurface(group, width, height, terrainFallbackMaterial) {
   const radius = hexCellRadius(width, height);
+  const surfaceOptions = regionSurfaceOptions(width, height);
   const terrainEntries = [];
   const waterEntries = [];
   let landMaterial = null;
@@ -219,7 +228,7 @@ function buildWeldedNeighborSurface(group, width, height, terrainFallbackMateria
 
   const replacements = [];
   if (terrainEntries.length > 0) {
-    const surface = buildWeldedHexSurface(terrainEntries, radius);
+    const surface = buildWeldedHexSurface(terrainEntries, radius, surfaceOptions);
     const geometry = buildSurfaceGeometry(surface);
     const material = cloneSurfaceMaterial(landMaterial, terrainFallbackMaterial);
     const mesh = new THREE.Mesh(geometry, material);
@@ -230,7 +239,7 @@ function buildWeldedNeighborSurface(group, width, height, terrainFallbackMateria
   }
 
   if (waterEntries.length > 0) {
-    const surface = buildWeldedHexSurface(waterEntries, radius);
+    const surface = buildWeldedHexSurface(waterEntries, radius, surfaceOptions);
     const geometry = buildSurfaceGeometry(surface);
     const material = cloneSurfaceMaterial(waterMaterial);
     const mesh = new THREE.Mesh(geometry, material);
