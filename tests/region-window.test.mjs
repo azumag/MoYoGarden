@@ -50,7 +50,9 @@ test("region window keeps the center snapshot complete while passive neighbors c
     y: Math.floor(index / 40),
     terrain: "plain",
   }));
-  const state = { width: 40, height: 24, tiles };
+  const agents = [{ id: "neighbor-agent", position: { x: 19, y: 11 } }];
+  const structures = [{ id: "neighbor-store", position: { x: 20, y: 11 } }];
+  const state = { width: 40, height: 24, tiles, agents, structures };
   const payload = enrichRegionWindowPayload({
     centerRegion: "garden-1",
     chunks: [
@@ -63,6 +65,8 @@ test("region window keeps the center snapshot complete while passive neighbors c
   assert.equal(payload.chunks[1].state.tiles.length, 397);
   assert.ok(payload.chunks[1].state.tiles.every((tile) => tile.x >= 8 && tile.x <= 30));
   assert.equal(payload.chunks[1].state.tiles.some((tile) => tile.x === 0 && tile.y === 0), false);
+  assert.deepEqual(payload.chunks[1].state.agents, agents);
+  assert.deepEqual(payload.chunks[1].state.structures, structures);
 });
 
 test("region window enrichment leaves unknown chunks intact", () => {
