@@ -52,6 +52,14 @@ function arrivalTaskAfterHandoff(agent: Agent, targetTick: number): Agent["task"
       type: "deposit",
     };
   }
+  if (task.type === "build") {
+    return {
+      source: "autonomy",
+      issuedAtTick: targetTick,
+      type: "build",
+      structureType: task.structureType,
+    };
+  }
   return undefined;
 }
 
@@ -120,7 +128,9 @@ export function attachAgentOwnership(
     ? `arrived from neighboring region; replanning ${arrivalTask.resource} search`
     : arrivalTask?.type === "deposit"
       ? "arrived from neighboring region; replanning storage return"
-      : "arrived from neighboring region";
+      : arrivalTask?.type === "build"
+        ? `arrived from neighboring region; replanning ${arrivalTask.structureType} build`
+        : "arrived from neighboring region";
   snapshot.state.agents.push(arrived);
   snapshot.state.agents.sort((a, b) => a.id.localeCompare(b.id));
   return { ok: true, value: snapshot };

@@ -71,7 +71,7 @@ export interface GatherTask extends AgentTaskBase {
 export interface BuildTask extends AgentTaskBase {
   type: "build";
   structureType: StructureType;
-  target: GridPosition;
+  target?: GridPosition;
   structureId?: string;
 }
 

@@ -786,12 +786,63 @@ function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask
   });
 }
 
+function resolveBuildTaskTarget(
+  state: WorldState,
+  agent: Agent,
+  task: BuildTask,
+): GridPosition | undefined {
+  if (task.structureId !== undefined) {
+    const structure = getStructure(state, task.structureId);
+    if (
+      structure !== undefined &&
+      structure.factionId === agent.factionId &&
+      structure.type === task.structureType
+    ) {
+      task.target = { ...structure.position };
+      return task.target;
+    }
+    delete task.structureId;
+  }
+
+  if (task.target !== undefined && isPassable(state, task.target)) return task.target;
+  delete task.target;
+
+  const existing = state.structures.find(
+    (structure) =>
+      structure.factionId === agent.factionId &&
+      structure.type === task.structureType,
+  );
+  if (existing?.status === "building") {
+    task.structureId = existing.id;
+    task.target = { ...existing.position };
+    return task.target;
+  }
+  if (existing?.status === "active") {
+    delete agent.task;
+    agent.status = `${task.structureType} already available`;
+    return undefined;
+  }
+
+  const camp = activeFactionStructures(state, agent.factionId).find(
+    (structure) => structure.type === "camp",
+  );
+  const target = findBuildSite(state, camp?.position ?? agent.position, agent.factionId);
+  if (target === undefined) {
+    delete agent.task;
+    agent.status = `no local site for ${task.structureType}`;
+    return undefined;
+  }
+  task.target = target;
+  return target;
+}
+
 function startConstruction(
   state: WorldState,
   agent: Agent,
   task: BuildTask,
+  target: GridPosition,
 ): Structure | undefined {
-  if (state.structures.some((structure) => samePosition(structure.position, task.target))) {
+  if (state.structures.some((structure) => samePosition(structure.position, target))) {
     agent.status = "build site occupied";
     delete agent.task;
     return undefined;
@@ -814,7 +865,7 @@ function startConstruction(
     id: `structure-${agent.factionId}-${task.structureType}-${state.tick}-${state.structures.length + 1}`,
     factionId: agent.factionId,
     type: task.structureType,
-    position: { ...task.target },
+    position: { ...target },
     status: "building",
     progress: 0,
     requiredProgress: recipe.work,
@@ -827,19 +878,21 @@ function startConstruction(
     message: `${agent.name} started a ${task.structureType}.`,
     agentId: agent.id,
     factionId: agent.factionId,
-    position: { ...task.target },
+    position: { ...target },
     data: { structureId: structure.id, structureType: task.structureType },
   });
   return structure;
 }
 
 function executeBuild(state: WorldState, agent: Agent, task: BuildTask): void {
-  if (!samePosition(agent.position, task.target)) {
-    moveAgent(state, agent, task.target);
+  const target = resolveBuildTaskTarget(state, agent, task);
+  if (target === undefined) return;
+  if (!samePosition(agent.position, target)) {
+    moveAgent(state, agent, target);
     return;
   }
   let structure = task.structureId === undefined ? undefined : getStructure(state, task.structureId);
-  if (structure === undefined) structure = startConstruction(state, agent, task);
+  if (structure === undefined) structure = startConstruction(state, agent, task, target);
   if (structure === undefined) return;
   if (structure.status === "active") {
     delete agent.task;

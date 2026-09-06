@@ -7,6 +7,7 @@ import {
   globalHandoffAgentId,
 } from "../dist-ts/src/agent-ownership.js";
 import { hexGridBoundaryCells, hexGridHandoffTarget } from "../dist-ts/src/hex-grid.js";
+import { simulate } from "../dist-ts/src/simulation.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
 function worlds() {
@@ -182,6 +183,66 @@ test("attach keeps autonomous deposit intent but drops its source-local structur
     type: "deposit",
   });
   assert.equal(arrived.status, "arrived from neighboring region; replanning storage return");
+});
+
+test("attach keeps autonomous build intent but drops its source-local site", () => {
+  const { source, target } = worlds();
+  const agent = source.agents.find((entry) => entry.role === "builder");
+  assert.ok(agent);
+  const sourceCell = hexGridBoundaryCells(source, "east")[11];
+  assert.ok(sourceCell);
+  const targetCell = hexGridHandoffTarget(source, sourceCell, "east");
+  assert.ok(targetCell);
+  const targetTile = target.tiles[targetCell.y * target.width + targetCell.x];
+  assert.ok(targetTile);
+  targetTile.terrain = "plain";
+  target.tick = 61;
+  target.structures = [];
+  for (const other of target.agents) {
+    other.autonomy = false;
+    delete other.task;
+  }
+
+  agent.position = { ...sourceCell };
+  agent.goal = "establish production wherever the settlement expands";
+  agent.task = {
+    source: "autonomy",
+    issuedAtTick: source.tick,
+    type: "build",
+    structureType: "workshop",
+    target: { ...sourceCell },
+    structureId: "structure-source-only",
+  };
+  const detached = detachAgentOwnership(source, [], agent.id);
+  assert.equal(detached.ok, true);
+
+  const attached = attachAgentOwnership(
+    target,
+    [],
+    detached.value.agent,
+    targetCell,
+    source.regionId,
+  );
+  assert.equal(attached.ok, true);
+  const globalId = globalHandoffAgentId(agent.id, source.regionId);
+  const arrived = attached.value.state.agents.find((entry) => entry.id === globalId);
+  assert.ok(arrived);
+  assert.equal(arrived.goal, agent.goal);
+  assert.deepEqual(arrived.task, {
+    source: "autonomy",
+    issuedAtTick: target.tick,
+    type: "build",
+    structureType: "workshop",
+  });
+  assert.equal(arrived.status, "arrived from neighboring region; replanning workshop build");
+
+  const advanced = simulate(attached.value.state).state;
+  const replanned = advanced.agents.find((entry) => entry.id === globalId);
+  assert.ok(replanned);
+  assert.equal(replanned.task?.type, "build");
+  assert.equal(replanned.task?.structureType, "workshop");
+  assert.ok(replanned.task?.target, "arrival-side simulation should resolve a local build site");
+  assert.notDeepEqual(replanned.task.target, sourceCell, "source-local build coordinates must not survive handoff");
 });
 
 test("attach rejects duplicate promoted identity, impassable, and non-hex ownership targets", () => {

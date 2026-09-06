@@ -403,9 +403,10 @@ function socialTopic(state: WorldState, speaker: Agent, listener: Agent): Social
     };
   }
   if (task?.type === "build") {
+    const location = task.target === undefined ? "in this region" : `at ${task.target.x},${task.target.y}`;
     return {
       topic: "construction",
-      line: `I'm working on the ${task.structureType} at ${task.target.x},${task.target.y}.`,
+      line: `I'm working on the ${task.structureType} ${location}.`,
     };
   }
   if (task?.type === "deposit") {
