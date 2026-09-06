@@ -44,6 +44,27 @@ test("region window exposes both physical and regular-hex placement metadata", (
   ]);
 });
 
+test("region window keeps the center snapshot complete while passive neighbors carry only active hex tiles", () => {
+  const tiles = Array.from({ length: 40 * 24 }, (_, index) => ({
+    x: index % 40,
+    y: Math.floor(index / 40),
+    terrain: "plain",
+  }));
+  const state = { width: 40, height: 24, tiles };
+  const payload = enrichRegionWindowPayload({
+    centerRegion: "garden-1",
+    chunks: [
+      { regionId: "garden-1", state },
+      { regionId: "garden-2", state },
+    ],
+  }, ["garden-1", "garden-2"]);
+
+  assert.equal(payload.chunks[0].state.tiles.length, 960);
+  assert.equal(payload.chunks[1].state.tiles.length, 397);
+  assert.ok(payload.chunks[1].state.tiles.every((tile) => tile.x >= 8 && tile.x <= 30));
+  assert.equal(payload.chunks[1].state.tiles.some((tile) => tile.x === 0 && tile.y === 0), false);
+});
+
 test("region window enrichment leaves unknown chunks intact", () => {
   const payload = enrichRegionWindowPayload({
     chunks: [{ regionId: "external", origin: { x: 99, y: 99 } }],
