@@ -25,6 +25,14 @@ export function createHexClippingPlanes(width, height, centerX = 0, centerZ = 0)
   return planes;
 }
 
+function clearClipMaterial(material) {
+  if (!material) return;
+  material.clippingPlanes = null;
+  material.clipShadows = false;
+  if (material.userData) delete material.userData.moyoHexClipKey;
+  material.needsUpdate = true;
+}
+
 function clipMaterial(material, planes, key) {
   if (!material || material.userData?.moyoHexClipKey === key) return;
   material.clippingPlanes = planes;
@@ -41,6 +49,14 @@ export function applyHexFootprintClipping(root, width, height, centerX = 0, cent
   const planes = createHexClippingPlanes(width, height, centerX, centerZ);
   root.traverse((object) => {
     if (!object?.isMesh) return;
+    if (object.userData?.moyoWeldedHexSurface || object.geometry?.userData?.moyoWeldedHexSurface) {
+      if (Array.isArray(object.material)) {
+        for (const material of object.material) clearClipMaterial(material);
+      } else {
+        clearClipMaterial(object.material);
+      }
+      return;
+    }
     if (Array.isArray(object.material)) {
       for (const material of object.material) clipMaterial(material, planes, key);
     } else {
