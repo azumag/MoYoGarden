@@ -1,5 +1,6 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
 import { RegionDurableObject } from "./autonomy-region.js";
+import { isHexGridCell } from "./hex-grid.js";
 import { regionHexTopology } from "./region-topology.js";
 import baseWorker from "./worker.js";
 
@@ -42,6 +43,27 @@ export function enrichMetaPayload(
   };
 }
 
+function compactPassiveRegionState(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.tiles)) return value;
+  const width = typeof value.width === "number" && Number.isInteger(value.width)
+    ? value.width
+    : undefined;
+  const height = typeof value.height === "number" && Number.isInteger(value.height)
+    ? value.height
+    : undefined;
+  if (width === undefined || height === undefined || width <= 0 || height <= 0) return value;
+
+  const extent = { width, height };
+  const tiles = value.tiles.filter((tile) => {
+    if (!isRecord(tile)) return false;
+    const x = typeof tile.x === "number" ? tile.x : Number.NaN;
+    const y = typeof tile.y === "number" ? tile.y : Number.NaN;
+    return isHexGridCell(extent, { x, y });
+  });
+  if (tiles.length === value.tiles.length) return value;
+  return { ...value, tiles };
+}
+
 export function enrichRegionWindowPayload(
   payload: unknown,
   regionIds: readonly string[],
@@ -51,12 +73,17 @@ export function enrichRegionWindowPayload(
   const topology = new Map(
     regionHexTopology(regionIds).map((entry) => [entry.id, entry] as const),
   );
+  const centerRegion = typeof payload.centerRegion === "string" ? payload.centerRegion : undefined;
   const chunks = payload.chunks.map((value) => {
     if (!isRecord(value) || typeof value.regionId !== "string") return value;
     const placement = topology.get(value.regionId);
     if (placement === undefined) return value;
+    const state = centerRegion !== undefined && value.regionId !== centerRegion
+      ? compactPassiveRegionState(value.state)
+      : value.state;
     return {
       ...value,
+      ...(state === value.state ? {} : { state }),
       axial: placement.axial,
       physicalOrigin: placement.physicalOrigin,
       hexOrigin: placement.hexOrigin,
