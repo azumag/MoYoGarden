@@ -41,3 +41,34 @@ test("queued command survives object eviction",async()=>{const storage=new Memor
   const accepted=await first.fetch(request(`/api/agents/${agentId}/commands`,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer command-secret"},body:JSON.stringify({id:"hibernate-goal",type:"set_goal",goal:"Survive eviction"})}));assert.equal(accepted.status,202);
   const secondCtx=new MemoryState(storage),restored=new RegionDurableObject(secondCtx,env);await secondCtx.ready;await restored.alarm();const after=await (await restored.fetch(request("/api/world/snapshot"))).json();assert.equal(after.tick,1);assert.equal(after.agents.find((entry)=>entry.id===agentId).goal,"Survive eviction");
 });
+test("persisted simulation clock advances only when simulation advances", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const ctx = new MemoryState();
+    const object = new RegionDurableObject(ctx, env);
+    await ctx.ready;
+    const snapshot = await (await object.fetch(request("/api/world/snapshot"))).json();
+    const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
+    assert.equal(assignedAt, now);
+
+    now += 5_000;
+    const command = await object.fetch(request(`/api/agents/${snapshot.agents[0].id}/commands`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer command-secret",
+      },
+      body: JSON.stringify({ id: "clock-goal", type: "set_goal", goal: "Track simulation time" }),
+    }));
+    assert.equal(command.status, 202);
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt);
+
+    now += 5_000;
+    await object.alarm();
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, now);
+  } finally {
+    Date.now = originalNow;
+  }
+});

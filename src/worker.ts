@@ -35,6 +35,7 @@ interface StoredRegion {
   pendingCommands: WorldCommand[];
   paused: boolean;
   updatedAt: number;
+  lastSimulatedAt?: number;
 }
 
 export interface RegionLayoutEntry {
@@ -209,6 +210,7 @@ export class RegionDurableObject {
   private runtime!: WorldRuntime;
   private paused = false;
   private updatedAt = Date.now();
+  private lastSimulatedAt = Date.now();
   private readonly tickMs: number;
   private assigned = false;
   private lastActivityAt = 0;
@@ -238,6 +240,9 @@ export class RegionDurableObject {
           });
           this.paused = stored.paused;
           this.updatedAt = stored.updatedAt;
+          this.lastSimulatedAt = Number.isFinite(stored.lastSimulatedAt ?? Number.NaN)
+            ? stored.lastSimulatedAt ?? stored.updatedAt
+            : stored.updatedAt;
           this.assigned = true;
         } catch (error) {
           console.error("Resetting invalid persisted MoYoGarden region", error);
@@ -303,6 +308,7 @@ export class RegionDurableObject {
     if (!this.assigned) {
       this.runtime = this.createRuntime(headerRegion);
       this.assigned = true;
+      this.lastSimulatedAt = Date.now();
       await this.persist();
       if (!this.paused) await this.scheduleNextTick();
       return;
@@ -323,6 +329,7 @@ export class RegionDurableObject {
       pendingCommands: this.runtime.pendingCommands(),
       paused: this.paused,
       updatedAt: this.updatedAt,
+      lastSimulatedAt: this.lastSimulatedAt,
     };
     await this.ctx.storage.put("region", stored);
   }
@@ -419,6 +426,8 @@ export class RegionDurableObject {
         pendingCommands: this.runtime.pendingCommands().length,
         websocketClients,
         updatedAt: this.updatedAt,
+        lastSimulatedAt: this.lastSimulatedAt,
+        simulationLagMs: Math.max(0, Date.now() - this.lastSimulatedAt),
       });
     }
 
@@ -509,6 +518,7 @@ export class RegionDurableObject {
               : 1;
           const count = Number.isInteger(rawCount) ? Math.max(1, Math.min(100, rawCount)) : 1;
           const state = this.runtime.tickMany(count);
+          this.lastSimulatedAt = Date.now();
           await this.persist();
           this.broadcastSnapshot();
           return json({ tick: state.tick, count, state });
@@ -527,6 +537,7 @@ export class RegionDurableObject {
           this.prepareRegionTerrain(resetState);
           this.runtime = new WorldRuntime({ state: resetState });
           const state = this.runtime.snapshot();
+          this.lastSimulatedAt = Date.now();
           await this.persist();
           if (!this.paused) await this.scheduleNextTick();
           this.broadcastSnapshot();
@@ -543,6 +554,7 @@ export class RegionDurableObject {
   async alarm(): Promise<void> {
     if (!this.assigned || this.paused) return;
     this.runtime.tick();
+    this.lastSimulatedAt = Date.now();
     await this.persist();
     this.broadcastSnapshot();
     await this.scheduleNextTick();
