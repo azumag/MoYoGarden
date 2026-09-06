@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import * as agentsModule from "../public/client/agents.js";
-
-const crowdLayout = agentsModule.buildAgentCrowdLayout ?? (() => new Map());
+import { buildAgentCrowdLayout } from "../public/client/agent-crowding.js";
 
 function offset(layout, id) {
   return layout.get(id) ?? { x: 0, z: 0 };
@@ -19,8 +17,8 @@ test("agents sharing one logical hex receive distinct deterministic visual offse
     { id: "agent-b", position: { x: 10, y: 14 } },
     { id: "agent-alone", position: { x: 11, y: 14 } },
   ];
-  const first = crowdLayout(agents, 1);
-  const second = crowdLayout([...agents].reverse(), 1);
+  const first = buildAgentCrowdLayout(agents, 1);
+  const second = buildAgentCrowdLayout([...agents].reverse(), 1);
 
   assert.deepEqual(offset(first, "agent-alone"), { x: 0, z: 0 });
   assert.equal(new Set(["agent-a", "agent-b", "agent-c"].map((id) => key(offset(first, id)))).size, 3);
@@ -32,7 +30,7 @@ test("dense crowds stay bounded to the logical hex while retaining unique micro-
     id: `agent-${String(index).padStart(2, "0")}`,
     position: { x: 14, y: 5 },
   }));
-  const layout = crowdLayout(agents, 1);
+  const layout = buildAgentCrowdLayout(agents, 1);
   const points = agents.map((agent) => offset(layout, agent.id));
 
   assert.equal(new Set(points.map(key)).size, agents.length);
