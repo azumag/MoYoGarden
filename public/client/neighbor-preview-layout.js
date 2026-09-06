@@ -4,6 +4,19 @@ function finiteOrigin(value) {
     && Number.isFinite(value.y);
 }
 
+function finiteAxial(value) {
+  return value
+    && Number.isInteger(value.q)
+    && Number.isInteger(value.r);
+}
+
+function axialDistance(a, b) {
+  const dq = a.q - b.q;
+  const dr = a.r - b.r;
+  const ds = -dq - dr;
+  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
+}
+
 export function buildNeighborPreviewPlacements(regions, centerRegionId) {
   if (!Array.isArray(regions) || typeof centerRegionId !== "string") return [];
   const center = regions.find((entry) => entry?.id === centerRegionId);
@@ -34,6 +47,28 @@ export function buildNeighborPreviewPlacements(regions, centerRegionId) {
       },
     }];
   });
+}
+
+/**
+ * Return each loaded preview-to-preview seam exactly once. The center region is
+ * not present in this list; it is already stitched through the primary terrain
+ * mesh. Keeping this purely axial avoids relying on rendered floating-point
+ * offsets when deciding which preview chunks really share a hex side.
+ */
+export function adjacentHexPreviewPairs(placements) {
+  if (!Array.isArray(placements)) return [];
+  const candidates = placements
+    .filter((entry) => typeof entry?.regionId === "string" && finiteAxial(entry.axial))
+    .sort((a, b) => a.regionId.localeCompare(b.regionId));
+  const pairs = [];
+  for (let left = 0; left < candidates.length; left += 1) {
+    for (let right = left + 1; right < candidates.length; right += 1) {
+      const source = candidates[left];
+      const target = candidates[right];
+      if (axialDistance(source.axial, target.axial) === 1) pairs.push([source, target]);
+    }
+  }
+  return pairs;
 }
 
 export function resolvePhysicalPreviewPlacement(
