@@ -256,7 +256,7 @@ function conformBoundaryVertices(rawVertices, rawIndices, safeRadius, options) {
   for (const source of rawVertices) {
     let x = source.x;
     let z = source.z;
-    if (source.cornerSamples > 0 && source.cornerSamples < 3 && source.centerSamples === 0) {
+    if (source.cornerSamples > 0 && source.centerSamples === 0) {
       const projected = projectToHexBoundary(x, z, width, height);
       if (Math.hypot(projected.x - x, projected.z - z) <= snapDistance + 1e-9) {
         x = projected.x;
