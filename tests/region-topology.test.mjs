@@ -153,6 +153,17 @@ test("legacy garden aliases resolve to stable axial identities without depending
   assert.equal(axialRegionNeighborId("garden-1", "northWest"), "hex-q0-r-1");
 });
 
+test("canonical topology preserves encoded coordinates even when configuration order is unrelated", () => {
+  const topology = regionHexTopology(["hex-q10-r-4", "hex-q100-r100", "hex-q11-r-4"]);
+  assert.deepEqual(topology.map(({ id, axial }) => ({ id, axial })), [
+    { id: "hex-q10-r-4", axial: { q: 10, r: -4 } },
+    { id: "hex-q100-r100", axial: { q: 100, r: 100 } },
+    { id: "hex-q11-r-4", axial: { q: 11, r: -4 } },
+  ]);
+  assert.equal(topology[0].neighbors.east, "hex-q11-r-4");
+  assert.equal(topology[0].neighbors.northEast, null);
+});
+
 test("dynamic axial ids resolve all six neighbors without a global region list", () => {
   const expected = [
     { q: 1, r: 0 },

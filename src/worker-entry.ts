@@ -1,7 +1,7 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
 import { RegionDurableObject } from "./autonomy-region.js";
 import { isHexGridCell } from "./hex-grid.js";
-import { regionHexTopology } from "./region-topology.js";
+import { regionHexTopology, regionHexWindow } from "./region-topology.js";
 import baseWorker from "./worker.js";
 
 interface WorkerEnv {
@@ -70,10 +70,16 @@ export function enrichRegionWindowPayload(
 ): unknown {
   if (!isRecord(payload) || !Array.isArray(payload.chunks)) return payload;
 
-  const topology = new Map(
-    regionHexTopology(regionIds).map((entry) => [entry.id, entry] as const),
-  );
   const centerRegion = typeof payload.centerRegion === "string" ? payload.centerRegion : undefined;
+  const radius = typeof payload.radius === "number" && Number.isFinite(payload.radius)
+    ? Math.max(0, Math.min(4, Math.floor(payload.radius)))
+    : 1;
+  const topology = new Map(
+    (centerRegion === undefined
+      ? regionHexTopology(regionIds)
+      : regionHexWindow(regionIds, centerRegion, radius))
+      .map((entry) => [entry.id, entry] as const),
+  );
   const chunks = payload.chunks.map((value) => {
     if (!isRecord(value) || typeof value.regionId !== "string") return value;
     const placement = topology.get(value.regionId);

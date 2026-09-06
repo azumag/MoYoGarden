@@ -227,7 +227,7 @@ export function regionHexTopology(
   // configuration exposes only a subset of those aliases. Unknown legacy ids
   // continue to use the historical ring-order allocation until the later
   // sparse-window migration replaces REGION_IDS enumeration altogether.
-  const fixedCoordinates = regionIds.map((regionId) => legacyRegionAxialCoordinate(regionId));
+  const fixedCoordinates = regionIds.map((regionId) => regionAxialCoordinate(regionId));
   const occupied = new Set(
     fixedCoordinates.flatMap((coordinate) => coordinate === undefined
       ? []
@@ -264,6 +264,87 @@ export function regionHexTopology(
       neighbors,
     };
   });
+}
+
+function configuredRegionIdAtCoordinate(
+  coordinate: HexCoordinate,
+  indexById: ReadonlyMap<string, number>,
+): string | undefined {
+  const legacy = legacyRegionIdAtCoordinate(coordinate);
+  const canonical = axialRegionId(coordinate);
+  let selected: string | undefined;
+  let selectedIndex = Number.POSITIVE_INFINITY;
+  for (const candidate of legacy === undefined ? [canonical] : [legacy, canonical]) {
+    const index = indexById.get(candidate);
+    if (index !== undefined && index < selectedIndex) {
+      selected = candidate;
+      selectedIndex = index;
+    }
+  }
+  return selected;
+}
+
+/**
+ * Build only the configured topology entries inside a bounded axial window.
+ * Resolved legacy aliases and canonical IDs can be addressed directly from
+ * their coordinates, so normal window requests avoid constructing the full
+ * ring topology. Unknown historical IDs retain the old full-topology fallback
+ * until REGION_IDS compatibility is removed in a later migration phase.
+ */
+export function regionHexWindow(
+  regionIds: readonly string[],
+  centerRegionId: string,
+  radius = 1,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionHexTopologyEntry[] {
+  if (regionIds.length === 0) return [];
+  const indexById = new Map(regionIds.map((regionId, index) => [regionId, index] as const));
+  if (!indexById.has(centerRegionId)) return [];
+  const safeRadius = Number.isFinite(radius)
+    ? Math.max(0, Math.min(4, Math.floor(radius)))
+    : 1;
+
+  if (regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)) {
+    const topology = regionHexTopology(regionIds, width, height);
+    const centerEntry = topology.find((entry) => entry.id === centerRegionId);
+    return centerEntry === undefined
+      ? []
+      : topology.filter((entry) => hexDistance(entry.axial, centerEntry.axial) <= safeRadius);
+  }
+
+  const center = regionAxialCoordinate(centerRegionId);
+  if (center === undefined) return [];
+  const centerKey = coordinateKey(center.q, center.r);
+  const entries: RegionHexTopologyEntry[] = [];
+  for (let q = center.q - safeRadius; q <= center.q + safeRadius; q += 1) {
+    for (let r = center.r - safeRadius; r <= center.r + safeRadius; r += 1) {
+      const coordinate = { q, r };
+      if (hexDistance(coordinate, center) > safeRadius) continue;
+      const id = coordinateKey(q, r) === centerKey
+        ? centerRegionId
+        : configuredRegionIdAtCoordinate(coordinate, indexById);
+      if (id === undefined) continue;
+      const index = indexById.get(id);
+      if (index === undefined) continue;
+      const neighbors = Object.fromEntries(
+        HEX_DIRECTIONS.map((direction) => [
+          direction,
+          configuredRegionIdAtCoordinate(hexNeighborCoordinate(coordinate, direction), indexById) ?? null,
+        ]),
+      ) as Record<HexDirection, string | null>;
+      entries.push({
+        id,
+        index,
+        axial: coordinate,
+        physicalOrigin: projectPhysicalRegionOrigin(index, width),
+        hexOrigin: projectHexCoordinate(coordinate, width, height),
+        ring: hexDistance(coordinate),
+        neighbors,
+      });
+    }
+  }
+  return entries.sort((a, b) => a.index - b.index);
 }
 
 function coordinateKey(q: number, r: number): string {

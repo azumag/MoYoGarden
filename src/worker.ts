@@ -14,7 +14,7 @@ import {
   TARGET_WORLD_HEIGHT,
   TARGET_WORLD_WIDTH,
 } from "./world-scale.js";
-import { HEX_DIRECTIONS, hexDistance, regionHexTopology } from "./region-topology.js";
+import { HEX_DIRECTIONS, regionHexTopology, regionHexWindow } from "./region-topology.js";
 
 interface Env {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -89,17 +89,17 @@ export function regionWindow(
   width = TARGET_WORLD_WIDTH,
   height = TARGET_WORLD_HEIGHT,
 ): RegionLayoutEntry[] {
-  const layout = regionLayout(regionIds, width, height);
-  const topology = regionHexTopology(regionIds, width, height);
-  const center = topology.find((entry) => entry.id === centerRegionId);
-  if (center === undefined) return [];
-  const safeRadius = Math.max(0, Math.min(4, Math.floor(radius)));
-  const visibleIndexes = new Set(
-    topology
-      .filter((entry) => hexDistance(entry.axial, center.axial) <= safeRadius)
-      .map((entry) => entry.index),
-  );
-  return layout.filter((entry) => visibleIndexes.has(entry.index));
+  return regionHexWindow(regionIds, centerRegionId, radius, width, height).map((entry) => ({
+    id: entry.id,
+    index: entry.index,
+    grid: { x: entry.index, y: 0 },
+    origin: entry.physicalOrigin,
+    extent: { width, height },
+    neighbors: {
+      west: entry.index > 0 ? regionIds[entry.index - 1] ?? null : null,
+      east: entry.index + 1 < regionIds.length ? regionIds[entry.index + 1] ?? null : null,
+    },
+  }));
 }
 
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
