@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildHexHaloLinks,
@@ -14,6 +15,15 @@ import {
 
 const extent = { width: 40, height: 24 };
 const regionIds = Array.from({ length: 7 }, (_, index) => `garden-${index + 1}`);
+const hexHaloSource = await readFile(new URL("../src/hex-halo.ts", import.meta.url), "utf8");
+const haloRegionSource = await readFile(new URL("../src/halo-region.ts", import.meta.url), "utf8");
+
+test("halo hot paths resolve only a bounded axial window", () => {
+  assert.match(hexHaloSource, /regionHexWindow/);
+  assert.doesNotMatch(hexHaloSource, /regionHexTopology/);
+  assert.match(haloRegionSource, /regionHexWindow/);
+  assert.doesNotMatch(haloRegionSource, /regionHexTopology/);
+});
 
 test("full ring center exposes one ghost link for every cell on all six sides", () => {
   const links = buildHexHaloLinks(extent, regionIds, "garden-1");
