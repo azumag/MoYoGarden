@@ -1,4 +1,7 @@
-import { applyHaloRegrowthCompensation } from "./halo-environment.js";
+import {
+  applyHaloRegrowthCompensation,
+  type HaloEnvironmentFrame,
+} from "./halo-environment.js";
 import {
   buildHexHaloLinks,
   materializeHexHalo,
@@ -13,6 +16,7 @@ import {
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
 import type { WorldState } from "./protocol.js";
+import { regionHexTopology } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { getTile } from "./world.js";
 
@@ -50,6 +54,7 @@ const WARM_TICK_MULTIPLIER = 6;
 const COLD_TICK_MULTIPLIER = 60;
 const MAX_ACTIVITY_TICK_MS = 3_600_000;
 const HALO_REGROWTH_INTERVAL = 30;
+const DEFAULT_WORLD_SEED = 424_242;
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -69,6 +74,13 @@ function configuredRegionIds(env: HaloEnv): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry));
   return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
+}
+
+function worldSeedValue(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 0x7fff_ffff
+    ? parsed
+    : DEFAULT_WORLD_SEED;
 }
 
 function directionValue(value: string | null): HexGridDirection | undefined {
@@ -230,6 +242,20 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     return isEdgeSnapshot(value) ? value : undefined;
   }
 
+  private haloEnvironmentFrame(state: WorldState): HaloEnvironmentFrame {
+    const entry = regionHexTopology(
+      configuredRegionIds(this.haloEnv),
+      state.width,
+      state.height,
+    ).find((candidate) => candidate.id === state.regionId);
+    const origin = entry?.physicalOrigin ?? { x: 0, y: 0 };
+    return {
+      worldSeed: worldSeedValue(this.haloEnv.WORLD_SEED),
+      originX: origin.x,
+      originY: origin.y,
+    };
+  }
+
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const regionIds = configuredRegionIds(this.haloEnv);
     const links = buildHexHaloLinks(state, regionIds, state.regionId);
@@ -318,7 +344,13 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     await super.alarm();
 
     const after = access.runtime.snapshot();
-    const grown = applyHaloRegrowthCompensation(before, after, halo, HALO_REGROWTH_INTERVAL);
+    const grown = applyHaloRegrowthCompensation(
+      before,
+      after,
+      halo,
+      HALO_REGROWTH_INTERVAL,
+      this.haloEnvironmentFrame(after),
+    );
     if (grown > 0) {
       access.runtime = new WorldRuntime({
         state: after,

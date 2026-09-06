@@ -10,6 +10,7 @@ import {
 } from "../dist-ts/src/halo-environment.js";
 import { buildHexHaloLinks } from "../dist-ts/src/hex-halo.js";
 import { resourceRegrowthChance, surfaceMoistureAt } from "../dist-ts/src/simulation.js";
+import { sampleWorldWind } from "../dist-ts/src/world-scale.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
 function fixture() {
@@ -45,6 +46,19 @@ function fixture() {
     },
   }];
   return { state, tile, halo, link };
+}
+
+function environmentFrameForWind(tile, direction) {
+  const worldSeed = 424242;
+  for (let originY = -768; originY <= 768; originY += 16) {
+    for (let originX = -768; originX <= 768; originX += 16) {
+      const wind = sampleWorldWind(worldSeed, originX + tile.x, originY + tile.y);
+      if (wind.direction === direction && wind.strength >= 0.2) {
+        return { worldSeed, originX, originY };
+      }
+    }
+  }
+  assert.fail(`could not find deterministic ${direction} wind fixture`);
 }
 
 test("immediate ghost water raises boundary surface moisture exactly as distance-one water", () => {
@@ -181,6 +195,37 @@ test("independent matching ghost stands combine bounded propagule pressure", () 
 
   second.tile.resource = { kind: "wood", amount: 10, maxAmount: 10 };
   assert.equal(resourceRegrowthChanceWithHalo(state, tile, [...halo, second]), oneStand);
+});
+
+test("shared world wind strengthens propagules arriving from the upwind halo side", () => {
+  const { state, tile, halo } = fixture();
+  tile.terrain = "plain";
+  tile.resource = { kind: "food", amount: 0, maxAmount: 10 };
+  halo[0].tile = {
+    x: halo[0].neighborPosition.x,
+    y: halo[0].neighborPosition.y,
+    terrain: "plain",
+    elevation: 0.8,
+    resource: { kind: "food", amount: 5, maxAmount: 10 },
+  };
+
+  const baseline = resourceRegrowthChanceWithHalo(state, tile, halo);
+  const upwindFrame = environmentFrameForWind(tile, "west");
+  const crosswindFrame = environmentFrameForWind(tile, "southEast");
+  const upwind = sampleWorldWind(
+    upwindFrame.worldSeed,
+    upwindFrame.originX + tile.x,
+    upwindFrame.originY + tile.y,
+  );
+  assert.equal(upwind.direction, "west");
+  assert.ok(upwind.strength >= 0.2);
+
+  const upwindChance = resourceRegrowthChanceWithHalo(state, tile, halo, upwindFrame);
+  const crosswindChance = resourceRegrowthChanceWithHalo(state, tile, halo, crosswindFrame);
+  assert.ok(upwindChance > baseline);
+  assert.equal(crosswindChance, baseline);
+  assert.ok(upwindChance <= resourceRegrowthChance(state, tile) + 0.04 + 1e-12);
+  assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), surfaceMoistureAt(state, tile));
 });
 
 test("halo moisture does not affect an interior cell with no directional ghost link", () => {

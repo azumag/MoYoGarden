@@ -1,6 +1,7 @@
 import { createRandom } from "./prng.js";
 import {
   HEX_GRID_DIRECTIONS,
+  oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
 import { hexHaloKey, hexHaloLookup, type HexHaloTile } from "./hex-halo.js";
@@ -13,6 +14,7 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { drainageAt, resourceRegrowthChance } from "./simulation.js";
+import { sampleWorldWind } from "./world-scale.js";
 import { getTile } from "./world.js";
 
 const WATER_MOISTURE_RADIUS = 4;
@@ -20,10 +22,17 @@ const HALO_ORGANIC_PROPAGULE_BONUS: Readonly<Record<Exclude<ResourceKind, "stone
   wood: 0.05,
   food: 0.04,
 };
+const HALO_UPWIND_PROPAGULE_GAIN = 0.35;
 const HALO_HYDROLOGY_EPSILON = 1e-6;
 const HALO_RUNOFF_SLOPE_SCALE = 0.18;
 
 type HaloLookup = ReturnType<typeof hexHaloLookup>;
+
+export interface HaloEnvironmentFrame {
+  worldSeed: number;
+  originX: number;
+  originY: number;
+}
 
 export interface HaloFlowOutlet {
   direction: HexGridDirection;
@@ -58,12 +67,31 @@ function haloNeighborPropaguleInfluence(
   position: GridPosition,
   resourceKind: Exclude<ResourceKind, "stone">,
   lookup: HaloLookup,
+  environment?: HaloEnvironmentFrame,
 ): number {
   let influence = 0;
+  const wind = environment === undefined
+    ? undefined
+    : sampleWorldWind(
+      environment.worldSeed,
+      environment.originX + position.x,
+      environment.originY + position.y,
+    );
+  const upwindDirection = wind === undefined
+    ? undefined
+    : oppositeHexGridDirection(wind.direction);
+
   for (const direction of HEX_GRID_DIRECTIONS) {
     const resource = lookup.get(hexHaloKey(position, direction))?.tile.resource;
     if (resource?.kind !== resourceKind || resource.maxAmount <= 0) continue;
-    const cover = clamp01(resource.amount / resource.maxAmount);
+    let cover = clamp01(resource.amount / resource.maxAmount);
+    if (direction === upwindDirection && wind !== undefined) {
+      // Preserve the existing isotropic seed pressure as the baseline, then let
+      // the shared world wind add a small directional advantage to biomass that
+      // is actually upwind of this boundary cell. Downwind/crosswind sources are
+      // never penalized, so existing halo behavior remains backward-compatible.
+      cover = clamp01(cover * (1 + wind.strength * HALO_UPWIND_PROPAGULE_GAIN));
+    }
     // Independent neighboring stands provide additional seed/propagule sources.
     // Combine them as a bounded union so extra directions matter without ever
     // exceeding the existing normalized influence scale.
@@ -306,10 +334,16 @@ function resourceRegrowthChanceWithHaloLookup(
   tile: Tile,
   lookup: HaloLookup,
   catchmentContribution?: ReadonlyMap<string, number>,
+  environment?: HaloEnvironmentFrame,
 ): number {
   if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
   const moisture = surfaceMoistureWithHaloLookup(state, tile, lookup, catchmentContribution);
-  const propaguleInfluence = haloNeighborPropaguleInfluence(tile, tile.resource.kind, lookup);
+  const propaguleInfluence = haloNeighborPropaguleInfluence(
+    tile,
+    tile.resource.kind,
+    lookup,
+    environment,
+  );
   const propaguleBonus = propaguleInfluence * HALO_ORGANIC_PROPAGULE_BONUS[tile.resource.kind];
   return tile.resource.kind === "wood"
     ? Math.min(0.32, 0.08 + moisture * 0.22 + propaguleBonus)
@@ -320,10 +354,17 @@ export function resourceRegrowthChanceWithHalo(
   state: WorldState,
   tile: Tile,
   halo: readonly HexHaloTile[] = [],
+  environment?: HaloEnvironmentFrame,
 ): number {
   const lookup = hexHaloLookup(halo);
   const catchmentContribution = haloCatchmentContributionMapFromLookup(state, lookup);
-  return resourceRegrowthChanceWithHaloLookup(state, tile, lookup, catchmentContribution);
+  return resourceRegrowthChanceWithHaloLookup(
+    state,
+    tile,
+    lookup,
+    catchmentContribution,
+    environment,
+  );
 }
 
 /**
@@ -339,6 +380,7 @@ export function applyHaloRegrowthCompensation(
   after: WorldState,
   halo: readonly HexHaloTile[],
   interval = 30,
+  environment?: HaloEnvironmentFrame,
 ): number {
   if (interval <= 0 || after.tick === 0 || after.tick % interval !== 0 || halo.length === 0) {
     return 0;
@@ -373,6 +415,7 @@ export function applyHaloRegrowthCompensation(
       tile,
       lookup,
       catchmentContribution,
+      environment,
     );
     if (haloChance <= localChance) continue;
     const conditional = clamp01((haloChance - localChance) / Math.max(1e-9, 1 - localChance));
