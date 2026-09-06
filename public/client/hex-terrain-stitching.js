@@ -13,11 +13,13 @@ const SAMPLE_SEARCH_RADII = 3.4;
 function centerVertexHeights(mesh) {
   const heights = new Map();
   const normals = new Map();
+  const colors = new Map();
   const samplesByKey = new Map();
   const geometry = mesh?.geometry;
   const position = geometry?.getAttribute("position");
   const normal = geometry?.getAttribute("normal");
-  if (!position) return { heights, normals, samples: [] };
+  const color = geometry?.getAttribute("color");
+  if (!position) return { heights, normals, colors, samples: [] };
 
   for (let index = 0; index < position.count; index += 1) {
     const x = position.getX(index);
@@ -36,9 +38,16 @@ function centerVertexHeights(mesh) {
           z: normal.getZ(index),
         });
       }
+      if (color) {
+        colors.set(key, {
+          r: color.getX(index),
+          g: color.getY(index),
+          b: color.getZ(index),
+        });
+      }
     }
   }
-  return { heights, normals, samples: [...samplesByKey.values()] };
+  return { heights, normals, colors, samples: [...samplesByKey.values()] };
 }
 
 function nativeYValues(mesh) {
@@ -52,22 +61,35 @@ function nativeYValues(mesh) {
   return values;
 }
 
-function copySharedNormals(mesh, group, centerSurface) {
+function copySharedAppearance(mesh, group, centerSurface) {
   const geometry = mesh.geometry;
   const position = geometry.getAttribute("position");
   const normal = geometry.getAttribute("normal");
-  if (!position || !normal || centerSurface.normals.size === 0) return false;
+  const color = geometry.getAttribute("color");
+  if (!position) return false;
 
   let changed = false;
+  let normalsChanged = false;
+  let colorsChanged = false;
   for (let index = 0; index < position.count; index += 1) {
     const worldX = group.position.x + position.getX(index);
     const worldZ = group.position.z + position.getZ(index);
-    const source = centerSurface.normals.get(terrainVertexKey(worldX, worldZ));
-    if (!source) continue;
-    normal.setXYZ(index, source.x, source.y, source.z);
-    changed = true;
+    const key = terrainVertexKey(worldX, worldZ);
+    const sourceNormal = centerSurface.normals.get(key);
+    if (normal && sourceNormal) {
+      normal.setXYZ(index, sourceNormal.x, sourceNormal.y, sourceNormal.z);
+      normalsChanged = true;
+      changed = true;
+    }
+    const sourceColor = centerSurface.colors.get(key);
+    if (color && sourceColor) {
+      color.setXYZ(index, sourceColor.r, sourceColor.g, sourceColor.b);
+      colorsChanged = true;
+      changed = true;
+    }
   }
-  if (changed) normal.needsUpdate = true;
+  if (normalsChanged) normal.needsUpdate = true;
+  if (colorsChanged) color.needsUpdate = true;
   return changed;
 }
 
@@ -129,12 +151,12 @@ function stitchMesh(mesh, group, centerSurface, width, height, cellRadius) {
     position.needsUpdate = true;
     geometry.computeVertexNormals();
   }
-  const normalsChanged = copySharedNormals(mesh, group, centerSurface);
-  if (changed || normalsChanged) {
+  const appearanceChanged = copySharedAppearance(mesh, group, centerSurface);
+  if (changed || appearanceChanged) {
     geometry.computeBoundingSphere();
     geometry.computeBoundingBox?.();
   }
-  return changed || normalsChanged;
+  return changed || appearanceChanged;
 }
 
 export function stitchHexNeighborTerrain(view) {
