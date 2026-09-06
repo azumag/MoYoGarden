@@ -23,6 +23,7 @@ const HALO_ORGANIC_PROPAGULE_BONUS: Readonly<Record<Exclude<ResourceKind, "stone
   food: 0.04,
 };
 const HALO_UPWIND_PROPAGULE_GAIN = 0.35;
+const HALO_UPWIND_WATER_VAPOR_GAIN = 0.08;
 const HALO_HYDROLOGY_EPSILON = 1e-6;
 const HALO_RUNOFF_SLOPE_SCALE = 0.18;
 
@@ -61,6 +62,28 @@ function haloNeighborWaterInfluence(
     if (ghost?.tile.terrain === "water") return 1;
   }
   return 0;
+}
+
+function haloUpwindWaterVaporMoisture(
+  position: GridPosition,
+  lookup: HaloLookup,
+  environment?: HaloEnvironmentFrame,
+): number {
+  if (environment === undefined) return 0;
+  const wind = sampleWorldWind(
+    environment.worldSeed,
+    environment.originX + position.x,
+    environment.originY + position.y,
+  );
+  const upwindDirection = oppositeHexGridDirection(wind.direction);
+  const ghost = lookup.get(hexHaloKey(position, upwindDirection));
+  if (ghost?.tile.terrain !== "water") return 0;
+
+  // Keep the existing distance-one water influence untouched, then add a small
+  // directional vapor term only when the shared world wind actually arrives
+  // from an adjacent ghost-water cell. Crosswind/downwind water therefore
+  // preserves the previous halo moisture result exactly.
+  return wind.strength * HALO_UPWIND_WATER_VAPOR_GAIN;
 }
 
 function haloNeighborPropaguleInfluence(
@@ -274,6 +297,7 @@ function surfaceMoistureWithHaloLookup(
   position: GridPosition,
   lookup: HaloLookup,
   catchmentContribution?: ReadonlyMap<string, number>,
+  environment?: HaloEnvironmentFrame,
 ): number {
   const tile = getTile(state, position);
   if (tile === undefined) return 0;
@@ -294,6 +318,7 @@ function surfaceMoistureWithHaloLookup(
   }
 
   waterInfluence = Math.max(waterInfluence, haloNeighborWaterInfluence(position, lookup));
+  const windborneMoisture = haloUpwindWaterVaporMoisture(position, lookup, environment);
   const vegetationCover =
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
       ? tile.resource.amount / tile.resource.maxAmount
@@ -315,7 +340,8 @@ function surfaceMoistureWithHaloLookup(
   const runoffRetention = runoff * 0.14;
   return Math.min(
     1,
-    0.04 + lowlandRetention + runoffRetention + waterInfluence * 0.64 + vegetationCover * 0.16,
+    0.04 + lowlandRetention + runoffRetention + waterInfluence * 0.64 +
+      vegetationCover * 0.16 + windborneMoisture,
   );
 }
 
@@ -323,10 +349,17 @@ export function surfaceMoistureWithHaloAt(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
   halo: readonly HexHaloTile[] = [],
+  environment?: HaloEnvironmentFrame,
 ): number {
   const lookup = hexHaloLookup(halo);
   const catchmentContribution = haloCatchmentContributionMapFromLookup(state, lookup);
-  return surfaceMoistureWithHaloLookup(state, position, lookup, catchmentContribution);
+  return surfaceMoistureWithHaloLookup(
+    state,
+    position,
+    lookup,
+    catchmentContribution,
+    environment,
+  );
 }
 
 function resourceRegrowthChanceWithHaloLookup(
@@ -337,7 +370,13 @@ function resourceRegrowthChanceWithHaloLookup(
   environment?: HaloEnvironmentFrame,
 ): number {
   if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
-  const moisture = surfaceMoistureWithHaloLookup(state, tile, lookup, catchmentContribution);
+  const moisture = surfaceMoistureWithHaloLookup(
+    state,
+    tile,
+    lookup,
+    catchmentContribution,
+    environment,
+  );
   const propaguleInfluence = haloNeighborPropaguleInfluence(
     tile,
     tile.resource.kind,
