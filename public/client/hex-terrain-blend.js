@@ -1,13 +1,37 @@
 import { hexFootprintVertices, isPointInsideHexFootprint } from "./hex-footprint.js";
 
-function pointSegmentDistance(px, pz, ax, az, bx, bz) {
+const BOUNDARY_SAMPLE_EPSILON = 1e-3;
+
+function pointSegmentProjection(px, pz, ax, az, bx, bz) {
   const dx = bx - ax;
   const dz = bz - az;
   const lengthSquared = dx * dx + dz * dz;
-  if (lengthSquared <= 1e-12) return Math.hypot(px - ax, pz - az);
+  if (lengthSquared <= 1e-12) {
+    return { x: ax, z: az, t: 0, distance: Math.hypot(px - ax, pz - az) };
+  }
   const projection = ((px - ax) * dx + (pz - az) * dz) / lengthSquared;
   const t = Math.max(0, Math.min(1, projection));
-  return Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
+  const x = ax + dx * t;
+  const z = az + dz * t;
+  return { x, z, t, distance: Math.hypot(px - x, pz - z) };
+}
+
+function pointSegmentDistance(px, pz, ax, az, bx, bz) {
+  return pointSegmentProjection(px, pz, ax, az, bx, bz).distance;
+}
+
+function nearestHexSideProjection(x, z, width, height) {
+  const vertices = hexFootprintVertices(width, height);
+  let nearest;
+  for (let index = 0; index < vertices.length; index += 1) {
+    const a = vertices[index];
+    const b = vertices[(index + 1) % vertices.length];
+    const projection = pointSegmentProjection(x, z, a.x, a.z, b.x, b.z);
+    if (nearest === undefined || projection.distance < nearest.distance - 1e-12) {
+      nearest = { ...projection, a, b, sideIndex: index };
+    }
+  }
+  return nearest;
 }
 
 /**
@@ -60,6 +84,86 @@ export function blendBoundaryHeight(
   const span = cellRadius * Math.max(0.5, Number.isFinite(blendRows) ? blendRows : 2);
   const t = smoothstep((boundaryDistance - lockedBand) / span);
   return targetHeight * (1 - t) + nativeHeight * t;
+}
+
+/**
+ * Sample the center region's height profile at the nearest point on the real
+ * macro-hex boundary. Boundary meshes do not necessarily contain identical
+ * vertices on both sides of a seam, so using the nearest vertex height can
+ * create a vertical zipper when neighboring terrain has a steep gradient.
+ * Interpolating between the two center-boundary samples that bracket the
+ * projected point gives both independently tessellated chunks the same seam
+ * profile without changing either chunk away from the blend band.
+ */
+export function interpolateHexBoundaryHeight(
+  x,
+  z,
+  samples,
+  width,
+  height,
+  maxDistance = Number.POSITIVE_INFINITY,
+) {
+  if (
+    ![x, z, width, height].every(Number.isFinite)
+    || width <= 0
+    || height <= 0
+    || !Array.isArray(samples)
+  ) {
+    return undefined;
+  }
+
+  const side = nearestHexSideProjection(x, z, width, height);
+  if (side === undefined) return undefined;
+  const safeMaximum = Number.isFinite(maxDistance)
+    ? Math.max(0, maxDistance)
+    : Number.POSITIVE_INFINITY;
+  if (side.distance > safeMaximum) return undefined;
+
+  const tolerance = Math.max(
+    BOUNDARY_SAMPLE_EPSILON,
+    Math.min(width, height) * 1e-5,
+  );
+  const edgeSamples = [];
+  for (const sample of samples) {
+    if (!Number.isFinite(sample?.x) || !Number.isFinite(sample?.z) || !Number.isFinite(sample?.height)) {
+      continue;
+    }
+    const projected = pointSegmentProjection(
+      sample.x,
+      sample.z,
+      side.a.x,
+      side.a.z,
+      side.b.x,
+      side.b.z,
+    );
+    if (projected.distance > tolerance) continue;
+    edgeSamples.push({ t: projected.t, height: sample.height });
+  }
+  if (edgeSamples.length === 0) return undefined;
+  edgeSamples.sort((a, b) => a.t - b.t);
+
+  let lower;
+  let upper;
+  for (const sample of edgeSamples) {
+    if (Math.abs(sample.t - side.t) <= 1e-9) {
+      return { x: side.x, z: side.z, height: sample.height, distance: side.distance };
+    }
+    if (sample.t < side.t) lower = sample;
+    if (sample.t > side.t) {
+      upper = sample;
+      break;
+    }
+  }
+  if (lower === undefined || upper === undefined) return undefined;
+  const span = upper.t - lower.t;
+  if (span <= 1e-12) return undefined;
+  const t = (side.t - lower.t) / span;
+  return {
+    x: side.x,
+    z: side.z,
+    height: lower.height * (1 - t) + upper.height * t,
+    distance: side.distance,
+  };
 }
 
 export function nearestHeightSample(x, z, samples, maxDistance = Number.POSITIVE_INFINITY) {

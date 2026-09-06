@@ -2,6 +2,7 @@ import { hexCellRadius } from "./hex-grid.js";
 import {
   blendBoundaryHeight,
   distanceOutsideHexFootprint,
+  interpolateHexBoundaryHeight,
   nearestHeightSample,
 } from "./hex-terrain-blend.js";
 import { terrainVertexKey } from "./terrain-stitch.js";
@@ -124,16 +125,24 @@ function stitchMesh(mesh, group, centerSurface, width, height, cellRadius) {
     } else {
       const boundaryDistance = distanceOutsideHexFootprint(worldX, worldZ, width, height);
       if (boundaryDistance <= maximumBoundaryDistance) {
-        const nearest = nearestHeightSample(
+        const boundary = interpolateHexBoundaryHeight(
+          worldX,
+          worldZ,
+          centerSurface.samples,
+          width,
+          height,
+          sampleDistance,
+        );
+        const target = boundary ?? nearestHeightSample(
           worldX,
           worldZ,
           centerSurface.samples,
           sampleDistance,
         );
-        if (nearest !== undefined) {
+        if (target !== undefined) {
           nextY = blendBoundaryHeight(
             originalY,
-            nearest.height,
+            target.height,
             boundaryDistance,
             cellRadius,
             BLEND_ROWS,
