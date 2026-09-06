@@ -5,6 +5,7 @@ import { hexGridBoundaryCells, hexGridCenter, isHexGridCell } from "../dist-ts/s
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
 const CLAIMS_KEY = "handoff:autonomy:claims:v1";
+const HANDOFF_KEY = "handoff:autonomy:v1";
 const TRAVEL_KEY = "handoff:autonomy:travel:v1";
 
 class MemoryStorage {
@@ -170,4 +171,38 @@ test("persisted supply claims keep the next scout from double-booking the same n
   assert.ok(newClaim, "starting the new expedition must persist its own short-lived supply claim");
   assert.equal(newClaim.amount, 4);
   assert.equal(newClaim.expiresAtTick, 84);
+});
+
+
+test("terminal autonomous handoff rejection releases its reserved neighbor supply", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  await assignRegion(env, "garden-2");
+
+  const state = source.object.runtime.snapshot();
+  state.tick = 24;
+  source.object.runtime = new WorldRuntime({ state });
+  await source.object.persist();
+
+  await source.state.storage.put(CLAIMS_KEY, [{
+    claimId: "orphaned-east-claim",
+    agentId: "missing-agent",
+    resource: "wood",
+    direction: "east",
+    neighborRegionId: "garden-2",
+    amount: 6,
+    expiresAtTick: 84,
+  }]);
+  await source.state.storage.put(HANDOFF_KEY, {
+    transferId: "autonomy:garden-1:missing-agent:24:east",
+    agentId: "missing-agent",
+    direction: "east",
+    resource: "wood",
+    claimId: "orphaned-east-claim",
+  });
+
+  await source.object.alarm();
+
+  assert.equal(await source.state.storage.get(HANDOFF_KEY), null);
+  assert.deepEqual(await source.state.storage.get(CLAIMS_KEY), []);
 });

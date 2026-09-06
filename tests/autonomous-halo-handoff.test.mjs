@@ -145,6 +145,7 @@ test("boundary autonomy honors neighbor supply claims without blocking the claim
   const ownPlan = planAutonomousHaloHandoff(state, halo, [ownReservation]);
   assert.ok(ownPlan, "the expedition that owns the reservation must be allowed through its seam");
   assert.equal(ownPlan.agentId, agent.id);
+  assert.equal(ownPlan.claimId, ownReservation.claimId);
 
   const legacyReservation = { ...reservedByAnotherAgent };
   delete legacyReservation.agentId;

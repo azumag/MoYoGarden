@@ -43,6 +43,7 @@ interface PendingAutonomousHandoff {
   agentId: string;
   direction: HexGridDirection;
   resource: ResourceKind;
+  claimId?: string;
 }
 
 interface PendingAutonomousTravel {
@@ -436,12 +437,24 @@ export function planAutonomousHaloHandoff(
     const issuedAtTick = agent.task?.source === "autonomy" && agent.task.type === "gather"
       ? agent.task.issuedAtTick
       : state.tick;
+    const claimId = claims
+      .filter((claim) =>
+        claim.agentId === agent.id &&
+        claim.resource === resource &&
+        claim.direction === candidate.direction &&
+        claim.neighborRegionId === candidate.neighborRegionId &&
+        claim.expiresAtTick > state.tick
+      )
+      .sort((a, b) =>
+        b.expiresAtTick - a.expiresAtTick || b.claimId.localeCompare(a.claimId)
+      )[0]?.claimId;
     return {
       transferId: `autonomy:${state.regionId}:${agent.id}:${issuedAtTick}:${candidate.direction}`,
       agentId: agent.id,
       direction: candidate.direction,
       resource,
       neighborRegionId: candidate.neighborRegionId,
+      ...(claimId === undefined ? {} : { claimId }),
     };
   }
   return undefined;
@@ -553,9 +566,31 @@ export class RegionDurableObject extends HaloRegionDurableObject {
 
   private async attemptPendingHandoff(pending: PendingAutonomousHandoff): Promise<void> {
     const response = await super.fetch(this.autonomousHandoffRequest(pending));
-    if (response.ok || response.status < 500) {
+    if (response.ok) {
       await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, null);
+      return;
     }
+    if (response.status >= 500) return;
+
+    // A 4xx response is already treated as terminal for this handoff. Release
+    // the matching short-lived supply reservation as well, otherwise one bad
+    // seam can keep healthy agents from using still-visible neighbor supply
+    // until the full claim TTL expires. Clear the failed autonomous gather
+    // intent so the normal simulation can replan instead of hammering the same
+    // terminal handoff every alarm.
+    await this.releaseAutonomousSupplyClaim(pending.claimId);
+    const state = runtimeAccess(this).runtime.snapshot();
+    const agent = state.agents.find((entry) => entry.id === pending.agentId);
+    if (
+      agent?.task?.source === "autonomy" &&
+      agent.task.type === "gather" &&
+      agent.task.resource === pending.resource
+    ) {
+      delete agent.task;
+      agent.status = `handoff ${pending.direction} rejected; replanning`;
+      this.replaceRuntimeState(state);
+    }
+    await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, null);
   }
 
   private async resumeAutonomousTravel(state: WorldState): Promise<boolean> {
@@ -676,6 +711,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           agentId: plan.agentId,
           direction: plan.direction,
           resource: plan.resource,
+          ...(plan.claimId === undefined ? {} : { claimId: plan.claimId }),
         };
         await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pendingPlan);
         await this.attemptPendingHandoff(pendingPlan);
