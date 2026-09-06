@@ -68,6 +68,14 @@ export interface AutonomousSupplyClaim {
   expiresAtTick: number;
 }
 
+interface AutonomousArrivalClaim {
+  claimId: string;
+  sourceRegionId: string;
+  agentId: string;
+  resource: ResourceKind;
+  registeredAtTick: number;
+}
+
 export interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {
   neighborRegionId: string;
 }
@@ -77,7 +85,11 @@ export interface AutonomousHaloTravelPlan extends PendingAutonomousTravel {}
 const AUTONOMOUS_HANDOFF_KEY = "handoff:autonomy:v1";
 const AUTONOMOUS_TRAVEL_KEY = "handoff:autonomy:travel:v1";
 const AUTONOMOUS_SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";
+const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
+const INTERNAL_AUTONOMY_PREFIX = "/api/internal/autonomy/";
+const INTERNAL_CLAIM_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/register`;
+const INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;
 const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
@@ -126,6 +138,15 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
     && value.amount > 0
     && typeof value.expiresAtTick === "number"
     && Number.isInteger(value.expiresAtTick);
+}
+
+function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalClaim {
+  return isRecord(value)
+    && typeof value.claimId === "string"
+    && typeof value.sourceRegionId === "string"
+    && typeof value.agentId === "string"
+    && isResourceKind(value.resource)
+    && Number.isInteger(value.registeredAtTick);
 }
 
 function inventoryAmount(agent: Agent): number {
@@ -544,6 +565,171 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     }
   }
 
+  private async arrivalClaims(): Promise<AutonomousArrivalClaim[]> {
+    const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_ARRIVAL_CLAIMS_KEY);
+    if (stored === undefined) return [];
+    const valid = Array.isArray(stored)
+      ? stored.filter(isAutonomousArrivalClaim)
+      : [];
+    if (!Array.isArray(stored) || valid.length !== stored.length) {
+      await this.autonomyState.storage.put(AUTONOMOUS_ARRIVAL_CLAIMS_KEY, valid);
+    }
+    return valid;
+  }
+
+  private async ensureAutonomyAssigned(request: Request): Promise<Response | undefined> {
+    const url = new URL(request.url);
+    url.pathname = "/api/health";
+    url.search = "";
+    const response = await super.fetch(new Request(url, {
+      method: "GET",
+      headers: request.headers,
+    }));
+    return response.ok ? undefined : response;
+  }
+
+  private async registerArrivalClaim(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+    }
+    if (
+      !isRecord(body) ||
+      typeof body.claimId !== "string" ||
+      body.claimId.trim() === "" ||
+      typeof body.sourceRegionId !== "string" ||
+      !configuredRegionIds(this.autonomyEnv).includes(body.sourceRegionId) ||
+      typeof body.agentId !== "string" ||
+      body.agentId.trim() === "" ||
+      !isResourceKind(body.resource)
+    ) {
+      return new Response(JSON.stringify({ error: "invalid arrival claim" }), { status: 400 });
+    }
+    const state = runtimeAccess(this).runtime.snapshot();
+    const arrived = state.agents.find((entry) => entry.id === body.agentId);
+    if (
+      arrived?.autonomy !== true ||
+      arrived.task?.source !== "autonomy" ||
+      arrived.task.type !== "gather" ||
+      arrived.task.resource !== body.resource
+    ) {
+      return new Response(JSON.stringify({ error: "arrival agent is not continuing this gather intent" }), {
+        status: 409,
+      });
+    }
+    const claim: AutonomousArrivalClaim = {
+      claimId: body.claimId,
+      sourceRegionId: body.sourceRegionId,
+      agentId: body.agentId,
+      resource: body.resource,
+      registeredAtTick: state.tick,
+    };
+    const claims = await this.arrivalClaims();
+    await this.autonomyState.storage.put(
+      AUTONOMOUS_ARRIVAL_CLAIMS_KEY,
+      [...claims.filter((entry) => entry.claimId !== claim.claimId), claim],
+    );
+    return new Response(JSON.stringify({ ok: true, claimId: claim.claimId }), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+
+  private async releaseArrivalSourceClaim(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+    }
+    if (!isRecord(body) || typeof body.claimId !== "string") {
+      return new Response(JSON.stringify({ error: "claimId is required" }), { status: 400 });
+    }
+    await this.releaseAutonomousSupplyClaim(body.claimId);
+    return new Response(JSON.stringify({ ok: true, claimId: body.claimId }), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+
+  private async registerSuccessfulArrivalClaim(
+    pending: PendingAutonomousHandoff,
+    response: Response,
+  ): Promise<void> {
+    if (pending.claimId === undefined) return;
+    let payload: unknown;
+    try {
+      payload = await response.clone().json();
+    } catch {
+      return;
+    }
+    if (
+      !isRecord(payload) ||
+      typeof payload.toRegionId !== "string" ||
+      typeof payload.agentId !== "string"
+    ) {
+      return;
+    }
+    const sourceRegionId = runtimeAccess(this).runtime.snapshot().regionId;
+    const target = this.autonomyStub(payload.toRegionId);
+    try {
+      await target.fetch(new Request(`https://moyo.internal${INTERNAL_CLAIM_REGISTER_PATH}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-moyo-region-internal": payload.toRegionId,
+        },
+        body: JSON.stringify({
+          claimId: pending.claimId,
+          sourceRegionId,
+          agentId: payload.agentId,
+          resource: pending.resource,
+        }),
+      }));
+    } catch {
+      // The source-side TTL remains the crash-safe fallback if arrival tracking
+      // cannot be installed after the ownership handoff has already committed.
+    }
+  }
+
+  private async reconcileArrivalClaims(after: WorldState): Promise<void> {
+    const claims = await this.arrivalClaims();
+    if (claims.length === 0) return;
+    const keep: AutonomousArrivalClaim[] = [];
+    for (const claim of claims) {
+      const agent = after.agents.find((entry) => entry.id === claim.agentId);
+      const stillGathering =
+        agent?.autonomy === true &&
+        agent.task?.source === "autonomy" &&
+        agent.task.type === "gather" &&
+        agent.task.resource === claim.resource;
+      if (stillGathering) {
+        keep.push(claim);
+        continue;
+      }
+
+      try {
+        const response = await this.autonomyStub(claim.sourceRegionId).fetch(new Request(
+          `https://moyo.internal${INTERNAL_CLAIM_RELEASE_PATH}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-moyo-region-internal": claim.sourceRegionId,
+            },
+            body: JSON.stringify({ claimId: claim.claimId }),
+          },
+        ));
+        if (!response.ok) keep.push(claim);
+      } catch {
+        keep.push(claim);
+      }
+    }
+    if (keep.length !== claims.length) {
+      await this.autonomyState.storage.put(AUTONOMOUS_ARRIVAL_CLAIMS_KEY, keep);
+    }
+  }
+
   private replaceRuntimeState(state: WorldState): void {
     const access = runtimeAccess(this);
     access.runtime = new WorldRuntime({
@@ -571,6 +757,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   private async attemptPendingHandoff(pending: PendingAutonomousHandoff): Promise<void> {
     const response = await super.fetch(this.autonomousHandoffRequest(pending));
     if (response.ok) {
+      await this.registerSuccessfulArrivalClaim(pending, response);
       await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, null);
       return;
     }
@@ -726,9 +913,26 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     await this.startAutonomousTravel(state, halo, directions);
   }
 
+  override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith(INTERNAL_AUTONOMY_PREFIX)) {
+      const assignmentError = await this.ensureAutonomyAssigned(request);
+      if (assignmentError !== undefined) return assignmentError;
+      if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {
+        return this.registerArrivalClaim(request);
+      }
+      if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_RELEASE_PATH) {
+        return this.releaseArrivalSourceClaim(request);
+      }
+      return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+    }
+    return super.fetch(request);
+  }
+
   override async alarm(): Promise<void> {
     const before = runtimeAccess(this).runtime.snapshot();
     await this.resumeOrPlanAutonomousHandoff(before);
     await super.alarm();
+    await this.reconcileArrivalClaims(runtimeAccess(this).runtime.snapshot());
   }
 }

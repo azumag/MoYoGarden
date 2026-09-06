@@ -116,7 +116,8 @@ export default {
     // Object stub calls. Never proxy them from the public Worker surface.
     if (
       url.pathname.startsWith("/api/internal/handoff/") ||
-      url.pathname.startsWith("/api/internal/halo/")
+      url.pathname.startsWith("/api/internal/halo/") ||
+      url.pathname.startsWith("/api/internal/autonomy/")
     ) {
       return hiddenInternalEndpoint();
     }

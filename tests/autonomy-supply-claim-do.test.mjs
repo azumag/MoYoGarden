@@ -7,6 +7,7 @@ import { WorldRuntime } from "../dist-ts/src/runtime.js";
 const CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const HANDOFF_KEY = "handoff:autonomy:v1";
 const TRAVEL_KEY = "handoff:autonomy:travel:v1";
+const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
 
 class MemoryStorage {
   constructor() {
@@ -174,6 +175,16 @@ test("persisted supply claims keep the next scout from double-booking the same n
 });
 
 
+test("public Worker hides autonomy claim reconciliation routes", async () => {
+  const env = environment();
+  const response = await worker.fetch(new Request(
+    "https://moyo.example/api/internal/autonomy/claim/release",
+    { method: "POST", body: "{}" },
+  ), env);
+  assert.equal(response.status, 404);
+});
+
+
 test("terminal autonomous handoff rejection releases its reserved neighbor supply", async () => {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
@@ -239,7 +250,7 @@ test("autonomous seam handoff reaches the neighbor through the internal region r
 
   const eastState = east.object.runtime.snapshot();
   depleteWood(eastState);
-  placeBoundaryWood(eastState, "west", 8);
+  placeBoundaryWood(eastState, "west", 4);
   east.object.runtime = new WorldRuntime({ state: eastState });
   await east.object.persist();
 
@@ -249,7 +260,7 @@ test("autonomous seam handoff reaches the neighbor through the internal region r
     resource: "wood",
     direction: "east",
     neighborRegionId: "garden-2",
-    amount: 8,
+    amount: 4,
     expiresAtTick: 84,
   }]);
 
@@ -275,6 +286,31 @@ test("autonomous seam handoff reaches the neighbor through the internal region r
   assert.ok(Array.isArray(claims));
   assert.ok(
     claims.some((claim) => claim.claimId === "owned-east-claim"),
-    "successful transfer keeps the short-lived supply claim for arrival-side reconciliation",
+    "successful transfer keeps the short-lived supply claim while arrival gathering is active",
   );
+
+  const arrivalClaims = await east.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.ok(Array.isArray(arrivalClaims));
+  assert.equal(arrivalClaims.length, 1);
+  assert.equal(arrivalClaims[0].claimId, "owned-east-claim");
+  assert.equal(arrivalClaims[0].sourceRegionId, "garden-1");
+  assert.equal(arrivalClaims[0].agentId, transferred.id);
+  const arrivalTile = targetAfter.tiles[transferred.position.y * targetAfter.width + transferred.position.x];
+  assert.equal(arrivalTile?.resource?.kind, "wood");
+  assert.equal(arrivalTile?.resource?.amount, 4);
+
+  await east.object.alarm();
+  assert.ok(
+    (await source.state.storage.get(CLAIMS_KEY)).some((claim) => claim.claimId === "owned-east-claim"),
+    "the reservation must remain while the arrival gather is still consuming its supply",
+  );
+
+  await east.object.alarm();
+
+  assert.deepEqual(
+    await source.state.storage.get(CLAIMS_KEY),
+    [],
+    "finishing the arrival-side gather must release reserved source supply before the TTL",
+  );
+  assert.deepEqual(await east.state.storage.get(ARRIVAL_CLAIMS_KEY), []);
 });
