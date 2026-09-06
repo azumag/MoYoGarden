@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveRegionPrefetch, resolveRegionRebase } from "../public/client/region-navigation.js";
+import { regionMetaUrl, resolveRegionPrefetch, resolveRegionRebase } from "../public/client/region-navigation.js";
 
 const layout = [
   { id: "garden-1", origin: { x: 0, y: 0 }, extent: { width: 40, height: 24 } },
@@ -30,6 +30,11 @@ const hexLayout = [
   origin: { x: index * 40, y: 0 },
   extent: { width: 40, height: 24 },
 }));
+
+test("region metadata requests are scoped to the current bounded hex window", () => {
+  assert.equal(regionMetaUrl("garden-1", 1), "/api/meta?region=garden-1&radius=1");
+  assert.equal(regionMetaUrl("hex-q10-r-4", 9), "/api/meta?region=hex-q10-r-4&radius=4");
+});
 
 function close(actual, expected, epsilon = 1e-9) {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);

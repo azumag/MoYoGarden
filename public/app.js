@@ -3,6 +3,7 @@ import { createDemoState } from "./client/demo-state.js";
 import { isHexGridCell } from "./client/hex-grid.js";
 import { ModelLibrary } from "./client/model-library.js";
 import { resolveQualityProfile } from "./client/quality.js";
+import { regionMetaUrl } from "./client/region-navigation.js";
 import { ROLE_LABELS, TERRAIN_COLORS, disposeObject } from "./client/shared.js";
 import { WorldView } from "./client/world-view.js";
 
@@ -111,7 +112,7 @@ function authHeaders(jsonBody = false) {
 }
 
 function apiUrl(path) {
-  const url = new URL(path, location.origin);
+  const url = new URL(path === "/api/meta" ? regionMetaUrl(app.region, 1) : path, location.origin);
   if (path !== "/api/meta") url.searchParams.set("region", app.region);
   return url;
 }

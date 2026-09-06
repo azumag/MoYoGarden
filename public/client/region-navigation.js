@@ -9,6 +9,15 @@ const HEX_STEPS = {
   southWest: { q: -1, r: 1 },
   southEast: { q: 0, r: 1 },
 };
+export function regionMetaUrl(regionId, radius = 1) {
+  const trimmed = typeof regionId === "string" ? regionId.trim() : "";
+  if (!trimmed) return "/api/meta";
+  const safeRadius = Number.isFinite(radius)
+    ? Math.max(0, Math.min(4, Math.floor(radius)))
+    : 1;
+  return `/api/meta?region=${encodeURIComponent(trimmed)}&radius=${safeRadius}`;
+}
+
 const HEX_SIDE_DIRECTIONS = [
   "northEast",
   "east",

@@ -4,31 +4,44 @@ import {
   buildNeighborPreviewPlacements,
   resolvePhysicalPreviewPlacement,
 } from "./neighbor-preview-layout.js";
+import { regionMetaUrl } from "./region-navigation.js";
 import { disposeObject } from "./shared.js";
 import { WorldView } from "./world-view.js";
 
 let topologyRegions = [];
+let topologyCenterRegionId;
 let topologyRequest;
+let topologyRequestCenterRegionId;
 
-function ensureTopology() {
-  if (topologyRegions.length > 0) return Promise.resolve(topologyRegions);
-  if (topologyRequest) return topologyRequest;
-  if (location.protocol === "file:") return Promise.resolve([]);
+function ensureTopology(centerRegionId) {
+  if (!centerRegionId || location.protocol === "file:") return Promise.resolve([]);
+  if (topologyCenterRegionId === centerRegionId && topologyRegions.length > 0) {
+    return Promise.resolve(topologyRegions);
+  }
+  if (topologyRequest && topologyRequestCenterRegionId === centerRegionId) return topologyRequest;
 
-  topologyRequest = fetch("/api/meta", { cache: "no-store" })
+  const requestedCenter = centerRegionId;
+  topologyRequestCenterRegionId = requestedCenter;
+  topologyRequest = fetch(regionMetaUrl(requestedCenter, 1), { cache: "no-store" })
     .then(async (response) => {
       if (!response.ok) throw new Error(`meta HTTP ${response.status}`);
       const meta = await response.json();
       const regions = meta?.world?.regionTopology?.regions;
-      if (Array.isArray(regions)) topologyRegions = regions;
-      return topologyRegions;
+      if (topologyRequestCenterRegionId === requestedCenter && Array.isArray(regions)) {
+        topologyRegions = regions;
+        topologyCenterRegionId = requestedCenter;
+      }
+      return topologyCenterRegionId === requestedCenter ? topologyRegions : [];
     })
     .catch((error) => {
       console.debug("MoYoGarden hex neighbor topology unavailable", error);
       return [];
     })
     .finally(() => {
-      topologyRequest = undefined;
+      if (topologyRequestCenterRegionId === requestedCenter) {
+        topologyRequest = undefined;
+        topologyRequestCenterRegionId = undefined;
+      }
     });
   return topologyRequest;
 }
@@ -155,19 +168,19 @@ const baseMarkShadowsDirty = WorldView.prototype.markShadowsDirty;
 WorldView.prototype.markShadowsDirty = function markShadowsDirtyWithHexNeighborPreview() {
   const preview = this.worldRoot?.getObjectByName("neighbor-region-preview");
   if (preview && !preview.userData.moyoHexChunked) {
-    if (topologyRegions.length > 0) {
+    const centerRegionId = this.state?.regionId;
+    if (centerRegionId && topologyCenterRegionId === centerRegionId && topologyRegions.length > 0) {
       upgradeNeighborPreview(this, preview);
-    } else {
+    } else if (centerRegionId) {
       // Preserve the instanced source meshes until topology arrives; otherwise
       // the legacy seamless extension may weld them into one rectangular mesh.
       preview.userData.moyoTerrainStitched = true;
-      void ensureTopology().then(() => {
+      void ensureTopology(centerRegionId).then(() => {
         if (preview.parent !== this.worldRoot || preview.userData.moyoHexChunked) return;
+        if (this.state?.regionId !== centerRegionId) return;
         if (upgradeNeighborPreview(this, preview)) baseMarkShadowsDirty.call(this);
       });
     }
   }
   baseMarkShadowsDirty.call(this);
 };
-
-void ensureTopology();

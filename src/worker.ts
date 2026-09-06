@@ -573,20 +573,37 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/api/meta") {
       const regions = allowedRegions(env);
+      const requestedRegion = url.searchParams.get("region")?.trim();
+      const scopedRegion = requestedRegion === undefined || requestedRegion === ""
+        ? undefined
+        : resolveRegion(request, env);
+      if (requestedRegion !== undefined && requestedRegion !== "" && scopedRegion === undefined) {
+        return json({ error: "unknown or disabled region" }, 404);
+      }
+      const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
+      const topology = scopedRegion === undefined
+        ? regionHexTopology(regions)
+        : regionHexWindow(regions, scopedRegion, radius);
+      const layout = scopedRegion === undefined
+        ? regionLayout(regions)
+        : regionWindow(regions, scopedRegion, radius);
+      const exposedRegions = scopedRegion === undefined
+        ? regions
+        : topology.map((entry) => entry.id);
       return json({
         service: "moyo-garden",
         version: "0.2.0",
-        regions,
+        regions: exposedRegions,
         defaultRegion: regions[0],
         runtime: "Cloudflare Workers + Durable Objects",
         world: {
           coordinateSpace: "global-grid",
           regionExtent: { width: TARGET_WORLD_WIDTH, height: TARGET_WORLD_HEIGHT },
-          regionLayout: regionLayout(regions),
+          regionLayout: layout,
           regionTopology: {
             kind: "hex-axial",
             directions: HEX_DIRECTIONS,
-            regions: regionHexTopology(regions),
+            regions: topology,
           },
           windowEndpoint: "/api/world/window?region={regionId}&radius=1",
         },

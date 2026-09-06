@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { resolveNavigationBounds } from "./navigation-bounds.js";
-import { resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
+import { regionMetaUrl, resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
 import { clamp, disposeObject } from "./shared.js";
 import {
   buildWeldedPreviewSurface,
@@ -14,7 +14,9 @@ const REBASE_TIMEOUT_MS = 15_000;
 const PREFETCH_MARGIN_TILES = 6;
 const PREFETCH_REFRESH_MS = 60_000;
 let regionLayout = [];
+let regionLayoutCenter;
 let regionLayoutRequest;
+let regionLayoutRequestCenter;
 let pendingRebase;
 let pendingRebaseTimer;
 let rebaseInFlight = false;
@@ -136,12 +138,18 @@ function clearPendingRebase() {
   rebaseInFlight = false;
 }
 
-function ensureRegionLayout() {
-  if (regionLayout.length > 0 || regionLayoutRequest || location.protocol === "file:") return;
-  regionLayoutRequest = fetch("/api/meta", { cache: "no-store" })
+function ensureRegionLayout(centerRegionId) {
+  if (!centerRegionId || location.protocol === "file:") return;
+  if (regionLayoutCenter === centerRegionId && regionLayout.length > 0) return;
+  if (regionLayoutRequest && regionLayoutRequestCenter === centerRegionId) return;
+
+  regionLayoutRequestCenter = centerRegionId;
+  const requestedCenter = centerRegionId;
+  regionLayoutRequest = fetch(regionMetaUrl(requestedCenter, 1), { cache: "no-store" })
     .then(async (response) => {
       if (!response.ok) throw new Error(`meta HTTP ${response.status}`);
       const meta = await response.json();
+      if (regionLayoutRequestCenter !== requestedCenter) return;
       const topology = meta?.world?.regionTopology?.regions;
       const extent = meta?.world?.regionExtent;
       if (
@@ -162,17 +170,24 @@ function ensureRegionLayout() {
           }));
         if (next.length > 0) {
           regionLayout = next;
+          regionLayoutCenter = requestedCenter;
           return;
         }
       }
       const next = meta?.world?.regionLayout;
-      if (Array.isArray(next)) regionLayout = next;
+      if (Array.isArray(next)) {
+        regionLayout = next;
+        regionLayoutCenter = requestedCenter;
+      }
     })
     .catch((error) => {
       console.debug("MoYoGarden seamless region metadata unavailable", error);
     })
     .finally(() => {
-      regionLayoutRequest = undefined;
+      if (regionLayoutRequestCenter === requestedCenter) {
+        regionLayoutRequest = undefined;
+        regionLayoutRequestCenter = undefined;
+      }
     });
 }
 
@@ -203,8 +218,8 @@ function warmRegion(regionId) {
 
 function maybeWarmRegionAhead(view) {
   if (!view.state?.regionId) return;
-  if (regionLayout.length === 0) {
-    ensureRegionLayout();
+  if (regionLayoutCenter !== view.state.regionId || regionLayout.length === 0) {
+    ensureRegionLayout(view.state.regionId);
     return;
   }
   const prefetch = resolveRegionPrefetch(
@@ -241,8 +256,8 @@ function beginRegionRebase(view, transition) {
 
 function maybeRebase(view) {
   if (rebaseInFlight || !view.state?.regionId) return;
-  if (regionLayout.length === 0) {
-    ensureRegionLayout();
+  if (regionLayoutCenter !== view.state.regionId || regionLayout.length === 0) {
+    ensureRegionLayout(view.state.regionId);
     return;
   }
   const transition = resolveRegionRebase(regionLayout, view.state.regionId, {
@@ -301,5 +316,3 @@ WorldView.prototype.clampTarget = function clampTargetToLoadedWindow() {
   maybeWarmRegionAhead(this);
   maybeRebase(this);
 };
-
-ensureRegionLayout();
