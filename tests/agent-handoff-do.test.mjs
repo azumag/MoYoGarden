@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
 import { globalHandoffAgentId } from "../dist-ts/src/agent-ownership.js";
 import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
+
+const handoffRegionSource = await readFile(new URL("../src/handoff-region.ts", import.meta.url), "utf8");
+
+test("handoff hot path resolves configured axial neighbors without full topology reconstruction", () => {
+  assert.match(handoffRegionSource, /configuredRegionNeighborId/);
+  assert.doesNotMatch(handoffRegionSource, /regionHexTopology/);
+});
 
 class MemoryStorage {
   constructor() {

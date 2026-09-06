@@ -285,6 +285,30 @@ function configuredRegionIdAtCoordinate(
 }
 
 /**
+ * Resolve one configured neighbor without rebuilding the whole region topology.
+ * Axial-aware ids take the direct coordinate path; unresolved historical ids
+ * retain the old ring-allocation fallback until REGION_IDS compatibility ends.
+ */
+export function configuredRegionNeighborId(
+  regionIds: readonly string[],
+  sourceRegionId: string,
+  direction: HexDirection,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): string | undefined {
+  const source = regionAxialCoordinate(sourceRegionId);
+  if (source !== undefined) {
+    const indexById = new Map(regionIds.map((regionId, index) => [regionId, index] as const));
+    if (!indexById.has(sourceRegionId)) return undefined;
+    return configuredRegionIdAtCoordinate(hexNeighborCoordinate(source, direction), indexById);
+  }
+
+  const sourceEntry = regionHexTopology(regionIds, width, height)
+    .find((entry) => entry.id === sourceRegionId);
+  return sourceEntry?.neighbors[direction] ?? undefined;
+}
+
+/**
  * Build only the configured topology entries inside a bounded axial window.
  * Resolved legacy aliases and canonical IDs can be addressed directly from
  * their coordinates, so normal window requests avoid constructing the full

@@ -20,7 +20,7 @@ import {
   type HexGridDirection,
 } from "./hex-grid.js";
 import type { GridPosition } from "./protocol.js";
-import { regionHexTopology } from "./region-topology.js";
+import { configuredRegionNeighborId } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { RegionDurableObject as BaseRegionDurableObject } from "./worker.js";
 import { isPassable } from "./world.js";
@@ -253,10 +253,16 @@ export class RegionDurableObject extends BaseRegionDurableObject {
       return { error: json({ error: "agent is not on the requested hex boundary" }, 409) };
     }
 
-    const topology = regionHexTopology(configuredRegionIds(this.handoffEnv), state.width, state.height);
-    const sourceRegion = topology.find((entry) => entry.id === state.regionId);
-    const targetRegionId = sourceRegion?.neighbors[direction] ?? null;
-    if (targetRegionId === null) return { error: json({ error: "no neighboring region in that direction" }, 409) };
+    const targetRegionId = configuredRegionNeighborId(
+      configuredRegionIds(this.handoffEnv),
+      state.regionId,
+      direction,
+      state.width,
+      state.height,
+    );
+    if (targetRegionId === undefined) {
+      return { error: json({ error: "no neighboring region in that direction" }, 409) };
+    }
 
     const resolved = await this.callTarget(targetRegionId, `${INTERNAL_PREFIX}resolve`, {
       targetPosition: mappedTarget,

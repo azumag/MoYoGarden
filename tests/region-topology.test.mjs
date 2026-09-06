@@ -9,6 +9,7 @@ import {
   parseAxialRegionId,
   projectHexCoordinate,
   projectPhysicalRegionOrigin,
+  configuredRegionNeighborId,
   regionAxialCoordinate,
   regionHexTopology,
   regularHexFootprintSize,
@@ -185,5 +186,27 @@ test("dynamic axial ids resolve all six neighbors without a global region list",
   assert.throws(
     () => hexNeighborCoordinate({ q: Number.MAX_SAFE_INTEGER, r: 0 }, "east"),
     RangeError,
+  );
+});
+
+test("configured region neighbor lookup uses axial identity without rebuilding full topology", () => {
+  assert.equal(
+    configuredRegionNeighborId(["garden-1", "garden-2", "garden-3", "hex-q0-r-1"], "garden-1", "northWest"),
+    "hex-q0-r-1",
+  );
+  assert.equal(
+    configuredRegionNeighborId(["hex-q0-r0", "garden-2"], "hex-q0-r0", "east"),
+    "garden-2",
+    "configured legacy aliases remain valid targets for canonical sources",
+  );
+  assert.equal(
+    configuredRegionNeighborId(["garden-1", "garden-2", "garden-3"], "garden-1", "northWest"),
+    undefined,
+    "unconfigured dynamic neighbors remain disabled during the compatibility phase",
+  );
+  assert.equal(
+    configuredRegionNeighborId(["region-a", "region-b"], "region-a", "east"),
+    "region-b",
+    "unknown historical ids retain the legacy ring fallback",
   );
 });
