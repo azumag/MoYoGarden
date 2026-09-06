@@ -468,32 +468,41 @@ export function planAutonomousHaloHandoff(
           entry.neighborRegionId,
         ) > 0
       )
+      .map((entry) => ({
+        entry,
+        claim: claims
+          .filter((claim) =>
+            claim.agentId === agent.id &&
+            claim.resource === resource &&
+            claim.direction === entry.direction &&
+            claim.neighborRegionId === entry.neighborRegionId &&
+            claim.expiresAtTick > state.tick
+          )
+          .sort((a, b) =>
+            b.expiresAtTick - a.expiresAtTick || b.claimId.localeCompare(a.claimId)
+          )[0],
+      }))
       .sort((a, b) =>
-        directionRank(a.direction) - directionRank(b.direction) ||
-        a.neighborRegionId.localeCompare(b.neighborRegionId)
+        Number(b.claim !== undefined) - Number(a.claim !== undefined) ||
+        (b.claim?.expiresAtTick ?? -1) - (a.claim?.expiresAtTick ?? -1) ||
+        directionRank(a.entry.direction) - directionRank(b.entry.direction) ||
+        a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
       )[0];
     if (candidate === undefined) continue;
 
+    // Interior travel already selected and reserved a concrete neighboring
+    // supply. At a multi-exit corner, keep that reservation authoritative
+    // instead of drifting to the first direction in the static direction list.
     const issuedAtTick = agent.task?.source === "autonomy" && agent.task.type === "gather"
       ? agent.task.issuedAtTick
       : state.tick;
-    const claimId = claims
-      .filter((claim) =>
-        claim.agentId === agent.id &&
-        claim.resource === resource &&
-        claim.direction === candidate.direction &&
-        claim.neighborRegionId === candidate.neighborRegionId &&
-        claim.expiresAtTick > state.tick
-      )
-      .sort((a, b) =>
-        b.expiresAtTick - a.expiresAtTick || b.claimId.localeCompare(a.claimId)
-      )[0]?.claimId;
+    const claimId = candidate.claim?.claimId;
     return {
-      transferId: `autonomy:${state.regionId}:${agent.id}:${issuedAtTick}:${candidate.direction}`,
+      transferId: `autonomy:${state.regionId}:${agent.id}:${issuedAtTick}:${candidate.entry.direction}`,
       agentId: agent.id,
-      direction: candidate.direction,
+      direction: candidate.entry.direction,
       resource,
-      neighborRegionId: candidate.neighborRegionId,
+      neighborRegionId: candidate.entry.neighborRegionId,
       ...(claimId === undefined ? {} : { claimId }),
     };
   }

@@ -164,3 +164,51 @@ test("boundary autonomy honors neighbor supply claims without blocking the claim
     "expired reservations must not block a seam handoff",
   );
 });
+
+
+test("boundary handoff follows the expedition's active neighbor claim at a multi-exit corner", () => {
+  const { state, agent } = stateWithBoundaryWoodIntent();
+  state.tick = 24;
+  const sourcePosition = hexGridBoundaryCells(state, "east")[0];
+  assert.ok(sourcePosition);
+  const exits = crossingDirections(state, sourcePosition);
+  assert.ok(exits.includes("east"));
+  assert.ok(exits.includes("northEast"));
+  agent.position = { ...sourcePosition };
+
+  const halo = [
+    ["east", "garden-2"],
+    ["northEast", "garden-3"],
+  ].map(([direction, neighborRegionId]) => {
+    const neighborPosition = hexGridHandoffTarget(state, sourcePosition, direction);
+    assert.ok(neighborPosition);
+    return {
+      sourceRegionId: "garden-1",
+      sourcePosition: { ...sourcePosition },
+      direction,
+      neighborRegionId,
+      neighborPosition: { ...neighborPosition },
+      tile: {
+        x: neighborPosition.x,
+        y: neighborPosition.y,
+        terrain: "forest",
+        resource: { kind: "wood", amount: 8, maxAmount: 8 },
+      },
+    };
+  });
+  const claim = {
+    claimId: "planned-north-east",
+    agentId: agent.id,
+    resource: "wood",
+    direction: "northEast",
+    neighborRegionId: "garden-3",
+    amount: 8,
+    expiresAtTick: 84,
+  };
+
+  const plan = planAutonomousHaloHandoff(state, halo, [claim]);
+  assert.ok(plan);
+  assert.equal(plan.direction, "northEast");
+  assert.equal(plan.neighborRegionId, "garden-3");
+  assert.equal(plan.claimId, claim.claimId);
+});
