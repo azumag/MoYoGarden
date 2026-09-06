@@ -58,11 +58,41 @@ const JSON_HEADERS = {
 const IDLE_TICK_MULTIPLIER = 6;
 const ACTIVE_GRACE_MULTIPLIER = 6;
 const MAX_IDLE_TICK_MS = 3_600_000;
+const MAX_VIRTUAL_CATCH_UP_TICKS = 60;
 const TERRAIN_FRAME_VERSION = 1;
 
 export function regionTickDelayMs(tickMs: number, active: boolean): number {
   if (active) return tickMs;
   return Math.min(MAX_IDLE_TICK_MS, tickMs * IDLE_TICK_MULTIPLIER);
+}
+
+export interface RegionVirtualCatchUpPlan {
+  dueTicks: number;
+  runnableTicks: number;
+  capped: boolean;
+}
+
+export function regionVirtualCatchUpPlan(
+  lastSimulatedAt: number,
+  now: number,
+  tickMs: number,
+  paused = false,
+  maxTicks = MAX_VIRTUAL_CATCH_UP_TICKS,
+): RegionVirtualCatchUpPlan {
+  if (paused) return { dueTicks: 0, runnableTicks: 0, capped: false };
+  if (
+    !Number.isFinite(lastSimulatedAt) ||
+    !Number.isFinite(now) ||
+    !Number.isFinite(tickMs) ||
+    tickMs <= 0 ||
+    now <= lastSimulatedAt
+  ) {
+    return { dueTicks: 0, runnableTicks: 0, capped: false };
+  }
+  const dueTicks = Math.max(0, Math.floor((now - lastSimulatedAt) / tickMs));
+  const cap = Number.isFinite(maxTicks) ? Math.max(0, Math.floor(maxTicks)) : MAX_VIRTUAL_CATCH_UP_TICKS;
+  const runnableTicks = Math.min(dueTicks, cap);
+  return { dueTicks, runnableTicks, capped: runnableTicks < dueTicks };
 }
 
 export function regionLayout(
@@ -411,6 +441,12 @@ export class RegionDurableObject {
       const state = this.runtime.snapshot();
       const websocketClients = this.ctx.getWebSockets().length;
       const active = this.active();
+      const catchUpPlan = regionVirtualCatchUpPlan(
+        this.lastSimulatedAt,
+        Date.now(),
+        this.tickMs,
+        this.paused,
+      );
       return json({
         ok: true,
         service: "moyo-garden",
@@ -428,6 +464,9 @@ export class RegionDurableObject {
         updatedAt: this.updatedAt,
         lastSimulatedAt: this.lastSimulatedAt,
         simulationLagMs: Math.max(0, Date.now() - this.lastSimulatedAt),
+        virtualTicksDue: catchUpPlan.dueTicks,
+        virtualTicksRunnable: catchUpPlan.runnableTicks,
+        virtualTicksCapped: catchUpPlan.capped,
       });
     }
 
@@ -505,6 +544,9 @@ export class RegionDurableObject {
         }
         if (path === "/api/admin/resume") {
           this.paused = false;
+          // Paused wall time is intentionally not simulation backlog. Rebase the
+          // virtual-time clock before future catch-up is allowed to consume it.
+          this.lastSimulatedAt = Date.now();
           await this.persist();
           await this.scheduleNextTick();
           this.broadcastSnapshot();

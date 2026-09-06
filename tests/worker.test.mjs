@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker, { RegionDurableObject, regionLayout, regionTickDelayMs, regionWindow } from "../dist-ts/src/worker.js";
+import worker, { RegionDurableObject, regionLayout, regionTickDelayMs, regionVirtualCatchUpPlan, regionWindow } from "../dist-ts/src/worker.js";
 class MemoryStorage {
   constructor(){this.values=new Map();this.alarm=null;}
   async get(key){return structuredClone(this.values.get(key));}
@@ -68,6 +68,78 @@ test("persisted simulation clock advances only when simulation advances", async 
     now += 5_000;
     await object.alarm();
     assert.equal(ctx.storage.values.get("region").lastSimulatedAt, now);
+
+    now += 30_000;
+    const manualTick = await object.fetch(request("/api/admin/tick", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer admin-secret",
+      },
+      body: JSON.stringify({ count: 3 }),
+    }));
+    assert.equal(manualTick.status, 200);
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, now);
+    const health = await (await object.fetch(request("/api/health"))).json();
+    assert.equal(health.virtualTicksDue, 0);
+    assert.equal(health.virtualTicksRunnable, 0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+
+test("virtual catch-up planning is bounded and ignores paused wall time", () => {
+  assert.deepEqual(
+    regionVirtualCatchUpPlan(1_000, 11_000, 1_000, false, 3),
+    { dueTicks: 10, runnableTicks: 3, capped: true },
+  );
+  assert.deepEqual(
+    regionVirtualCatchUpPlan(1_000, 11_000, 1_000, true, 3),
+    { dueTicks: 0, runnableTicks: 0, capped: false },
+  );
+  assert.deepEqual(
+    regionVirtualCatchUpPlan(11_000, 11_000, 1_000, false, 3),
+    { dueTicks: 0, runnableTicks: 0, capped: false },
+  );
+  assert.deepEqual(
+    regionVirtualCatchUpPlan(0, 3_600_000, 10_000),
+    { dueTicks: 360, runnableTicks: 60, capped: true },
+  );
+});
+
+test("resume rebases virtual time so paused duration cannot become catch-up debt", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_100_000;
+  Date.now = () => now;
+  try {
+    const ctx = new MemoryState();
+    const object = new RegionDurableObject(ctx, env);
+    await ctx.ready;
+    await object.fetch(request("/api/world/snapshot"));
+
+    now += 10_000;
+    const paused = await object.fetch(request("/api/admin/pause", {
+      method: "POST",
+      headers: { authorization: "Bearer admin-secret" },
+    }));
+    assert.equal(paused.status, 200);
+
+    now += 3_600_000;
+    const pausedHealth = await (await object.fetch(request("/api/health"))).json();
+    assert.equal(pausedHealth.virtualTicksDue, 0);
+    assert.equal(pausedHealth.virtualTicksRunnable, 0);
+
+    const resumed = await object.fetch(request("/api/admin/resume", {
+      method: "POST",
+      headers: { authorization: "Bearer admin-secret" },
+    }));
+    assert.equal(resumed.status, 200);
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, now);
+
+    const resumedHealth = await (await object.fetch(request("/api/health"))).json();
+    assert.equal(resumedHealth.virtualTicksDue, 0);
+    assert.equal(resumedHealth.virtualTicksRunnable, 0);
   } finally {
     Date.now = originalNow;
   }
