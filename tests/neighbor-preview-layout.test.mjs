@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
+import * as previewLayout from "../public/client/neighbor-preview-layout.js";
+
+const {
   buildNeighborPreviewPlacements,
   resolvePhysicalPreviewPlacement,
-} from "../public/client/neighbor-preview-layout.js";
+} = previewLayout;
 
 const regularHexWidth = 12 * Math.sqrt(3);
 const topology = [
@@ -60,4 +62,14 @@ test("garden-3 remains north-west of garden-2 after regularizing the hex geometr
   const garden3 = placements.find((entry) => entry.regionId === "garden-3");
   assert.deepEqual(garden3?.physicalOffset, { x: 40, z: 0 });
   assert.deepEqual(garden3?.hexOffset, { x: -regularHexWidth / 2, z: -18 });
+});
+
+test("loaded preview regions expose their neighbor-to-neighbor seam instead of only center seams", () => {
+  const placements = buildNeighborPreviewPlacements(topology, "garden-1");
+  const adjacentHexPreviewPairs = previewLayout.adjacentHexPreviewPairs;
+  assert.equal(typeof adjacentHexPreviewPairs, "function");
+  assert.deepEqual(
+    adjacentHexPreviewPairs(placements).map(([source, target]) => [source.regionId, target.regionId]),
+    [["garden-2", "garden-3"]],
+  );
 });
