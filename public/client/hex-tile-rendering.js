@@ -7,6 +7,7 @@ import {
 } from "./hex-grid.js";
 import { regularHexFootprintSize } from "./hex-footprint.js";
 import { TERRAIN_COLORS, disposeObject } from "./shared.js";
+import { buildWeldedHexSurface } from "./terrain-stitch.js";
 import { WorldView } from "./world-view.js";
 
 function clamp01(value) {
@@ -31,32 +32,31 @@ function tileColor(tile) {
   return color;
 }
 
-function appendHexFace(positions, colors, indices, center, y, radius, color) {
-  const base = positions.length / 3;
-  positions.push(center.x, y, center.z);
-  colors.push(color.r, color.g, color.b);
-  for (let index = 0; index < 6; index += 1) {
-    const angle = index * Math.PI / 3;
-    positions.push(
-      center.x + Math.cos(angle) * radius,
-      y,
-      center.z + Math.sin(angle) * radius,
-    );
-    colors.push(color.r, color.g, color.b);
-  }
-  for (let index = 0; index < 6; index += 1) {
-    indices.push(base, base + 1 + ((index + 1) % 6), base + 1 + index);
-  }
-}
-
-function buildFaceGeometry(positions, colors, indices) {
+function buildSurfaceGeometry(surface) {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setIndex(indices);
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(surface.positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(surface.colors, 3));
+  geometry.setIndex(surface.indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
+  geometry.userData.moyoWeldedHexSurface = true;
   return geometry;
+}
+
+function cloneSurfaceMaterial(material, fallback = null) {
+  const source = Array.isArray(material) ? material[0] : material;
+  const fallbackSource = Array.isArray(fallback) ? fallback[0] : fallback;
+  const cloned = source?.clone?.()
+    || fallbackSource?.clone?.()
+    || new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.985,
+      metalness: 0,
+      envMapIntensity: 0.3,
+    });
+  cloned.vertexColors = true;
+  cloned.needsUpdate = true;
+  return cloned;
 }
 
 WorldView.prototype.worldPosition = function worldPositionHex(position, lift = 0) {
@@ -87,29 +87,26 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
   disposeObject(this.waterMesh);
   disposeObject(this.detailRoot);
 
-  const landPositions = [];
-  const landColors = [];
-  const landIndices = [];
-  const waterPositions = [];
-  const waterColors = [];
-  const waterIndices = [];
+  const terrainEntries = [];
+  const waterEntries = [];
   const surfaceHeights = new Map();
-  const radius = hexCellRadius(state.width, state.height) * 0.985;
+  const radius = hexCellRadius(state.width, state.height);
 
   for (const tile of state.tiles) {
     if (!isHexGridCell(tile, state.width, state.height)) continue;
     const center = hexTileWorldXZ(tile, state.width, state.height);
-    const y = tileHeight(this, tile);
-    surfaceHeights.set(`${tile.x}:${tile.y}`, y);
+    const height = tileHeight(this, tile);
+    const color = tileColor(tile);
+    surfaceHeights.set(`${tile.x}:${tile.y}`, height);
+    terrainEntries.push({ x: center.x, z: center.z, height, color });
     if (tile.terrain === "water") {
-      appendHexFace(waterPositions, waterColors, waterIndices, center, y + 0.04, radius, tileColor(tile));
-    } else {
-      appendHexFace(landPositions, landColors, landIndices, center, y, radius, tileColor(tile));
+      waterEntries.push({ x: center.x, z: center.z, height: height + 0.04, color });
     }
   }
   this.surfaceHeightMap = surfaceHeights;
 
-  const terrainGeometry = buildFaceGeometry(landPositions, landColors, landIndices);
+  const terrainSurface = buildWeldedHexSurface(terrainEntries, radius);
+  const terrainGeometry = buildSurfaceGeometry(terrainSurface);
   this.terrainMesh = new THREE.Mesh(
     terrainGeometry,
     new THREE.MeshStandardMaterial({
@@ -120,11 +117,13 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
     }),
   );
   this.terrainMesh.name = "hex-cell-terrain";
+  this.terrainMesh.userData.moyoWeldedHexSurface = true;
   this.terrainMesh.receiveShadow = true;
   this.worldRoot.add(this.terrainMesh);
 
-  if (waterPositions.length > 0) {
-    const waterGeometry = buildFaceGeometry(waterPositions, waterColors, waterIndices);
+  if (waterEntries.length > 0) {
+    const waterSurface = buildWeldedHexSurface(waterEntries, radius);
+    const waterGeometry = buildSurfaceGeometry(waterSurface);
     this.waterMesh = new THREE.Mesh(
       waterGeometry,
       new THREE.MeshPhysicalMaterial({
@@ -140,6 +139,7 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
       }),
     );
     this.waterMesh.name = "hex-cell-water";
+    this.waterMesh.userData.moyoWeldedHexSurface = true;
     this.waterMesh.renderOrder = 2;
     this.worldRoot.add(this.waterMesh);
   }
@@ -163,64 +163,83 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
   this.worldRoot.add(detail);
 };
 
-function convertedGeometry(source, radius) {
-  if (source.geometry?.type === "BoxGeometry") {
-    const geometry = new THREE.CylinderGeometry(radius, radius, 0.08, 6);
-    geometry.rotateY(Math.PI / 6);
-    return { geometry, water: false };
-  }
-  if (source.geometry?.type === "PlaneGeometry") {
-    const geometry = new THREE.CircleGeometry(radius, 6);
-    geometry.rotateX(-Math.PI / 2);
-    geometry.rotateZ(Math.PI / 6);
-    return { geometry, water: true };
-  }
+function previewSourceKind(source) {
+  if (source?.geometry?.type === "BoxGeometry") return "land";
+  if (source?.geometry?.type === "PlaneGeometry") return "water";
   return null;
 }
 
-function convertNeighborChunkMesh(source, width, height) {
-  const radius = hexCellRadius(width, height) * 0.985;
-  const converted = convertedGeometry(source, radius);
-  if (!converted) return null;
-
+function buildWeldedNeighborSurface(group, width, height, terrainFallbackMaterial) {
+  const radius = hexCellRadius(width, height);
+  const terrainEntries = [];
+  const waterEntries = [];
+  let landMaterial = null;
+  let waterMaterial = null;
   const matrix = new THREE.Matrix4();
   const color = new THREE.Color();
-  const entries = [];
-  for (let index = 0; index < source.count; index += 1) {
-    source.getMatrixAt(index, matrix);
-    const tile = {
-      x: Math.round(matrix.elements[12] + width / 2 - 0.5),
-      y: Math.round(matrix.elements[14] + height / 2 - 0.5),
-    };
-    if (!isHexGridCell(tile, width, height)) continue;
-    const projected = hexTileWorldXZ(tile, width, height);
-    const entryColor = source.instanceColor
-      ? (source.getColorAt(index, color), color.clone())
-      : new THREE.Color(0x71845a);
-    entries.push({ x: projected.x, y: matrix.elements[13], z: projected.z, color: entryColor });
-  }
-  if (entries.length === 0) {
-    converted.geometry.dispose();
-    return null;
+
+  for (const source of group.children.filter((entry) => entry?.isInstancedMesh)) {
+    const kind = previewSourceKind(source);
+    if (!kind) continue;
+    if (kind === "land" && !landMaterial) landMaterial = source.material;
+    if (kind === "water" && !waterMaterial) waterMaterial = source.material;
+    const boxTopOffset = kind === "land"
+      ? (Number(source.geometry?.parameters?.height) || 0.08) * 0.5
+      : 0;
+
+    for (let index = 0; index < source.count; index += 1) {
+      source.getMatrixAt(index, matrix);
+      const tile = {
+        x: Math.round(matrix.elements[12] + width / 2 - 0.5),
+        y: Math.round(matrix.elements[14] + height / 2 - 0.5),
+      };
+      if (!isHexGridCell(tile, width, height)) continue;
+      const projected = hexTileWorldXZ(tile, width, height);
+      const entryColor = source.instanceColor
+        ? (source.getColorAt(index, color), color.clone())
+        : new THREE.Color(kind === "water" ? 0x39758a : 0x71845a);
+      const renderedTop = matrix.elements[13] + boxTopOffset;
+      const nativeTerrainHeight = kind === "water" ? renderedTop - 0.035 : renderedTop;
+      terrainEntries.push({
+        x: projected.x,
+        z: projected.z,
+        height: nativeTerrainHeight,
+        color: entryColor,
+      });
+      if (kind === "water") {
+        waterEntries.push({
+          x: projected.x,
+          z: projected.z,
+          height: renderedTop,
+          color: entryColor,
+        });
+      }
+    }
   }
 
-  const material = Array.isArray(source.material)
-    ? source.material.map((entry) => entry.clone())
-    : source.material.clone();
-  const mesh = new THREE.InstancedMesh(converted.geometry, material, entries.length);
-  mesh.name = converted.water ? "neighbor-hex-water" : "neighbor-hex-land";
-  mesh.receiveShadow = source.receiveShadow;
-  mesh.renderOrder = source.renderOrder;
-  entries.forEach((entry, index) => {
-    matrix.identity();
-    matrix.setPosition(entry.x, entry.y, entry.z);
-    mesh.setMatrixAt(index, matrix);
-    mesh.setColorAt(index, entry.color);
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.computeBoundingSphere();
-  return mesh;
+  const replacements = [];
+  if (terrainEntries.length > 0) {
+    const surface = buildWeldedHexSurface(terrainEntries, radius);
+    const geometry = buildSurfaceGeometry(surface);
+    const material = cloneSurfaceMaterial(landMaterial, terrainFallbackMaterial);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = "neighbor-hex-land";
+    mesh.userData.moyoWeldedHexSurface = true;
+    mesh.receiveShadow = true;
+    replacements.push(mesh);
+  }
+
+  if (waterEntries.length > 0) {
+    const surface = buildWeldedHexSurface(waterEntries, radius);
+    const geometry = buildSurfaceGeometry(surface);
+    const material = cloneSurfaceMaterial(waterMaterial);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = "neighbor-hex-water";
+    mesh.userData.moyoWeldedHexSurface = true;
+    mesh.renderOrder = 1;
+    replacements.push(mesh);
+  }
+  return replacements;
 }
 
 function convertNeighborPreview(view) {
@@ -231,13 +250,9 @@ function convertNeighborPreview(view) {
   if (!Number.isFinite(width) || !Number.isFinite(height)) return;
 
   for (const group of preview.children.filter((entry) => entry?.isGroup)) {
-    const replacements = [];
-    for (const source of [...group.children]) {
-      if (!source?.isInstancedMesh) continue;
-      const replacement = convertNeighborChunkMesh(source, width, height);
-      if (replacement) replacements.push(replacement);
-      disposeObject(source);
-    }
+    const sources = [...group.children].filter((entry) => entry?.isInstancedMesh && previewSourceKind(entry));
+    const replacements = buildWeldedNeighborSurface(group, width, height, view.terrainMesh?.material);
+    for (const source of sources) disposeObject(source);
     group.add(...replacements);
   }
   preview.userData.moyoHexCells = true;

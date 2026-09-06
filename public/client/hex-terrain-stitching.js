@@ -1,100 +1,140 @@
-import * as THREE from "three";
-import { hexCellRadius, hexTileWorldXZ, isHexGridCell } from "./hex-grid.js";
+import { hexCellRadius } from "./hex-grid.js";
 import {
   blendBoundaryHeight,
   distanceOutsideHexFootprint,
   nearestHeightSample,
 } from "./hex-terrain-blend.js";
+import { terrainVertexKey } from "./terrain-stitch.js";
 import { WorldView } from "./world-view.js";
 
 const BLEND_ROWS = 2.25;
 const SAMPLE_SEARCH_RADII = 3.4;
 
-function centerHeightSamples(view) {
-  const width = Number(view.state?.width);
-  const height = Number(view.state?.height);
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return { land: [], water: [] };
+function centerVertexHeights(mesh) {
+  const heights = new Map();
+  const normals = new Map();
+  const samplesByKey = new Map();
+  const geometry = mesh?.geometry;
+  const position = geometry?.getAttribute("position");
+  const normal = geometry?.getAttribute("normal");
+  if (!position) return { heights, normals, samples: [] };
 
-  const land = [];
-  const water = [];
-  for (const tile of view.state?.tiles ?? []) {
-    if (!isHexGridCell(tile, width, height)) continue;
-    const position = hexTileWorldXZ(tile, width, height);
-    const stored = view.surfaceHeightMap?.get(`${tile.x}:${tile.y}`);
-    if (!Number.isFinite(stored)) continue;
-    const sample = {
-      x: position.x,
-      z: position.z,
-      height: stored + (tile.terrain === "water" ? 0.04 : 0),
-    };
-    if (tile.terrain === "water") water.push(sample);
-    else land.push(sample);
+  for (let index = 0; index < position.count; index += 1) {
+    const x = position.getX(index);
+    const y = position.getY(index);
+    const z = position.getZ(index);
+    if (![x, y, z].every(Number.isFinite)) continue;
+    const key = terrainVertexKey(x, z);
+    const previous = samplesByKey.get(key);
+    if (!previous || y > previous.height) {
+      heights.set(key, y);
+      samplesByKey.set(key, { x, z, height: y });
+      if (normal) {
+        normals.set(key, {
+          x: normal.getX(index),
+          y: normal.getY(index),
+          z: normal.getZ(index),
+        });
+      }
+    }
   }
-  return { land, water };
+  return { heights, normals, samples: [...samplesByKey.values()] };
 }
 
-function nativeYValues(mesh, matrix) {
+function nativeYValues(mesh) {
+  const geometry = mesh?.geometry;
+  const position = geometry?.getAttribute("position");
+  if (!position) return [];
   const cached = mesh.userData?.moyoHexTerrainNativeY;
-  if (Array.isArray(cached) && cached.length === mesh.count) return cached;
-  const values = [];
-  for (let index = 0; index < mesh.count; index += 1) {
-    mesh.getMatrixAt(index, matrix);
-    values.push(matrix.elements[13]);
-  }
+  if (Array.isArray(cached) && cached.length === position.count) return cached;
+  const values = Array.from({ length: position.count }, (_, index) => position.getY(index));
   mesh.userData.moyoHexTerrainNativeY = values;
   return values;
 }
 
-function stitchMesh(mesh, group, samples, width, height, cellRadius, matrix) {
-  if (!mesh?.isInstancedMesh || mesh.count <= 0 || samples.length === 0) return false;
+function copySharedNormals(mesh, group, centerSurface) {
+  const geometry = mesh.geometry;
+  const position = geometry.getAttribute("position");
+  const normal = geometry.getAttribute("normal");
+  if (!position || !normal || centerSurface.normals.size === 0) return false;
+
+  let changed = false;
+  for (let index = 0; index < position.count; index += 1) {
+    const worldX = group.position.x + position.getX(index);
+    const worldZ = group.position.z + position.getZ(index);
+    const source = centerSurface.normals.get(terrainVertexKey(worldX, worldZ));
+    if (!source) continue;
+    normal.setXYZ(index, source.x, source.y, source.z);
+    changed = true;
+  }
+  if (changed) normal.needsUpdate = true;
+  return changed;
+}
+
+function stitchMesh(mesh, group, centerSurface, width, height, cellRadius) {
+  if (!mesh?.isMesh || !mesh.userData?.moyoWeldedHexSurface) return false;
   const isLand = mesh.name === "neighbor-hex-land";
   const isWater = mesh.name === "neighbor-hex-water";
   if (!isLand && !isWater) return false;
 
-  const nativeY = nativeYValues(mesh, matrix);
-  const topOffset = isLand
-    ? (Number(mesh.geometry?.parameters?.height) || 0.08) * 0.5
-    : 0;
+  const geometry = mesh.geometry;
+  const position = geometry.getAttribute("position");
+  if (!position || position.count <= 0) return false;
+  const nativeY = nativeYValues(mesh);
+  if (nativeY.length !== position.count) return false;
+
   const maximumBoundaryDistance = cellRadius * (1.05 + BLEND_ROWS);
   const sampleDistance = cellRadius * SAMPLE_SEARCH_RADII;
   let changed = false;
 
-  for (let index = 0; index < mesh.count; index += 1) {
-    mesh.getMatrixAt(index, matrix);
+  for (let index = 0; index < position.count; index += 1) {
     const originalY = nativeY[index];
     if (!Number.isFinite(originalY)) continue;
 
-    const worldX = group.position.x + matrix.elements[12];
-    const worldZ = group.position.z + matrix.elements[14];
-    const boundaryDistance = distanceOutsideHexFootprint(worldX, worldZ, width, height);
+    const worldX = group.position.x + position.getX(index);
+    const worldZ = group.position.z + position.getZ(index);
+    const key = terrainVertexKey(worldX, worldZ);
+    const exactHeight = centerSurface.heights.get(key);
     let nextY = originalY;
 
-    if (boundaryDistance <= maximumBoundaryDistance) {
-      const nearest = nearestHeightSample(worldX, worldZ, samples, sampleDistance);
-      if (nearest !== undefined) {
-        const nativeTop = originalY + topOffset;
-        const blendedTop = blendBoundaryHeight(
-          nativeTop,
-          nearest.height,
-          boundaryDistance,
-          cellRadius,
-          BLEND_ROWS,
+    if (Number.isFinite(exactHeight)) {
+      nextY = exactHeight;
+    } else {
+      const boundaryDistance = distanceOutsideHexFootprint(worldX, worldZ, width, height);
+      if (boundaryDistance <= maximumBoundaryDistance) {
+        const nearest = nearestHeightSample(
+          worldX,
+          worldZ,
+          centerSurface.samples,
+          sampleDistance,
         );
-        nextY = blendedTop - topOffset;
+        if (nearest !== undefined) {
+          nextY = blendBoundaryHeight(
+            originalY,
+            nearest.height,
+            boundaryDistance,
+            cellRadius,
+            BLEND_ROWS,
+          );
+        }
       }
     }
 
-    if (Math.abs(matrix.elements[13] - nextY) <= 1e-9) continue;
-    matrix.elements[13] = nextY;
-    mesh.setMatrixAt(index, matrix);
+    if (Math.abs(position.getY(index) - nextY) <= 1e-9) continue;
+    position.setY(index, nextY);
     changed = true;
   }
 
   if (changed) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere?.();
+    position.needsUpdate = true;
+    geometry.computeVertexNormals();
   }
-  return changed;
+  const normalsChanged = copySharedNormals(mesh, group, centerSurface);
+  if (changed || normalsChanged) {
+    geometry.computeBoundingSphere();
+    geometry.computeBoundingBox?.();
+  }
+  return changed || normalsChanged;
 }
 
 export function stitchHexNeighborTerrain(view) {
@@ -110,17 +150,19 @@ export function stitchHexNeighborTerrain(view) {
   const revision = `${view.state.regionId}:${view.state.revision}:${preview.uuid}`;
   if (preview.userData.moyoHexTerrainStitchRevision === revision) return false;
 
-  const samples = centerHeightSamples(view);
-  if (samples.land.length === 0 && samples.water.length === 0) return false;
+  const surfaces = {
+    land: centerVertexHeights(view.terrainMesh),
+    water: centerVertexHeights(view.waterMesh),
+  };
+  if (surfaces.land.samples.length === 0 && surfaces.water.samples.length === 0) return false;
 
   const radius = hexCellRadius(width, height);
-  const matrix = new THREE.Matrix4();
   let changed = false;
-
   for (const group of preview.children.filter((entry) => entry?.isGroup)) {
     for (const mesh of group.children) {
-      const sourceSamples = mesh.name === "neighbor-hex-water" ? samples.water : samples.land;
-      changed = stitchMesh(mesh, group, sourceSamples, width, height, radius, matrix) || changed;
+      const centerSurface = mesh.name === "neighbor-hex-water" ? surfaces.water : surfaces.land;
+      if (centerSurface.samples.length === 0) continue;
+      changed = stitchMesh(mesh, group, centerSurface, width, height, radius) || changed;
     }
   }
 
