@@ -46,6 +46,55 @@ const HEX_STEPS: Readonly<Record<HexDirection, HexCoordinate>> = {
   southEast: { q: 0, r: 1 },
 };
 
+const AXIAL_REGION_ID_PATTERN = /^hex-q(-?(?:0|[1-9]\d*))-r(-?(?:0|[1-9]\d*))$/;
+
+function assertSafeAxialCoordinate(coordinate: HexCoordinate): void {
+  if (!Number.isSafeInteger(coordinate.q) || !Number.isSafeInteger(coordinate.r)) {
+    throw new RangeError("axial region coordinates must be safe integers");
+  }
+}
+
+/**
+ * Encode an axial coordinate as a canonical Durable Object routing name.
+ * The format intentionally uses only the characters accepted by the current
+ * public region-id validator so it can be adopted without widening API input.
+ */
+export function axialRegionId(coordinate: HexCoordinate): string {
+  assertSafeAxialCoordinate(coordinate);
+  return `hex-q${coordinate.q}-r${coordinate.r}`;
+}
+
+export function parseAxialRegionId(regionId: string): HexCoordinate | undefined {
+  const match = AXIAL_REGION_ID_PATTERN.exec(regionId);
+  if (match === null) return undefined;
+  const q = Number(match[1]);
+  const r = Number(match[2]);
+  if (!Number.isSafeInteger(q) || !Number.isSafeInteger(r)) return undefined;
+  const coordinate = { q, r };
+  return axialRegionId(coordinate) === regionId ? coordinate : undefined;
+}
+
+export function hexNeighborCoordinate(
+  coordinate: HexCoordinate,
+  direction: HexDirection,
+): HexCoordinate {
+  assertSafeAxialCoordinate(coordinate);
+  const step = HEX_STEPS[direction];
+  const neighbor = { q: coordinate.q + step.q, r: coordinate.r + step.r };
+  assertSafeAxialCoordinate(neighbor);
+  return neighbor;
+}
+
+export function axialRegionNeighborId(
+  regionId: string,
+  direction: HexDirection,
+): string | undefined {
+  const coordinate = parseAxialRegionId(regionId);
+  return coordinate === undefined
+    ? undefined
+    : axialRegionId(hexNeighborCoordinate(coordinate, direction));
+}
+
 export function hexDistance(a: HexCoordinate, b: HexCoordinate = { q: 0, r: 0 }): number {
   const dq = a.q - b.q;
   const dr = a.r - b.r;

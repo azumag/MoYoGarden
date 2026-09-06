@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   HEX_DIRECTIONS,
+  axialRegionId,
+  axialRegionNeighborId,
   hexDistance,
+  hexNeighborCoordinate,
+  parseAxialRegionId,
   projectHexCoordinate,
   projectPhysicalRegionOrigin,
   regionHexTopology,
@@ -106,4 +110,49 @@ test("hex topology fills complete rings before adding farther regions", () => {
     [1, 6, 12],
   );
   assert.equal(hexDistance({ q: 2, r: -1 }), 2);
+});
+
+test("axial region ids round-trip signed coordinates in a canonical routing-safe form", () => {
+  const samples = [
+    { q: 0, r: 0 },
+    { q: -12, r: 34 },
+    { q: Number.MAX_SAFE_INTEGER, r: Number.MIN_SAFE_INTEGER },
+  ];
+  for (const coordinate of samples) {
+    const regionId = axialRegionId(coordinate);
+    assert.match(regionId, /^[a-z0-9-]+$/);
+    assert.ok(regionId.length <= 48);
+    assert.deepEqual(parseAxialRegionId(regionId), coordinate);
+  }
+
+  assert.equal(axialRegionId({ q: -12, r: 34 }), "hex-q-12-r34");
+  assert.equal(parseAxialRegionId("garden-1"), undefined);
+  assert.equal(parseAxialRegionId("hex-q01-r0"), undefined);
+  assert.equal(parseAxialRegionId("hex-q9007199254740992-r0"), undefined);
+  assert.throws(() => axialRegionId({ q: 0.5, r: 0 }), RangeError);
+});
+
+test("dynamic axial ids resolve all six neighbors without a global region list", () => {
+  const expected = [
+    { q: 1, r: 0 },
+    { q: 1, r: -1 },
+    { q: 0, r: -1 },
+    { q: -1, r: 0 },
+    { q: -1, r: 1 },
+    { q: 0, r: 1 },
+  ];
+
+  assert.deepEqual(
+    HEX_DIRECTIONS.map((direction) => hexNeighborCoordinate({ q: 0, r: 0 }, direction)),
+    expected,
+  );
+  assert.deepEqual(
+    HEX_DIRECTIONS.map((direction) => axialRegionNeighborId("hex-q0-r0", direction)),
+    expected.map((coordinate) => axialRegionId(coordinate)),
+  );
+  assert.equal(axialRegionNeighborId("garden-1", "east"), undefined);
+  assert.throws(
+    () => hexNeighborCoordinate({ q: Number.MAX_SAFE_INTEGER, r: 0 }, "east"),
+    RangeError,
+  );
 });
