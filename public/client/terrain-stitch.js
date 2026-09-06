@@ -1,3 +1,5 @@
+import { hexFootprintVertices } from "./hex-footprint.js";
+
 const KEY_PRECISION = 4;
 const KEY_EPSILON = 10 ** -KEY_PRECISION;
 const DEFAULT_EDGE_BLEND_DISTANCE = 3;
@@ -160,13 +162,6 @@ function colorChannel(color, channel, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-/**
- * Build one shared-vertex surface from tile-centered preview entries.
- * Neighboring quads reuse the same corner vertex, which lets Three.js compute
- * continuous normals instead of a visible faceted grid. Vertex colors are the
- * mean of incident tile colors so terrain tint also transitions across tile
- * boundaries without adding extra draw calls.
- */
 export function buildWeldedPreviewSurface(entries, resolveHeight) {
   const vertices = new Map();
   const indices = [];
@@ -219,13 +214,98 @@ export function buildWeldedPreviewSurface(entries, resolveHeight) {
   return { positions, colors, indices, vertexCount: ordered.length };
 }
 
+function cross2(ax, az, bx, bz) {
+  return ax * bz - az * bx;
+}
+
+function projectToHexBoundary(x, z, width, height) {
+  if (![x, z, width, height].every(Number.isFinite) || Math.hypot(x, z) <= 1e-12) {
+    return { x, z };
+  }
+  const polygon = hexFootprintVertices(width, height);
+  let bestT = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < polygon.length; index += 1) {
+    const a = polygon[index];
+    const b = polygon[(index + 1) % polygon.length];
+    const ex = b.x - a.x;
+    const ez = b.z - a.z;
+    const denominator = cross2(x, z, ex, ez);
+    if (Math.abs(denominator) <= 1e-12) continue;
+    const t = cross2(a.x, a.z, ex, ez) / denominator;
+    const u = cross2(a.x, a.z, x, z) / denominator;
+    if (t <= 0 || u < -1e-9 || u > 1 + 1e-9) continue;
+    bestT = Math.min(bestT, t);
+  }
+  if (!Number.isFinite(bestT)) return { x, z };
+  return { x: x * bestT, z: z * bestT };
+}
+
+function conformBoundaryVertices(rawVertices, rawIndices, safeRadius, options) {
+  const width = Number(options?.footprintWidth);
+  const height = Number(options?.footprintHeight);
+  if (![width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return { vertices: rawVertices, indices: rawIndices };
+  }
+
+  const snapDistance = Number.isFinite(options?.boundarySnapDistance)
+    ? Math.max(0, Number(options.boundarySnapDistance))
+    : safeRadius * 1.35;
+  const merged = new Map();
+  const remap = new Map();
+
+  for (const source of rawVertices) {
+    let x = source.x;
+    let z = source.z;
+    if (source.cornerSamples > 0 && source.cornerSamples < 3 && source.centerSamples === 0) {
+      const projected = projectToHexBoundary(x, z, width, height);
+      if (Math.hypot(projected.x - x, projected.z - z) <= snapDistance + 1e-9) {
+        x = projected.x;
+        z = projected.z;
+      }
+    }
+
+    const key = terrainVertexKey(x, z);
+    let target = merged.get(key);
+    if (!target) {
+      target = {
+        index: merged.size,
+        x,
+        z,
+        heightTotal: 0,
+        heightSamples: 0,
+        r: 0,
+        g: 0,
+        b: 0,
+        colorSamples: 0,
+        centerSamples: 0,
+        cornerSamples: 0,
+      };
+      merged.set(key, target);
+    }
+    target.heightTotal += source.heightTotal;
+    target.heightSamples += source.heightSamples;
+    target.r += source.r;
+    target.g += source.g;
+    target.b += source.b;
+    target.colorSamples += source.colorSamples;
+    target.centerSamples += source.centerSamples;
+    target.cornerSamples += source.cornerSamples;
+    remap.set(source.index, target.index);
+  }
+
+  return {
+    vertices: [...merged.values()].sort((a, b) => a.index - b.index),
+    indices: rawIndices.map((index) => remap.get(index) ?? index),
+  };
+}
+
 /**
- * Build a pointy-top hex surface whose adjacent cells literally reuse their
- * shared edge vertices. Corner heights and colors are averaged from every
- * incident cell, turning discrete simulation elevations into a continuous
- * rendered slope while keeping each cell center anchored to its native value.
+ * Build a smooth hex-cell surface and, when a region footprint is supplied,
+ * conform only the outer cell-corner ring to the exact macro-hex boundary.
+ * This gives neighboring regions real shared world-space vertices instead of
+ * relying on GPU clipping to manufacture two independent seam edges.
  */
-export function buildWeldedHexSurface(entries, radius) {
+export function buildWeldedHexSurface(entries, radius, options = undefined) {
   const safeRadius = Number(radius);
   if (!Number.isFinite(safeRadius) || safeRadius <= 0) {
     return { positions: [], colors: [], indices: [], vertexCount: 0 };
@@ -234,7 +314,7 @@ export function buildWeldedHexSurface(entries, radius) {
   const vertices = new Map();
   const indices = [];
 
-  function vertexIndex(x, z, height, color) {
+  function vertexIndex(x, z, height, color, corner) {
     const key = terrainVertexKey(x, z);
     let vertex = vertices.get(key);
     if (vertex === undefined) {
@@ -248,6 +328,8 @@ export function buildWeldedHexSurface(entries, radius) {
         g: 0,
         b: 0,
         colorSamples: 0,
+        centerSamples: 0,
+        cornerSamples: 0,
       };
       vertices.set(key, vertex);
     }
@@ -260,6 +342,8 @@ export function buildWeldedHexSurface(entries, radius) {
     vertex.g += colorChannel(color, "g", 0.52);
     vertex.b += colorChannel(color, "b", 0.35);
     vertex.colorSamples += 1;
+    if (corner) vertex.cornerSamples += 1;
+    else vertex.centerSamples += 1;
     return vertex.index;
   }
 
@@ -269,7 +353,7 @@ export function buildWeldedHexSurface(entries, radius) {
     const height = Number(entry?.height);
     if (![x, z, height].every(Number.isFinite)) continue;
 
-    const center = vertexIndex(x, z, height, entry.color);
+    const center = vertexIndex(x, z, height, entry.color, false);
     const corners = [];
     for (let index = 0; index < 6; index += 1) {
       const angle = index * Math.PI / 3;
@@ -278,6 +362,7 @@ export function buildWeldedHexSurface(entries, radius) {
         z + Math.sin(angle) * safeRadius,
         height,
         entry.color,
+        true,
       ));
     }
     for (let index = 0; index < 6; index += 1) {
@@ -285,10 +370,11 @@ export function buildWeldedHexSurface(entries, radius) {
     }
   }
 
-  const ordered = [...vertices.values()].sort((a, b) => a.index - b.index);
+  const rawVertices = [...vertices.values()].sort((a, b) => a.index - b.index);
+  const conformed = conformBoundaryVertices(rawVertices, indices, safeRadius, options);
   const positions = [];
   const colors = [];
-  for (const vertex of ordered) {
+  for (const vertex of conformed.vertices) {
     const heightSamples = Math.max(1, vertex.heightSamples);
     const colorSamples = Math.max(1, vertex.colorSamples);
     positions.push(vertex.x, vertex.heightTotal / heightSamples, vertex.z);
@@ -299,5 +385,10 @@ export function buildWeldedHexSurface(entries, radius) {
     );
   }
 
-  return { positions, colors, indices, vertexCount: ordered.length };
+  return {
+    positions,
+    colors,
+    indices: conformed.indices,
+    vertexCount: conformed.vertices.length,
+  };
 }
