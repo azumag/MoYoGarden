@@ -122,6 +122,26 @@ export function shouldMaterializeHaloForTick(currentTick: number): boolean {
   return nextTick > 0 && nextTick % HALO_REGROWTH_INTERVAL === 0;
 }
 
+/**
+ * Halo reads are only useful for regrowth compensation when the next tick can
+ * run compensation and at least one organic resource is actually below its
+ * carrying capacity. Stone uses the local-only regrowth rate, while full
+ * wood/food deposits cannot grow, so fetching neighboring edges in those
+ * states only adds cross-DO work without changing simulation output.
+ */
+export function shouldMaterializeHaloForRegrowth(
+  state: Pick<WorldState, "tiles">,
+  currentTick: number,
+): boolean {
+  if (!shouldMaterializeHaloForTick(currentTick)) return false;
+  return state.tiles.some((tile) => {
+    const resource = tile.resource;
+    return resource !== undefined
+      && resource.kind !== "stone"
+      && resource.amount < resource.maxAmount;
+  });
+}
+
 export class RegionDurableObject extends MoveRegionDurableObject {
   private readonly activityTickMs: number;
   private lastDirectActivityAt = 0;
@@ -340,7 +360,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   override async alarm(): Promise<void> {
     const access = runtimeAccess(this);
     const before = access.runtime.snapshot();
-    const halo = shouldMaterializeHaloForTick(before.tick)
+    const halo = shouldMaterializeHaloForRegrowth(before, before.tick)
       ? (await this.materializeHaloForState(before)).halo
       : [];
     await super.alarm();
