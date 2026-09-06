@@ -514,6 +514,13 @@ function moveAgent(state: WorldState, agent: Agent, target: GridPosition): boole
   return samePosition(next, target);
 }
 
+function agentCrowdingAt(state: Pick<WorldState, "agents">, position: GridPosition): number {
+  return state.agents.reduce(
+    (count, agent) => count + (samePosition(agent.position, position) ? 1 : 0),
+    0,
+  );
+}
+
 function nearestResource(
   state: WorldState,
   origin: GridPosition,
@@ -527,7 +534,9 @@ function nearestResource(
     )
     .sort((a, b) => {
       const distance = manhattanDistance(a, origin) - manhattanDistance(b, origin);
-      return distance || a.y - b.y || a.x - b.x;
+      if (distance !== 0) return distance;
+      const crowding = agentCrowdingAt(state, a) - agentCrowdingAt(state, b);
+      return crowding || a.y - b.y || a.x - b.x;
     })[0];
   return tile === undefined ? undefined : { x: tile.x, y: tile.y };
 }

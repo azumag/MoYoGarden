@@ -53,3 +53,40 @@ test("autonomous gatherer prefers the less crowded resource hex when distance is
   assert.equal(moved.task?.type, "gather");
   assert.deepEqual(moved.task?.target, { x: open.x, y: open.y });
 });
+
+test("resource distance remains authoritative over crowding", () => {
+  const state = plainResourceFixture();
+  const worker = state.agents.find((agent) => agent.role === "woodcutter");
+  assert.ok(worker);
+
+  worker.position = { x: 7, y: 5 };
+  worker.energy = 100;
+  worker.inventory = { wood: 0, stone: 0, food: 0 };
+  worker.autonomy = true;
+  delete worker.task;
+
+  const near = state.tiles.find((tile) => tile.x === 8 && tile.y === 5);
+  const far = state.tiles.find((tile) => tile.x === 9 && tile.y === 5);
+  assert.ok(near);
+  assert.ok(far);
+  near.terrain = "forest";
+  near.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+  far.terrain = "forest";
+  far.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+
+  const blockers = state.agents
+    .filter((agent) => agent.id !== worker.id)
+    .slice(0, 3);
+  for (const blocker of blockers) {
+    blocker.position = { x: near.x, y: near.y };
+    blocker.autonomy = false;
+    delete blocker.task;
+  }
+  state.agents = [worker, ...blockers];
+
+  const next = simulate(state).state;
+  const moved = next.agents.find((agent) => agent.id === worker.id);
+  assert.ok(moved);
+  assert.deepEqual(moved.task?.target, { x: near.x, y: near.y });
+  assert.deepEqual(moved.position, { x: near.x, y: near.y });
+});
