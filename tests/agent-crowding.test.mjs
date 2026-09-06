@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { buildAgentCrowdLayout } from "../public/client/agent-crowding.js";
 
@@ -35,4 +36,12 @@ test("dense crowds stay bounded to the logical hex while retaining unique micro-
 
   assert.equal(new Set(points.map(key)).size, agents.length);
   for (const point of points) assert.ok(Math.hypot(point.x, point.z) <= 0.78 + 1e-9);
+});
+
+test("boot installs crowd separation before the main application starts", async () => {
+  const source = await readFile(new URL("../public/boot.js", import.meta.url), "utf8");
+  const crowdImport = source.indexOf("/client/agent-crowding.js");
+  const appLaunch = source.indexOf("/app.js?v=${VERSION}");
+  assert.ok(crowdImport >= 0);
+  assert.ok(appLaunch > crowdImport);
 });
