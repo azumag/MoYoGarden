@@ -240,6 +240,16 @@ function projectToHexBoundary(x, z, width, height) {
   return { x: x * bestT, z: z * bestT };
 }
 
+function nearestCanonicalCorner(x, z, corners, maxDistance) {
+  let nearest;
+  for (const corner of corners) {
+    const distance = Math.hypot(corner.x - x, corner.z - z);
+    if (distance > maxDistance) continue;
+    if (!nearest || distance < nearest.distance) nearest = { ...corner, distance };
+  }
+  return nearest;
+}
+
 function conformBoundaryVertices(rawVertices, rawIndices, safeRadius, options) {
   const width = Number(options?.footprintWidth);
   const height = Number(options?.footprintHeight);
@@ -250,6 +260,10 @@ function conformBoundaryVertices(rawVertices, rawIndices, safeRadius, options) {
   const snapDistance = Number.isFinite(options?.boundarySnapDistance)
     ? Math.max(0, Number(options.boundarySnapDistance))
     : safeRadius * 1.35;
+  const cornerSnapDistance = Number.isFinite(options?.cornerSnapDistance)
+    ? Math.max(0, Number(options.cornerSnapDistance))
+    : safeRadius * 0.75;
+  const canonicalCorners = hexFootprintVertices(width, height);
   const merged = new Map();
   const remap = new Map();
 
@@ -261,6 +275,11 @@ function conformBoundaryVertices(rawVertices, rawIndices, safeRadius, options) {
       if (Math.hypot(projected.x - x, projected.z - z) <= snapDistance + 1e-9) {
         x = projected.x;
         z = projected.z;
+        const canonical = nearestCanonicalCorner(x, z, canonicalCorners, cornerSnapDistance + 1e-9);
+        if (canonical) {
+          x = canonical.x;
+          z = canonical.z;
+        }
       }
     }
 
@@ -302,8 +321,9 @@ function conformBoundaryVertices(rawVertices, rawIndices, safeRadius, options) {
 /**
  * Build a smooth hex-cell surface and, when a region footprint is supplied,
  * conform only the outer cell-corner ring to the exact macro-hex boundary.
- * This gives neighboring regions real shared world-space vertices instead of
- * relying on GPU clipping to manufacture two independent seam edges.
+ * Boundary notches created by the flat-top cell lattice are collapsed into the
+ * six canonical pointy-top macro corners, so neighboring regions meet at real
+ * shared vertices instead of leaving small triangular gaps.
  */
 export function buildWeldedHexSurface(entries, radius, options = undefined) {
   const safeRadius = Number(radius);
