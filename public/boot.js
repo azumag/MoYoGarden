@@ -80,6 +80,7 @@
   preload(`/client/hex-neighbor-preview.js?v=${VERSION}`);
   preload(`/client/hex-tile-rendering.js?v=${VERSION}`);
   preload(`/client/hex-terrain-stitching.js?v=${VERSION}`);
+  preload(`/client/agent-crowding.js?v=${VERSION}`);
   preload(`/client/decay-dressing.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
@@ -118,6 +119,11 @@
       await import(`/client/hex-terrain-stitching.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: hex terrain boundary stitching failed; keeping native chunk heights", error);
+    }
+    try {
+      await import(`/client/agent-crowding.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: BOT crowd separation failed; keeping centered agent rendering", error);
     }
     try {
       await import(`/client/decay-dressing.js?v=${VERSION}`);
