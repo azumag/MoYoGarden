@@ -16,7 +16,7 @@ import {
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
 import type { WorldState } from "./protocol.js";
-import { regionHexTopology } from "./region-topology.js";
+import { regionHexWindow } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { getTile } from "./world.js";
 
@@ -243,8 +243,10 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   private haloEnvironmentFrame(state: WorldState): HaloEnvironmentFrame {
-    const entry = regionHexTopology(
+    const entry = regionHexWindow(
       configuredRegionIds(this.haloEnv),
+      state.regionId,
+      0,
       state.width,
       state.height,
     ).find((candidate) => candidate.id === state.regionId);
