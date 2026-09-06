@@ -1075,7 +1075,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return super.fetch(request);
   }
 
-  override async alarm(): Promise<void> {
+  private async runSingleAlarmTick(): Promise<void> {
     const before = runtimeAccess(this).runtime.snapshot();
     await this.resumeOrPlanAutonomousHandoff(before);
     const simulationBefore = runtimeAccess(this).runtime.snapshot();
@@ -1084,5 +1084,14 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       simulationBefore,
       runtimeAccess(this).runtime.snapshot(),
     );
+  }
+
+  override async alarm(): Promise<void> {
+    const now = Date.now();
+    const ticks = this.virtualTicksForAlarm(now);
+    for (let index = 0; index < ticks; index += 1) {
+      await this.runSingleAlarmTick();
+    }
+    await this.scheduleCatchUpIfBehind(Date.now());
   }
 }

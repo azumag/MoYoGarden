@@ -374,6 +374,27 @@ export class RegionDurableObject {
     await this.ctx.storage.setAlarm(Date.now() + delayMs);
   }
 
+  protected virtualCatchUpPlan(now = Date.now()): RegionVirtualCatchUpPlan {
+    return regionVirtualCatchUpPlan(
+      this.lastSimulatedAt,
+      now,
+      this.tickMs,
+      this.paused,
+    );
+  }
+
+  protected virtualTicksForAlarm(now = Date.now()): number {
+    if (!this.assigned || this.paused) return 0;
+    return Math.max(1, this.virtualCatchUpPlan(now).runnableTicks);
+  }
+
+  protected async scheduleCatchUpIfBehind(now = Date.now()): Promise<void> {
+    if (!this.assigned || this.paused) return;
+    if (this.virtualCatchUpPlan(now).dueTicks > 0) {
+      await this.ctx.storage.setAlarm(now + this.tickMs);
+    }
+  }
+
   private async markActivity(): Promise<void> {
     this.lastActivityAt = Date.now();
     if (!this.assigned || this.paused) return;
@@ -595,8 +616,12 @@ export class RegionDurableObject {
 
   async alarm(): Promise<void> {
     if (!this.assigned || this.paused) return;
+    const now = Date.now();
+    const nextSimulatedAt = this.lastSimulatedAt < now
+      ? Math.min(now, this.lastSimulatedAt + this.tickMs)
+      : now;
     this.runtime.tick();
-    this.lastSimulatedAt = Date.now();
+    this.lastSimulatedAt = nextSimulatedAt;
     await this.persist();
     this.broadcastSnapshot();
     await this.scheduleNextTick();
