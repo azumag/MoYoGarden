@@ -8,7 +8,7 @@ import {
   type HexGridPosition,
 } from "./hex-grid.js";
 import type { Tile } from "./protocol.js";
-import { regionHexTopology } from "./region-topology.js";
+import { regionHexWindow } from "./region-topology.js";
 
 export interface HexHaloLink {
   sourceRegionId: string;
@@ -39,7 +39,7 @@ export function buildHexHaloLinks(
   regionIds: readonly string[],
   sourceRegionId: string,
 ): HexHaloLink[] {
-  const topology = regionHexTopology(regionIds, extent.width, extent.height);
+  const topology = regionHexWindow(regionIds, sourceRegionId, 1, extent.width, extent.height);
   const source = topology.find((entry) => entry.id === sourceRegionId);
   if (source === undefined) return [];
 
@@ -69,7 +69,7 @@ export function boundaryDirectionForNeighbor(
   width: number,
   height: number,
 ): { sourceDirection: HexGridDirection; neighborDirection: HexGridDirection } | undefined {
-  const topology = regionHexTopology(regionIds, width, height);
+  const topology = regionHexWindow(regionIds, sourceRegionId, 1, width, height);
   const source = topology.find((entry) => entry.id === sourceRegionId);
   if (source === undefined) return undefined;
   const sourceDirection = HEX_GRID_DIRECTIONS.find(
