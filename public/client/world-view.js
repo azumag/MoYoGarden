@@ -324,7 +324,7 @@ export class WorldView {
     this.resize();
     this.updateHeldKeys(delta);
     for (const entry of this.agentObjects.values()) this.animateAgent(entry, time);
-    if (this.waterMesh) {
+    if (this.waterMesh && this.waterMesh.material.userData.moyoSurfaceKind !== "water") {
       const material = this.waterMesh.material;
       material.opacity = 0.73 + Math.sin(time * 0.0011) * 0.022;
       material.color.setHSL(0.545, 0.38, 0.42 + Math.sin(time * 0.0007) * 0.012);

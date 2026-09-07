@@ -131,6 +131,12 @@
       console.warn("MoYoGarden: decay dressing failed; continuing without ruined-world details", error);
     }
 
+    try {
+      await import(`/client/world-atmosphere.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: atmosphere extension failed; keeping base PBR rendering", error);
+    }
+
     const moduleScript = document.createElement("script");
     moduleScript.type = "module";
     moduleScript.src = `/app.js?v=${VERSION}`;
