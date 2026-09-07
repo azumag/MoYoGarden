@@ -14,17 +14,14 @@ import {
 } from "./agent-ownership.js";
 import {
   HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
   hexGridCrossingDirection,
   hexGridDistance,
-  hexGridHandoffTarget,
   nearestHexGridCell,
   type HexGridDirection,
 } from "./hex-grid.js";
 import type { GridPosition } from "./protocol.js";
-import {
-  configuredRegionNeighborId,
-  regionCellTransition,
-} from "./region-topology.js";
+import { regionCellTransition } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { RegionDurableObject as BaseRegionDurableObject } from "./worker.js";
 import { isPassable } from "./world.js";
@@ -82,15 +79,6 @@ async function readJson(request: Request): Promise<unknown> {
   } catch {
     throw new Error("request body must be valid JSON");
   }
-}
-
-function configuredRegionIds(env: HandoffEnv): string[] {
-  const configured = env.REGION_IDS ?? env.DEFAULT_REGION_ID ?? "garden-1";
-  const regions = configured
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry));
-  return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
 }
 
 function adminAuthorized(request: Request, env: HandoffEnv): boolean {
@@ -253,7 +241,6 @@ export class RegionDurableObject extends BaseRegionDurableObject {
     }
 
     const sourcePosition = detached.value.agent.position;
-    const regionIds = configuredRegionIds(this.handoffEnv);
     let targetRegionId: string | undefined;
     let mappedTarget: GridPosition | undefined;
     let handoffDirection = direction;
@@ -275,20 +262,20 @@ export class RegionDurableObject extends BaseRegionDurableObject {
       mappedTarget = transition.targetPosition;
       handoffDirection = transition.direction;
     } else {
-      mappedTarget = hexGridHandoffTarget(state, sourcePosition, direction);
-      if (mappedTarget === undefined) {
-        return { error: json({ error: "agent is not on the requested hex boundary" }, 409) };
-      }
-      targetRegionId = configuredRegionNeighborId(
-        regionIds,
+      const step = HEX_GRID_DIRECTION_STEPS[direction];
+      const desired = { x: sourcePosition.x + step.x, y: sourcePosition.y + step.y };
+      const transition = regionCellTransition(
         state.regionId,
-        direction,
+        desired,
         state.width,
         state.height,
       );
-      if (targetRegionId === undefined) {
-        return { error: json({ error: "no neighboring region in that direction" }, 409) };
+      if (transition === undefined) {
+        return { error: json({ error: "agent is not on the requested hex boundary" }, 409) };
       }
+      targetRegionId = transition.targetRegionId;
+      mappedTarget = transition.targetPosition;
+      handoffDirection = transition.direction;
     }
 
     const resolved = await this.callTarget(targetRegionId, `${INTERNAL_PREFIX}resolve`, {

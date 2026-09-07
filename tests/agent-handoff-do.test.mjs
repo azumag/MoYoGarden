@@ -8,8 +8,9 @@ import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
 const handoffRegionSource = await readFile(new URL("../src/handoff-region.ts", import.meta.url), "utf8");
 
-test("handoff hot path resolves configured axial neighbors without full topology reconstruction", () => {
-  assert.match(handoffRegionSource, /configuredRegionNeighborId/);
+test("handoff hot path resolves exact axial ownership without configured topology scans", () => {
+  assert.match(handoffRegionSource, /regionCellTransition/);
+  assert.doesNotMatch(handoffRegionSource, /configuredRegionNeighborId/);
   assert.doesNotMatch(handoffRegionSource, /regionHexTopology/);
 });
 
@@ -216,6 +217,27 @@ test("commit transport failure leaves recoverable detached/prepared journals and
     env.REGIONS.entries.get("garden-3").state.storage.values.get("handoff:incoming:v1")[0].phase,
     "committed",
   );
+});
+
+test("direction-only admin handoff can materialize an unlisted axial neighbor", async () => {
+  const env = environment();
+  const { agentId } = await placeAgentOnBoundary(env, "garden-1", "northWest");
+  const transferId = "integration-dynamic-nw";
+
+  const moved = await publicJson(
+    env,
+    "/api/admin/handoff?region=garden-1",
+    adminHandoffBody({ transferId, agentId, direction: "northWest" }),
+  );
+  assert.equal(moved.response.status, 200);
+  assert.equal(moved.body.phase, "committed");
+  assert.equal(moved.body.toRegionId, "hex-q0-r-1");
+
+  const source = (await publicJson(env, "/api/world/snapshot?region=garden-1")).body;
+  const target = (await publicJson(env, "/api/world/snapshot?region=hex-q0-r-1")).body;
+  const globalId = globalHandoffAgentId(agentId, "garden-1");
+  assert.equal(source.agents.some((agent) => agent.id === agentId), false);
+  assert.equal(target.agents.filter((agent) => agent.id === globalId).length, 1);
 });
 
 test("handoff admin route requires admin authentication", async () => {
