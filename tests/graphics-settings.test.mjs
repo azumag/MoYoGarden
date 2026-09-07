@@ -136,3 +136,11 @@ test('save-and-apply only navigates after storage succeeds', async () => {
     href: 'https://example.test/', navigate: value => {next=value;}}), false);
   assert.equal(next, undefined);
 });
+
+
+test('saved light mode cannot restore decorative density through an old advanced override', () => {
+  const low = { ...baseline, id: 'balanced', label: 'SAFE', pixelRatioCap: 1 };
+  const value = applyGraphicsOverrides(low, { vegetation: 'full', water: 'ripples' });
+  assert.equal(value.detailDensity, 0);
+  assert.equal(value.waterQuality, 'ripples');
+});

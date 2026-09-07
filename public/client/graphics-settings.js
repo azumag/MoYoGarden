@@ -73,7 +73,7 @@ export function applyGraphicsOverrides(profile, input, lockSafe = false) {
     if (result.shadowsEnabled) result.shadowSize = Number(settings.shadows);
   }
   if (settings.water !== 'auto') result.waterQuality = settings.water;
-  if (settings.vegetation !== 'auto') {
+  if (!light && settings.vegetation !== 'auto') {
     result.detailDensity = { off: 0, sparse: 0.25, full: 1 }[settings.vegetation];
   }
   if (settings.fps !== 'auto') result.frameRate = Number(settings.fps);

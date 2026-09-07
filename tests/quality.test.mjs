@@ -132,7 +132,13 @@ test("legacy low quality launches a real constrained renderer profile", () => {
     assert.equal(quality.shadowSize, 512);
     assert.equal(quality.environmentSize, 16);
     assert.equal(quality.modelConcurrency, 1);
-    assert.equal(quality.detailDensity, 0.32);
+    // Light mode deliberately omits decorative geometry, not just reduces it.
+    assert.equal(quality.detailDensity, 0);
+    assert.equal(quality.shadowsEnabled, false);
+    assert.equal(quality.environmentEnabled, false);
+    assert.equal(quality.loadModels, false);
+    assert.equal(quality.waterQuality, "simple");
+    assert.equal(quality.frameRate, 30);
     assert.equal(quality.lodScale, 0.64);
   });
 });
@@ -145,7 +151,13 @@ test("compat and safe aliases use the same constrained renderer instead of a dea
       assert.equal(quality.requested, "safe");
       assert.equal(quality.label, "SAFE");
       assert.equal(quality.antialias, false);
-      assert.equal(quality.detailDensity, 0.32);
+      // Light mode deliberately omits decorative geometry, not just reduces it.
+      assert.equal(quality.detailDensity, 0);
+      assert.equal(quality.shadowsEnabled, false);
+      assert.equal(quality.environmentEnabled, false);
+      assert.equal(quality.loadModels, false);
+      assert.equal(quality.waterQuality, "simple");
+      assert.equal(quality.frameRate, 30);
     });
   }
 });
