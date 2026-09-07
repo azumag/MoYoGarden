@@ -109,12 +109,17 @@ test("one unresolved ghost catchment chooses one steepest receiving cell", () =>
     ["garden-1", "garden-2", "garden-3"],
     "garden-1",
   );
-  const duplicate = links.find((candidate, index) => links.some((other, otherIndex) =>
-    otherIndex > index &&
-    other.neighborRegionId === candidate.neighborRegionId &&
-    other.neighborPosition.x === candidate.neighborPosition.x &&
-    other.neighborPosition.y === candidate.neighborPosition.y
-  ));
+  const duplicate = links.find((candidate, index) =>
+    candidate.neighborRegionId === "garden-2" &&
+    candidate.neighborPosition.x === 8 &&
+    candidate.neighborPosition.y === 12 &&
+    links.some((other, otherIndex) =>
+      otherIndex > index &&
+      other.neighborRegionId === candidate.neighborRegionId &&
+      other.neighborPosition.x === candidate.neighborPosition.x &&
+      other.neighborPosition.y === candidate.neighborPosition.y
+    )
+  );
   assert.ok(duplicate);
   const paired = links.find((candidate) =>
     candidate !== duplicate &&

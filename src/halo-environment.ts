@@ -1,6 +1,7 @@
 import { createRandom } from "./prng.js";
 import {
   HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
   oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
@@ -14,6 +15,7 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { drainageAt, resourceRegrowthChance } from "./simulation.js";
+import { regionCellTransition, regionGlobalCellOrigin } from "./region-topology.js";
 import { sampleWorldWind } from "./world-scale.js";
 import { getTile } from "./world.js";
 
@@ -70,6 +72,87 @@ function preferHaloFlowReceiver(
   if (candidate.elevation > current.elevation + HALO_HYDROLOGY_EPSILON) return false;
   return candidate.position.y < current.position.y ||
     (candidate.position.y === current.position.y && candidate.position.x < current.position.x);
+}
+
+interface HaloCornerRunoffOwner {
+  regionId: string;
+  targetPosition: GridPosition;
+}
+
+/**
+ * Give a boundary catchment that touches multiple macro regions one stable
+ * transient owner before any passive cross-DO runoff is accepted.
+ *
+ * A corner source cell can have downhill neighbors in two different Durable
+ * Objects. Without a shared arbitration rule, each receiver independently sees
+ * the same ghost drainage and both can accept it, creating water. Persisted
+ * cross-DO flow ownership is not available yet, so use the exact global-cell
+ * frame to choose one geometry-stable receiving region, reusing the existing
+ * local seam position tie-break so equal-slope behavior stays compatible. Within
+ * that owner, the slope/elevation comparator still chooses the receiving cell.
+ *
+ * The rule is deliberately conservative: if the elected owner has no downhill
+ * candidate, runoff stays with the source instead of being duplicated elsewhere.
+ */
+function haloCornerRunoffOwner(
+  sourceRegionId: string,
+  sourcePosition: GridPosition,
+  width: number,
+  height: number,
+): HaloCornerRunoffOwner | undefined {
+  if (regionGlobalCellOrigin(sourceRegionId, width, height) === undefined) return undefined;
+
+  let owner: HaloCornerRunoffOwner | undefined;
+  const regions = new Set<string>();
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    const desiredPosition = {
+      x: sourcePosition.x + step.x,
+      y: sourcePosition.y + step.y,
+    };
+    const transition = regionCellTransition(
+      sourceRegionId,
+      desiredPosition,
+      width,
+      height,
+    );
+    if (transition === undefined) continue;
+    regions.add(transition.targetRegionId);
+    const targetPosition = transition.targetPosition;
+    if (
+      owner === undefined ||
+      targetPosition.y < owner.targetPosition.y ||
+      (targetPosition.y === owner.targetPosition.y && targetPosition.x < owner.targetPosition.x) ||
+      (
+        targetPosition.y === owner.targetPosition.y &&
+        targetPosition.x === owner.targetPosition.x &&
+        transition.targetRegionId < owner.regionId
+      )
+    ) {
+      owner = { regionId: transition.targetRegionId, targetPosition: { ...targetPosition } };
+    }
+  }
+
+  return regions.size > 1 ? owner : undefined;
+}
+
+function usesExactGlobalHaloAdjacency(
+  receiverRegionId: string,
+  receiverPosition: GridPosition,
+  sourceRegionId: string,
+  sourcePosition: GridPosition,
+  width: number,
+  height: number,
+): boolean {
+  const receiverOrigin = regionGlobalCellOrigin(receiverRegionId, width, height);
+  const sourceOrigin = regionGlobalCellOrigin(sourceRegionId, width, height);
+  if (receiverOrigin === undefined || sourceOrigin === undefined) return false;
+  const dx = sourceOrigin.x + sourcePosition.x - (receiverOrigin.x + receiverPosition.x);
+  const dy = sourceOrigin.y + sourcePosition.y - (receiverOrigin.y + receiverPosition.y);
+  return HEX_GRID_DIRECTIONS.some((direction) => {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    return step.x === dx && step.y === dy;
+  });
 }
 
 function haloNeighborWaterInfluence(
@@ -152,7 +235,7 @@ function haloNeighborPropaguleInfluence(
  * persisted yet.
  */
 function haloFlowOutletFromLookup(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   position: GridPosition,
   lookup: HaloLookup,
 ): HaloFlowOutlet | undefined {
@@ -167,10 +250,30 @@ function haloFlowOutletFromLookup(
     return undefined;
   }
 
+  const cornerOwner = haloCornerRunoffOwner(
+    state.regionId,
+    position,
+    state.width,
+    state.height,
+  );
   let best: HaloFlowOutlet | undefined;
   for (const direction of HEX_GRID_DIRECTIONS) {
     const ghost = lookup.get(hexHaloKey(position, direction));
     if (ghost === undefined) continue;
+    if (
+      cornerOwner !== undefined &&
+      usesExactGlobalHaloAdjacency(
+        state.regionId,
+        position,
+        ghost.neighborRegionId,
+        ghost.neighborPosition,
+        state.width,
+        state.height,
+      ) &&
+      ghost.neighborRegionId !== cornerOwner.regionId
+    ) {
+      continue;
+    }
     const ghostElevation = tileElevation(ghost.tile);
     if (ghostElevation === undefined) continue;
     const drop = elevation - ghostElevation;
@@ -196,7 +299,7 @@ function haloFlowOutletFromLookup(
 }
 
 export function haloFlowOutletAt(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   position: GridPosition,
   halo: readonly HexHaloTile[] = [],
 ): HaloFlowOutlet | undefined {
@@ -218,7 +321,7 @@ export function haloFlowOutletAt(
  * normalized to [0,1], preserving the existing moisture scale.
  */
 function haloDrainageInflowMapFromLookup(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   lookup: HaloLookup,
 ): Map<string, number> {
   const bestByGhost = new Map<string, {
@@ -230,6 +333,22 @@ function haloDrainageInflowMapFromLookup(
 
   for (const ghost of lookup.values()) {
     if (ghost.tile.terrain === "water" || ghost.tile.flowTo !== undefined) continue;
+    const cornerOwner = usesExactGlobalHaloAdjacency(
+      state.regionId,
+      ghost.sourcePosition,
+      ghost.neighborRegionId,
+      ghost.neighborPosition,
+      state.width,
+      state.height,
+    )
+      ? haloCornerRunoffOwner(
+        ghost.neighborRegionId,
+        ghost.neighborPosition,
+        state.width,
+        state.height,
+      )
+      : undefined;
+    if (cornerOwner !== undefined && cornerOwner.regionId !== state.regionId) continue;
     const tile = getTile(state, ghost.sourcePosition);
     const localElevation = tileElevation(tile);
     const ghostElevation = tileElevation(ghost.tile);
@@ -280,7 +399,7 @@ function haloDrainageInflowMapFromLookup(
 }
 
 function haloDrainageInflowFromLookup(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   position: GridPosition,
   lookup: HaloLookup,
 ): number {
@@ -288,7 +407,7 @@ function haloDrainageInflowFromLookup(
 }
 
 export function haloDrainageInflowAt(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   position: GridPosition,
   halo: readonly HexHaloTile[] = [],
 ): number {
@@ -303,7 +422,7 @@ export function haloDrainageInflowAt(
  * moisture inside the receiving region while keeping ownership unchanged.
  */
 function haloCatchmentContributionMapFromLookup(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   lookup: HaloLookup,
 ): Map<string, number> {
   const contribution = new Map<string, number>();
@@ -348,7 +467,7 @@ function haloCatchmentContributionMapFromLookup(
 }
 
 export function haloCatchmentContributionAt(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   position: GridPosition,
   halo: readonly HexHaloTile[] = [],
 ): number {
@@ -357,7 +476,7 @@ export function haloCatchmentContributionAt(
 }
 
 function surfaceMoistureWithHaloLookup(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   position: GridPosition,
   lookup: HaloLookup,
   catchmentContribution?: ReadonlyMap<string, number>,
@@ -410,7 +529,7 @@ function surfaceMoistureWithHaloLookup(
 }
 
 export function surfaceMoistureWithHaloAt(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "regionId" | "width" | "height" | "tiles">,
   position: GridPosition,
   halo: readonly HexHaloTile[] = [],
   environment?: HaloEnvironmentFrame,

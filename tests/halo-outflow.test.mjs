@@ -146,3 +146,93 @@ test("equal-slope cross-region outlet agrees with the receiver that owns the inf
     "source outlet and receiver inflow must choose the same equal-slope seam cell",
   );
 });
+
+test("multi-region corner runoff is owned by only one receiving region", () => {
+  const regionIds = ["garden-1", "garden-2", "garden-3"];
+  const source = createInitialWorld({ seed: 9404, width: 40, height: 24, regionId: "garden-1" });
+  const receivers = new Map([
+    ["garden-2", createInitialWorld({ seed: 9405, width: 40, height: 24, regionId: "garden-2" })],
+    ["garden-3", createInitialWorld({ seed: 9406, width: 40, height: 24, regionId: "garden-3" })],
+  ]);
+  for (const state of [source, ...receivers.values()]) {
+    for (const tile of state.tiles) {
+      tile.terrain = "plain";
+      delete tile.resource;
+      tile.elevation = 0.8;
+      tile.drainage = 0;
+      delete tile.flowTo;
+      tile.erosionPressure = 0;
+    }
+  }
+
+  const sourcePosition = { x: 30, y: 0 };
+  const sourceTile = source.tiles[sourcePosition.y * source.width + sourcePosition.x];
+  assert.ok(sourceTile);
+  sourceTile.elevation = 0.8;
+  sourceTile.drainage = 0.5;
+
+  const sourceLinks = buildConfiguredHexHaloLinks(source, regionIds, "garden-1")
+    .filter((link) =>
+      link.sourcePosition.x === sourcePosition.x &&
+      link.sourcePosition.y === sourcePosition.y
+    );
+  assert.deepEqual(
+    [...new Set(sourceLinks.map((link) => link.neighborRegionId))].sort(),
+    ["garden-2", "garden-3"],
+    "fixture must exercise a boundary cell that can reach two neighboring regions",
+  );
+  for (const link of sourceLinks) {
+    const receiver = receivers.get(link.neighborRegionId);
+    assert.ok(receiver);
+    const target = receiver.tiles[link.neighborPosition.y * receiver.width + link.neighborPosition.x];
+    assert.ok(target);
+    target.elevation = 0.6;
+  }
+  const sourceHalo = sourceLinks.map((link) => ({
+    ...link,
+    tile: {
+      x: link.neighborPosition.x,
+      y: link.neighborPosition.y,
+      terrain: "plain",
+      elevation: 0.6,
+      drainage: 0,
+    },
+  }));
+  const outlet = haloFlowOutletAt(source, sourcePosition, sourceHalo);
+  assert.ok(outlet);
+
+  const inflowByRegion = new Map();
+  for (const [regionId, receiver] of receivers) {
+    const reverseLinks = buildConfiguredHexHaloLinks(receiver, regionIds, regionId)
+      .filter((link) =>
+        link.neighborRegionId === "garden-1" &&
+        link.neighborPosition.x === sourcePosition.x &&
+        link.neighborPosition.y === sourcePosition.y
+      );
+    const receiverHalo = reverseLinks.map((link) => ({
+      ...link,
+      tile: {
+        x: sourcePosition.x,
+        y: sourcePosition.y,
+        terrain: "plain",
+        elevation: 0.8,
+        drainage: 0.5,
+      },
+    }));
+    const inflow = reverseLinks.reduce(
+      (sum, link) => sum + haloDrainageInflowAt(receiver, link.sourcePosition, receiverHalo),
+      0,
+    );
+    inflowByRegion.set(regionId, inflow);
+  }
+
+  const receivingRegions = [...inflowByRegion]
+    .filter(([, inflow]) => inflow > 0)
+    .map(([regionId]) => regionId);
+  assert.deepEqual(receivingRegions, [outlet.neighborRegionId]);
+  assert.equal(
+    [...inflowByRegion.values()].reduce((sum, inflow) => sum + inflow, 0),
+    0.5,
+    "one source catchment must not be duplicated into two neighboring Durable Objects",
+  );
+});
