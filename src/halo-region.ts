@@ -276,13 +276,18 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   ): Promise<HexHaloEdgeSnapshot | undefined> {
     const url = new URL("https://moyo.internal/api/internal/halo/edge");
     url.searchParams.set("direction", direction);
-    const response = await this.haloStub(neighborRegionId).fetch(new Request(url, {
-      method: "GET",
-      headers: { "x-moyo-region-internal": neighborRegionId },
-    }));
-    if (!response.ok) return undefined;
-    const value = await response.json() as unknown;
-    return isEdgeSnapshot(value) ? value : undefined;
+    try {
+      const response = await this.haloStub(neighborRegionId).fetch(new Request(url, {
+        method: "GET",
+        headers: { "x-moyo-region-internal": neighborRegionId },
+      }));
+      if (!response.ok) return undefined;
+      const value = await response.json() as unknown;
+      return isEdgeSnapshot(value) ? value : undefined;
+    } catch (error) {
+      console.debug("MoYoGarden halo edge unavailable", neighborRegionId, direction, error);
+      return undefined;
+    }
   }
 
   private haloEnvironmentFrame(state: WorldState): HaloEnvironmentFrame {
