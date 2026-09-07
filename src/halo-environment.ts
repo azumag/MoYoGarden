@@ -185,41 +185,82 @@ export function haloFlowOutletAt(
  * entering this cell. Ghost tiles that already drain locally are left alone so
  * we do not redirect or double-count an established local flow path.
  *
- * Multiple unresolved ghost sinks can meet the same corner/edge cell on a hex.
- * Their catchments are independent tributaries, so accumulate their slope-
- * weighted runoff instead of keeping only the strongest one. Drainage remains
+ * One unresolved ghost sink can be adjacent to multiple local boundary cells at
+ * a slanted seam. Give that catchment to exactly one steepest downhill receiver,
+ * matching local flowTargetAt semantics and preventing duplicated runoff. Truly
+ * distinct ghost sinks may still accumulate at one local cell. Drainage remains
  * normalized to [0,1], preserving the existing moisture scale.
  */
-function haloDrainageInflowFromLookup(
+function haloDrainageInflowMapFromLookup(
   state: Pick<WorldState, "width" | "height" | "tiles">,
-  position: GridPosition,
   lookup: HaloLookup,
-): number {
-  const tile = getTile(state, position);
-  const elevation = tileElevation(tile);
-  if (tile === undefined || tile.terrain === "water" || elevation === undefined) return 0;
+): Map<string, number> {
+  const bestByGhost = new Map<string, {
+    sourcePosition: GridPosition;
+    localElevation: number;
+    drop: number;
+    drainage: number;
+  }>();
 
-  let inflow = 0;
-  for (const direction of HEX_GRID_DIRECTIONS) {
-    const ghost = lookup.get(hexHaloKey(position, direction));
-    if (ghost === undefined || ghost.tile.terrain === "water" || ghost.tile.flowTo !== undefined) {
-      continue;
-    }
+  for (const ghost of lookup.values()) {
+    if (ghost.tile.terrain === "water" || ghost.tile.flowTo !== undefined) continue;
+    const tile = getTile(state, ghost.sourcePosition);
+    const localElevation = tileElevation(tile);
     const ghostElevation = tileElevation(ghost.tile);
     const ghostDrainage = Number.isFinite(ghost.tile.drainage ?? Number.NaN)
       ? clamp01(ghost.tile.drainage ?? 0)
       : 0;
     if (
+      tile === undefined ||
+      tile.terrain === "water" ||
+      localElevation === undefined ||
       ghostElevation === undefined ||
-      ghostDrainage <= 0 ||
-      ghostElevation - elevation <= HALO_HYDROLOGY_EPSILON
+      ghostDrainage <= 0
     ) {
       continue;
     }
-    const slope = clamp01((ghostElevation - elevation) / HALO_RUNOFF_SLOPE_SCALE);
-    inflow = clamp01(inflow + ghostDrainage * slope);
+    const drop = ghostElevation - localElevation;
+    if (drop <= HALO_HYDROLOGY_EPSILON) continue;
+
+    const ghostKey = `${ghost.neighborRegionId}:${positionKey(ghost.neighborPosition)}`;
+    const current = bestByGhost.get(ghostKey);
+    if (
+      current !== undefined &&
+      (
+        drop < current.drop - HALO_HYDROLOGY_EPSILON ||
+        (Math.abs(drop - current.drop) <= HALO_HYDROLOGY_EPSILON &&
+          (localElevation > current.localElevation + HALO_HYDROLOGY_EPSILON ||
+            (Math.abs(localElevation - current.localElevation) <= HALO_HYDROLOGY_EPSILON &&
+              (ghost.sourcePosition.y > current.sourcePosition.y ||
+                (ghost.sourcePosition.y === current.sourcePosition.y &&
+                  ghost.sourcePosition.x >= current.sourcePosition.x)))))
+      )
+    ) {
+      continue;
+    }
+    bestByGhost.set(ghostKey, {
+      sourcePosition: { ...ghost.sourcePosition },
+      localElevation,
+      drop,
+      drainage: ghostDrainage,
+    });
+  }
+
+  const inflow = new Map<string, number>();
+  for (const candidate of bestByGhost.values()) {
+    const key = positionKey(candidate.sourcePosition);
+    const slope = clamp01(candidate.drop / HALO_RUNOFF_SLOPE_SCALE);
+    inflow.set(key, clamp01((inflow.get(key) ?? 0) + candidate.drainage * slope));
   }
   return inflow;
+}
+
+function haloDrainageInflowFromLookup(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  lookup: HaloLookup,
+): number {
+  return haloDrainageInflowMapFromLookup(state, lookup).get(positionKey(position)) ?? 0;
 }
 
 export function haloDrainageInflowAt(
@@ -244,10 +285,9 @@ function haloCatchmentContributionMapFromLookup(
   const contribution = new Map<string, number>();
   if (lookup.size === 0) return contribution;
 
-  for (const tile of state.tiles) {
-    if (tile.terrain === "water") continue;
-    const inflow = haloDrainageInflowFromLookup(state, tile, lookup);
-    if (inflow > 0) contribution.set(positionKey(tile), inflow);
+  const directInflow = haloDrainageInflowMapFromLookup(state, lookup);
+  for (const [key, inflow] of directInflow) {
+    if (inflow > 0) contribution.set(key, inflow);
   }
 
   const ordered = [...state.tiles].sort((a, b) =>

@@ -5,7 +5,10 @@ import {
   haloDrainageInflowAt,
   surfaceMoistureWithHaloAt,
 } from "../dist-ts/src/halo-environment.js";
-import { buildHexHaloLinks } from "../dist-ts/src/hex-halo.js";
+import {
+  buildConfiguredHexHaloLinks,
+  buildHexHaloLinks,
+} from "../dist-ts/src/hex-halo.js";
 import { surfaceMoistureAt } from "../dist-ts/src/simulation.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
@@ -87,5 +90,64 @@ test("cross-region catchment continues downhill through owned local flow edges",
     haloCatchmentContributionAt(state, downstream, halo),
     0,
     "without an owned local flow edge the cross-region contribution must not jump inward",
+  );
+});
+
+test("one unresolved ghost catchment chooses one steepest receiving cell", () => {
+  const state = createInitialWorld({ seed: 9402, width: 40, height: 24, regionId: "garden-1" });
+  for (const tile of state.tiles) {
+    tile.terrain = "plain";
+    delete tile.resource;
+    delete tile.flowTo;
+    tile.elevation = 0.8;
+    tile.drainage = 0;
+    tile.erosionPressure = 0;
+  }
+
+  const links = buildConfiguredHexHaloLinks(
+    state,
+    ["garden-1", "garden-2", "garden-3"],
+    "garden-1",
+  );
+  const duplicate = links.find((candidate, index) => links.some((other, otherIndex) =>
+    otherIndex > index &&
+    other.neighborRegionId === candidate.neighborRegionId &&
+    other.neighborPosition.x === candidate.neighborPosition.x &&
+    other.neighborPosition.y === candidate.neighborPosition.y
+  ));
+  assert.ok(duplicate);
+  const paired = links.find((candidate) =>
+    candidate !== duplicate &&
+    candidate.neighborRegionId === duplicate.neighborRegionId &&
+    candidate.neighborPosition.x === duplicate.neighborPosition.x &&
+    candidate.neighborPosition.y === duplicate.neighborPosition.y
+  );
+  assert.ok(paired);
+
+  const shallow = state.tiles[duplicate.sourcePosition.y * state.width + duplicate.sourcePosition.x];
+  const steep = state.tiles[paired.sourcePosition.y * state.width + paired.sourcePosition.x];
+  assert.ok(shallow);
+  assert.ok(steep);
+  shallow.elevation = 0.82;
+  steep.elevation = 0.7;
+
+  const ghostTile = {
+    x: duplicate.neighborPosition.x,
+    y: duplicate.neighborPosition.y,
+    terrain: "plain",
+    elevation: 0.9,
+    drainage: 0.5,
+  };
+  const halo = [
+    { ...duplicate, tile: structuredClone(ghostTile) },
+    { ...paired, tile: structuredClone(ghostTile) },
+  ];
+
+  assert.equal(haloDrainageInflowAt(state, shallow, halo), 0);
+  assert.equal(haloDrainageInflowAt(state, steep, halo), 0.5);
+  assert.equal(
+    haloCatchmentContributionAt(state, shallow, halo) + haloCatchmentContributionAt(state, steep, halo),
+    0.5,
+    "one ghost catchment must not be duplicated across two adjacent receiving cells",
   );
 });

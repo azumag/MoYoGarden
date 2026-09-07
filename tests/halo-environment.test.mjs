@@ -104,12 +104,16 @@ test("independent upstream ghost tributaries combine at the same hex boundary ce
     elevation: 0.9,
     drainage: 0.35,
   };
+  const secondNeighborPosition = {
+    x: halo[0].neighborPosition.x,
+    y: halo[0].neighborPosition.y - 1,
+  };
   const second = {
     ...structuredClone(halo[0]),
     direction: "northEast",
+    neighborPosition: secondNeighborPosition,
     tile: {
-      x: halo[0].neighborPosition.x,
-      y: halo[0].neighborPosition.y,
+      ...secondNeighborPosition,
       terrain: "plain",
       elevation: 0.95,
       drainage: 0.4,
