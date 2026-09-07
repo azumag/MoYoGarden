@@ -7,6 +7,7 @@ import {
   hexHaloLookup,
   materializeHexHalo,
 } from "../dist-ts/src/hex-halo.js";
+import { haloLinksForActivity } from "../dist-ts/src/halo-region.js";
 import {
   HEX_GRID_DIRECTIONS,
   hexGridBoundaryCells,
@@ -23,6 +24,21 @@ test("halo hot paths resolve only a bounded axial window", () => {
   assert.doesNotMatch(hexHaloSource, /regionHexTopology/);
   assert.match(haloRegionSource, /regionHexWindow/);
   assert.doesNotMatch(haloRegionSource, /regionHexTopology/);
+});
+
+
+
+test("active legacy regions expand environmental halo to all six dynamic neighbors", () => {
+  const configured = ["garden-1", "garden-2", "garden-3"];
+  const active = haloLinksForActivity(extent, configured, "garden-1", "active");
+  const warm = haloLinksForActivity(extent, configured, "garden-1", "warm");
+  assert.equal(active.length, 6 * 23);
+  assert.equal(new Set(active.map((entry) => entry.neighborRegionId)).size, 6);
+  assert.equal(warm.length, 2 * 23);
+  assert.deepEqual(
+    [...new Set(warm.map((entry) => entry.neighborRegionId))].sort(),
+    ["garden-2", "garden-3"],
+  );
 });
 
 test("full ring center exposes one ghost link for every cell on all six sides", () => {

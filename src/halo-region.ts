@@ -44,7 +44,7 @@ interface HaloMaterialization {
   halo: HexHaloTile[];
 }
 
-type RegionActivityTier = "active" | "warm" | "cold";
+export type RegionActivityTier = "active" | "warm" | "cold";
 
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
 const PUBLIC_HALO_PATH = "/api/world/halo";
@@ -115,6 +115,18 @@ function activityDelayMs(tickMs: number, tier: RegionActivityTier): number {
   if (tier === "active") return tickMs;
   const multiplier = tier === "warm" ? WARM_TICK_MULTIPLIER : COLD_TICK_MULTIPLIER;
   return Math.min(MAX_ACTIVITY_TICK_MS, tickMs * multiplier);
+}
+
+export function haloLinksForActivity(
+  extent: Pick<WorldState, "width" | "height">,
+  regionIds: readonly string[],
+  sourceRegionId: string,
+  tier: RegionActivityTier,
+): ReturnType<typeof buildConfiguredHexHaloLinks> {
+  if (tier === "active" || !regionIds.includes(sourceRegionId)) {
+    return buildDynamicHexHaloLinks(extent, sourceRegionId);
+  }
+  return buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId);
 }
 
 export function shouldMaterializeHaloForTick(currentTick: number): boolean {
@@ -293,9 +305,12 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const regionIds = configuredRegionIds(this.haloEnv);
-    const links = regionIds.includes(state.regionId)
-      ? buildConfiguredHexHaloLinks(state, regionIds, state.regionId)
-      : buildDynamicHexHaloLinks(state, state.regionId);
+    const links = haloLinksForActivity(
+      state,
+      regionIds,
+      state.regionId,
+      this.activityTier(),
+    );
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
       const direction = link.neighborDirection;

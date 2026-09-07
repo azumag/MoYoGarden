@@ -73,27 +73,34 @@ test("public Worker never proxies internal halo edge routes", async () => {
   assert.equal(env.REGIONS.entries.size, 0);
 });
 
-test("world halo materializes live ghost tiles from each configured neighbor Durable Object", async () => {
+test("active legacy world halo expands to the full six-neighbor dynamic ring", async () => {
   const env = environment();
   const result = await call(env, "/api/world/halo?region=garden-1");
   assert.equal(result.response.status, 200);
   assert.equal(result.body.centerRegion, "garden-1");
   assert.equal(result.body.depth, 1);
-  assert.equal(result.body.expectedLinks, 46);
-  assert.equal(result.body.materializedLinks, 46);
+  assert.equal(result.body.expectedLinks, 138);
+  assert.equal(result.body.materializedLinks, 138);
   assert.deepEqual(
     result.body.neighborEdges.map((entry) => entry.regionId).sort(),
-    ["garden-2", "garden-3"],
+    [
+      "garden-2",
+      "garden-3",
+      "hex-q-1-r0",
+      "hex-q-1-r1",
+      "hex-q0-r-1",
+      "hex-q0-r1",
+    ].sort(),
   );
   assert.ok(result.body.neighborEdges.every((entry) => entry.tiles === 23));
   assert.ok(result.body.halo.every((entry) => entry.sourceRegionId === "garden-1"));
   assert.deepEqual(
     [...new Set(result.body.halo.map((entry) => entry.direction))].sort(),
-    ["east", "northEast", "northWest"],
+    ["east", "northEast", "northWest", "southEast", "southWest", "west"].sort(),
   );
 
   const targetSnapshots = new Map();
-  for (const regionId of ["garden-2", "garden-3"]) {
+  for (const regionId of result.body.neighborEdges.map((entry) => entry.regionId)) {
     targetSnapshots.set(regionId, (await call(env, `/api/world/snapshot?region=${regionId}`)).body);
   }
   for (const ghost of result.body.halo) {
@@ -105,10 +112,10 @@ test("world halo materializes live ghost tiles from each configured neighbor Dur
   }
 });
 
-test("halo edge sampling does not promote passive neighbors to active tick cadence", async () => {
+test("dynamic halo edge sampling keeps all six passive neighbors cold", async () => {
   const env = environment();
-  await call(env, "/api/world/halo?region=garden-1");
-  for (const regionId of ["garden-2", "garden-3"]) {
+  const halo = await call(env, "/api/world/halo?region=garden-1");
+  for (const regionId of halo.body.neighborEdges.map((entry) => entry.regionId)) {
     const health = await call(env, `/api/health?region=${regionId}`);
     assert.equal(health.response.status, 200);
     assert.equal(health.body.tickMode, "cold");
