@@ -159,7 +159,17 @@ export const resourceMethods = {
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         for (const material of materials) {
           if (!material.color || material.name?.includes("Faction")) continue;
-          material.color.offsetHSL(hue, 0, light);
+          const foliage = kind === "wood" && /leaf|leaves|foliage/i.test(material.name);
+          const bark = kind === "wood" && /bark|wood/i.test(material.name);
+          if (foliage || bark) {
+            material.color.set(foliage ? 0x7e8759 : 0x705742);
+            material.color.offsetHSL(hue * 0.5, 0, light * 0.65);
+            material.metalness = 0;
+            material.envMapIntensity = 0.3;
+            material.userData.moyoDecayStyled = true;
+          } else {
+            material.color.offsetHSL(hue, 0, light);
+          }
           material.roughness = clamp(material.roughness ?? 0.8, 0.48, 0.98);
         }
       }
