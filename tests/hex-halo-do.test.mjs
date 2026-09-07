@@ -27,7 +27,11 @@ class MemoryState {
 }
 
 class MemoryNamespace {
-  constructor(env) { this.env = env; this.entries = new Map(); }
+  constructor(env) {
+    this.env = env;
+    this.entries = new Map();
+    this.edgeFailures = new Map();
+  }
   idFromName(name) { return name; }
   get(id) {
     let entry = this.entries.get(id);
@@ -40,6 +44,17 @@ class MemoryNamespace {
     return {
       fetch: async (request) => {
         await entry.state.ready;
+        const url = new URL(request.url);
+        if (url.pathname === "/api/internal/halo/edge") {
+          const failure = this.edgeFailures.get(id);
+          if (failure === "throw") throw new Error(`simulated edge transport failure for ${id}`);
+          if (failure === "malformed") {
+            return new Response("{", {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }
+        }
         return entry.object.fetch(request);
       },
     };
@@ -111,6 +126,31 @@ test("active legacy world halo expands to the full six-neighbor dynamic ring", a
     assert.deepEqual(ghost.tile, tile);
   }
 });
+
+for (const [failure, label] of [
+  ["throw", "transport failure"],
+  ["malformed", "malformed JSON"],
+]) {
+  test(`one unavailable halo neighbor does not abort the whole snapshot on ${label}`, async () => {
+    const env = environment();
+    const unavailableRegion = "hex-q0-r1";
+    env.REGIONS.edgeFailures.set(unavailableRegion, failure);
+
+    const result = await call(env, "/api/world/halo?region=garden-1");
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.expectedLinks, 138);
+    assert.equal(result.body.materializedLinks, 115);
+    assert.equal(result.body.neighborEdges.length, 5);
+    assert.equal(
+      result.body.neighborEdges.some((entry) => entry.regionId === unavailableRegion),
+      false,
+    );
+    assert.equal(
+      result.body.halo.some((entry) => entry.neighborRegionId === unavailableRegion),
+      false,
+    );
+  });
+}
 
 test("dynamic halo edge sampling keeps all six passive neighbors cold", async () => {
   const env = environment();
