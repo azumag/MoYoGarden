@@ -125,7 +125,9 @@ function stitchMesh(mesh, group, sourceSurface, sourceOrigin, width, height, cel
     const local = sourceLocalPosition(group, position, index, sourceOrigin);
     const key = terrainVertexKey(local.x, local.z);
     const exactHeight = sourceSurface.heights.get(key);
-    let nextY = originalY;
+    // A preview chunk can be stitched against multiple neighbors in sequence.
+    // Preserve earlier seams unless this source actually influences this vertex.
+    let nextY = position.getY(index);
 
     if (Number.isFinite(exactHeight)) {
       nextY = exactHeight;
