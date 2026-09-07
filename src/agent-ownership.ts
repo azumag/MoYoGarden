@@ -29,7 +29,8 @@ function cloneSnapshot(
   };
 }
 
-function arrivalTaskAfterHandoff(agent: Agent, targetTick: number): Agent["task"] | undefined {
+function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["task"] | undefined {
+  const targetTick = targetState.tick;
   const task = agent.task;
   if (task?.source !== "autonomy") return undefined;
 
@@ -58,6 +59,20 @@ function arrivalTaskAfterHandoff(agent: Agent, targetTick: number): Agent["task"
       issuedAtTick: targetTick,
       type: "build",
       structureType: task.structureType,
+    };
+  }
+  if (
+    task.type === "trade"
+    && task.targetAgentId.startsWith(GLOBAL_AGENT_PREFIX)
+    && targetState.agents.some((entry) => entry.id === task.targetAgentId)
+  ) {
+    return {
+      source: "autonomy",
+      issuedAtTick: targetTick,
+      type: "trade",
+      targetAgentId: task.targetAgentId,
+      offer: { ...task.offer },
+      request: { ...task.request },
     };
   }
   return undefined;
@@ -121,7 +136,7 @@ export function attachAgentOwnership(
   // Coordinate-bound tasks still belong to the source region and must be
   // cleared. Region-independent autonomous intent can survive only after its
   // source-local target has been stripped and will be re-resolved on arrival.
-  const arrivalTask = arrivalTaskAfterHandoff(arrived, snapshot.state.tick);
+  const arrivalTask = arrivalTaskAfterHandoff(arrived, snapshot.state);
   if (arrivalTask === undefined) delete arrived.task;
   else arrived.task = arrivalTask;
   arrived.status = arrivalTask?.type === "gather"
@@ -130,7 +145,9 @@ export function attachAgentOwnership(
       ? "arrived from neighboring region; replanning storage return"
       : arrivalTask?.type === "build"
         ? `arrived from neighboring region; replanning ${arrivalTask.structureType} build`
-        : "arrived from neighboring region";
+        : arrivalTask?.type === "trade"
+          ? `arrived from neighboring region; resuming trade with ${arrivalTask.targetAgentId}`
+          : "arrived from neighboring region";
   snapshot.state.agents.push(arrived);
   snapshot.state.agents.sort((a, b) => a.id.localeCompare(b.id));
   return { ok: true, value: snapshot };

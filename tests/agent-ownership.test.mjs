@@ -245,6 +245,111 @@ test("attach keeps autonomous build intent but drops its source-local site", () 
   assert.notDeepEqual(replanned.task.target, sourceCell, "source-local build coordinates must not survive handoff");
 });
 
+
+test("attach preserves autonomous trade only when its global target already owns the destination", () => {
+  const { source, target } = worlds();
+  const agent = source.agents[0];
+  const tradeTarget = target.agents.find((entry) => entry.factionId !== agent?.factionId);
+  assert.ok(agent);
+  assert.ok(tradeTarget);
+  const sourceCell = hexGridBoundaryCells(source, "east")[11];
+  assert.ok(sourceCell);
+  const targetCell = hexGridHandoffTarget(source, sourceCell, "east");
+  assert.ok(targetCell);
+  const targetTile = target.tiles[targetCell.y * target.width + targetCell.x];
+  assert.ok(targetTile);
+  targetTile.terrain = "plain";
+  target.tick = 67;
+
+  for (const other of target.agents) {
+    other.autonomy = false;
+    delete other.task;
+  }
+  const originalTargetId = tradeTarget.id;
+  tradeTarget.id = globalHandoffAgentId(originalTargetId, "garden-3");
+  tradeTarget.position = { ...targetCell };
+  tradeTarget.inventory = { wood: 0, stone: 2, food: 0 };
+
+  agent.position = { ...sourceCell };
+  agent.inventory = { wood: 2, stone: 0, food: 0 };
+  agent.goal = "complete the promised barter after crossing the border";
+  agent.task = {
+    source: "autonomy",
+    issuedAtTick: source.tick,
+    type: "trade",
+    targetAgentId: tradeTarget.id,
+    offer: { wood: 1, stone: 0, food: 0 },
+    request: { wood: 0, stone: 1, food: 0 },
+  };
+
+  const detached = detachAgentOwnership(source, [], agent.id);
+  assert.equal(detached.ok, true);
+  const attached = attachAgentOwnership(
+    target,
+    [],
+    detached.value.agent,
+    targetCell,
+    source.regionId,
+  );
+  assert.equal(attached.ok, true);
+
+  const globalId = globalHandoffAgentId(agent.id, source.regionId);
+  const arrived = attached.value.state.agents.find((entry) => entry.id === globalId);
+  assert.ok(arrived);
+  assert.deepEqual(arrived.task, {
+    source: "autonomy",
+    issuedAtTick: target.tick,
+    type: "trade",
+    targetAgentId: tradeTarget.id,
+    offer: { wood: 1, stone: 0, food: 0 },
+    request: { wood: 0, stone: 1, food: 0 },
+  });
+  assert.match(arrived.status, /resuming trade/);
+
+  const advanced = simulate(attached.value.state).state;
+  const trader = advanced.agents.find((entry) => entry.id === globalId);
+  const counterparty = advanced.agents.find((entry) => entry.id === tradeTarget.id);
+  assert.ok(trader);
+  assert.ok(counterparty);
+  assert.deepEqual(trader.inventory, { wood: 1, stone: 1, food: 0 });
+  assert.deepEqual(counterparty.inventory, { wood: 1, stone: 1, food: 0 });
+  assert.equal(trader.task, undefined);
+});
+
+test("attach drops autonomous trade when the destination does not own its global counterparty", () => {
+  const { source, target } = worlds();
+  const agent = source.agents[0];
+  assert.ok(agent);
+  const sourceCell = hexGridBoundaryCells(source, "east")[11];
+  assert.ok(sourceCell);
+  const targetCell = hexGridHandoffTarget(source, sourceCell, "east");
+  assert.ok(targetCell);
+  const targetTile = target.tiles[targetCell.y * target.width + targetCell.x];
+  assert.ok(targetTile);
+  targetTile.terrain = "plain";
+
+  agent.position = { ...sourceCell };
+  agent.task = {
+    source: "autonomy",
+    issuedAtTick: source.tick,
+    type: "trade",
+    targetAgentId: globalHandoffAgentId("agent-missing", "garden-3"),
+    offer: { wood: 1, stone: 0, food: 0 },
+    request: { wood: 0, stone: 1, food: 0 },
+  };
+  const detached = detachAgentOwnership(source, [], agent.id);
+  assert.equal(detached.ok, true);
+  const attached = attachAgentOwnership(target, [], detached.value.agent, targetCell, source.regionId);
+  assert.equal(attached.ok, true);
+
+  const arrived = attached.value.state.agents.find(
+    (entry) => entry.id === globalHandoffAgentId(agent.id, source.regionId),
+  );
+  assert.ok(arrived);
+  assert.equal(arrived.task, undefined);
+  assert.equal(arrived.status, "arrived from neighboring region");
+});
+
 test("attach rejects duplicate promoted identity, impassable, and non-hex ownership targets", () => {
   const { source, target } = worlds();
   const agent = structuredClone(source.agents[0]);
