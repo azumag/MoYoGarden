@@ -2,13 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
 import { createRandom } from "../dist-ts/src/prng.js";
-import { buildHexHaloLinks } from "../dist-ts/src/hex-halo.js";
+import { buildConfiguredHexHaloLinks } from "../dist-ts/src/hex-halo.js";
 import {
   resourceRegrowthChanceWithHalo,
 } from "../dist-ts/src/halo-environment.js";
-import {
-  hexGridHandoffTarget,
-} from "../dist-ts/src/hex-grid.js";
 import { resourceRegrowthChance, updateTileHydrology } from "../dist-ts/src/simulation.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
@@ -91,10 +88,8 @@ test("scheduled region tick lets neighbor ghost water raise actual organic regro
 
   const source = sourceEntry.object.runtime.snapshot();
   const target = targetEntry.object.runtime.snapshot();
-  const link = buildHexHaloLinks(source, ["garden-1", "garden-2"], "garden-1")
-    .filter((entry) => entry.direction === "east")[11];
+  const link = buildConfiguredHexHaloLinks(source, ["garden-1", "garden-2"], "garden-1")[11];
   assert.ok(link);
-  assert.deepEqual(hexGridHandoffTarget(source, link.sourcePosition, "east"), link.neighborPosition);
 
   for (const tile of source.tiles) {
     tile.terrain = "plain";

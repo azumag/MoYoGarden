@@ -3,7 +3,7 @@ import {
   type HaloEnvironmentFrame,
 } from "./halo-environment.js";
 import {
-  buildHexHaloLinks,
+  buildConfiguredHexHaloLinks,
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
   type HexHaloTile,
@@ -11,7 +11,6 @@ import {
 import {
   HEX_GRID_DIRECTIONS,
   hexGridBoundaryCells,
-  oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
@@ -39,7 +38,7 @@ interface RuntimeAccess {
 }
 
 interface HaloMaterialization {
-  links: ReturnType<typeof buildHexHaloLinks>;
+  links: ReturnType<typeof buildConfiguredHexHaloLinks>;
   edges: HexHaloEdgeSnapshot[];
   halo: HexHaloTile[];
 }
@@ -291,10 +290,10 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const regionIds = configuredRegionIds(this.haloEnv);
-    const links = buildHexHaloLinks(state, regionIds, state.regionId);
+    const links = buildConfiguredHexHaloLinks(state, regionIds, state.regionId);
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
-      const direction = oppositeHexGridDirection(link.direction);
+      const direction = link.neighborDirection;
       requested.set(`${link.neighborRegionId}:${direction}`, {
         regionId: link.neighborRegionId,
         direction,

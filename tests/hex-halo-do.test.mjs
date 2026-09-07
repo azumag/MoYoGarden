@@ -89,7 +89,7 @@ test("world halo materializes live ghost tiles from each configured neighbor Dur
   assert.ok(result.body.halo.every((entry) => entry.sourceRegionId === "garden-1"));
   assert.deepEqual(
     [...new Set(result.body.halo.map((entry) => entry.direction))].sort(),
-    ["east", "northEast"],
+    ["east", "northEast", "northWest"],
   );
 
   const targetSnapshots = new Map();

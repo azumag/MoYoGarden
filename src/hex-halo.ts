@@ -1,5 +1,6 @@
 import {
   HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
   hexGridBoundaryCells,
   hexGridHandoffTarget,
   oppositeHexGridDirection,
@@ -8,7 +9,11 @@ import {
   type HexGridPosition,
 } from "./hex-grid.js";
 import type { Tile } from "./protocol.js";
-import { regionHexWindow } from "./region-topology.js";
+import {
+  configuredRegionCellTransition,
+  regionAxialCoordinate,
+  regionHexWindow,
+} from "./region-topology.js";
 
 export interface HexHaloLink {
   sourceRegionId: string;
@@ -16,6 +21,7 @@ export interface HexHaloLink {
   direction: HexGridDirection;
   neighborRegionId: string;
   neighborPosition: HexGridPosition;
+  neighborDirection: HexGridDirection;
 }
 
 export interface HexHaloTile extends HexHaloLink {
@@ -34,6 +40,11 @@ export function hexHaloKey(position: HexGridPosition, direction: HexGridDirectio
   return `${position.x},${position.y}:${direction}`;
 }
 
+/**
+ * Legacy/configuration-oriented halo mapping. Unknown historical region IDs
+ * still rely on the older side-to-side pairing until their axial identity is
+ * migrated. Axial production IDs should prefer buildConfiguredHexHaloLinks.
+ */
 export function buildHexHaloLinks(
   extent: HexGridExtent,
   regionIds: readonly string[],
@@ -56,6 +67,52 @@ export function buildHexHaloLinks(
         direction,
         neighborRegionId,
         neighborPosition,
+        neighborDirection: oppositeHexGridDirection(direction),
+      });
+    }
+  }
+  return links;
+}
+
+/**
+ * Build a configured-only halo using the shared global cell ownership frame.
+ * This deliberately does not synthesize unconfigured neighbors: it fixes which
+ * cells existing halo reads observe without increasing cross-DO fan-out.
+ */
+export function buildConfiguredHexHaloLinks(
+  extent: HexGridExtent,
+  regionIds: readonly string[],
+  sourceRegionId: string,
+): HexHaloLink[] {
+  if (
+    regionAxialCoordinate(sourceRegionId) === undefined ||
+    regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)
+  ) {
+    return buildHexHaloLinks(extent, regionIds, sourceRegionId);
+  }
+  const links: HexHaloLink[] = [];
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    for (const sourcePosition of hexGridBoundaryCells(extent, direction)) {
+      const desiredPosition = {
+        x: sourcePosition.x + step.x,
+        y: sourcePosition.y + step.y,
+      };
+      const transition = configuredRegionCellTransition(
+        regionIds,
+        sourceRegionId,
+        desiredPosition,
+        extent.width,
+        extent.height,
+      );
+      if (transition === undefined) continue;
+      links.push({
+        sourceRegionId,
+        sourcePosition,
+        direction,
+        neighborRegionId: transition.targetRegionId,
+        neighborPosition: transition.targetPosition,
+        neighborDirection: oppositeHexGridDirection(transition.direction),
       });
     }
   }
@@ -95,11 +152,9 @@ export function materializeHexHalo(
       );
     }
   }
-
   return links.flatMap((link) => {
-    const neighborDirection = oppositeHexGridDirection(link.direction);
     const tile = edgeIndex.get(
-      `${link.neighborRegionId}:${neighborDirection}:${link.neighborPosition.x},${link.neighborPosition.y}`,
+      `${link.neighborRegionId}:${link.neighborDirection}:${link.neighborPosition.x},${link.neighborPosition.y}`,
     );
     if (tile === undefined) return [];
     return [{ ...structuredClone(link), tile: structuredClone(tile) }];
