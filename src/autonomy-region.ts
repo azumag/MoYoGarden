@@ -1,5 +1,5 @@
 import {
-  buildHexHaloLinks,
+  buildConfiguredHexHaloLinks,
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
   type HexHaloTile,
@@ -8,7 +8,6 @@ import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
   isHexGridCell,
-  oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as HaloRegionDurableObject } from "./halo-region.js";
@@ -44,6 +43,7 @@ interface PendingAutonomousHandoff {
   direction: HexGridDirection;
   resource: ResourceKind;
   claimId?: string;
+  desiredPosition?: GridPosition;
 }
 
 interface PendingAutonomousTravel {
@@ -259,8 +259,12 @@ function remainingInventoryCapacity(agent: Agent): number {
   return Math.max(0, agent.capacity - inventoryAmount(agent));
 }
 
-function haloSupplyKey(direction: HexGridDirection, neighborRegionId: string): string {
-  return `${direction}:${neighborRegionId}`;
+function haloSupplyKey(neighborRegionId: string): string {
+  return neighborRegionId;
+}
+
+function haloSupplyCellKey(entry: Pick<HexHaloTile, "neighborRegionId" | "neighborPosition">): string {
+  return `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;
 }
 
 function availableHaloSupplyForAgent(
@@ -269,13 +273,12 @@ function availableHaloSupplyForAgent(
   claims: readonly AutonomousSupplyClaim[],
   agentId: string,
   resource: ResourceKind,
-  direction: HexGridDirection,
   neighborRegionId: string,
 ): number {
   let visibleSupply = 0;
+  const seenCells = new Set<string>();
   for (const entry of halo) {
     if (
-      entry.direction !== direction ||
       entry.neighborRegionId !== neighborRegionId ||
       entry.tile.terrain === "water" ||
       entry.tile.resource?.kind !== resource ||
@@ -283,6 +286,9 @@ function availableHaloSupplyForAgent(
     ) {
       continue;
     }
+    const cellKey = haloSupplyCellKey(entry);
+    if (seenCells.has(cellKey)) continue;
+    seenCells.add(cellKey);
     visibleSupply += entry.tile.resource.amount;
   }
 
@@ -290,7 +296,6 @@ function availableHaloSupplyForAgent(
   for (const claim of claims) {
     if (
       claim.resource !== resource ||
-      claim.direction !== direction ||
       claim.neighborRegionId !== neighborRegionId ||
       claim.expiresAtTick <= state.tick ||
       claim.agentId === agentId
@@ -364,21 +369,29 @@ export function planAutonomousHaloTravel(
       }
       return [{ entry, travelDistance }];
     });
+    // Exact hex ownership can expose the same neighboring cell through two
+    // outward source directions along a slanted seam. Count physical supply
+    // once per target cell and reserve it once per owning region so a second
+    // route cannot double-book the same deposit.
     const visibleSupply = new Map<string, number>();
+    const visibleCells = new Set<string>();
     for (const { entry } of candidates) {
-      const key = haloSupplyKey(entry.direction, entry.neighborRegionId);
+      const cellKey = haloSupplyCellKey(entry);
+      if (visibleCells.has(cellKey)) continue;
+      visibleCells.add(cellKey);
+      const key = haloSupplyKey(entry.neighborRegionId);
       visibleSupply.set(key, (visibleSupply.get(key) ?? 0) + (entry.tile.resource?.amount ?? 0));
     }
     const claimedSupply = new Map<string, number>();
     for (const claim of claims) {
       if (claim.resource !== resource || claim.expiresAtTick <= state.tick) continue;
-      const key = haloSupplyKey(claim.direction, claim.neighborRegionId);
+      const key = haloSupplyKey(claim.neighborRegionId);
       claimedSupply.set(key, (claimedSupply.get(key) ?? 0) + claim.amount);
     }
 
     const candidate = candidates
       .flatMap(({ entry, travelDistance }) => {
-        const key = haloSupplyKey(entry.direction, entry.neighborRegionId);
+        const key = haloSupplyKey(entry.neighborRegionId);
         const availableSupply = Math.max(
           0,
           (visibleSupply.get(key) ?? 0) - (claimedSupply.get(key) ?? 0),
@@ -464,7 +477,6 @@ export function planAutonomousHaloHandoff(
           claims,
           agent.id,
           resource,
-          entry.direction,
           entry.neighborRegionId,
         ) > 0
       )
@@ -503,6 +515,10 @@ export function planAutonomousHaloHandoff(
       direction: candidate.entry.direction,
       resource,
       neighborRegionId: candidate.entry.neighborRegionId,
+      desiredPosition: {
+        x: candidate.entry.sourcePosition.x + HEX_GRID_DIRECTION_STEPS[candidate.entry.direction].x,
+        y: candidate.entry.sourcePosition.y + HEX_GRID_DIRECTION_STEPS[candidate.entry.direction].y,
+      },
       ...(claimId === undefined ? {} : { claimId }),
     };
   }
@@ -541,11 +557,11 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     directions: readonly HexGridDirection[],
   ): Promise<HexHaloTile[]> {
     const needed = new Set(directions);
-    const links = buildHexHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId)
+    const links = buildConfiguredHexHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId)
       .filter((link) => needed.has(link.direction));
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
-      const direction = oppositeHexGridDirection(link.direction);
+      const direction = link.neighborDirection;
       requested.set(`${link.neighborRegionId}:${direction}`, {
         regionId: link.neighborRegionId,
         direction,
@@ -893,6 +909,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         transferId: pending.transferId,
         agentId: pending.agentId,
         direction: pending.direction,
+        ...(pending.desiredPosition === undefined
+          ? {}
+          : { desiredPosition: { ...pending.desiredPosition } }),
       }),
     });
   }
@@ -1034,17 +1053,26 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     if (await this.resumeAutonomousTravel(state)) return;
 
     const directions = autonomyHaloPlanningDirections(state);
+    const scoutDue = shouldScoutAutonomyHalo(state);
+    const loadedDirections = scoutDue && directions.length > 0
+      ? HEX_GRID_DIRECTIONS
+      : directions;
     let halo: HexHaloTile[] = [];
-    if (directions.length > 0) {
-      halo = await this.materializeAutonomyHalo(state, directions);
+    if (loadedDirections.length > 0) {
+      halo = await this.materializeAutonomyHalo(state, loadedDirections);
       const claims = await this.activeAutonomousSupplyClaims(state.tick);
-      const plan = planAutonomousHaloHandoff(state, halo, claims);
+      const plan = directions.length > 0
+        ? planAutonomousHaloHandoff(state, halo, claims)
+        : undefined;
       if (plan !== undefined) {
         const pendingPlan: PendingAutonomousHandoff = {
           transferId: plan.transferId,
           agentId: plan.agentId,
           direction: plan.direction,
           resource: plan.resource,
+          ...(plan.desiredPosition === undefined
+            ? {}
+            : { desiredPosition: { ...plan.desiredPosition } }),
           ...(plan.claimId === undefined ? {} : { claimId: plan.claimId }),
         };
         await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pendingPlan);
@@ -1053,7 +1081,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       }
     }
 
-    await this.startAutonomousTravel(state, halo, directions);
+    await this.startAutonomousTravel(state, halo, loadedDirections);
   }
 
   override async fetch(request: Request): Promise<Response> {

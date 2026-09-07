@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
-import { hexGridBoundaryCells, hexGridCenter, isHexGridCell } from "../dist-ts/src/hex-grid.js";
+import { HEX_GRID_DIRECTION_STEPS, hexGridBoundaryCells, hexGridCenter, isHexGridCell } from "../dist-ts/src/hex-grid.js";
+import { buildConfiguredHexHaloLinks } from "../dist-ts/src/hex-halo.js";
+import { regionCellTransition } from "../dist-ts/src/region-topology.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
 const CLAIMS_KEY = "handoff:autonomy:claims:v1";
@@ -94,14 +96,18 @@ function depleteWood(state) {
   }
 }
 
-function placeBoundaryWood(state, direction, amount) {
-  const cells = hexGridBoundaryCells(state, direction);
-  const position = cells[Math.floor(cells.length / 2)];
-  assert.ok(position);
-  const tile = state.tiles[position.y * state.width + position.x];
+function placeLinkedBoundaryWood(sourceState, targetState, direction, targetRegionId, amount) {
+  const link = buildConfiguredHexHaloLinks(
+    sourceState,
+    ["garden-1", "garden-2", "garden-3"],
+    sourceState.regionId,
+  ).find((entry) => entry.direction === direction && entry.neighborRegionId === targetRegionId);
+  assert.ok(link);
+  const tile = targetState.tiles[link.neighborPosition.y * targetState.width + link.neighborPosition.x];
   assert.ok(tile);
   tile.terrain = "forest";
   tile.resource = { kind: "wood", amount, maxAmount: amount };
+  return link;
 }
 
 test("persisted supply claims keep the next scout from double-booking the same neighbor", async () => {
@@ -133,13 +139,13 @@ test("persisted supply claims keep the next scout from double-booking the same n
 
   const eastState = east.object.runtime.snapshot();
   depleteWood(eastState);
-  placeBoundaryWood(eastState, "west", 12);
+  placeLinkedBoundaryWood(sourceState, eastState, "east", "garden-2", 12);
   east.object.runtime = new WorldRuntime({ state: eastState });
   await east.object.persist();
 
   const northEastState = northEast.object.runtime.snapshot();
   depleteWood(northEastState);
-  placeBoundaryWood(northEastState, "southWest", 4);
+  placeLinkedBoundaryWood(sourceState, northEastState, "northEast", "garden-3", 4);
   northEast.object.runtime = new WorldRuntime({ state: northEastState });
   await northEast.object.persist();
 
@@ -148,7 +154,7 @@ test("persisted supply claims keep the next scout from double-booking the same n
     resource: "wood",
     direction: "east",
     neighborRegionId: "garden-2",
-    amount: 10,
+    amount: 12,
     expiresAtTick: 84,
   }]);
 
@@ -295,7 +301,21 @@ test("autonomous seam handoff reaches the neighbor through the internal region r
 
   const eastState = east.object.runtime.snapshot();
   depleteWood(eastState);
-  placeBoundaryWood(eastState, "west", 4);
+  const step = HEX_GRID_DIRECTION_STEPS.east;
+  const transition = regionCellTransition(
+    "garden-1",
+    { x: sourcePosition.x + step.x, y: sourcePosition.y + step.y },
+    sourceState.width,
+    sourceState.height,
+  );
+  assert.ok(transition);
+  assert.equal(transition.targetRegionId, "garden-2");
+  const targetTile = eastState.tiles[
+    transition.targetPosition.y * eastState.width + transition.targetPosition.x
+  ];
+  assert.ok(targetTile);
+  targetTile.terrain = "forest";
+  targetTile.resource = { kind: "wood", amount: 4, maxAmount: 4 };
   east.object.runtime = new WorldRuntime({ state: eastState });
   await east.object.persist();
 
@@ -362,4 +382,83 @@ test("autonomous seam handoff reaches the neighbor through the internal region r
     "finishing the arrival-side gather must release reserved source supply before the TTL",
   );
   assert.deepEqual(await east.state.storage.get(ARRIVAL_CLAIMS_KEY), []);
+});
+
+
+test("autonomous handoff follows exact global cell ownership on a slanted seam", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  const east = await assignRegion(env, "garden-2");
+  const northEast = await assignRegion(env, "garden-3");
+
+  const sourceState = source.object.runtime.snapshot();
+  depleteWood(sourceState);
+  for (const candidate of sourceState.agents) candidate.autonomy = false;
+  const agent = sourceState.agents[0];
+  assert.ok(agent);
+  const sourcePosition = { x: 30, y: 1 };
+  assert.ok(isHexGridCell(sourceState, sourcePosition));
+  const step = HEX_GRID_DIRECTION_STEPS.northEast;
+  const desiredPosition = { x: sourcePosition.x + step.x, y: sourcePosition.y + step.y };
+  const transition = regionCellTransition(
+    "garden-1",
+    desiredPosition,
+    sourceState.width,
+    sourceState.height,
+  );
+  assert.ok(transition);
+  assert.equal(transition.targetRegionId, "garden-2");
+
+  sourceState.tick = 24;
+  agent.autonomy = true;
+  agent.position = { ...sourcePosition };
+  agent.role = "woodcutter";
+  agent.capacity = 12;
+  agent.inventory = { wood: 0, stone: 0, food: 0 };
+  agent.energy = 100;
+  agent.task = {
+    source: "autonomy",
+    issuedAtTick: 20,
+    type: "gather",
+    resource: "wood",
+  };
+  source.object.runtime = new WorldRuntime({ state: sourceState });
+  await source.object.persist();
+
+  const eastState = east.object.runtime.snapshot();
+  depleteWood(eastState);
+  const targetTile = eastState.tiles[
+    transition.targetPosition.y * eastState.width + transition.targetPosition.x
+  ];
+  assert.ok(targetTile);
+  targetTile.terrain = "forest";
+  targetTile.resource = { kind: "wood", amount: 4, maxAmount: 4 };
+  east.object.runtime = new WorldRuntime({ state: eastState });
+  await east.object.persist();
+
+  const northEastState = northEast.object.runtime.snapshot();
+  depleteWood(northEastState);
+  northEast.object.runtime = new WorldRuntime({ state: northEastState });
+  await northEast.object.persist();
+
+  await source.object.alarm();
+
+  const sourceAfter = source.object.runtime.snapshot();
+  assert.equal(sourceAfter.agents.some((entry) => entry.id === agent.id), false);
+  const eastAfter = east.object.runtime.snapshot();
+  const transferred = eastAfter.agents.find((entry) =>
+    entry.id !== agent.id && entry.id.endsWith(`:${agent.id}`)
+  );
+  assert.ok(transferred, "the exact global owner must receive the autonomous agent");
+  assert.deepEqual(transferred.position, transition.targetPosition);
+  assert.equal(transferred.task?.source, "autonomy");
+  assert.equal(transferred.task?.type, "gather");
+  assert.equal(transferred.task?.resource, "wood");
+
+  const northEastAfter = northEast.object.runtime.snapshot();
+  assert.equal(
+    northEastAfter.agents.some((entry) => entry.id !== agent.id && entry.id.endsWith(`:${agent.id}`)),
+    false,
+    "the macro north-east alias must not receive a cell owned by garden-2",
+  );
 });

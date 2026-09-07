@@ -154,7 +154,7 @@ test("one alarm reuses boundary halo edges when an interior scout follows", asyn
   await source.object.alarm();
 
   const reads = env.REGIONS.edgeFetches;
-  assert.equal(reads.length, 2, "the two configured neighboring edges should be fetched only once");
+  assert.equal(reads.length, 2, "the two configured neighboring edge snapshots should be fetched only once");
   assert.equal(
     new Set(reads.map(({ regionId, direction }) => `${regionId}:${direction}`)).size,
     reads.length,
