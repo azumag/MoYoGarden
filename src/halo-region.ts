@@ -4,6 +4,7 @@ import {
 } from "./halo-environment.js";
 import {
   buildConfiguredHexHaloLinks,
+  buildDynamicHexHaloLinks,
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
   type HexHaloTile,
@@ -15,7 +16,7 @@ import {
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
 import type { WorldState } from "./protocol.js";
-import { regionHexWindow } from "./region-topology.js";
+import { regionGlobalCellOrigin, regionHexWindow } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { getTile } from "./world.js";
 
@@ -280,7 +281,9 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       state.width,
       state.height,
     ).find((candidate) => candidate.id === state.regionId);
-    const origin = entry?.physicalOrigin ?? { x: 0, y: 0 };
+    const origin = entry?.physicalOrigin
+      ?? regionGlobalCellOrigin(state.regionId, state.width, state.height)
+      ?? { x: 0, y: 0 };
     return {
       worldSeed: worldSeedValue(this.haloEnv.WORLD_SEED),
       originX: origin.x,
@@ -290,7 +293,9 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const regionIds = configuredRegionIds(this.haloEnv);
-    const links = buildConfiguredHexHaloLinks(state, regionIds, state.regionId);
+    const links = regionIds.includes(state.regionId)
+      ? buildConfiguredHexHaloLinks(state, regionIds, state.regionId)
+      : buildDynamicHexHaloLinks(state, state.regionId);
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
       const direction = link.neighborDirection;

@@ -12,6 +12,7 @@ import type { Tile } from "./protocol.js";
 import {
   configuredRegionCellTransition,
   regionAxialCoordinate,
+  regionCellTransition,
   regionHexWindow,
 } from "./region-topology.js";
 
@@ -100,6 +101,45 @@ export function buildConfiguredHexHaloLinks(
       };
       const transition = configuredRegionCellTransition(
         regionIds,
+        sourceRegionId,
+        desiredPosition,
+        extent.width,
+        extent.height,
+      );
+      if (transition === undefined) continue;
+      links.push({
+        sourceRegionId,
+        sourcePosition,
+        direction,
+        neighborRegionId: transition.targetRegionId,
+        neighborPosition: transition.targetPosition,
+        neighborDirection: oppositeHexGridDirection(transition.direction),
+      });
+    }
+  }
+  return links;
+}
+
+/**
+ * Build a depth-1 halo for an axial region without requiring its neighbors to
+ * be prelisted in REGION_IDS. Exact global cell ownership remains the source of
+ * truth, while legacy garden aliases retain ownership of their persisted axial
+ * coordinates. Unknown historical IDs deliberately produce no dynamic halo.
+ */
+export function buildDynamicHexHaloLinks(
+  extent: HexGridExtent,
+  sourceRegionId: string,
+): HexHaloLink[] {
+  if (regionAxialCoordinate(sourceRegionId) === undefined) return [];
+  const links: HexHaloLink[] = [];
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    for (const sourcePosition of hexGridBoundaryCells(extent, direction)) {
+      const desiredPosition = {
+        x: sourcePosition.x + step.x,
+        y: sourcePosition.y + step.y,
+      };
+      const transition = regionCellTransition(
         sourceRegionId,
         desiredPosition,
         extent.width,

@@ -115,3 +115,27 @@ test("halo edge sampling does not promote passive neighbors to active tick caden
     assert.equal(health.body.effectiveTickMs, 600000);
   }
 });
+
+
+test("canonical world halo materializes a bounded six-neighbor dynamic ring", async () => {
+  const env = environment();
+  const result = await call(env, "/api/world/halo?region=hex-q0-r1");
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.centerRegion, "hex-q0-r1");
+  assert.equal(result.body.depth, 1);
+  assert.equal(result.body.expectedLinks, 138);
+  assert.equal(result.body.materializedLinks, 138);
+  assert.equal(result.body.neighborEdges.length, 6);
+  assert.ok(result.body.neighborEdges.every((entry) => entry.tiles === 23));
+  assert.deepEqual(
+    result.body.neighborEdges.map((entry) => entry.regionId).sort(),
+    ["garden-1", "garden-2", "hex-q-1-r1", "hex-q-1-r2", "hex-q0-r2", "hex-q1-r1"].sort(),
+  );
+  assert.equal(env.REGIONS.entries.size, 7, "center plus exactly six neighbors may materialize");
+
+  for (const regionId of result.body.neighborEdges.map((entry) => entry.regionId)) {
+    const health = await call(env, `/api/health?region=${regionId}`);
+    assert.equal(health.response.status, 200);
+    assert.equal(health.body.tickMode, "cold", `${regionId} must stay cold after internal halo sampling`);
+  }
+});
