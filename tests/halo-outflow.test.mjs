@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  haloDrainageInflowAt,
   haloFlowOutletAt,
   surfaceMoistureWithHaloAt,
 } from "../dist-ts/src/halo-environment.js";
-import { buildHexHaloLinks } from "../dist-ts/src/hex-halo.js";
+import { buildConfiguredHexHaloLinks, buildHexHaloLinks } from "../dist-ts/src/hex-halo.js";
 import { surfaceMoistureAt } from "../dist-ts/src/simulation.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
@@ -65,4 +66,83 @@ test("existing local flow remains authoritative over a lower ghost outlet", () =
 
   assert.equal(haloFlowOutletAt(state, tile, halo), undefined);
   assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), surfaceMoistureAt(state, tile));
+});
+
+test("equal-slope cross-region outlet agrees with the receiver that owns the inflow", () => {
+  const regionIds = ["garden-1", "garden-2", "garden-3"];
+  const source = createInitialWorld({ seed: 9402, width: 40, height: 24, regionId: "garden-1" });
+  const receiver = createInitialWorld({ seed: 9403, width: 40, height: 24, regionId: "garden-2" });
+  for (const state of [source, receiver]) {
+    for (const tile of state.tiles) {
+      tile.terrain = "plain";
+      delete tile.resource;
+      tile.elevation = 0.8;
+      tile.drainage = 0;
+      delete tile.flowTo;
+      tile.erosionPressure = 0;
+    }
+  }
+
+  const sourcePosition = { x: 30, y: 1 };
+  const sourceTile = source.tiles[sourcePosition.y * source.width + sourcePosition.x];
+  assert.ok(sourceTile);
+  sourceTile.elevation = 0.8;
+  sourceTile.drainage = 0.5;
+
+  const sourceLinks = buildConfiguredHexHaloLinks(source, regionIds, "garden-1")
+    .filter((link) =>
+      link.sourcePosition.x === sourcePosition.x &&
+      link.sourcePosition.y === sourcePosition.y &&
+      link.neighborRegionId === "garden-2"
+    );
+  assert.equal(sourceLinks.length, 2);
+  const sourceHalo = sourceLinks.map((link) => ({
+    ...link,
+    tile: {
+      x: link.neighborPosition.x,
+      y: link.neighborPosition.y,
+      terrain: "plain",
+      elevation: 0.6,
+      drainage: 0,
+    },
+  }));
+
+  const outlet = haloFlowOutletAt(source, sourcePosition, sourceHalo);
+  assert.ok(outlet);
+
+  const reverseLinks = buildConfiguredHexHaloLinks(receiver, regionIds, "garden-2")
+    .filter((link) =>
+      link.neighborRegionId === "garden-1" &&
+      link.neighborPosition.x === sourcePosition.x &&
+      link.neighborPosition.y === sourcePosition.y
+    );
+  assert.equal(reverseLinks.length, 2);
+  for (const link of reverseLinks) {
+    const tile = receiver.tiles[link.sourcePosition.y * receiver.width + link.sourcePosition.x];
+    assert.ok(tile);
+    tile.elevation = 0.6;
+  }
+  const receiverHalo = reverseLinks.map((link) => ({
+    ...link,
+    tile: {
+      x: sourcePosition.x,
+      y: sourcePosition.y,
+      terrain: "plain",
+      elevation: 0.8,
+      drainage: 0.5,
+    },
+  }));
+
+  const receivingPositions = reverseLinks
+    .map((link) => ({
+      position: link.sourcePosition,
+      inflow: haloDrainageInflowAt(receiver, link.sourcePosition, receiverHalo),
+    }))
+    .filter((entry) => entry.inflow > 0);
+  assert.equal(receivingPositions.length, 1);
+  assert.deepEqual(
+    outlet.neighborPosition,
+    receivingPositions[0].position,
+    "source outlet and receiver inflow must choose the same equal-slope seam cell",
+  );
 });

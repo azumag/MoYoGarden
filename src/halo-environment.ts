@@ -53,6 +53,25 @@ function tileElevation(tile: Tile | undefined): number | undefined {
   return Number.isFinite(elevation ?? Number.NaN) ? elevation : undefined;
 }
 
+interface HaloFlowReceiverCandidate {
+  drop: number;
+  elevation: number;
+  position: GridPosition;
+}
+
+function preferHaloFlowReceiver(
+  candidate: HaloFlowReceiverCandidate,
+  current: HaloFlowReceiverCandidate | undefined,
+): boolean {
+  if (current === undefined) return true;
+  if (candidate.drop > current.drop + HALO_HYDROLOGY_EPSILON) return true;
+  if (candidate.drop < current.drop - HALO_HYDROLOGY_EPSILON) return false;
+  if (candidate.elevation < current.elevation - HALO_HYDROLOGY_EPSILON) return true;
+  if (candidate.elevation > current.elevation + HALO_HYDROLOGY_EPSILON) return false;
+  return candidate.position.y < current.position.y ||
+    (candidate.position.y === current.position.y && candidate.position.x < current.position.x);
+}
+
 function haloNeighborWaterInfluence(
   position: GridPosition,
   lookup: HaloLookup,
@@ -156,7 +175,14 @@ function haloFlowOutletFromLookup(
     if (ghostElevation === undefined) continue;
     const drop = elevation - ghostElevation;
     if (drop <= HALO_HYDROLOGY_EPSILON) continue;
-    if (best !== undefined && drop <= best.drop + HALO_HYDROLOGY_EPSILON) continue;
+    if (!preferHaloFlowReceiver(
+      { drop, elevation: ghostElevation, position: ghost.neighborPosition },
+      best === undefined
+        ? undefined
+        : { drop: best.drop, elevation: best.elevation, position: best.neighborPosition },
+    )) {
+      continue;
+    }
     best = {
       direction,
       neighborRegionId: ghost.neighborRegionId,
@@ -224,18 +250,16 @@ function haloDrainageInflowMapFromLookup(
 
     const ghostKey = `${ghost.neighborRegionId}:${positionKey(ghost.neighborPosition)}`;
     const current = bestByGhost.get(ghostKey);
-    if (
-      current !== undefined &&
-      (
-        drop < current.drop - HALO_HYDROLOGY_EPSILON ||
-        (Math.abs(drop - current.drop) <= HALO_HYDROLOGY_EPSILON &&
-          (localElevation > current.localElevation + HALO_HYDROLOGY_EPSILON ||
-            (Math.abs(localElevation - current.localElevation) <= HALO_HYDROLOGY_EPSILON &&
-              (ghost.sourcePosition.y > current.sourcePosition.y ||
-                (ghost.sourcePosition.y === current.sourcePosition.y &&
-                  ghost.sourcePosition.x >= current.sourcePosition.x)))))
-      )
-    ) {
+    if (!preferHaloFlowReceiver(
+      { drop, elevation: localElevation, position: ghost.sourcePosition },
+      current === undefined
+        ? undefined
+        : {
+          drop: current.drop,
+          elevation: current.localElevation,
+          position: current.sourcePosition,
+        },
+    )) {
       continue;
     }
     bestByGhost.set(ghostKey, {
