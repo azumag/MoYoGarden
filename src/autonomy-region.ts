@@ -1,6 +1,4 @@
 import {
-  buildConfiguredHexHaloLinks,
-  buildDynamicHexHaloLinks,
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
   type HexHaloTile,
@@ -11,7 +9,11 @@ import {
   isHexGridCell,
   type HexGridDirection,
 } from "./hex-grid.js";
-import { RegionDurableObject as HaloRegionDurableObject } from "./halo-region.js";
+import {
+  haloLinksForActivity,
+  RegionDurableObject as HaloRegionDurableObject,
+  type RegionActivityTier,
+} from "./halo-region.js";
 import {
   positionKey,
   type Agent,
@@ -114,14 +116,21 @@ function configuredRegionIds(env: AutonomyEnv): string[] {
   return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
 }
 
+export function autonomyHaloLinksForActivity(
+  extent: Pick<WorldState, "width" | "height">,
+  regionIds: readonly string[],
+  sourceRegionId: string,
+  tier: RegionActivityTier,
+) {
+  return haloLinksForActivity(extent, regionIds, sourceRegionId, tier);
+}
+
 export function autonomyHaloLinks(
   extent: Pick<WorldState, "width" | "height">,
   regionIds: readonly string[],
   sourceRegionId: string,
 ) {
-  return regionIds.includes(sourceRegionId)
-    ? buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId)
-    : buildDynamicHexHaloLinks(extent, sourceRegionId);
+  return autonomyHaloLinksForActivity(extent, regionIds, sourceRegionId, "warm");
 }
 
 export function isAutonomyClaimSourceRegionId(
@@ -576,8 +585,12 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     directions: readonly HexGridDirection[],
   ): Promise<HexHaloTile[]> {
     const needed = new Set(directions);
-    const links = autonomyHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId)
-      .filter((link) => needed.has(link.direction));
+    const links = autonomyHaloLinksForActivity(
+      state,
+      configuredRegionIds(this.autonomyEnv),
+      state.regionId,
+      this.activityTier(),
+    ).filter((link) => needed.has(link.direction));
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
       const direction = link.neighborDirection;

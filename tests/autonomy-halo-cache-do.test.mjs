@@ -99,7 +99,7 @@ async function depleteWood(entry) {
   await entry.object.persist();
 }
 
-test("one alarm reuses boundary halo edges when an interior scout follows", async () => {
+test("active legacy autonomy reuses one six-direction halo read when an interior scout follows", async () => {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
   const east = await assignRegion(env, "garden-2");
@@ -154,7 +154,7 @@ test("one alarm reuses boundary halo edges when an interior scout follows", asyn
   await source.object.alarm();
 
   const reads = env.REGIONS.edgeFetches;
-  assert.equal(reads.length, 2, "the two configured neighboring edge snapshots should be fetched only once");
+  assert.equal(reads.length, 6, "the six active neighboring edge snapshots should be fetched only once");
   assert.equal(
     new Set(reads.map(({ regionId, direction }) => `${regionId}:${direction}`)).size,
     reads.length,
@@ -162,6 +162,6 @@ test("one alarm reuses boundary halo edges when an interior scout follows", asyn
   );
   assert.deepEqual(
     new Set(reads.map(({ regionId }) => regionId)),
-    new Set(["garden-2", "garden-3"]),
+    new Set(["garden-2", "garden-3", "hex-q-1-r0", "hex-q-1-r1", "hex-q0-r-1", "hex-q0-r1"]),
   );
 });

@@ -167,7 +167,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     this.activityTickMs = tickMsValue(haloEnv.TICK_MS);
   }
 
-  private activityTier(now = Date.now()): RegionActivityTier {
+  protected activityTier(now = Date.now()): RegionActivityTier {
     if (this.activityState.getWebSockets().length > 0) return "active";
     const activeGraceMs = Math.min(
       MAX_ACTIVITY_TICK_MS,

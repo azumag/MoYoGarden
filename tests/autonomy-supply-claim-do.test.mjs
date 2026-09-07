@@ -115,6 +115,18 @@ test("persisted supply claims keep the next scout from double-booking the same n
   const source = await assignRegion(env, "garden-1");
   const east = await assignRegion(env, "garden-2");
   const northEast = await assignRegion(env, "garden-3");
+  const otherDynamicNeighbors = await Promise.all([
+    "hex-q-1-r0",
+    "hex-q-1-r1",
+    "hex-q0-r-1",
+    "hex-q0-r1",
+  ].map((regionId) => assignRegion(env, regionId)));
+  for (const entry of otherDynamicNeighbors) {
+    const state = entry.object.runtime.snapshot();
+    depleteWood(state);
+    entry.object.runtime = new WorldRuntime({ state });
+    await entry.object.persist();
+  }
 
   const sourceState = source.object.runtime.snapshot();
   depleteWood(sourceState);
