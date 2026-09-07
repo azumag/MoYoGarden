@@ -83,6 +83,7 @@
   preload(`/client/agent-crowding.js?v=${VERSION}`);
   preload(`/client/decay-dressing.js?v=${VERSION}`);
   preload(`/client/atmosphere.js?v=${VERSION}`);
+  preload(`/client/graphics-controls.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
@@ -136,6 +137,11 @@
       await import(`/client/atmosphere.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: atmosphere enhancement failed; keeping base materials", error);
+    }
+    try {
+      await import(`/client/graphics-controls.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: graphics controls failed; keeping base renderer", error);
     }
 
     const moduleScript = document.createElement("script");

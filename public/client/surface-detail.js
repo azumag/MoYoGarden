@@ -1,3 +1,5 @@
+import { resolveQualityProfile } from './quality.js';
+import { patchWaterShader } from './water-shading.js';
 // Detail in world space keeps every independently rendered hex on the same
 // material field. No displacement: picking, shorelines and welded seams stay put.
 const styled = new WeakSet();
@@ -10,27 +12,30 @@ float moyoNoise(vec2 p) {
 }
 `;
 
-export function styleSurface(material, kind, clock) {
+export function styleSurface(material, kind, clock, options = {}) {
   if (!material?.isMeshStandardMaterial || styled.has(material)) return;
   styled.add(material);
   material.userData.moyoSurfaceKind = kind;
   material.userData.moyoDecayStyled = true;
+  const waterQuality = kind === 'water' ? (options.waterQuality ?? resolveQualityProfile().waterQuality) : 'none';
   const previous = material.onBeforeCompile;
   const previousKey = material.customProgramCacheKey();
-  material.customProgramCacheKey = () => `${previousKey}:moyo-surface-v1:${kind}`;
+  material.customProgramCacheKey = () => `${previousKey}:moyo-surface-v2:${kind}:${waterQuality}`;
   if (kind === 'water') {
-    material.color.set(0x849c8e);
-    material.roughness = 0.26;
-    material.metalness = 0.04;
-    material.envMapIntensity = 0.72;
-    material.opacity = 0.84;
+    material.color.set(0x678d89);
+    material.roughness = waterQuality === 'simple' ? 0.42 : 0.19;
+    material.metalness = 0;
+    material.envMapIntensity = 0.8;
+    material.opacity = 0.88;
     if (material.isMeshPhysicalMaterial) {
-      material.clearcoat = 0.85;
-      material.clearcoatRoughness = 0.2;
+      material.transmission = 0;
+      material.clearcoat = waterQuality === 'simple' ? 0 : 0.38;
+      material.clearcoatRoughness = 0.24;
     }
   }
   material.onBeforeCompile = function(shader, renderer) {
     previous.call(this, shader, renderer);
+    if (kind === 'water' && waterQuality === 'simple') return;
     shader.uniforms.moyoTime = clock;
     shader.vertexShader = 'varying vec3 vMoyoWorld;\n' + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `
@@ -43,18 +48,7 @@ export function styleSurface(material, kind, clock) {
     `);
     shader.fragmentShader = `varying vec3 vMoyoWorld;\nuniform float moyoTime;\n${NOISE_GLSL}` + shader.fragmentShader;
     if (kind === 'water') {
-      shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', `
-        #include <normal_fragment_maps>
-        vec2 p = vMoyoWorld.xz;
-        float a = dot(p, vec2(3.8, 1.7)) + moyoTime * 1.1;
-        float b = dot(p, vec2(-2.1, 5.3)) - moyoTime * 0.8;
-        vec3 ripple = vec3(cos(a)*0.13 + cos(b)*0.065, 0.0, sin(a)*0.1 - sin(b)*0.09);
-        normal = normalize(normal + mat3(viewMatrix) * ripple);
-      `).replace('#include <color_fragment>', `
-        #include <color_fragment>
-        float swell = moyoNoise(vMoyoWorld.xz * 0.75 + vec2(moyoTime * 0.018));
-        diffuseColor.rgb *= mix(vec3(0.62,0.79,0.73), vec3(1.05,1.08,0.97), swell);
-      `);
+      patchWaterShader(shader, waterQuality);
     } else {
       shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `
         #include <color_fragment>
