@@ -1,5 +1,6 @@
 import {
   buildConfiguredHexHaloLinks,
+  buildDynamicHexHaloLinks,
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
   type HexHaloTile,
@@ -18,6 +19,7 @@ import {
   type ResourceKind,
   type WorldState,
 } from "./protocol.js";
+import { regionAxialCoordinate } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { isPassable } from "./world.js";
 
@@ -110,6 +112,23 @@ function configuredRegionIds(env: AutonomyEnv): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry));
   return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
+}
+
+export function autonomyHaloLinks(
+  extent: Pick<WorldState, "width" | "height">,
+  regionIds: readonly string[],
+  sourceRegionId: string,
+) {
+  return regionIds.includes(sourceRegionId)
+    ? buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId)
+    : buildDynamicHexHaloLinks(extent, sourceRegionId);
+}
+
+export function isAutonomyClaimSourceRegionId(
+  regionIds: readonly string[],
+  sourceRegionId: string,
+): boolean {
+  return regionIds.includes(sourceRegionId) || regionAxialCoordinate(sourceRegionId) !== undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -557,7 +576,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     directions: readonly HexGridDirection[],
   ): Promise<HexHaloTile[]> {
     const needed = new Set(directions);
-    const links = buildConfiguredHexHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId)
+    const links = autonomyHaloLinks(state, configuredRegionIds(this.autonomyEnv), state.regionId)
       .filter((link) => needed.has(link.direction));
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
@@ -644,7 +663,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       typeof body.claimId !== "string" ||
       body.claimId.trim() === "" ||
       typeof body.sourceRegionId !== "string" ||
-      !configuredRegionIds(this.autonomyEnv).includes(body.sourceRegionId) ||
+      !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId) ||
       typeof body.agentId !== "string" ||
       body.agentId.trim() === "" ||
       !isResourceKind(body.resource)
