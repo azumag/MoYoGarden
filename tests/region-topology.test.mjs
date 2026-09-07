@@ -12,8 +12,14 @@ import {
   configuredRegionNeighborId,
   regionAxialCoordinate,
   regionHexTopology,
+  regionGlobalCellOrigin,
   regularHexFootprintSize,
 } from "../dist-ts/src/region-topology.js";
+import {
+  HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
+  isHexGridCell,
+} from "../dist-ts/src/hex-grid.js";
 
 function close(actual, expected, epsilon = 1e-9) {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
@@ -163,6 +169,62 @@ test("canonical topology preserves encoded coordinates even when configuration o
   ]);
   assert.equal(topology[0].neighbors.east, "hex-q11-r-4");
   assert.equal(topology[0].neighbors.northEast, null);
+});
+
+test("global cell origins tile the center and six neighboring regions without gaps or overlap", () => {
+  const extent = { width: 40, height: 24 };
+  const centerRegion = { q: 0, r: 0 };
+  const sourceOrigin = regionGlobalCellOrigin("garden-1", extent.width, extent.height);
+  assert.deepEqual(sourceOrigin, { x: -19, y: -11 });
+  assert.deepEqual(
+    regionGlobalCellOrigin("garden-2", extent.width, extent.height),
+    regionGlobalCellOrigin("hex-q1-r0", extent.width, extent.height),
+    "legacy aliases and canonical ids share one global simulation frame",
+  );
+  assert.equal(regionGlobalCellOrigin("garden-4", extent.width, extent.height), undefined);
+
+  const regions = [
+    centerRegion,
+    ...HEX_GRID_DIRECTIONS.map((direction) => hexNeighborCoordinate(centerRegion, direction)),
+  ];
+  const cellSets = regions.map((coordinate) => {
+    const origin = regionGlobalCellOrigin(axialRegionId(coordinate), extent.width, extent.height);
+    assert.ok(origin);
+    const cells = new Set();
+    for (let y = 0; y < extent.height; y += 1) {
+      for (let x = 0; x < extent.width; x += 1) {
+        if (!isHexGridCell(extent, { x, y })) continue;
+        cells.add(`${origin.x + x},${origin.y + y}`);
+      }
+    }
+    assert.equal(cells.size, 397);
+    return cells;
+  });
+
+  for (let a = 0; a < cellSets.length; a += 1) {
+    for (let b = a + 1; b < cellSets.length; b += 1) {
+      assert.equal(
+        [...cellSets[a]].some((key) => cellSets[b].has(key)),
+        false,
+        `region footprints ${a} and ${b} must not overlap`,
+      );
+    }
+  }
+
+  const centerCells = cellSets[0];
+  const outsideNeighbors = new Set();
+  for (const key of centerCells) {
+    const [x, y] = key.split(",").map(Number);
+    for (const step of Object.values(HEX_GRID_DIRECTION_STEPS)) {
+      const neighborKey = `${x + step.x},${y + step.y}`;
+      if (!centerCells.has(neighborKey)) outsideNeighbors.add(neighborKey);
+    }
+  }
+  assert.equal(outsideNeighbors.size, 72);
+  for (const key of outsideNeighbors) {
+    const owners = cellSets.slice(1).filter((cells) => cells.has(key));
+    assert.equal(owners.length, 1, `boundary cell ${key} must have exactly one neighboring owner`);
+  }
 });
 
 test("dynamic axial ids resolve all six neighbors without a global region list", () => {

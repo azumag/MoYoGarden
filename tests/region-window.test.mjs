@@ -21,6 +21,7 @@ test("region window exposes both physical and regular-hex placement metadata", (
     origin: "physical",
     physicalOrigin: "persisted-rectangular-ownership",
     hexOrigin: "logical-hex-placement",
+    globalCellOrigin: "shared-axial-cell-frame",
   });
   assert.deepEqual(payload.chunks.map((chunk) => chunk.origin), [
     { x: 0, y: 0 },
@@ -36,6 +37,11 @@ test("region window exposes both physical and regular-hex placement metadata", (
     { x: 0, y: 0 },
     { x: regularHexWidth, y: 0 },
     { x: regularHexWidth / 2, y: -18 },
+  ]);
+  assert.deepEqual(payload.chunks.map((chunk) => chunk.globalCellOrigin), [
+    { x: -19, y: -11 },
+    { x: 4, y: -22 },
+    { x: -7, y: -34 },
   ]);
   assert.deepEqual(payload.chunks.map((chunk) => chunk.axial), [
     { q: 0, r: 0 },

@@ -93,6 +93,7 @@ export function enrichRegionWindowPayload(
       axial: placement.axial,
       physicalOrigin: placement.physicalOrigin,
       hexOrigin: placement.hexOrigin,
+      globalCellOrigin: placement.globalCellOrigin,
       ring: placement.ring,
     };
   });
@@ -104,6 +105,7 @@ export function enrichRegionWindowPayload(
       origin: "physical",
       physicalOrigin: "persisted-rectangular-ownership",
       hexOrigin: "logical-hex-placement",
+      globalCellOrigin: "shared-axial-cell-frame",
     },
     chunks,
   };

@@ -1,3 +1,4 @@
+import { hexGridCenter, hexGridRadius } from "./hex-grid.js";
 import { TARGET_WORLD_HEIGHT, TARGET_WORLD_WIDTH } from "./world-scale.js";
 
 export const HEX_DIRECTIONS = [
@@ -33,6 +34,7 @@ export interface RegionHexTopologyEntry {
   axial: HexCoordinate;
   physicalOrigin: HexWorldOrigin;
   hexOrigin: HexWorldOrigin;
+  globalCellOrigin: HexWorldOrigin;
   ring: number;
   neighbors: Record<HexDirection, string | null>;
 }
@@ -188,6 +190,56 @@ export function projectHexCoordinate(
   };
 }
 
+/**
+ * Project a macro-region axial coordinate into the shared axial cell lattice.
+ *
+ * Each 40x24 compatibility envelope contains a radius-11 active hex (397
+ * cells). Adjacent radius-R hex clusters tile the infinite cell lattice with
+ * basis vectors `(2R+1,-R)` and `(R,R+1)`, whose determinant is exactly the
+ * number of active cells `3R(R+1)+1`. This gives every active local cell one
+ * unique global axial address without changing persisted rectangular storage.
+ *
+ * The returned value is the global address of local storage cell `(0,0)`, so a
+ * tile at local `(x,y)` is sampled at `origin + (x,y)`. Render `hexOrigin` and
+ * persisted `physicalOrigin` deliberately remain separate coordinate spaces.
+ */
+export function projectRegionGlobalCellOrigin(
+  coordinate: HexCoordinate,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): HexWorldOrigin {
+  assertSafeAxialCoordinate(coordinate);
+  const safeWidth = Number.isSafeInteger(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
+  const safeHeight = Number.isSafeInteger(height) && height > 0 ? height : TARGET_WORLD_HEIGHT;
+  const extent = { width: safeWidth, height: safeHeight };
+  const center = hexGridCenter(extent);
+  const radius = hexGridRadius(extent);
+  const eastBasis = { x: radius * 2 + 1, y: -radius };
+  const southEastBasis = { x: radius, y: radius + 1 };
+  const regionCenter = {
+    x: coordinate.q * eastBasis.x + coordinate.r * southEastBasis.x,
+    y: coordinate.q * eastBasis.y + coordinate.r * southEastBasis.y,
+  };
+  if (!Number.isSafeInteger(regionCenter.x) || !Number.isSafeInteger(regionCenter.y)) {
+    throw new RangeError("projected global cell coordinates must be safe integers");
+  }
+  return {
+    x: regionCenter.x - center.x,
+    y: regionCenter.y - center.y,
+  };
+}
+
+export function regionGlobalCellOrigin(
+  regionId: string,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): HexWorldOrigin | undefined {
+  const coordinate = regionAxialCoordinate(regionId);
+  return coordinate === undefined
+    ? undefined
+    : projectRegionGlobalCellOrigin(coordinate, width, height);
+}
+
 function nextAvailableCoordinate(
   queue: HexCoordinate[],
   seen: Set<string>,
@@ -260,6 +312,7 @@ export function regionHexTopology(
       axial: coordinate,
       physicalOrigin: projectPhysicalRegionOrigin(index, width),
       hexOrigin: projectHexCoordinate(coordinate, width, height),
+      globalCellOrigin: projectRegionGlobalCellOrigin(coordinate, width, height),
       ring: hexDistance(coordinate),
       neighbors,
     };
@@ -363,6 +416,7 @@ export function regionHexWindow(
         axial: coordinate,
         physicalOrigin: projectPhysicalRegionOrigin(index, width),
         hexOrigin: projectHexCoordinate(coordinate, width, height),
+        globalCellOrigin: projectRegionGlobalCellOrigin(coordinate, width, height),
         ring: hexDistance(coordinate),
         neighbors,
       });
