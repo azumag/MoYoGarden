@@ -199,3 +199,66 @@ test("deposit distance remains authoritative over congestion", () => {
   assert.equal(moved.task?.structureId, near.id);
   assert.deepEqual(moved.position, near.position);
 });
+
+
+test("autonomous builder prefers the less crowded build hex when distance is tied", () => {
+  const state = plainResourceFixture();
+  const builder = state.agents.find((agent) => agent.role === "builder");
+  assert.ok(builder);
+
+  builder.position = { x: 7, y: 5 };
+  builder.energy = 100;
+  builder.inventory = { wood: 0, stone: 0, food: 0 };
+  builder.autonomy = true;
+  delete builder.task;
+
+  const faction = state.factions.find((entry) => entry.id === builder.factionId);
+  assert.ok(faction);
+  faction.resources = { wood: 100, stone: 100, food: 100 };
+
+  state.structures = [{
+    id: "builder-camp",
+    factionId: builder.factionId,
+    type: "camp",
+    position: { ...builder.position },
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 0 },
+  }];
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") continue;
+    tile.resource = { kind: "food", amount: 1, maxAmount: 1 };
+  }
+  const crowded = state.tiles.find((tile) => tile.x === 8 && tile.y === 5);
+  const open = state.tiles.find((tile) => tile.x === 7 && tile.y === 6);
+  assert.ok(crowded);
+  assert.ok(open);
+  crowded.terrain = "plain";
+  open.terrain = "plain";
+  delete crowded.resource;
+  delete open.resource;
+
+  const blockers = state.agents
+    .filter((agent) => agent.id !== builder.id)
+    .slice(0, 3);
+  assert.equal(blockers.length, 3);
+  const otherFaction = state.factions.find((entry) => entry.id !== builder.factionId);
+  assert.ok(otherFaction);
+  for (const blocker of blockers) {
+    blocker.factionId = otherFaction.id;
+    blocker.position = { x: crowded.x, y: crowded.y };
+    blocker.autonomy = false;
+    delete blocker.task;
+  }
+  state.agents = [builder, ...blockers];
+
+  const next = simulate(state).state;
+  const moved = next.agents.find((agent) => agent.id === builder.id);
+  assert.ok(moved);
+  assert.equal(moved.task?.type, "build");
+  assert.equal(moved.task?.structureType, "storehouse");
+  assert.deepEqual(moved.task?.target, { x: open.x, y: open.y });
+  assert.deepEqual(moved.position, { x: open.x, y: open.y });
+});

@@ -581,6 +581,7 @@ function findBuildSite(
       return (
         resourcePenaltyA - resourcePenaltyB ||
         manhattanDistance(a, origin) - manhattanDistance(b, origin) ||
+        agentCrowdingAt(state, a) - agentCrowdingAt(state, b) ||
         a.y - b.y ||
         a.x - b.x
       );
