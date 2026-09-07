@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { regionMetaUrl, resolveRegionPrefetch, resolveRegionRebase } from "../public/client/region-navigation.js";
+import { regionMetaUrl, regionWarmSnapshotRequestInit, resolveRegionPrefetch, resolveRegionRebase } from "../public/client/region-navigation.js";
 
 const layout = [
   { id: "garden-1", origin: { x: 0, y: 0 }, extent: { width: 40, height: 24 } },
@@ -34,6 +34,13 @@ const hexLayout = [
 test("region metadata requests are scoped to the current bounded hex window", () => {
   assert.equal(regionMetaUrl("garden-1", 1), "/api/meta?region=garden-1&radius=1");
   assert.equal(regionMetaUrl("hex-q10-r-4", 9), "/api/meta?region=hex-q10-r-4&radius=4");
+});
+
+test("region warmup snapshots stay passive instead of promoting neighbors to active cadence", () => {
+  const init = regionWarmSnapshotRequestInit();
+  assert.equal(init.cache, "no-store");
+  const headers = new Headers(init.headers);
+  assert.equal(headers.get("x-moyo-prefetch"), "1");
 });
 
 function close(actual, expected, epsilon = 1e-9) {

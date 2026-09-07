@@ -9,6 +9,14 @@ const HEX_STEPS = {
   southWest: { q: -1, r: 1 },
   southEast: { q: 0, r: 1 },
 };
+
+export function regionWarmSnapshotRequestInit() {
+  return {
+    cache: "no-store",
+    headers: { "x-moyo-prefetch": "1" },
+  };
+}
+
 export function regionMetaUrl(regionId, radius = 1) {
   const trimmed = typeof regionId === "string" ? regionId.trim() : "";
   if (!trimmed) return "/api/meta";

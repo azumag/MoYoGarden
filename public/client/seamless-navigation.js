@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { resolveNavigationBounds } from "./navigation-bounds.js";
-import { regionMetaUrl, resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
+import { regionMetaUrl, regionWarmSnapshotRequestInit, resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
 import { clamp, disposeObject } from "./shared.js";
 import {
   buildWeldedPreviewSurface,
@@ -197,11 +197,13 @@ function warmRegion(regionId) {
   if (Date.now() - lastWarm < PREFETCH_REFRESH_MS) return;
 
   regionWarmAt.set(regionId, Date.now());
-  // /api/health is intentionally passive on the Worker, so it loads the Durable Object
-  // without switching an idle neighbor back to active tick cadence. A normal snapshot
-  // request marks the region active; cancel the body after headers to keep this warm-up
-  // cheap while the existing window prefetch remains responsible for preview state.
-  const request = fetch(`/api/world/snapshot?region=${encodeURIComponent(regionId)}`, { cache: "no-store" })
+  // Mark this snapshot as a passive prefetch so the Worker promotes the neighbor only
+  // to the warm tier instead of active cadence. Cancel the body after headers to keep
+  // this warm-up cheap while the existing window prefetch remains responsible for preview state.
+  const request = fetch(
+    `/api/world/snapshot?region=${encodeURIComponent(regionId)}`,
+    regionWarmSnapshotRequestInit(),
+  )
     .then(async (response) => {
       if (!response.ok) throw new Error(`warm snapshot HTTP ${response.status}`);
       await response.body?.cancel();
