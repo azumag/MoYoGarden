@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { createDemoState } from "./client/demo-state.js";
 import { isHexGridCell } from "./client/hex-grid.js";
+import { createLiveNeighborSimulation } from "./client/live-region-rendering.js";
 import { ModelLibrary } from "./client/model-library.js";
 import { resolveQualityProfile } from "./client/quality.js";
 import { regionMetaUrl } from "./client/region-navigation.js";
@@ -51,6 +52,9 @@ const ui = {
   pausedBadge: $("#paused-badge"),
 };
 
+const LIVE_REGION_WINDOW_REFRESH_MS = 10_000;
+const NEIGHBOR_TERRAIN_REFRESH_MS = 60_000;
+
 const quality = resolveQualityProfile();
 const models = new ModelLibrary();
 const renderState = {
@@ -78,6 +82,9 @@ ui.tokenInput.value = app.token;
 let view;
 let toastTimer;
 let neighborPreviewRoot;
+let liveNeighborSimulation;
+let neighborTerrainCenter;
+let neighborTerrainUpdatedAt = 0;
 let readyDispatched = false;
 
 function toast(message, error = false) {
@@ -256,9 +263,15 @@ async function loadRegionWindow() {
   }
   const requestedRegion = app.region;
   try {
-    const payload = await requestJson("/api/world/window?radius=1", {}, 10_000);
+    const payload = await requestJson("/api/world/window?radius=1&live=1", {}, 10_000);
     if (requestedRegion !== app.region) return;
-    buildNeighborPreview(payload);
+    liveNeighborSimulation?.syncWindow(payload, app.region, LIVE_REGION_WINDOW_REFRESH_MS);
+    const now = Date.now();
+    if (neighborTerrainCenter !== app.region || now - neighborTerrainUpdatedAt >= NEIGHBOR_TERRAIN_REFRESH_MS) {
+      buildNeighborPreview(payload);
+      neighborTerrainCenter = app.region;
+      neighborTerrainUpdatedAt = now;
+    }
   } catch (error) {
     console.debug("MoYoGarden neighbor region prefetch skipped", error);
   }
@@ -266,7 +279,7 @@ async function loadRegionWindow() {
 
 function startRegionWindowRefresh() {
   clearInterval(app.windowTimer);
-  app.windowTimer = setInterval(() => { void loadRegionWindow(); }, 60_000);
+  app.windowTimer = setInterval(() => { void loadRegionWindow(); }, LIVE_REGION_WINDOW_REFRESH_MS);
 }
 
 function applyEnvelope(value) {
@@ -404,6 +417,8 @@ async function connect() {
     const meta = await requestJson("/api/meta");
     app.regions = meta.regions || [meta.defaultRegion || "garden-1"];
     if (!app.regions.includes(app.region)) app.region = meta.defaultRegion || app.regions[0];
+    liveNeighborSimulation?.setCenter(app.region);
+    neighborTerrainCenter = undefined;
     populateRegions();
     await loadSnapshot();
     void loadRegionWindow();
@@ -431,6 +446,7 @@ async function loadHighResolutionModels() {
     onModelLoaded: ({ key }) => {
       renderState.modelsLoaded += 1;
       view.refreshModelType(key);
+      liveNeighborSimulation?.refreshModelType(key);
       updateRenderStatus();
     },
   });
@@ -494,6 +510,7 @@ async function initialize() {
   ui.loadingDetail.textContent = `${quality.label}プロファイル`;
 
   view = new WorldView(ui.canvas, models, quality);
+  liveNeighborSimulation = createLiveNeighborSimulation(view);
   view.onSelect = updateAgentDetail;
   view.onCommand = async (agentId, target) => {
     try {

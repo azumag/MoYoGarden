@@ -743,12 +743,13 @@ export default {
       const regionId = resolveRegion(request, env);
       if (regionId === undefined) return json({ error: "unknown or disabled region" }, 404);
       const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
+      const liveWindow = url.searchParams.get("live") === "1";
       const entries = sparseRegionWindow(regions, regionId, radius);
       const chunks = await Promise.all(entries.map(async (entry) => {
         const stub = env.REGIONS.get(env.REGIONS.idFromName(entry.id));
         const headers = new Headers(request.headers);
         headers.set("x-moyo-region-internal", entry.id);
-        if (entry.id !== regionId) headers.set("x-moyo-prefetch", "1");
+        if (!liveWindow && entry.id !== regionId) headers.set("x-moyo-prefetch", "1");
         else headers.delete("x-moyo-prefetch");
         const snapshotUrl = new URL(request.url);
         snapshotUrl.pathname = "/api/world/snapshot";

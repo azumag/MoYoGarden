@@ -187,3 +187,25 @@ test("resume rebases virtual time so paused duration cannot become catch-up debt
     Date.now = originalNow;
   }
 });
+
+test("live radius-one window promotes neighboring regions to active cadence", async () => {
+  const scoped = memoryNamespaceEnv({ REGION_IDS: "garden-1,garden-2,garden-3" });
+  const response = await worker.fetch(
+    new Request("https://moyo.example/api/world/window?region=garden-1&radius=1&live=1"),
+    scoped.env,
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.chunks.length, 7);
+  for (const chunk of payload.chunks) {
+    if (chunk.regionId === "garden-1") continue;
+    const entry = scoped.entries.get(chunk.regionId);
+    assert.ok(entry, `missing region object for ${chunk.regionId}`);
+    const headers = new Headers({ "x-moyo-region-internal": chunk.regionId });
+    const health = await (await entry.object.fetch(
+      new Request("https://moyo.example/api/health", { headers }),
+    )).json();
+    assert.equal(health.tickMode, "active", `${chunk.regionId} must be active while visible`);
+    assert.equal(health.effectiveTickMs, 10_000);
+  }
+});

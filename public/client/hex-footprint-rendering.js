@@ -72,7 +72,7 @@ WorldView.prototype.setState = function setStateWithHexFootprint(state, tickMs) 
 
   if (this.renderer) this.renderer.localClippingEnabled = true;
   for (const child of this.worldRoot?.children ?? []) {
-    if (child.name === "neighbor-region-preview") continue;
+    if (child.name === "neighbor-region-preview" || child.name === "live-neighbor-simulation") continue;
     applyHexFootprintClipping(child, state.width, state.height);
   }
   this.markShadowsDirty?.();
