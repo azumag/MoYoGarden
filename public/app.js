@@ -169,6 +169,10 @@ function buildNeighborPreview(payload) {
     return;
   }
 
+  window.dispatchEvent(new CustomEvent("moyo:neighbor-topology", {
+    detail: { payload, centerRegionId: app.region },
+  }));
+
   const land = [];
   const water = [];
   let neighborChunks = 0;

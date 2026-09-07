@@ -13,6 +13,38 @@ let topologyCenterRegionId;
 let topologyRequest;
 let topologyRequestCenterRegionId;
 
+function finiteWindowOrigin(value) {
+  return value && Number.isFinite(value.x) && Number.isFinite(value.y);
+}
+
+export function primeHexNeighborTopology(payload, centerRegionId) {
+  if (typeof centerRegionId !== "string" || centerRegionId.length === 0) return [];
+  const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
+  const regions = chunks.flatMap((chunk) => {
+    if (
+      typeof chunk?.regionId !== "string"
+      || !finiteWindowOrigin(chunk?.physicalOrigin)
+      || !finiteWindowOrigin(chunk?.hexOrigin)
+    ) return [];
+    return [{
+      id: chunk.regionId,
+      axial: chunk.axial,
+      physicalOrigin: chunk.physicalOrigin,
+      hexOrigin: chunk.hexOrigin,
+    }];
+  });
+  if (!regions.some((entry) => entry.id === centerRegionId)) return [];
+  topologyRegions = regions;
+  topologyCenterRegionId = centerRegionId;
+  topologyRequest = undefined;
+  topologyRequestCenterRegionId = undefined;
+  return regions;
+}
+
+globalThis.addEventListener?.("moyo:neighbor-topology", (event) => {
+  primeHexNeighborTopology(event?.detail?.payload, event?.detail?.centerRegionId);
+});
+
 function ensureTopology(centerRegionId) {
   if (!centerRegionId || location.protocol === "file:") return Promise.resolve([]);
   if (topologyCenterRegionId === centerRegionId && topologyRegions.length > 0) {
