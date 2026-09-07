@@ -36,6 +36,7 @@ class MemoryNamespace {
     this.env = env;
     this.entries = new Map();
     this.edgeFetches = [];
+    this.edgeFailure = null;
   }
   idFromName(name) { return name; }
   get(id) {
@@ -51,10 +52,19 @@ class MemoryNamespace {
         await entry.state.ready;
         const url = new URL(request.url);
         if (url.pathname === "/api/internal/halo/edge") {
-          this.edgeFetches.push({
-            regionId: id,
-            direction: url.searchParams.get("direction"),
-          });
+          const direction = url.searchParams.get("direction");
+          this.edgeFetches.push({ regionId: id, direction });
+          if (this.edgeFailure?.regionId === id) {
+            if (this.edgeFailure.mode === "transport") {
+              throw new Error(`simulated autonomy edge transport failure for ${id}`);
+            }
+            if (this.edgeFailure.mode === "malformed") {
+              return new Response("{", {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              });
+            }
+          }
         }
         return entry.object.fetch(request);
       },
@@ -99,7 +109,7 @@ async function depleteWood(entry) {
   await entry.object.persist();
 }
 
-test("active legacy autonomy reuses one six-direction halo read when an interior scout follows", async () => {
+async function activeLegacyAutonomyScenario() {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
   const east = await assignRegion(env, "garden-2");
@@ -150,7 +160,11 @@ test("active legacy autonomy reuses one six-direction halo read when an interior
   source.object.runtime = new WorldRuntime({ state });
   await source.object.persist();
   env.REGIONS.edgeFetches.length = 0;
+  return { env, source };
+}
 
+test("active legacy autonomy reuses one six-direction halo read when an interior scout follows", async () => {
+  const { env, source } = await activeLegacyAutonomyScenario();
   await source.object.alarm();
 
   const reads = env.REGIONS.edgeFetches;
@@ -165,3 +179,22 @@ test("active legacy autonomy reuses one six-direction halo read when an interior
     new Set(["garden-2", "garden-3", "hex-q-1-r0", "hex-q-1-r1", "hex-q0-r-1", "hex-q0-r1"]),
   );
 });
+
+for (const mode of ["transport", "malformed"]) {
+  test(`one unavailable autonomy neighbor does not abort the alarm on ${mode} failure`, async () => {
+    const { env, source } = await activeLegacyAutonomyScenario();
+    env.REGIONS.edgeFailure = { regionId: "garden-2", mode };
+
+    await assert.doesNotReject(
+      () => source.object.alarm(),
+      `one ${mode} neighbor must not abort autonomous halo planning`,
+    );
+
+    assert.equal(source.object.runtime.snapshot().tick, 25, "the local simulation tick must still advance");
+    assert.equal(env.REGIONS.edgeFetches.length, 6, "all bounded neighbor reads are attempted independently");
+    assert.ok(
+      env.REGIONS.edgeFetches.some(({ regionId }) => regionId === "garden-3"),
+      "healthy neighbor edges remain available to the planner",
+    );
+  });
+}

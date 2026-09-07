@@ -572,13 +572,18 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   ): Promise<HexHaloEdgeSnapshot | undefined> {
     const url = new URL(`https://moyo.internal${INTERNAL_EDGE_PATH}`);
     url.searchParams.set("direction", direction);
-    const response = await this.autonomyStub(neighborRegionId).fetch(new Request(url, {
-      method: "GET",
-      headers: { "x-moyo-region-internal": neighborRegionId },
-    }));
-    if (!response.ok) return undefined;
-    const value = await response.json() as unknown;
-    return isEdgeSnapshot(value) ? value : undefined;
+    try {
+      const response = await this.autonomyStub(neighborRegionId).fetch(new Request(url, {
+        method: "GET",
+        headers: { "x-moyo-region-internal": neighborRegionId },
+      }));
+      if (!response.ok) return undefined;
+      const value = await response.json() as unknown;
+      return isEdgeSnapshot(value) ? value : undefined;
+    } catch (error) {
+      console.debug("MoYoGarden autonomy halo edge unavailable", neighborRegionId, direction, error);
+      return undefined;
+    }
   }
 
   private async materializeAutonomyHalo(
