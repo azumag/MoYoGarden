@@ -1,4 +1,9 @@
-import { hexGridCenter, hexGridRadius } from "./hex-grid.js";
+import {
+  hexGridCenter,
+  hexGridRadius,
+  isHexGridCell,
+  type HexGridPosition,
+} from "./hex-grid.js";
 import { TARGET_WORLD_HEIGHT, TARGET_WORLD_WIDTH } from "./world-scale.js";
 
 export const HEX_DIRECTIONS = [
@@ -37,6 +42,12 @@ export interface RegionHexTopologyEntry {
   globalCellOrigin: HexWorldOrigin;
   ring: number;
   neighbors: Record<HexDirection, string | null>;
+}
+
+export interface RegionCellTransition {
+  direction: HexDirection;
+  targetRegionId: string;
+  targetPosition: HexGridPosition;
 }
 
 const HEX_STEPS: Readonly<Record<HexDirection, HexCoordinate>> = {
@@ -359,6 +370,57 @@ export function configuredRegionNeighborId(
   const sourceEntry = regionHexTopology(regionIds, width, height)
     .find((entry) => entry.id === sourceRegionId);
   return sourceEntry?.neighbors[direction] ?? undefined;
+}
+
+/**
+ * Resolve a local coordinate outside one axial region into the configured
+ * neighboring region that owns the exact same global simulation cell.
+ *
+ * The internal cell-step direction and the macro-region direction are not
+ * interchangeable along slanted edges. Resolving through `globalCellOrigin`
+ * avoids teleporting a crossing onto a merely corresponding boundary slot.
+ */
+export function configuredRegionCellTransition(
+  regionIds: readonly string[],
+  sourceRegionId: string,
+  desiredPosition: HexGridPosition,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionCellTransition | undefined {
+  const source = regionAxialCoordinate(sourceRegionId);
+  if (source === undefined) return undefined;
+  const indexById = new Map(regionIds.map((regionId, index) => [regionId, index] as const));
+  if (!indexById.has(sourceRegionId)) return undefined;
+  if (!Number.isSafeInteger(desiredPosition.x) || !Number.isSafeInteger(desiredPosition.y)) return undefined;
+
+  const safeWidth = Number.isSafeInteger(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
+  const safeHeight = Number.isSafeInteger(height) && height > 0 ? height : TARGET_WORLD_HEIGHT;
+  const extent = { width: safeWidth, height: safeHeight };
+  if (isHexGridCell(extent, desiredPosition)) return undefined;
+
+  const sourceOrigin = projectRegionGlobalCellOrigin(source, safeWidth, safeHeight);
+  const globalPosition = {
+    x: sourceOrigin.x + desiredPosition.x,
+    y: sourceOrigin.y + desiredPosition.y,
+  };
+
+  let resolved: RegionCellTransition | undefined;
+  for (const direction of HEX_DIRECTIONS) {
+    const targetCoordinate = hexNeighborCoordinate(source, direction);
+    const targetRegionId = configuredRegionIdAtCoordinate(targetCoordinate, indexById);
+    if (targetRegionId === undefined) continue;
+    const targetOrigin = projectRegionGlobalCellOrigin(targetCoordinate, safeWidth, safeHeight);
+    const targetPosition = {
+      x: globalPosition.x - targetOrigin.x,
+      y: globalPosition.y - targetOrigin.y,
+    };
+    if (!isHexGridCell(extent, targetPosition)) continue;
+    if (resolved !== undefined) {
+      throw new Error("global cell is owned by multiple configured neighboring regions");
+    }
+    resolved = { direction, targetRegionId, targetPosition };
+  }
+  return resolved;
 }
 
 /**

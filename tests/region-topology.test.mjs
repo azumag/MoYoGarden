@@ -9,6 +9,7 @@ import {
   parseAxialRegionId,
   projectHexCoordinate,
   projectPhysicalRegionOrigin,
+  configuredRegionCellTransition,
   configuredRegionNeighborId,
   regionAxialCoordinate,
   regionHexTopology,
@@ -270,5 +271,66 @@ test("configured region neighbor lookup uses axial identity without rebuilding f
     configuredRegionNeighborId(["region-a", "region-b"], "region-a", "east"),
     "region-b",
     "unknown historical ids retain the legacy ring fallback",
+  );
+});
+
+test("global cell ownership resolves every one-step boundary crossing without teleporting", () => {
+  const extent = { width: 40, height: 24 };
+  const centerId = axialRegionId({ q: 0, r: 0 });
+  const regionIds = [
+    centerId,
+    ...HEX_DIRECTIONS.map((direction) => axialRegionNeighborId(centerId, direction)),
+  ];
+  assert.equal(regionIds.every(Boolean), true);
+
+  const sourceOrigin = regionGlobalCellOrigin(centerId, extent.width, extent.height);
+  assert.ok(sourceOrigin);
+  let crossingCount = 0;
+  let redirectedCount = 0;
+
+  for (let y = 0; y < extent.height; y += 1) {
+    for (let x = 0; x < extent.width; x += 1) {
+      const source = { x, y };
+      if (!isHexGridCell(extent, source)) continue;
+      for (const localDirection of HEX_GRID_DIRECTIONS) {
+        const step = HEX_GRID_DIRECTION_STEPS[localDirection];
+        const desired = { x: x + step.x, y: y + step.y };
+        if (isHexGridCell(extent, desired)) continue;
+        crossingCount += 1;
+
+        const transition = configuredRegionCellTransition(
+          regionIds,
+          centerId,
+          desired,
+          extent.width,
+          extent.height,
+        );
+        assert.ok(transition, `${x},${y} ${localDirection} must have one configured owner`);
+        const targetOrigin = regionGlobalCellOrigin(transition.targetRegionId, extent.width, extent.height);
+        assert.ok(targetOrigin);
+        assert.equal(isHexGridCell(extent, transition.targetPosition), true);
+        assert.deepEqual(
+          {
+            x: targetOrigin.x + transition.targetPosition.x,
+            y: targetOrigin.y + transition.targetPosition.y,
+          },
+          { x: sourceOrigin.x + desired.x, y: sourceOrigin.y + desired.y },
+          "handoff target must preserve the exact global adjacent cell",
+        );
+        if (transition.direction !== localDirection) redirectedCount += 1;
+      }
+    }
+  }
+
+  assert.equal(crossingCount, 138);
+  assert.equal(redirectedCount, 66, "slanted macro ownership must not reuse the local step direction");
+
+  assert.deepEqual(
+    configuredRegionCellTransition(regionIds, centerId, { x: 30, y: 12 }, 40, 24),
+    {
+      direction: "southEast",
+      targetRegionId: axialRegionId({ q: 0, r: 1 }),
+      targetPosition: { x: 19, y: 0 },
+    },
   );
 });
