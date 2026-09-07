@@ -205,15 +205,26 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async shortenAlarmForActivity(): Promise<void> {
     const scheduled = await this.activityState.storage.getAlarm();
-    if (scheduled === null) return;
     const desired = Date.now() + activityDelayMs(this.activityTickMs, this.activityTier());
-    if (scheduled > desired) await this.activityState.storage.setAlarm(desired);
+    if (scheduled === null || scheduled > desired) {
+      await this.activityState.storage.setAlarm(desired);
+    }
   }
 
   private async applyAlarmTierAfterTick(): Promise<void> {
     if ((await this.activityState.storage.getAlarm()) === null) return;
+    const now = Date.now();
+    const tier = this.activityTier(now);
+    if (tier === "cold" && this.virtualCatchUpPlan(now).dueTicks === 0) {
+      // Once a cold region has caught up to wall time, keeping a periodic Alarm
+      // buys no continuity: lastSimulatedAt is enough to reconstruct elapsed
+      // virtual time on the next warm/direct access. Removing the Alarm lets the
+      // Durable Object genuinely hibernate instead of polling every 10 minutes.
+      await this.activityState.storage.deleteAlarm();
+      return;
+    }
     await this.activityState.storage.setAlarm(
-      Date.now() + activityDelayMs(this.activityTickMs, this.activityTier()),
+      now + activityDelayMs(this.activityTickMs, tier),
     );
   }
 
@@ -348,10 +359,12 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       const payload = await response.json() as unknown;
       if (!isRecord(payload)) return response;
       const tier = this.activityTier();
+      const alarmScheduled = (await this.activityState.storage.getAlarm()) !== null;
       return json({
         ...payload,
         effectiveTickMs: activityDelayMs(this.activityTickMs, tier),
         tickMode: tier,
+        deepIdle: tier === "cold" && !alarmScheduled,
       });
     }
     return response;

@@ -284,9 +284,10 @@ export class RegionDurableObject {
       }
 
       if (this.assigned && migratedTerrainFrame) await this.persist();
-      if (this.assigned && !this.paused && (await this.ctx.storage.getAlarm()) === null) {
-        await this.scheduleNextTick();
-      }
+      // An assigned persisted region with no Alarm is intentionally allowed to
+      // remain unloaded. Direct/warm traffic re-arms it through the activity
+      // path, while health checks and internal halo reads must not resurrect an
+      // otherwise deep-idle Durable Object.
     });
   }
 

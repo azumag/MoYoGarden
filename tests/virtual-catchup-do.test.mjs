@@ -15,7 +15,7 @@ class MemoryStorage {
 }
 
 class MemoryState {
-  constructor() { this.storage = new MemoryStorage(); this.sockets = []; this.ready = Promise.resolve(); }
+  constructor(storage = new MemoryStorage()) { this.storage = storage; this.sockets = []; this.ready = Promise.resolve(); }
   blockConcurrencyWhile(callback) { this.ready = callback(); return this.ready; }
   acceptWebSocket(socket) { this.sockets.push(socket); }
   getWebSockets() { return [...this.sockets]; }
@@ -65,8 +65,8 @@ test("cold alarm catches up bounded virtual ticks without skipping simulation ca
     assert.equal(health.virtualTicksRunnable, 0);
     assert.equal(
       alarmSetsAfterCatchUp,
-      2,
-      "catch-up should reschedule only on the final virtual tick (base + activity tier)",
+      1,
+      "catch-up should only perform the final base reschedule before cold deep-idle removes it",
     );
   } finally {
     Date.now = originalNow;
@@ -96,6 +96,45 @@ test("capped catch-up preserves remaining debt and schedules a prompt retry", as
     assert.equal(health.virtualTicksRunnable, 60);
     assert.equal(health.virtualTicksCapped, true);
     assert.equal(ctx.storage.alarm, now + 10_000, "remaining debt should retry at base tick cadence");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("caught-up cold regions deep-idle without an alarm and warm access wakes them", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_003_000_000;
+  Date.now = () => now;
+  try {
+    const ctx = new MemoryState();
+    const object = new RegionDurableObject(ctx, env);
+    await ctx.ready;
+    await object.fetch(request("/api/world/snapshot"));
+
+    now += 600_000;
+    await object.alarm();
+    assert.equal(ctx.storage.alarm, null, "caught-up cold regions should stop scheduling alarms");
+
+    const coldHealth = await (await object.fetch(request("/api/health"))).json();
+    assert.equal(coldHealth.tickMode, "cold");
+    assert.equal(coldHealth.deepIdle, true);
+    assert.equal(ctx.storage.alarm, null, "monitoring must not wake a deep-idle region");
+
+    const restoredCtx = new MemoryState(ctx.storage);
+    const restored = new RegionDurableObject(restoredCtx, env);
+    await restoredCtx.ready;
+    assert.equal(restoredCtx.storage.alarm, null, "rehydration must preserve intentional deep-idle");
+
+    await restored.fetch(new Request("https://moyo.example/api/world/snapshot", {
+      headers: {
+        "x-moyo-region-internal": "garden-test",
+        "x-moyo-prefetch": "1",
+      },
+    }));
+    assert.equal(restoredCtx.storage.alarm, now + 60_000, "warm prefetch should re-arm the region");
+    const warmHealth = await (await restored.fetch(request("/api/health"))).json();
+    assert.equal(warmHealth.tickMode, "warm");
+    assert.equal(warmHealth.deepIdle, false);
   } finally {
     Date.now = originalNow;
   }

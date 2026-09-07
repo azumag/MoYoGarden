@@ -62,7 +62,9 @@ test("production region activity tiers map direct, hex-window prefetch, and cold
   assert.equal(coldHealth.effectiveTickMs, 600000);
 
   await object.alarm();
-  assertAlarmNear(ctx.storage.alarm, 600000);
+  assert.equal(ctx.storage.alarm, null, "caught-up cold regions should deep-idle without another alarm");
+  const deepIdleHealth = await (await object.fetch(request("/api/health"))).json();
+  assert.equal(deepIdleHealth.deepIdle, true);
 
   await object.fetch(request("/api/world/snapshot", { headers: { "x-moyo-prefetch": "1" } }));
   const warmHealth = await (await object.fetch(request("/api/health"))).json();
