@@ -239,9 +239,6 @@ function maybeWarmRegionAhead(view) {
 function beginRegionRebase(view, transition) {
   if (rebaseInFlight || !transition?.regionId || transition.regionId === view.state?.regionId) return;
   const select = document.querySelector("#region-select");
-  const reconnect = document.querySelector("#reconnect-button");
-  if (!(select instanceof HTMLSelectElement) || !(reconnect instanceof HTMLButtonElement)) return;
-  if (![...select.options].some((option) => option.value === transition.regionId)) return;
 
   pendingRebase = {
     fromRegion: view.state.regionId,
@@ -251,10 +248,22 @@ function beginRegionRebase(view, transition) {
     expiresAt: Date.now() + REBASE_TIMEOUT_MS,
   };
   rebaseInFlight = true;
-  select.value = transition.regionId;
-  reconnect.click();
+  if (select instanceof HTMLSelectElement) select.value = transition.regionId;
+  window.dispatchEvent(new CustomEvent("moyo:region-transition", {
+    detail: {
+      regionId: transition.regionId,
+      fromRegion: view.state.regionId,
+      offsetX: transition.offsetX,
+      offsetZ: transition.offsetZ,
+    },
+  }));
   pendingRebaseTimer = setTimeout(clearPendingRebase, REBASE_TIMEOUT_MS);
 }
+
+window.addEventListener("moyo:region-transition-failed", (event) => {
+  if (!pendingRebase || pendingRebase.toRegion !== event.detail?.regionId) return;
+  clearPendingRebase();
+});
 
 function maybeRebase(view) {
   if (rebaseInFlight || !view.state?.regionId) return;

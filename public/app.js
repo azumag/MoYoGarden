@@ -258,8 +258,8 @@ function buildNeighborPreview(payload) {
   updateRenderStatus();
 }
 
-async function loadTerrainWindow() {
-  if (!app.state || (terrainWindowCenter === app.region && neighborPreviewRoot)) return;
+async function loadTerrainWindow(force = false) {
+  if (!app.state || (!force && terrainWindowCenter === app.region && neighborPreviewRoot)) return;
   const requestedRegion = app.region;
   try {
     const payload = await requestJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000);
@@ -464,6 +464,76 @@ async function connect() {
     if (location.protocol !== "file:") app.reconnectTimer = setTimeout(connect, 6_000);
   }
 }
+
+async function transitionRegion(regionId) {
+  const targetRegion = typeof regionId === "string" ? regionId.trim() : "";
+  if (!targetRegion || targetRegion === app.region) return;
+
+  const previousRegion = app.region;
+  const cachedTerrainWindow = terrainWindowPayload;
+  const previousSocket = app.socket;
+  app.socket = null;
+  previousSocket?.close();
+  clearInterval(app.pollTimer);
+  clearTimeout(app.reconnectTimer);
+  app.region = targetRegion;
+  setConnection("", "境界同期中");
+
+  try {
+    const [windowPayload, health] = await Promise.all([
+      requestJson("/api/world/window?radius=1&live=1", {}, 10_000),
+      requestJson("/api/health"),
+    ]);
+    if (app.region !== targetRegion) return;
+
+    const chunks = Array.isArray(windowPayload?.chunks) ? windowPayload.chunks : [];
+    const center = chunks.find((chunk) =>
+      chunk?.regionId === targetRegion
+      && chunk?.state?.tiles
+      && chunk?.state?.agents
+      && chunk?.state?.structures
+    );
+    if (!center) throw new Error(`live window did not include full center ${targetRegion}`);
+
+    app.regions = chunks.map((chunk) => chunk?.regionId).filter(Boolean);
+    populateRegions();
+    liveNeighborSimulation?.syncWindow(
+      windowPayload,
+      targetRegion,
+      Number(health?.tickMs) || app.tickMs,
+    );
+    applyEnvelope({ state: center.state, paused: health?.paused, tickMs: health?.tickMs });
+
+    if (cachedTerrainWindow?.chunks?.some((chunk) => chunk?.regionId === targetRegion)) {
+      terrainWindowPayload = cachedTerrainWindow;
+      buildNeighborPreview(terrainWindowPayload);
+      terrainWindowCenter = targetRegion;
+      neighborTerrainUpdatedAt = Date.now();
+    } else {
+      terrainWindowCenter = undefined;
+      terrainWindowPayload = undefined;
+      neighborTerrainUpdatedAt = 0;
+    }
+
+    startRegionWindowRefresh();
+    connectSocket();
+    void loadTerrainWindow(true);
+  } catch (error) {
+    if (app.region !== targetRegion) return;
+    app.region = previousRegion;
+    populateRegions();
+    setConnection("offline", "境界同期を再試行");
+    window.dispatchEvent(new CustomEvent("moyo:region-transition-failed", {
+      detail: { regionId: targetRegion },
+    }));
+    connectSocket();
+    toast(`リージョン移動を再同期します: ${error.message}`, true);
+  }
+}
+
+window.addEventListener("moyo:region-transition", (event) => {
+  void transitionRegion(event.detail?.regionId);
+});
 
 async function loadHighResolutionModels() {
   const result = await models.load({
