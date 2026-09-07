@@ -212,3 +212,14 @@ test("boundary handoff follows the expedition's active neighbor claim at a multi
   assert.equal(plan.neighborRegionId, "garden-3");
   assert.equal(plan.claimId, claim.claimId);
 });
+
+for (const reason of ["low energy", "full inventory"]) {
+  test(`boundary autonomy does not cross or fetch halo with ${reason}`, () => {
+    const { state, agent, halo } = stateWithBoundaryWoodIntent();
+    for (const other of state.agents) other.autonomy = other.id === agent.id;
+    if (reason === "low energy") agent.energy = 18;
+    else agent.inventory.wood = agent.capacity;
+    assert.equal(planAutonomousHaloHandoff(state, halo), undefined);
+    assert.deepEqual(autonomyHaloPlanningDirections(state), []);
+  });
+}

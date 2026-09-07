@@ -235,3 +235,12 @@ test("interior autonomy gives the single travel slot to the most efficient eligi
     "equal expedition costs should retain a deterministic agent-id tie break",
   );
 });
+
+for (const reason of ["low energy", "full inventory"]) {
+  test(`interior autonomy skips scouting with ${reason}`, () => {
+    const { state, agent } = depletedInteriorWoodcutter();
+    if (reason === "low energy") agent.energy = 18;
+    else agent.inventory.wood = agent.capacity;
+    assert.equal(shouldScoutAutonomyHalo(state), false);
+  });
+}

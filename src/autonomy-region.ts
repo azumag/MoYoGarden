@@ -207,12 +207,13 @@ function hasActiveFactionStructure(state: WorldState, factionId: string): boolea
 }
 
 function resourceIntent(state: WorldState, agent: Agent): ResourceKind | undefined {
+  // Existing gather tasks must obey the same safety gates as idle workers.
+  if (agent.energy <= LOW_ENERGY_THRESHOLD || remainingInventoryCapacity(agent) <= 0) return undefined;
   if (agent.task !== undefined) {
     return agent.task.source === "autonomy" && agent.task.type === "gather"
       ? agent.task.resource
       : undefined;
   }
-  if (agent.energy <= LOW_ENERGY_THRESHOLD) return undefined;
   if (
     hasActiveFactionStructure(state, agent.factionId) &&
     inventoryAmount(agent) >= Math.min(6, agent.capacity)
