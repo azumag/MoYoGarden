@@ -566,26 +566,6 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return this.autonomyEnv.REGIONS.get(this.autonomyEnv.REGIONS.idFromName(regionId));
   }
 
-  private async fetchAutonomyNeighborEdge(
-    neighborRegionId: string,
-    direction: HexGridDirection,
-  ): Promise<HexHaloEdgeSnapshot | undefined> {
-    const url = new URL(`https://moyo.internal${INTERNAL_EDGE_PATH}`);
-    url.searchParams.set("direction", direction);
-    try {
-      const response = await this.autonomyStub(neighborRegionId).fetch(new Request(url, {
-        method: "GET",
-        headers: { "x-moyo-region-internal": neighborRegionId },
-      }));
-      if (!response.ok) return undefined;
-      const value = await response.json() as unknown;
-      return isEdgeSnapshot(value) ? value : undefined;
-    } catch (error) {
-      console.debug("MoYoGarden autonomy halo edge unavailable", neighborRegionId, direction, error);
-      return undefined;
-    }
-  }
-
   private async materializeAutonomyHalo(
     state: WorldState,
     directions: readonly HexGridDirection[],
@@ -608,7 +588,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const edges = (
       await Promise.all(
         [...requested.values()].map(({ regionId, direction }) =>
-          this.fetchAutonomyNeighborEdge(regionId, direction)
+          this.fetchNeighborEdge(regionId, direction)
         ),
       )
     ).filter((value): value is HexHaloEdgeSnapshot => value !== undefined);
@@ -1142,14 +1122,19 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   }
 
   private async runSingleAlarmTick(): Promise<void> {
-    const before = runtimeAccess(this).runtime.snapshot();
-    await this.resumeOrPlanAutonomousHandoff(before);
-    const simulationBefore = runtimeAccess(this).runtime.snapshot();
-    await super.alarm();
-    await this.reconcileArrivalClaims(
-      simulationBefore,
-      runtimeAccess(this).runtime.snapshot(),
-    );
+    const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
+    try {
+      const before = runtimeAccess(this).runtime.snapshot();
+      await this.resumeOrPlanAutonomousHandoff(before);
+      const simulationBefore = runtimeAccess(this).runtime.snapshot();
+      await super.alarm();
+      await this.reconcileArrivalClaims(
+        simulationBefore,
+        runtimeAccess(this).runtime.snapshot(),
+      );
+    } finally {
+      this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
+    }
   }
 
   override async alarm(): Promise<void> {

@@ -198,3 +198,25 @@ for (const mode of ["transport", "malformed"]) {
     );
   });
 }
+
+test("one simulation tick shares neighbor edge snapshots between autonomy and environmental halo", async () => {
+  const { env, source } = await activeLegacyAutonomyScenario();
+  const state = source.object.runtime.snapshot();
+  state.tick = 59;
+  source.object.runtime = new WorldRuntime({ state });
+  await source.object.persist();
+  env.REGIONS.edgeFetches.length = 0;
+
+  await source.object.alarm();
+
+  assert.equal(
+    env.REGIONS.edgeFetches.length,
+    6,
+    "autonomy and environmental regrowth should share the same six bounded edge snapshots within one simulation tick",
+  );
+  assert.equal(
+    new Set(env.REGIONS.edgeFetches.map(({ regionId, direction }) => `${regionId}:${direction}`)).size,
+    6,
+    "each neighbor edge should be fetched at most once per simulation tick",
+  );
+});

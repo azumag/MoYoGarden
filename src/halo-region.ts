@@ -158,6 +158,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   private readonly activityTickMs: number;
   private lastDirectActivityAt = 0;
   private lastWarmActivityAt = 0;
+  private haloEdgeReadCache: Map<string, Promise<HexHaloEdgeSnapshot | undefined>> | undefined;
 
   constructor(
     private readonly activityState: DurableObjectState,
@@ -270,7 +271,29 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     return this.haloEnv.REGIONS.get(this.haloEnv.REGIONS.idFromName(regionId));
   }
 
-  private async fetchNeighborEdge(
+  protected beginHaloEdgeReadBatch(): boolean {
+    if (this.haloEdgeReadCache !== undefined) return false;
+    this.haloEdgeReadCache = new Map();
+    return true;
+  }
+
+  protected endHaloEdgeReadBatch(owner: boolean): void {
+    if (owner) this.haloEdgeReadCache = undefined;
+  }
+
+  protected fetchNeighborEdge(
+    neighborRegionId: string,
+    direction: HexGridDirection,
+  ): Promise<HexHaloEdgeSnapshot | undefined> {
+    const cacheKey = `${neighborRegionId}:${direction}`;
+    const cached = this.haloEdgeReadCache?.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const pending = this.fetchNeighborEdgeUncached(neighborRegionId, direction);
+    this.haloEdgeReadCache?.set(cacheKey, pending);
+    return pending;
+  }
+
+  private async fetchNeighborEdgeUncached(
     neighborRegionId: string,
     direction: HexGridDirection,
   ): Promise<HexHaloEdgeSnapshot | undefined> {
@@ -395,29 +418,34 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   override async alarm(): Promise<void> {
-    const access = runtimeAccess(this);
-    const before = access.runtime.snapshot();
-    const halo = shouldMaterializeHaloForRegrowth(before, before.tick)
-      ? (await this.materializeHaloForState(before)).halo
-      : [];
-    await super.alarm();
+    const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
+    try {
+      const access = runtimeAccess(this);
+      const before = access.runtime.snapshot();
+      const halo = shouldMaterializeHaloForRegrowth(before, before.tick)
+        ? (await this.materializeHaloForState(before)).halo
+        : [];
+      await super.alarm();
 
-    const after = access.runtime.snapshot();
-    const grown = applyHaloRegrowthCompensation(
-      before,
-      after,
-      halo,
-      HALO_REGROWTH_INTERVAL,
-      this.haloEnvironmentFrame(after),
-    );
-    if (grown > 0) {
-      access.runtime = new WorldRuntime({
-        state: after,
-        pendingCommands: access.runtime.pendingCommands(),
-      });
-      await access.persist();
-      access.broadcastSnapshot();
+      const after = access.runtime.snapshot();
+      const grown = applyHaloRegrowthCompensation(
+        before,
+        after,
+        halo,
+        HALO_REGROWTH_INTERVAL,
+        this.haloEnvironmentFrame(after),
+      );
+      if (grown > 0) {
+        access.runtime = new WorldRuntime({
+          state: after,
+          pendingCommands: access.runtime.pendingCommands(),
+        });
+        await access.persist();
+        access.broadcastSnapshot();
+      }
+      if (!this.isAlarmRescheduleDeferred()) await this.applyAlarmTierAfterTick();
+    } finally {
+      this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
     }
-    if (!this.isAlarmRescheduleDeferred()) await this.applyAlarmTierAfterTick();
   }
 }
