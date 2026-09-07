@@ -14,13 +14,17 @@ import {
 } from "./agent-ownership.js";
 import {
   HEX_GRID_DIRECTIONS,
+  hexGridCrossingDirection,
   hexGridDistance,
   hexGridHandoffTarget,
   nearestHexGridCell,
   type HexGridDirection,
 } from "./hex-grid.js";
 import type { GridPosition } from "./protocol.js";
-import { configuredRegionNeighborId } from "./region-topology.js";
+import {
+  configuredRegionCellTransition,
+  configuredRegionNeighborId,
+} from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { RegionDurableObject as BaseRegionDurableObject } from "./worker.js";
 import { isPassable } from "./world.js";
@@ -239,6 +243,7 @@ export class RegionDurableObject extends BaseRegionDurableObject {
     agentId: string,
     direction: HexGridDirection,
     transferId: string,
+    desiredPosition?: GridPosition,
   ): Promise<{ envelope?: AgentHandoffEnvelope; error?: Response }> {
     const access = baseAccess(this);
     const state = access.runtime.snapshot();
@@ -248,20 +253,43 @@ export class RegionDurableObject extends BaseRegionDurableObject {
     }
 
     const sourcePosition = detached.value.agent.position;
-    const mappedTarget = hexGridHandoffTarget(state, sourcePosition, direction);
-    if (mappedTarget === undefined) {
-      return { error: json({ error: "agent is not on the requested hex boundary" }, 409) };
-    }
+    const regionIds = configuredRegionIds(this.handoffEnv);
+    let targetRegionId: string | undefined;
+    let mappedTarget: GridPosition | undefined;
+    let handoffDirection = direction;
 
-    const targetRegionId = configuredRegionNeighborId(
-      configuredRegionIds(this.handoffEnv),
-      state.regionId,
-      direction,
-      state.width,
-      state.height,
-    );
-    if (targetRegionId === undefined) {
-      return { error: json({ error: "no neighboring region in that direction" }, 409) };
+    if (desiredPosition !== undefined) {
+      if (hexGridCrossingDirection(state, sourcePosition, desiredPosition) !== direction) {
+        return { error: json({ error: "desired handoff position is not the requested one-cell crossing" }, 409) };
+      }
+      const transition = configuredRegionCellTransition(
+        regionIds,
+        state.regionId,
+        desiredPosition,
+        state.width,
+        state.height,
+      );
+      if (transition === undefined) {
+        return { error: json({ error: "exact adjacent cell owner is not configured" }, 409) };
+      }
+      targetRegionId = transition.targetRegionId;
+      mappedTarget = transition.targetPosition;
+      handoffDirection = transition.direction;
+    } else {
+      mappedTarget = hexGridHandoffTarget(state, sourcePosition, direction);
+      if (mappedTarget === undefined) {
+        return { error: json({ error: "agent is not on the requested hex boundary" }, 409) };
+      }
+      targetRegionId = configuredRegionNeighborId(
+        regionIds,
+        state.regionId,
+        direction,
+        state.width,
+        state.height,
+      );
+      if (targetRegionId === undefined) {
+        return { error: json({ error: "no neighboring region in that direction" }, 409) };
+      }
     }
 
     const resolved = await this.callTarget(targetRegionId, `${INTERNAL_PREFIX}resolve`, {
@@ -277,7 +305,7 @@ export class RegionDurableObject extends BaseRegionDurableObject {
         transferId,
         fromRegionId: state.regionId,
         toRegionId: targetRegionId,
-        direction,
+        direction: handoffDirection,
         sourcePosition: { ...sourcePosition },
         targetPosition,
         agent: structuredClone(detached.value.agent),
@@ -356,8 +384,14 @@ export class RegionDurableObject extends BaseRegionDurableObject {
     if (typeof body.agentId !== "string") return json({ error: "agentId is required" }, 400);
     const direction = directionValue(body.direction);
     if (direction === undefined) return json({ error: "valid hex direction is required" }, 400);
+    const desiredPosition = body.desiredPosition === undefined
+      ? undefined
+      : parsePosition(body.desiredPosition);
+    if (body.desiredPosition !== undefined && desiredPosition === undefined) {
+      return json({ error: "desiredPosition must contain integer x/y coordinates" }, 400);
+    }
 
-    const created = await this.createEnvelope(body.agentId, direction, transferId);
+    const created = await this.createEnvelope(body.agentId, direction, transferId, desiredPosition);
     if (created.error !== undefined || created.envelope === undefined) {
       return created.error ?? json({ error: "could not create handoff" }, 409);
     }

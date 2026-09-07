@@ -139,6 +139,102 @@ test("one-step move across a hex side becomes a normal command-driven region han
   assert.equal(afterRetry.agents.filter((agent) => agent.id === globalId).length, 1);
 });
 
+test("command-driven crossing follows the exact global cell owner at a slanted seam", async () => {
+  const env = environment();
+  const initial = await call(env, "/api/world/snapshot?region=garden-1");
+  assert.equal(initial.response.status, 200);
+  const sourceEntry = env.REGIONS.entries.get("garden-1");
+  assert.ok(sourceEntry);
+  await sourceEntry.state.ready;
+  const state = sourceEntry.object.runtime.snapshot();
+  const agent = state.agents[0];
+  assert.ok(agent);
+  const cell = hexGridBoundaryCells(state, "northEast")
+    .find((position) => position.x === 30 && position.y === 1);
+  assert.deepEqual(cell, { x: 30, y: 1 });
+  const sourceTile = state.tiles[cell.y * state.width + cell.x];
+  assert.ok(sourceTile);
+  sourceTile.terrain = "plain";
+  delete sourceTile.resource;
+  agent.position = { ...cell };
+  agent.autonomy = false;
+  delete agent.task;
+  sourceEntry.object.runtime = new WorldRuntime({ state });
+  await sourceEntry.object.persist();
+
+  const targetEntryInit = await call(env, "/api/world/snapshot?region=garden-2");
+  assert.equal(targetEntryInit.response.status, 200);
+  const targetEntry = env.REGIONS.entries.get("garden-2");
+  assert.ok(targetEntry);
+  await targetEntry.state.ready;
+  const targetState = targetEntry.object.runtime.snapshot();
+  const exactEntry = { x: 8, y: 11 };
+  const targetTile = targetState.tiles[exactEntry.y * targetState.width + exactEntry.x];
+  assert.ok(targetTile);
+  targetTile.terrain = "plain";
+  delete targetTile.resource;
+  targetEntry.object.runtime = new WorldRuntime({ state: targetState });
+  await targetEntry.object.persist();
+
+  const step = HEX_GRID_DIRECTION_STEPS.northEast;
+  const desired = { x: cell.x + step.x, y: cell.y + step.y };
+  assert.deepEqual(desired, { x: 31, y: 0 });
+  const moved = await call(
+    env,
+    `/api/agents/${encodeURIComponent(agent.id)}/commands?region=garden-1`,
+    commandInit({ id: "move-slanted-owner", type: "move", target: desired }),
+  );
+
+  assert.equal(moved.response.status, 202);
+  assert.equal(moved.body.handoff.toRegionId, "garden-2");
+  const arrived = (await call(env, "/api/world/snapshot?region=garden-2")).body.agents
+    .find((entry) => entry.id === globalHandoffAgentId(agent.id, "garden-1"));
+  assert.ok(arrived);
+  assert.deepEqual(arrived.position, exactEntry);
+  assert.equal(env.REGIONS.entries.has("garden-3"), false);
+});
+
+test("command-driven crossing fails closed when the exact global owner is not configured", async () => {
+  const env = environment();
+  const initial = await call(env, "/api/world/snapshot?region=garden-1");
+  assert.equal(initial.response.status, 200);
+  const entry = env.REGIONS.entries.get("garden-1");
+  assert.ok(entry);
+  await entry.state.ready;
+  const state = entry.object.runtime.snapshot();
+  const agent = state.agents[0];
+  assert.ok(agent);
+  const cell = hexGridBoundaryCells(state, "east")
+    .find((position) => position.x === 29 && position.y === 12);
+  assert.deepEqual(cell, { x: 29, y: 12 });
+  const tile = state.tiles[cell.y * state.width + cell.x];
+  assert.ok(tile);
+  tile.terrain = "plain";
+  delete tile.resource;
+  agent.position = { ...cell };
+  agent.autonomy = false;
+  delete agent.task;
+  entry.object.runtime = new WorldRuntime({ state });
+  await entry.object.persist();
+
+  const step = HEX_GRID_DIRECTION_STEPS.east;
+  const result = await call(
+    env,
+    `/api/agents/${encodeURIComponent(agent.id)}/commands?region=garden-1`,
+    commandInit({
+      id: "move-unconfigured-owner",
+      type: "move",
+      target: { x: cell.x + step.x, y: cell.y + step.y },
+    }),
+  );
+
+  assert.equal(result.response.status, 409);
+  assert.match(result.body.error, /exact adjacent cell owner is not configured/);
+  const source = (await call(env, "/api/world/snapshot?region=garden-1")).body;
+  assert.equal(source.agents.some((candidate) => candidate.id === agent.id), true);
+  assert.equal(env.REGIONS.entries.has("garden-2"), false);
+});
+
 test("cross-region move requires a stable explicit command id", async () => {
   const env = environment();
   const { agentId, cell } = await placeBoundaryAgent(env, "northEast");

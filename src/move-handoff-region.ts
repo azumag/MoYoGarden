@@ -190,7 +190,7 @@ export class RegionDurableObject extends HandoffRegionDurableObject {
       request,
       commandId,
       state.tick,
-      { transferId, agentId, direction },
+      { transferId, agentId, direction, desiredPosition: target },
     );
   }
 
