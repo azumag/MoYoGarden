@@ -5,6 +5,7 @@ import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import {
   alignRegionBoundaryElevations,
   ensureWorldExtent,
+  initializeWorldTerrainFrame,
   sampleWorldConditions,
   TARGET_WORLD_HEIGHT,
   TARGET_WORLD_WIDTH,
@@ -56,6 +57,24 @@ test("legacy default worlds gain a deterministic hex-compatible frontier without
   assert.ok(frontier.every((tile) => Number.isFinite(tile.elevation)));
   assert.deepEqual(validateWorldState(legacy), []);
   assert.equal(ensureWorldExtent(legacy), false);
+});
+
+test("fresh global terrain frames ignore region-local seeds and preserve valid agent placement", () => {
+  const sharedSeed = 424242;
+  const origin = { x: 173, y: -91 };
+  const first = createInitialWorld({ seed: 111, width: 40, height: 24, regionId: "hex-q7-r-3" });
+  const second = createInitialWorld({ seed: 222, width: 40, height: 24, regionId: "hex-q7-r-3" });
+
+  initializeWorldTerrainFrame(first, sharedSeed, origin.x, origin.y);
+  initializeWorldTerrainFrame(second, sharedSeed, origin.x, origin.y);
+
+  assert.deepEqual(first.tiles, second.tiles);
+  assert.deepEqual(validateWorldState(first), []);
+  assert.deepEqual(validateWorldState(second), []);
+  assert.ok(first.agents.every((agent) => {
+    const tile = first.tiles[agent.position.y * first.width + agent.position.x];
+    return tile?.terrain !== "water";
+  }));
 });
 
 test("absolute environment sampling remains stable regardless of outer storage extent", () => {

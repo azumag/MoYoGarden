@@ -227,7 +227,7 @@ export function alignRegionBoundaryElevations(
   return changed;
 }
 
-function createFrontierTile(
+export function createGlobalTerrainTile(
   localX: number,
   localY: number,
   worldSeed: number,
@@ -297,6 +297,33 @@ function createFrontierTile(
   return tile;
 }
 
+/**
+ * Replace the terrain of a freshly-created region from the shared world seed
+ * and global axial cell frame. This is intentionally separate from
+ * `ensureWorldExtent`: persisted production regions keep their authored/history
+ * state, while never-visited canonical regions can be generated without a
+ * region-local terrain seed or a `{0,0}` origin fallback.
+ */
+export function initializeWorldTerrainFrame(
+  state: WorldState,
+  worldSeed: number,
+  originX: number,
+  originY: number,
+): void {
+  const tiles: Tile[] = [];
+  for (let y = 0; y < state.height; y += 1) {
+    for (let x = 0; x < state.width; x += 1) {
+      tiles.push(
+        isHexGridCell(state, { x, y })
+          ? createGlobalTerrainTile(x, y, worldSeed, originX, originY)
+          : { x, y, terrain: "water", elevation: 0 },
+      );
+    }
+  }
+  state.tiles = tiles;
+  migrateWorldToHexGrid(state);
+}
+
 export function ensureWorldExtent(
   state: WorldState,
   targetWidth = TARGET_WORLD_WIDTH,
@@ -325,7 +352,7 @@ export function ensureWorldExtent(
             continue;
           }
         }
-        tiles.push(createFrontierTile(x, y, worldSeed, originX, originY));
+        tiles.push(createGlobalTerrainTile(x, y, worldSeed, originX, originY));
       }
     }
 

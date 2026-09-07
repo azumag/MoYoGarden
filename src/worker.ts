@@ -11,10 +11,17 @@ import { createInitialWorld, validateWorldState } from "./world.js";
 import {
   alignRegionBoundaryElevations,
   ensureWorldExtent,
+  initializeWorldTerrainFrame,
   TARGET_WORLD_HEIGHT,
   TARGET_WORLD_WIDTH,
 } from "./world-scale.js";
-import { HEX_DIRECTIONS, regionHexTopology, regionHexWindow } from "./region-topology.js";
+import {
+  HEX_DIRECTIONS,
+  parseAxialRegionId,
+  regionGlobalCellOrigin,
+  regionHexTopology,
+  regionHexWindow,
+} from "./region-topology.js";
 
 interface Env {
   REGIONS: DurableObjectNamespace<RegionDurableObject>;
@@ -294,20 +301,33 @@ export class RegionDurableObject {
   private terrainFrame(regionId: string): {
     worldSeed: number;
     entry: RegionLayoutEntry | undefined;
+    origin: { x: number; y: number };
+    canonicalGlobalFrame: boolean;
   } {
     const worldSeed = integerValue(this.env.WORLD_SEED, 424_242, 1, 0x7fff_ffff);
     const entry = regionLayout(allowedRegions(this.env)).find((candidate) => candidate.id === regionId);
-    return { worldSeed, entry };
+    const canonicalGlobalFrame = parseAxialRegionId(regionId) !== undefined;
+    const globalOrigin = canonicalGlobalFrame
+      ? regionGlobalCellOrigin(regionId, TARGET_WORLD_WIDTH, TARGET_WORLD_HEIGHT)
+      : undefined;
+    return {
+      worldSeed,
+      entry,
+      origin: globalOrigin ?? entry?.origin ?? { x: 0, y: 0 },
+      canonicalGlobalFrame,
+    };
   }
 
-  private prepareRegionTerrain(state: WorldState): void {
-    const { worldSeed, entry } = this.terrainFrame(state.regionId);
-    const origin = entry?.origin ?? { x: 0, y: 0 };
+  private prepareRegionTerrain(state: WorldState, initializeFreshTerrain = false): void {
+    const { worldSeed, entry, origin, canonicalGlobalFrame } = this.terrainFrame(state.regionId);
     ensureWorldExtent(state, TARGET_WORLD_WIDTH, TARGET_WORLD_HEIGHT, {
       worldSeed,
       originX: origin.x,
       originY: origin.y,
     });
+    if (initializeFreshTerrain && canonicalGlobalFrame) {
+      initializeWorldTerrainFrame(state, worldSeed, origin.x, origin.y);
+    }
     if (entry !== undefined) {
       alignRegionBoundaryElevations(
         state,
@@ -327,7 +347,7 @@ export class RegionDurableObject {
     const baseSeed = integerValue(this.env.WORLD_SEED, 424_242, 1, 0x7fff_ffff);
     const seed = ((baseSeed ^ hashRegion(regionId)) & 0x7fff_ffff) || baseSeed;
     const state = createInitialWorld({ seed, regionId });
-    this.prepareRegionTerrain(state);
+    this.prepareRegionTerrain(state, true);
     return new WorldRuntime({ state });
   }
 
@@ -607,7 +627,7 @@ export class RegionDurableObject {
             ? Math.max(1, Math.min(0x7fff_ffff, rawSeed))
             : currentSeed;
           const resetState = this.runtime.reset(seed);
-          this.prepareRegionTerrain(resetState);
+          this.prepareRegionTerrain(resetState, true);
           this.runtime = new WorldRuntime({ state: resetState });
           const state = this.runtime.snapshot();
           this.lastSimulatedAt = Date.now();

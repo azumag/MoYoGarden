@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject, regionLayout, regionTickDelayMs, regionVirtualCatchUpPlan, regionWindow } from "../dist-ts/src/worker.js";
+import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
+import { regionGlobalCellOrigin } from "../dist-ts/src/region-topology.js";
+import { createGlobalTerrainTile } from "../dist-ts/src/world-scale.js";
 class MemoryStorage {
   constructor(){this.values=new Map();this.alarm=null;}
   async get(key){return structuredClone(this.values.get(key));}
@@ -24,6 +27,25 @@ test("canonical sparse region window follows encoded axial coordinates instead o
 test("scoped meta keeps region topology bounded to the requested axial window",async()=>{const center="hex-q10-r-4",far="hex-q100-r100";const neighbors=["hex-q11-r-4","hex-q10-r-3","hex-q9-r-3","hex-q9-r-4","hex-q10-r-5","hex-q11-r-5"];const ids=[center,far,...neighbors];const response=await worker.fetch(new Request(`https://moyo.example/api/meta?region=${center}&radius=1`),{REGION_IDS:ids.join(","),WORLD_SEED:"424242"});assert.equal(response.status,200);const payload=await response.json();assert.deepEqual(payload.regions,[center,...neighbors]);assert.deepEqual(payload.world.regionTopology.regions.map((entry)=>entry.id),[center,...neighbors]);assert.deepEqual(payload.world.regionLayout.map((entry)=>entry.id),[center,...neighbors]);});
 
 test("new regions persist a hex-compatible terrain frame without activating storage corners",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const state=await (await object.fetch(request("/api/world/snapshot"))).json();assert.equal(state.regionId,"garden-test");const north=state.tiles.find((tile)=>tile.x===19&&tile.y===0);assert.ok(north);assert.equal(state.tiles[0].terrain,"water");assert.equal(state.tiles[state.width-1].terrain,"water");assert.ok(state.agents.every((agent)=>agent.position.x>=0&&agent.position.y>=0&&agent.position.x<state.width&&agent.position.y<state.height));assert.equal(ctx.storage.values.get("region").terrainFrameVersion,1);});
+
+test("fresh canonical regions generate their full active terrain from the shared global cell frame",async()=>{
+  const regionId="hex-q7-r-3";
+  const canonicalEnv={...env,REGION_IDS:regionId};
+  const ctx=new MemoryState(),object=new RegionDurableObject(ctx,canonicalEnv);
+  await ctx.ready;
+  const headers=new Headers({"x-moyo-region-internal":regionId});
+  const state=await (await object.fetch(new Request("https://moyo.example/api/world/snapshot",{headers}))).json();
+  const origin=regionGlobalCellOrigin(regionId,state.width,state.height);
+  assert.ok(origin);
+  const active=state.tiles.filter((tile)=>isHexGridCell(state,tile));
+  assert.equal(active.length,397);
+  for(const tile of active){
+    const expected=createGlobalTerrainTile(tile.x,tile.y,424242,origin.x,origin.y);
+    assert.equal(tile.terrain,expected.terrain,`terrain mismatch at ${tile.x},${tile.y}`);
+    assert.equal(tile.elevation,expected.elevation,`elevation mismatch at ${tile.x},${tile.y}`);
+    assert.deepEqual(tile.resource,expected.resource,`resource mismatch at ${tile.x},${tile.y}`);
+  }
+});
 
 test("passive snapshot prefetch keeps an unloaded region on idle cadence",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const before=Date.now();const response=await object.fetch(request("/api/world/snapshot",{headers:{"x-moyo-prefetch":"1"}}));const state=await response.json();assert.equal(state.regionId,"garden-test");const health=await (await object.fetch(request("/api/health"))).json();assert.equal(health.tickMode,"idle");assert.equal(health.effectiveTickMs,60000);assert.ok(ctx.storage.alarm>=before+59000);assert.ok(ctx.storage.alarm<=before+61000);});
 
