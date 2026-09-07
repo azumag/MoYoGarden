@@ -22,8 +22,8 @@ import {
 } from "./hex-grid.js";
 import type { GridPosition } from "./protocol.js";
 import {
-  configuredRegionCellTransition,
   configuredRegionNeighborId,
+  regionCellTransition,
 } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { RegionDurableObject as BaseRegionDurableObject } from "./worker.js";
@@ -262,15 +262,14 @@ export class RegionDurableObject extends BaseRegionDurableObject {
       if (hexGridCrossingDirection(state, sourcePosition, desiredPosition) !== direction) {
         return { error: json({ error: "desired handoff position is not the requested one-cell crossing" }, 409) };
       }
-      const transition = configuredRegionCellTransition(
-        regionIds,
+      const transition = regionCellTransition(
         state.regionId,
         desiredPosition,
         state.width,
         state.height,
       );
       if (transition === undefined) {
-        return { error: json({ error: "exact adjacent cell owner is not configured" }, 409) };
+        return { error: json({ error: "exact adjacent cell owner could not be resolved" }, 409) };
       }
       targetRegionId = transition.targetRegionId;
       mappedTarget = transition.targetPosition;

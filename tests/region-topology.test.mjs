@@ -12,6 +12,7 @@ import {
   configuredRegionCellTransition,
   configuredRegionNeighborId,
   regionAxialCoordinate,
+  regionCellTransition,
   regionHexTopology,
   regionHexWindow,
   regionGlobalCellOrigin,
@@ -309,6 +310,25 @@ test("sparse canonical center remains addressable even when it is absent from RE
   assert.equal(entries.length, 7);
   assert.equal(entries[0].id, "hex-q0-r1");
   assert.equal(entries.some((entry) => entry.id === "garden-1"), true);
+});
+
+test("dynamic global cell ownership preserves persisted legacy aliases", () => {
+  assert.deepEqual(
+    regionCellTransition("garden-1", { x: 30, y: 12 }, 40, 24),
+    {
+      direction: "southEast",
+      targetRegionId: "hex-q0-r1",
+      targetPosition: { x: 19, y: 0 },
+    },
+  );
+  assert.deepEqual(
+    regionCellTransition("hex-q0-r1", { x: 19, y: -1 }, 40, 24),
+    {
+      direction: "northWest",
+      targetRegionId: "garden-1",
+      targetPosition: { x: 30, y: 11 },
+    },
+  );
 });
 
 test("global cell ownership resolves every one-step boundary crossing without teleporting", () => {

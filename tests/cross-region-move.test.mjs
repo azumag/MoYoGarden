@@ -194,7 +194,7 @@ test("command-driven crossing follows the exact global cell owner at a slanted s
   assert.equal(env.REGIONS.entries.has("garden-3"), false);
 });
 
-test("command-driven crossing fails closed when the exact global owner is not configured", async () => {
+test("command-driven crossing materializes the exact canonical owner when it is not configured", async () => {
   const env = environment();
   const initial = await call(env, "/api/world/snapshot?region=garden-1");
   assert.equal(initial.response.status, 200);
@@ -228,10 +228,17 @@ test("command-driven crossing fails closed when the exact global owner is not co
     }),
   );
 
-  assert.equal(result.response.status, 409);
-  assert.match(result.body.error, /exact adjacent cell owner is not configured/);
+  assert.equal(result.response.status, 202);
+  assert.equal(result.body.handoff.phase, "committed");
+  assert.equal(result.body.handoff.toRegionId, "hex-q0-r1");
   const source = (await call(env, "/api/world/snapshot?region=garden-1")).body;
-  assert.equal(source.agents.some((candidate) => candidate.id === agent.id), true);
+  assert.equal(source.agents.some((candidate) => candidate.id === agent.id), false);
+  const target = (await call(env, "/api/world/snapshot?region=hex-q0-r1")).body;
+  assert.equal(target.regionId, "hex-q0-r1");
+  assert.equal(
+    target.agents.some((candidate) => candidate.id === globalHandoffAgentId(agent.id, "garden-1")),
+    true,
+  );
   assert.equal(env.REGIONS.entries.has("garden-2"), false);
 });
 

@@ -373,6 +373,51 @@ export function configuredRegionNeighborId(
 }
 
 /**
+ * Resolve one exact adjacent global cell without requiring the target region to
+ * be present in `REGION_IDS`. The three persisted garden aliases remain the
+ * physical owners of their fixed axial coordinates; every other coordinate is
+ * routed to its deterministic canonical Durable Object name.
+ */
+export function regionCellTransition(
+  sourceRegionId: string,
+  desiredPosition: HexGridPosition,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionCellTransition | undefined {
+  const source = regionAxialCoordinate(sourceRegionId);
+  if (source === undefined) return undefined;
+  if (!Number.isSafeInteger(desiredPosition.x) || !Number.isSafeInteger(desiredPosition.y)) return undefined;
+
+  const safeWidth = Number.isSafeInteger(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
+  const safeHeight = Number.isSafeInteger(height) && height > 0 ? height : TARGET_WORLD_HEIGHT;
+  const extent = { width: safeWidth, height: safeHeight };
+  if (isHexGridCell(extent, desiredPosition)) return undefined;
+
+  const sourceOrigin = projectRegionGlobalCellOrigin(source, safeWidth, safeHeight);
+  const globalPosition = {
+    x: sourceOrigin.x + desiredPosition.x,
+    y: sourceOrigin.y + desiredPosition.y,
+  };
+
+  let resolved: RegionCellTransition | undefined;
+  for (const direction of HEX_DIRECTIONS) {
+    const targetCoordinate = hexNeighborCoordinate(source, direction);
+    const targetRegionId = legacyRegionIdAtCoordinate(targetCoordinate) ?? axialRegionId(targetCoordinate);
+    const targetOrigin = projectRegionGlobalCellOrigin(targetCoordinate, safeWidth, safeHeight);
+    const targetPosition = {
+      x: globalPosition.x - targetOrigin.x,
+      y: globalPosition.y - targetOrigin.y,
+    };
+    if (!isHexGridCell(extent, targetPosition)) continue;
+    if (resolved !== undefined) {
+      throw new Error("global cell is owned by multiple neighboring regions");
+    }
+    resolved = { direction, targetRegionId, targetPosition };
+  }
+  return resolved;
+}
+
+/**
  * Resolve a local coordinate outside one axial region into the configured
  * neighboring region that owns the exact same global simulation cell.
  *
