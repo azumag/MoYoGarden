@@ -82,6 +82,7 @@
   preload(`/client/hex-terrain-stitching.js?v=${VERSION}`);
   preload(`/client/agent-crowding.js?v=${VERSION}`);
   preload(`/client/decay-dressing.js?v=${VERSION}`);
+  preload(`/client/atmosphere.js?v=${VERSION}`);
   preload(`/app.js?v=${VERSION}`);
 
   const launch = async () => {
@@ -129,6 +130,12 @@
       await import(`/client/decay-dressing.js?v=${VERSION}`);
     } catch (error) {
       console.warn("MoYoGarden: decay dressing failed; continuing without ruined-world details", error);
+    }
+
+    try {
+      await import(`/client/atmosphere.js?v=${VERSION}`);
+    } catch (error) {
+      console.warn("MoYoGarden: atmosphere enhancement failed; keeping base materials", error);
     }
 
     const moduleScript = document.createElement("script");
