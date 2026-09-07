@@ -6,10 +6,10 @@ const appSource = await readFile(new URL("../public/app.js", import.meta.url), "
 const navigationSource = await readFile(new URL("../public/client/seamless-navigation.js", import.meta.url), "utf8");
 const previewSource = await readFile(new URL("../public/client/hex-neighbor-preview.js", import.meta.url), "utf8");
 
-test("browser topology consumers request metadata for the current radius-one hex window", () => {
+test("browser topology consumers scope metadata to their loaded hex windows", () => {
   assert.match(appSource, /regionMetaUrl\(app\.region/);
   assert.match(navigationSource, /regionMetaUrl\((?:requestedCenter|centerRegionId), 1\)/);
-  assert.match(previewSource, /regionMetaUrl\((?:requestedCenter|centerRegionId), 1\)/);
+  assert.match(previewSource, /regionMetaUrl\((?:requestedCenter|centerRegionId), 2\)/);
   assert.doesNotMatch(navigationSource, /fetch\(["'`]\/api\/meta["'`]/);
   assert.doesNotMatch(previewSource, /fetch\(["'`]\/api\/meta["'`]/);
 });

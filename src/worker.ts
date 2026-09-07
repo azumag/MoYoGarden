@@ -258,6 +258,22 @@ function parseBoundedInteger(value: string | null, fallback: number, min: number
   return Math.max(min, Math.min(max, parsed));
 }
 
+function terrainPreviewState(state: WorldState) {
+  return {
+    regionId: state.regionId,
+    width: state.width,
+    height: state.height,
+    tick: state.tick,
+    revision: state.revision,
+    tiles: state.tiles.map((tile) => ({
+      x: tile.x,
+      y: tile.y,
+      terrain: tile.terrain,
+      ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
+    })),
+  };
+}
+
 function eventPayload(state: WorldState, afterTick: number, limit: number) {
   return state.events.filter((event) => event.tick > afterTick).slice(-limit);
 }
@@ -744,13 +760,17 @@ export default {
       if (regionId === undefined) return json({ error: "unknown or disabled region" }, 404);
       const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
       const liveWindow = url.searchParams.get("live") === "1";
+      const terrainOnly = url.searchParams.get("terrain") === "1";
       const entries = sparseRegionWindow(regions, regionId, radius);
       const chunks = await Promise.all(entries.map(async (entry) => {
         const stub = env.REGIONS.get(env.REGIONS.idFromName(entry.id));
         const headers = new Headers(request.headers);
         headers.set("x-moyo-region-internal", entry.id);
-        if (!liveWindow && entry.id !== regionId) headers.set("x-moyo-prefetch", "1");
-        else headers.delete("x-moyo-prefetch");
+        if (terrainOnly || (!liveWindow && entry.id !== regionId)) {
+          headers.set("x-moyo-prefetch", "1");
+        } else {
+          headers.delete("x-moyo-prefetch");
+        }
         const snapshotUrl = new URL(request.url);
         snapshotUrl.pathname = "/api/world/snapshot";
         snapshotUrl.search = "";
@@ -767,7 +787,9 @@ export default {
           regionId: entry.id,
           origin: entry.origin,
           extent: entry.extent,
-          state: await response.json(),
+          state: terrainOnly
+            ? terrainPreviewState(await response.json() as WorldState)
+            : await response.json(),
         };
       }));
       return json({

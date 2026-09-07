@@ -22,7 +22,7 @@ function ensureTopology(centerRegionId) {
 
   const requestedCenter = centerRegionId;
   topologyRequestCenterRegionId = requestedCenter;
-  topologyRequest = fetch(regionMetaUrl(requestedCenter, 1), { cache: "no-store" })
+  topologyRequest = fetch(regionMetaUrl(requestedCenter, 2), { cache: "no-store" })
     .then(async (response) => {
       if (!response.ok) throw new Error(`meta HTTP ${response.status}`);
       const meta = await response.json();

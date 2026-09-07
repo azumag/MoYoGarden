@@ -209,3 +209,29 @@ test("live radius-one window promotes neighboring regions to active cadence", as
     assert.equal(health.effectiveTickMs, 10_000);
   }
 });
+
+
+test("terrain-only radius-two window stays passive and omits simulation objects", async () => {
+  const scoped = memoryNamespaceEnv({ REGION_IDS: "garden-1,garden-2,garden-3" });
+  const response = await worker.fetch(
+    new Request("https://moyo.example/api/world/window?region=garden-1&radius=2&terrain=1"),
+    scoped.env,
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.chunks.length, 19);
+  for (const chunk of payload.chunks) {
+    assert.ok(Array.isArray(chunk.state?.tiles));
+    assert.equal("agents" in chunk.state, false);
+    assert.equal("structures" in chunk.state, false);
+    for (const tile of chunk.state.tiles) {
+      assert.equal("resource" in tile, false);
+    }
+    if (chunk.regionId === "garden-1") continue;
+    const entry = scoped.entries.get(chunk.regionId);
+    const headers = new Headers({ "x-moyo-region-internal": chunk.regionId });
+    const health = await (await entry.object.fetch(new Request("https://moyo.example/api/health", { headers }))).json();
+    assert.equal(health.tickMode, "idle");
+    assert.equal(health.effectiveTickMs, 60_000);
+  }
+});

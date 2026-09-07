@@ -54,6 +54,7 @@ const ui = {
 
 const LIVE_REGION_WINDOW_REFRESH_MS = 10_000;
 const NEIGHBOR_TERRAIN_REFRESH_MS = 60_000;
+const FAR_TERRAIN_RADIUS = 2;
 
 const quality = resolveQualityProfile();
 const models = new ModelLibrary();
@@ -83,7 +84,8 @@ let view;
 let toastTimer;
 let neighborPreviewRoot;
 let liveNeighborSimulation;
-let neighborTerrainCenter;
+let terrainWindowCenter;
+let terrainWindowPayload;
 let neighborTerrainUpdatedAt = 0;
 let readyDispatched = false;
 
@@ -256,9 +258,39 @@ function buildNeighborPreview(payload) {
   updateRenderStatus();
 }
 
+async function loadTerrainWindow() {
+  if (!app.state || (terrainWindowCenter === app.region && neighborPreviewRoot)) return;
+  const requestedRegion = app.region;
+  try {
+    const payload = await requestJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000);
+    if (requestedRegion !== app.region) return;
+    buildNeighborPreview(payload);
+    terrainWindowPayload = payload;
+    terrainWindowCenter = app.region;
+    neighborTerrainUpdatedAt = Date.now();
+  } catch (error) {
+    console.debug("MoYoGarden outer terrain window skipped", error);
+  }
+}
+
+function refreshNearTerrainFromLive(payload) {
+  if (!terrainWindowPayload || terrainWindowCenter !== app.region) return;
+  const now = Date.now();
+  if (now - neighborTerrainUpdatedAt < NEIGHBOR_TERRAIN_REFRESH_MS) return;
+  const liveByRegion = new Map(
+    (payload?.chunks ?? []).map((chunk) => [chunk.regionId, chunk]),
+  );
+  terrainWindowPayload = {
+    ...terrainWindowPayload,
+    chunks: terrainWindowPayload.chunks.map((chunk) => liveByRegion.get(chunk.regionId) ?? chunk),
+  };
+  buildNeighborPreview(terrainWindowPayload);
+  neighborTerrainUpdatedAt = now;
+}
+
 async function loadRegionWindow() {
   if (!app.state || app.regions.length < 2) {
-    clearNeighborPreview();
+    liveNeighborSimulation?.setCenter(app.region);
     return;
   }
   const requestedRegion = app.region;
@@ -266,14 +298,9 @@ async function loadRegionWindow() {
     const payload = await requestJson("/api/world/window?radius=1&live=1", {}, 10_000);
     if (requestedRegion !== app.region) return;
     liveNeighborSimulation?.syncWindow(payload, app.region, LIVE_REGION_WINDOW_REFRESH_MS);
-    const now = Date.now();
-    if (neighborTerrainCenter !== app.region || now - neighborTerrainUpdatedAt >= NEIGHBOR_TERRAIN_REFRESH_MS) {
-      buildNeighborPreview(payload);
-      neighborTerrainCenter = app.region;
-      neighborTerrainUpdatedAt = now;
-    }
+    refreshNearTerrainFromLive(payload);
   } catch (error) {
-    console.debug("MoYoGarden neighbor region prefetch skipped", error);
+    console.debug("MoYoGarden live neighbor window skipped", error);
   }
 }
 
@@ -418,9 +445,12 @@ async function connect() {
     app.regions = meta.regions || [meta.defaultRegion || "garden-1"];
     if (!app.regions.includes(app.region)) app.region = meta.defaultRegion || app.regions[0];
     liveNeighborSimulation?.setCenter(app.region);
-    neighborTerrainCenter = undefined;
+    terrainWindowCenter = undefined;
+    terrainWindowPayload = undefined;
+    neighborTerrainUpdatedAt = 0;
     populateRegions();
     await loadSnapshot();
+    void loadTerrainWindow();
     void loadRegionWindow();
     startRegionWindowRefresh();
     connectSocket();
