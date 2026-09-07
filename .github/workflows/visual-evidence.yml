@@ -1,0 +1,38 @@
+name: Rendering baseline evidence
+
+on:
+  push:
+    branches: [feat/atmospheric-world-20260908]
+    paths: [.github/workflows/visual-evidence.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and verify baseline
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+      - name: Package renderable baseline without credentials
+        run: |
+          mkdir -p /tmp/moyo-evidence
+          git archive HEAD | tar -x -C /tmp/moyo-evidence
+          cp -R public /tmp/moyo-evidence/
+          mkdir -p /tmp/moyo-evidence/node_modules
+          cp -R node_modules/three /tmp/moyo-evidence/node_modules/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rendering-baseline
+          path: /tmp/moyo-evidence
+          include-hidden-files: false
+          retention-days: 3
