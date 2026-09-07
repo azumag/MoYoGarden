@@ -21,6 +21,7 @@ import {
   regionGlobalCellOrigin,
   regionHexTopology,
   regionHexWindow,
+  sparseRegionHexWindow,
 } from "./region-topology.js";
 
 interface Env {
@@ -140,6 +141,23 @@ export function regionWindow(
   }));
 }
 
+export function sparseRegionWindow(
+  regionIds: readonly string[],
+  centerRegionId: string,
+  radius = 1,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionLayoutEntry[] {
+  return sparseRegionHexWindow(regionIds, centerRegionId, radius, width, height).map((entry) => ({
+    id: entry.id,
+    index: entry.index,
+    grid: { x: entry.index, y: 0 },
+    origin: entry.physicalOrigin,
+    extent: { width, height },
+    neighbors: { west: null, east: null },
+  }));
+}
+
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
   const headers = new Headers(JSON_HEADERS);
   if (extraHeaders !== undefined) {
@@ -177,7 +195,8 @@ function resolveRegion(request: Request, env: Env): string | undefined {
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
   const regions = allowedRegions(env);
   if (requested === undefined || requested === "") return regions[0];
-  return regions.includes(requested) ? requested : undefined;
+  if (regions.includes(requested)) return requested;
+  return parseAxialRegionId(requested) === undefined ? undefined : requested;
 }
 
 function hashRegion(regionId: string): number {
@@ -692,10 +711,10 @@ export default {
       const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
       const topology = scopedRegion === undefined
         ? regionHexTopology(regions)
-        : regionHexWindow(regions, scopedRegion, radius);
+        : sparseRegionHexWindow(regions, scopedRegion, radius);
       const layout = scopedRegion === undefined
         ? regionLayout(regions)
-        : regionWindow(regions, scopedRegion, radius);
+        : sparseRegionWindow(regions, scopedRegion, radius);
       const exposedRegions = scopedRegion === undefined
         ? regions
         : topology.map((entry) => entry.id);
@@ -724,7 +743,7 @@ export default {
       const regionId = resolveRegion(request, env);
       if (regionId === undefined) return json({ error: "unknown or disabled region" }, 404);
       const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
-      const entries = regionWindow(regions, regionId, radius);
+      const entries = sparseRegionWindow(regions, regionId, radius);
       const chunks = await Promise.all(entries.map(async (entry) => {
         const stub = env.REGIONS.get(env.REGIONS.idFromName(entry.id));
         const headers = new Headers(request.headers);

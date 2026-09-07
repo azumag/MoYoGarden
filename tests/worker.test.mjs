@@ -14,6 +14,23 @@ class MemoryStorage {
 }
 class MemoryState { constructor(storage=new MemoryStorage()){this.storage=storage;this.sockets=[];this.ready=Promise.resolve();} blockConcurrencyWhile(callback){this.ready=callback();return this.ready;} acceptWebSocket(socket){this.sockets.push(socket);} getWebSockets(){return [...this.sockets];} }
 const env={WORLD_SEED:"424242",REGION_IDS:"garden-1,garden-test,garden-3",TICK_MS:"10000",OPEN_COMMANDS:"false",COMMAND_TOKEN:"command-secret",ADMIN_TOKEN:"admin-secret"};
+function memoryNamespaceEnv(overrides={}){
+  const scoped={...env,...overrides};
+  const entries=new Map();
+  scoped.REGIONS={
+    idFromName:(name)=>name,
+    get:(id)=>{
+      let entry=entries.get(id);
+      if(!entry){
+        const state=new MemoryState(),object=new RegionDurableObject(state,scoped);
+        entry={state,object};
+        entries.set(id,entry);
+      }
+      return{fetch:async(req)=>{await entry.state.ready;return entry.object.fetch(req);}};
+    },
+  };
+  return{env:scoped,entries};
+}
 function request(path,init={}){const headers=new Headers(init.headers);headers.set("x-moyo-region-internal","garden-test");return new Request(`https://moyo.example${path}`,{...init,headers});}
 
 test("region tick cadence slows only while inactive",()=>{assert.equal(regionTickDelayMs(10000,false),60000);assert.equal(regionTickDelayMs(10000,true),10000);assert.equal(regionTickDelayMs(1000000,false),3600000);});
@@ -25,6 +42,10 @@ test("region window follows logical hex distance instead of array index distance
 test("canonical sparse region window follows encoded axial coordinates instead of list order",()=>{const center="hex-q10-r-4",far="hex-q100-r100";const neighbors=["hex-q11-r-4","hex-q10-r-3","hex-q9-r-3","hex-q9-r-4","hex-q10-r-5","hex-q11-r-5"];const ids=[center,far,...neighbors];assert.deepEqual(regionWindow(ids,center,1,40,24).map((entry)=>entry.id),[center,...neighbors]);assert.deepEqual(regionWindow(ids,center,0,40,24).map((entry)=>entry.id),[center]);});
 
 test("scoped meta keeps region topology bounded to the requested axial window",async()=>{const center="hex-q10-r-4",far="hex-q100-r100";const neighbors=["hex-q11-r-4","hex-q10-r-3","hex-q9-r-3","hex-q9-r-4","hex-q10-r-5","hex-q11-r-5"];const ids=[center,far,...neighbors];const response=await worker.fetch(new Request(`https://moyo.example/api/meta?region=${center}&radius=1`),{REGION_IDS:ids.join(","),WORLD_SEED:"424242"});assert.equal(response.status,200);const payload=await response.json();assert.deepEqual(payload.regions,[center,...neighbors]);assert.deepEqual(payload.world.regionTopology.regions.map((entry)=>entry.id),[center,...neighbors]);assert.deepEqual(payload.world.regionLayout.map((entry)=>entry.id),[center,...neighbors]);});
+
+test("unlisted canonical regions are publicly addressable without extending REGION_IDS",async()=>{const canonical="hex-q0-r1";const scoped=memoryNamespaceEnv({REGION_IDS:"garden-1,garden-2,garden-3"});const response=await worker.fetch(new Request(`https://moyo.example/api/world/snapshot?region=${canonical}`),scoped.env);assert.equal(response.status,200);const state=await response.json();assert.equal(state.regionId,canonical);assert.ok(scoped.entries.has(canonical));});
+
+test("scoped sparse meta and window synthesize only the local axial neighborhood",async()=>{const center="hex-q0-r1";const scoped=memoryNamespaceEnv({REGION_IDS:"garden-1,garden-2,garden-3"});const metaResponse=await worker.fetch(new Request(`https://moyo.example/api/meta?region=${center}&radius=1`),scoped.env);assert.equal(metaResponse.status,200);const meta=await metaResponse.json();assert.equal(meta.regions.includes(center),true);assert.equal(meta.regions.length,7);assert.equal(meta.world.regionTopology.regions.length,7);assert.equal(meta.world.regionTopology.regions.every((entry)=>entry.axial&&entry.id),true);const windowResponse=await worker.fetch(new Request(`https://moyo.example/api/world/window?region=${center}&radius=1`),scoped.env);assert.equal(windowResponse.status,200);const window=await windowResponse.json();assert.equal(window.centerRegion,center);assert.equal(window.chunks.length,7);assert.equal(window.chunks.every((chunk)=>chunk.state?.regionId===chunk.regionId),true);assert.equal(scoped.entries.size,7,"radius-one browsing must fan out to exactly the bounded local window");});
 
 test("new regions persist a hex-compatible terrain frame without activating storage corners",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const state=await (await object.fetch(request("/api/world/snapshot"))).json();assert.equal(state.regionId,"garden-test");const north=state.tiles.find((tile)=>tile.x===19&&tile.y===0);assert.ok(north);assert.equal(state.tiles[0].terrain,"water");assert.equal(state.tiles[state.width-1].terrain,"water");assert.ok(state.agents.every((agent)=>agent.position.x>=0&&agent.position.y>=0&&agent.position.x<state.width&&agent.position.y<state.height));assert.equal(ctx.storage.values.get("region").terrainFrameVersion,1);});
 

@@ -1,7 +1,7 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
 import { RegionDurableObject } from "./autonomy-region.js";
 import { isHexGridCell } from "./hex-grid.js";
-import { regionHexTopology, regionHexWindow } from "./region-topology.js";
+import { regionHexTopology, sparseRegionHexWindow } from "./region-topology.js";
 import baseWorker from "./worker.js";
 
 interface WorkerEnv {
@@ -77,7 +77,7 @@ export function enrichRegionWindowPayload(
   const topology = new Map(
     (centerRegion === undefined
       ? regionHexTopology(regionIds)
-      : regionHexWindow(regionIds, centerRegion, radius))
+      : sparseRegionHexWindow(regionIds, centerRegion, radius))
       .map((entry) => [entry.id, entry] as const),
   );
   const chunks = payload.chunks.map((value) => {

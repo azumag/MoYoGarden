@@ -13,7 +13,9 @@ import {
   configuredRegionNeighborId,
   regionAxialCoordinate,
   regionHexTopology,
+  regionHexWindow,
   regionGlobalCellOrigin,
+  sparseRegionHexWindow,
   regularHexFootprintSize,
 } from "../dist-ts/src/region-topology.js";
 import {
@@ -272,6 +274,41 @@ test("configured region neighbor lookup uses axial identity without rebuilding f
     "region-b",
     "unknown historical ids retain the legacy ring fallback",
   );
+});
+
+test("sparse public window synthesizes only the bounded unlisted axial neighborhood", () => {
+  const ids = ["garden-1", "garden-2", "garden-3"];
+  const entries = sparseRegionHexWindow(ids, "garden-1", 1, 40, 24);
+  assert.equal(entries.length, 7);
+  assert.equal(entries[0].id, "garden-1");
+  assert.deepEqual(
+    new Set(entries.map((entry) => entry.id)),
+    new Set([
+      "garden-1",
+      "garden-2",
+      "garden-3",
+      "hex-q0-r-1",
+      "hex-q-1-r0",
+      "hex-q-1-r1",
+      "hex-q0-r1",
+    ]),
+  );
+  assert.equal(entries.every((entry) => hexDistance(entry.axial, { q: 0, r: 0 }) <= 1), true);
+  assert.equal(regionHexWindow(ids, "garden-1", 1, 40, 24).length, 3,
+    "internal configured window must remain bounded to configured neighbors");
+});
+
+test("sparse canonical center remains addressable even when it is absent from REGION_IDS", () => {
+  const entries = sparseRegionHexWindow(
+    ["garden-1", "garden-2", "garden-3"],
+    "hex-q0-r1",
+    1,
+    40,
+    24,
+  );
+  assert.equal(entries.length, 7);
+  assert.equal(entries[0].id, "hex-q0-r1");
+  assert.equal(entries.some((entry) => entry.id === "garden-1"), true);
 });
 
 test("global cell ownership resolves every one-step boundary crossing without teleporting", () => {

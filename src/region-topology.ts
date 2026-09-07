@@ -487,6 +487,92 @@ export function regionHexWindow(
   return entries.sort((a, b) => a.index - b.index);
 }
 
+/**
+ * Build a bounded axial window for the public sparse-world surface without
+ * requiring every canonical neighbor to be listed in REGION_IDS.
+ *
+ * Internal halo/autonomy consumers deliberately keep using regionHexWindow(),
+ * which exposes only configured neighbors during the compatibility phase. This
+ * prevents passive simulation fan-out from expanding merely because the public
+ * camera can discover an unvisited canonical region.
+ */
+export function sparseRegionHexWindow(
+  regionIds: readonly string[],
+  centerRegionId: string,
+  radius = 1,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionHexTopologyEntry[] {
+  if (regionIds.length === 0) return [];
+  if (regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)) {
+    return regionHexWindow(regionIds, centerRegionId, radius, width, height);
+  }
+
+  const center = regionAxialCoordinate(centerRegionId);
+  if (center === undefined) return [];
+  const indexById = new Map(regionIds.map((regionId, index) => [regionId, index] as const));
+  if (!indexById.has(centerRegionId) && parseAxialRegionId(centerRegionId) === undefined) return [];
+
+  const safeRadius = Number.isFinite(radius)
+    ? Math.max(0, Math.min(4, Math.floor(radius)))
+    : 1;
+  const centerKey = coordinateKey(center.q, center.r);
+  const coordinates: HexCoordinate[] = [];
+  for (let q = center.q - safeRadius; q <= center.q + safeRadius; q += 1) {
+    for (let r = center.r - safeRadius; r <= center.r + safeRadius; r += 1) {
+      const coordinate = { q, r };
+      if (hexDistance(coordinate, center) <= safeRadius) coordinates.push(coordinate);
+    }
+  }
+
+  // Keep configured legacy physical slots stable. Unvisited canonical entries
+  // get deterministic window-local staging slots used only by the rectangular
+  // preview compatibility layer; logical placement comes from hexOrigin.
+  let nextSyntheticIndex = regionIds.length;
+  const syntheticIndexByCoordinate = new Map<string, number>();
+  for (const coordinate of coordinates) {
+    if (configuredRegionIdAtCoordinate(coordinate, indexById) !== undefined) continue;
+    syntheticIndexByCoordinate.set(coordinateKey(coordinate.q, coordinate.r), nextSyntheticIndex);
+    nextSyntheticIndex += 1;
+  }
+
+  const entries = coordinates.map((coordinate) => {
+    const key = coordinateKey(coordinate.q, coordinate.r);
+    const configuredId = configuredRegionIdAtCoordinate(coordinate, indexById);
+    const id = key === centerKey
+      ? centerRegionId
+      : configuredId ?? axialRegionId(coordinate);
+    const index = indexById.get(id) ?? syntheticIndexByCoordinate.get(key);
+    if (index === undefined) throw new Error("sparse region window index resolution failed");
+    const neighbors = Object.fromEntries(
+      HEX_DIRECTIONS.map((direction) => {
+        const neighborCoordinate = hexNeighborCoordinate(coordinate, direction);
+        return [
+          direction,
+          configuredRegionIdAtCoordinate(neighborCoordinate, indexById)
+            ?? axialRegionId(neighborCoordinate),
+        ];
+      }),
+    ) as Record<HexDirection, string | null>;
+    return {
+      id,
+      index,
+      axial: coordinate,
+      physicalOrigin: projectPhysicalRegionOrigin(index, width),
+      hexOrigin: projectHexCoordinate(coordinate, width, height),
+      globalCellOrigin: projectRegionGlobalCellOrigin(coordinate, width, height),
+      ring: hexDistance(coordinate),
+      neighbors,
+    };
+  });
+
+  return entries.sort((a, b) => {
+    if (a.id === centerRegionId) return -1;
+    if (b.id === centerRegionId) return 1;
+    return a.index - b.index;
+  });
+}
+
 function coordinateKey(q: number, r: number): string {
   return `${q},${r}`;
 }
