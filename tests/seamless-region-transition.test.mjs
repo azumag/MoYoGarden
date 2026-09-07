@@ -21,19 +21,29 @@ test("automatic region crossing requests a soft transition instead of clicking r
   assert.doesNotMatch(seamlessSource, /reconnect\.click\(\)/);
   assert.match(appSource, /addEventListener\("moyo:region-transition"/);
 });
-test("soft transition reuses loaded window visuals before background refresh", () => {
+test("soft transition keeps the loaded world visible while target state is prepared", () => {
   const body = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
   assert.match(body, /\/api\/world\/window\?radius=1&live=1/);
   assert.match(body, /liveNeighborSimulation\?\.syncWindow/);
   assert.match(body, /applyEnvelope/);
-  assert.match(body, /buildNeighborPreview\(terrainWindowPayload\)/);
-  assert.match(body, /loadTerrainWindow\(true\)/);
   assert.doesNotMatch(body, /clearNeighborPreview\(\)/);
   assert.doesNotMatch(body, /\bconnect\(\)/);
 
   const liveSync = body.indexOf("liveNeighborSimulation?.syncWindow");
   const promote = body.indexOf("applyEnvelope");
-  const terrainReuse = body.indexOf("buildNeighborPreview(terrainWindowPayload)");
   assert.ok(liveSync >= 0 && liveSync < promote, "live neighbors should rebase before center promotion");
-  assert.ok(promote >= 0 && promote < terrainReuse, "cached terrain should be recentered after center promotion");
+});
+
+test("soft transition waits for target terrain instead of rebuilding old-center staging data", () => {
+  const body = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
+  assert.doesNotMatch(body, /cachedTerrainWindow/);
+  assert.match(body, /radius=\$\{FAR_TERRAIN_RADIUS\}&terrain=1/);
+  assert.match(body, /buildNeighborPreview\(terrainWindowPayload\)/);
+  assert.doesNotMatch(body, /loadTerrainWindow\(true\)/);
+
+  const fetchTerrain = body.indexOf("terrain=1");
+  const promote = body.indexOf("applyEnvelope");
+  const rebuild = body.indexOf("buildNeighborPreview(terrainWindowPayload)");
+  assert.ok(fetchTerrain >= 0 && fetchTerrain < promote, "target terrain must be ready before promotion");
+  assert.ok(promote >= 0 && promote < rebuild, "new center must be active before target terrain is rebuilt");
 });

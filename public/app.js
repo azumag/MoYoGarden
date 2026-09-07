@@ -5,6 +5,7 @@ import { createLiveNeighborSimulation } from "./client/live-region-rendering.js"
 import { ModelLibrary } from "./client/model-library.js";
 import { resolveQualityProfile } from "./client/quality.js";
 import { regionMetaUrl } from "./client/region-navigation.js";
+import { mergeLiveTerrainWindow } from "./client/terrain-window-cache.js";
 import { ROLE_LABELS, TERRAIN_COLORS, disposeObject } from "./client/shared.js";
 import { WorldView } from "./client/world-view.js";
 
@@ -277,13 +278,7 @@ function refreshNearTerrainFromLive(payload) {
   if (!terrainWindowPayload || terrainWindowCenter !== app.region) return;
   const now = Date.now();
   if (now - neighborTerrainUpdatedAt < NEIGHBOR_TERRAIN_REFRESH_MS) return;
-  const liveByRegion = new Map(
-    (payload?.chunks ?? []).map((chunk) => [chunk.regionId, chunk]),
-  );
-  terrainWindowPayload = {
-    ...terrainWindowPayload,
-    chunks: terrainWindowPayload.chunks.map((chunk) => liveByRegion.get(chunk.regionId) ?? chunk),
-  };
+  terrainWindowPayload = mergeLiveTerrainWindow(terrainWindowPayload, payload);
   buildNeighborPreview(terrainWindowPayload);
   neighborTerrainUpdatedAt = now;
 }
@@ -470,7 +465,6 @@ async function transitionRegion(regionId) {
   if (!targetRegion || targetRegion === app.region) return;
 
   const previousRegion = app.region;
-  const cachedTerrainWindow = terrainWindowPayload;
   const previousSocket = app.socket;
   app.socket = null;
   previousSocket?.close();
@@ -480,9 +474,10 @@ async function transitionRegion(regionId) {
   setConnection("", "境界同期中");
 
   try {
-    const [windowPayload, health] = await Promise.all([
+    const [windowPayload, health, terrainPayload] = await Promise.all([
       requestJson("/api/world/window?radius=1&live=1", {}, 10_000),
       requestJson("/api/health"),
+      requestJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000),
     ]);
     if (app.region !== targetRegion) return;
 
@@ -504,20 +499,13 @@ async function transitionRegion(regionId) {
     );
     applyEnvelope({ state: center.state, paused: health?.paused, tickMs: health?.tickMs });
 
-    if (cachedTerrainWindow?.chunks?.some((chunk) => chunk?.regionId === targetRegion)) {
-      terrainWindowPayload = cachedTerrainWindow;
-      buildNeighborPreview(terrainWindowPayload);
-      terrainWindowCenter = targetRegion;
-      neighborTerrainUpdatedAt = Date.now();
-    } else {
-      terrainWindowCenter = undefined;
-      terrainWindowPayload = undefined;
-      neighborTerrainUpdatedAt = 0;
-    }
+    terrainWindowPayload = mergeLiveTerrainWindow(terrainPayload, windowPayload);
+    terrainWindowCenter = targetRegion;
+    neighborTerrainUpdatedAt = Date.now();
+    buildNeighborPreview(terrainWindowPayload);
 
     startRegionWindowRefresh();
     connectSocket();
-    void loadTerrainWindow(true);
   } catch (error) {
     if (app.region !== targetRegion) return;
     app.region = previousRegion;
