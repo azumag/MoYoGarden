@@ -59,6 +59,20 @@ function syncProxy(proxy, state, tickMs) {
   proxy.syncStructures(state);
   proxy.syncAgents(state);
 }
+
+function snapshotTick(state) {
+  const tick = state?.tick;
+  return Number.isFinite(tick) ? tick : undefined;
+}
+
+function isStaleSnapshot(proxy, state) {
+  const currentTick = snapshotTick(proxy?.state);
+  const incomingTick = snapshotTick(state);
+  return currentTick !== undefined
+    && incomingTick !== undefined
+    && incomingTick < currentTick;
+}
+
 function disposeProxy(entry) {
   for (const agent of entry.proxy.agentObjects.values()) {
     entry.proxy.disposeAgentEntry(agent);
@@ -178,9 +192,14 @@ class LiveNeighborSimulation {
         this.root.add(group);
         entry = { group, proxy: createProxy(this.view, group, next.state, tickMs) };
         this.entries.set(next.regionId, entry);
-      } else {
+      } else if (!isStaleSnapshot(entry.proxy, next.state)) {
+        // Same-region live window requests can overlap near their timeout boundary
+        // or during a soft handoff. Never let a slower, older response roll BOT,
+        // structure, or resource graphics back after a newer tick was rendered.
         syncProxy(entry.proxy, next.state, tickMs);
       }
+      // Placement metadata is independent of simulation tick freshness, so even
+      // a stale state response may carry the correct offset after camera rebase.
       entry.group.position.set(next.offsetX, 0, next.offsetZ);
     }
     this.centerRegionId = centerRegionId;

@@ -46,3 +46,15 @@ test("retained partial neighbors rebase from placement metadata even without a f
   const healthyStateLoop = liveRegionSource.indexOf("for (const next of nextEntries)");
   assert.ok(placementUpdate >= 0 && placementUpdate < healthyStateLoop);
 });
+
+test("out-of-order live windows cannot roll neighbor simulation graphics backward", () => {
+  assert.match(liveRegionSource, /function isStaleSnapshot\(proxy, state\)/);
+  assert.match(liveRegionSource, /incomingTick < currentTick/);
+  assert.match(
+    liveRegionSource,
+    /else if \(!isStaleSnapshot\(entry\.proxy, next\.state\)\) \{[\s\S]*syncProxy\(entry\.proxy, next\.state, tickMs\);/,
+  );
+  const staleGuard = liveRegionSource.indexOf("else if (!isStaleSnapshot(entry.proxy, next.state))");
+  const placementUpdate = liveRegionSource.indexOf("entry.group.position.set(next.offsetX, 0, next.offsetZ)", staleGuard);
+  assert.ok(staleGuard >= 0 && placementUpdate > staleGuard);
+});
