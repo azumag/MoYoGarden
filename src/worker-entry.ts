@@ -1,7 +1,12 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
 import { RegionDurableObject } from "./autonomy-region.js";
 import { isHexGridCell } from "./hex-grid.js";
-import { regionHexTopology, sparseRegionHexWindow } from "./region-topology.js";
+import {
+  parseAxialRegionId,
+  regionHexTopology,
+  sparseCanonicalRegionHexWindow,
+  sparseRegionHexWindow,
+} from "./region-topology.js";
 import baseWorker from "./worker.js";
 
 interface WorkerEnv {
@@ -77,7 +82,9 @@ export function enrichRegionWindowPayload(
   const topology = new Map(
     (centerRegion === undefined
       ? regionHexTopology(regionIds)
-      : sparseRegionHexWindow(regionIds, centerRegion, radius))
+      : parseAxialRegionId(centerRegion) !== undefined
+        ? sparseCanonicalRegionHexWindow(centerRegion, radius)
+        : sparseRegionHexWindow(regionIds, centerRegion, radius))
       .map((entry) => [entry.id, entry] as const),
   );
   const chunks = payload.chunks.map((value) => {
@@ -166,13 +173,14 @@ export default {
     }
 
     if (url.pathname === "/api/world/window") {
-      return jsonResponse(
-        response,
-        enrichRegionWindowPayload(
-          await response.json() as unknown,
-          configuredRegionIds(env),
-        ),
-      );
+      const payload = await response.json() as unknown;
+      const centerRegion = isRecord(payload) && typeof payload.centerRegion === "string"
+        ? payload.centerRegion
+        : undefined;
+      const regionIds = centerRegion !== undefined && parseAxialRegionId(centerRegion) !== undefined
+        ? []
+        : configuredRegionIds(env);
+      return jsonResponse(response, enrichRegionWindowPayload(payload, regionIds));
     }
 
     return response;

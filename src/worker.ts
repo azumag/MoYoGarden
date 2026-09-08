@@ -21,6 +21,7 @@ import {
   regionGlobalCellOrigin,
   regionHexTopology,
   regionHexWindow,
+  sparseCanonicalRegionHexWindow,
   sparseRegionHexWindow,
 } from "./region-topology.js";
 
@@ -158,6 +159,22 @@ export function sparseRegionWindow(
   }));
 }
 
+export function sparseCanonicalRegionWindow(
+  centerRegionId: string,
+  radius = 1,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionLayoutEntry[] {
+  return sparseCanonicalRegionHexWindow(centerRegionId, radius, width, height).map((entry) => ({
+    id: entry.id,
+    index: entry.index,
+    grid: { x: entry.index, y: 0 },
+    origin: entry.physicalOrigin,
+    extent: { width, height },
+    neighbors: { west: null, east: null },
+  }));
+}
+
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
   const headers = new Headers(JSON_HEADERS);
   if (extraHeaders !== undefined) {
@@ -193,10 +210,12 @@ function resolveRegion(request: Request, env: Env): string | undefined {
   const url = new URL(request.url);
   const requested =
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
+  if (requested !== undefined && requested !== "" && parseAxialRegionId(requested) !== undefined) {
+    return requested;
+  }
   const regions = allowedRegions(env);
   if (requested === undefined || requested === "") return regions[0];
-  if (regions.includes(requested)) return requested;
-  return parseAxialRegionId(requested) === undefined ? undefined : requested;
+  return regions.includes(requested) ? requested : undefined;
 }
 
 function hashRegion(regionId: string): number {
@@ -723,7 +742,6 @@ export default {
 
     const url = new URL(request.url);
     if (url.pathname === "/api/meta") {
-      const regions = allowedRegions(env);
       const requestedRegion = url.searchParams.get("region")?.trim();
       const scopedRegion = requestedRegion === undefined || requestedRegion === ""
         ? undefined
@@ -732,20 +750,29 @@ export default {
         return json({ error: "unknown or disabled region" }, 404);
       }
       const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
-      const topology = scopedRegion === undefined
-        ? regionHexTopology(regions)
-        : sparseRegionHexWindow(regions, scopedRegion, radius);
-      const layout = scopedRegion === undefined
-        ? regionLayout(regions)
-        : sparseRegionWindow(regions, scopedRegion, radius);
+      const canonicalScoped = scopedRegion !== undefined && parseAxialRegionId(scopedRegion) !== undefined;
+      const regions = canonicalScoped ? undefined : allowedRegions(env);
+      const topology = canonicalScoped
+        ? sparseCanonicalRegionHexWindow(scopedRegion, radius)
+        : scopedRegion === undefined
+          ? regionHexTopology(regions ?? [])
+          : sparseRegionHexWindow(regions ?? [], scopedRegion, radius);
+      const layout = canonicalScoped
+        ? sparseCanonicalRegionWindow(scopedRegion, radius)
+        : scopedRegion === undefined
+          ? regionLayout(regions ?? [])
+          : sparseRegionWindow(regions ?? [], scopedRegion, radius);
       const exposedRegions = scopedRegion === undefined
-        ? regions
+        ? regions ?? []
         : topology.map((entry) => entry.id);
+      const defaultRegion = canonicalScoped
+        ? env.DEFAULT_REGION_ID?.trim() || "garden-1"
+        : regions?.[0] ?? "garden-1";
       return json({
         service: "moyo-garden",
         version: "0.2.0",
         regions: exposedRegions,
-        defaultRegion: regions[0],
+        defaultRegion,
         runtime: "Cloudflare Workers + Durable Objects",
         world: {
           coordinateSpace: "global-grid",
@@ -762,13 +789,14 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/api/world/window") {
-      const regions = allowedRegions(env);
       const regionId = resolveRegion(request, env);
       if (regionId === undefined) return json({ error: "unknown or disabled region" }, 404);
       const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
       const liveWindow = url.searchParams.get("live") === "1";
       const terrainOnly = url.searchParams.get("terrain") === "1";
-      const entries = sparseRegionWindow(regions, regionId, radius);
+      const entries = parseAxialRegionId(regionId) !== undefined
+        ? sparseCanonicalRegionWindow(regionId, radius)
+        : sparseRegionWindow(allowedRegions(env), regionId, radius);
       const chunks = await Promise.all(entries.map(async (entry) => {
         const stub = env.REGIONS.get(env.REGIONS.idFromName(entry.id));
         const headers = new Headers(request.headers);

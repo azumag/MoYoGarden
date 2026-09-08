@@ -74,6 +74,10 @@ const LEGACY_REGION_ID_BY_COORDINATE: ReadonlyMap<string, string> = new Map(
   ]),
 );
 
+const LEGACY_REGION_PHYSICAL_INDEX: ReadonlyMap<string, number> = new Map(
+  [...LEGACY_REGION_AXIAL_ALIASES.keys()].map((regionId, index) => [regionId, index]),
+);
+
 function assertSafeAxialCoordinate(coordinate: HexCoordinate): void {
   if (!Number.isSafeInteger(coordinate.q) || !Number.isSafeInteger(coordinate.r)) {
     throw new RangeError("axial region coordinates must be safe integers");
@@ -530,6 +534,67 @@ export function regionHexWindow(
     }
   }
   return entries.sort((a, b) => a.index - b.index);
+}
+
+/**
+ * Build a bounded public window around a canonical region without consulting
+ * REGION_IDS. The three persisted garden aliases retain their fixed identities
+ * and rectangular compatibility slots; every other coordinate is synthesized
+ * deterministically inside the bounded request window.
+ */
+export function sparseCanonicalRegionHexWindow(
+  centerRegionId: string,
+  radius = 1,
+  width = TARGET_WORLD_WIDTH,
+  height = TARGET_WORLD_HEIGHT,
+): RegionHexTopologyEntry[] {
+  const center = parseAxialRegionId(centerRegionId);
+  if (center === undefined) return [];
+  const safeRadius = Number.isFinite(radius)
+    ? Math.max(0, Math.min(4, Math.floor(radius)))
+    : 1;
+  const centerKey = coordinateKey(center.q, center.r);
+  const coordinates: HexCoordinate[] = [];
+  for (let q = center.q - safeRadius; q <= center.q + safeRadius; q += 1) {
+    for (let r = center.r - safeRadius; r <= center.r + safeRadius; r += 1) {
+      const coordinate = { q, r };
+      if (hexDistance(coordinate, center) <= safeRadius) coordinates.push(coordinate);
+    }
+  }
+
+  let nextSyntheticIndex = LEGACY_REGION_AXIAL_ALIASES.size;
+  const syntheticIndexByCoordinate = new Map<string, number>();
+  for (const coordinate of coordinates) {
+    if (legacyRegionIdAtCoordinate(coordinate) !== undefined) continue;
+    syntheticIndexByCoordinate.set(coordinateKey(coordinate.q, coordinate.r), nextSyntheticIndex);
+    nextSyntheticIndex += 1;
+  }
+
+  return coordinates.map((coordinate) => {
+    const key = coordinateKey(coordinate.q, coordinate.r);
+    const legacyId = legacyRegionIdAtCoordinate(coordinate);
+    const id = key === centerKey ? centerRegionId : legacyId ?? axialRegionId(coordinate);
+    const index = legacyId === undefined
+      ? syntheticIndexByCoordinate.get(key)
+      : LEGACY_REGION_PHYSICAL_INDEX.get(legacyId);
+    if (index === undefined) throw new Error("canonical sparse region index resolution failed");
+    const neighbors = Object.fromEntries(
+      HEX_DIRECTIONS.map((direction) => {
+        const neighbor = hexNeighborCoordinate(coordinate, direction);
+        return [direction, legacyRegionIdAtCoordinate(neighbor) ?? axialRegionId(neighbor)];
+      }),
+    ) as Record<HexDirection, string | null>;
+    return {
+      id,
+      index,
+      axial: coordinate,
+      physicalOrigin: projectPhysicalRegionOrigin(index, width),
+      hexOrigin: projectHexCoordinate(coordinate, width, height),
+      globalCellOrigin: projectRegionGlobalCellOrigin(coordinate, width, height),
+      ring: hexDistance(coordinate),
+      neighbors,
+    };
+  }).sort((a, b) => a.index - b.index);
 }
 
 /**
