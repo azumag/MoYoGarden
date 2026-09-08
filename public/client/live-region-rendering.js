@@ -72,6 +72,16 @@ function disposeProxy(entry) {
   disposeObject(entry.group);
 }
 
+function windowRegionIds(payload, centerRegionId) {
+  const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
+  const ids = new Set();
+  for (const chunk of chunks) {
+    if (typeof chunk?.regionId !== "string" || chunk.regionId === centerRegionId) continue;
+    ids.add(chunk.regionId);
+  }
+  return ids;
+}
+
 function windowEntries(payload, centerRegionId) {
   const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
   const center = chunks.find((chunk) =>
@@ -122,10 +132,13 @@ class LiveNeighborSimulation {
   }
 
   syncWindow(payload, centerRegionId, tickMs) {
+    const requestedIds = windowRegionIds(payload, centerRegionId);
     const nextEntries = windowEntries(payload, centerRegionId);
-    const liveIds = new Set(nextEntries.map((entry) => entry.regionId));
     for (const [regionId, entry] of this.entries) {
-      if (liveIds.has(regionId)) continue;
+      // A live-window request can return an error/partial chunk for one neighbor.
+      // Keep its last-known graphics while the region is still part of this
+      // window; the next healthy snapshot will update it in place.
+      if (requestedIds.has(regionId)) continue;
       disposeProxy(entry);
       this.entries.delete(regionId);
     }
