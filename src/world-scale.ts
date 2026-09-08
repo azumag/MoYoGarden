@@ -92,7 +92,7 @@ export function orographicMoistureFromFetch(
   let totalWeight = 0;
   for (let index = 0; index < Math.min(weights.length, upwindElevations.length); index += 1) {
     const elevation = upwindElevations[index];
-    if (!Number.isFinite(elevation)) continue;
+    if (typeof elevation !== "number" || !Number.isFinite(elevation)) continue;
     const weight = weights[index] ?? 0;
     weightedElevation += elevation * weight;
     totalWeight += weight;
