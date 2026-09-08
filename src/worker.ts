@@ -319,10 +319,10 @@ export class RegionDurableObject {
           this.assigned = true;
         } catch (error) {
           console.error("Resetting invalid persisted MoYoGarden region", error);
-          this.runtime = this.createRuntime("garden-1");
+          // Leave the object unassigned. The first routed request will create
+          // exactly the requested region instead of building and discarding a
+          // temporary garden-1 world first.
         }
-      } else {
-        this.runtime = this.createRuntime("garden-1");
       }
 
       if (this.assigned && migratedTerrainFrame) await this.persist();
@@ -340,16 +340,23 @@ export class RegionDurableObject {
     canonicalGlobalFrame: boolean;
   } {
     const worldSeed = integerValue(this.env.WORLD_SEED, 424_242, 1, 0x7fff_ffff);
-    const entry = regionLayout(allowedRegions(this.env)).find((candidate) => candidate.id === regionId);
     const canonicalGlobalFrame = parseAxialRegionId(regionId) !== undefined;
-    const globalOrigin = canonicalGlobalFrame
-      ? regionGlobalCellOrigin(regionId, TARGET_WORLD_WIDTH, TARGET_WORLD_HEIGHT)
-      : undefined;
+    if (canonicalGlobalFrame) {
+      const globalOrigin = regionGlobalCellOrigin(regionId, TARGET_WORLD_WIDTH, TARGET_WORLD_HEIGHT);
+      return {
+        worldSeed,
+        entry: undefined,
+        origin: globalOrigin ?? { x: 0, y: 0 },
+        canonicalGlobalFrame: true,
+      };
+    }
+
+    const entry = regionLayout(allowedRegions(this.env)).find((candidate) => candidate.id === regionId);
     return {
       worldSeed,
       entry,
-      origin: globalOrigin ?? entry?.origin ?? { x: 0, y: 0 },
-      canonicalGlobalFrame,
+      origin: entry?.origin ?? { x: 0, y: 0 },
+      canonicalGlobalFrame: false,
     };
   }
 

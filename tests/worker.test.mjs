@@ -49,6 +49,23 @@ test("scoped sparse meta and window synthesize only the local axial neighborhood
 
 test("new regions persist a hex-compatible terrain frame without activating storage corners",async()=>{const ctx=new MemoryState(),object=new RegionDurableObject(ctx,env);await ctx.ready;const state=await (await object.fetch(request("/api/world/snapshot"))).json();assert.equal(state.regionId,"garden-test");const north=state.tiles.find((tile)=>tile.x===19&&tile.y===0);assert.ok(north);assert.equal(state.tiles[0].terrain,"water");assert.equal(state.tiles[state.width-1].terrain,"water");assert.ok(state.agents.every((agent)=>agent.position.x>=0&&agent.position.y>=0&&agent.position.x<state.width&&agent.position.y<state.height));assert.equal(ctx.storage.values.get("region").terrainFrameVersion,1);});
 
+test("fresh canonical region initialization does not enumerate REGION_IDS", async () => {
+  const regionId = "hex-q12-r-7";
+  const canonicalEnv = { ...env };
+  Object.defineProperty(canonicalEnv, "REGION_IDS", {
+    get() { throw new Error("canonical terrain must not enumerate REGION_IDS"); },
+  });
+  const ctx = new MemoryState();
+  const object = new RegionDurableObject(ctx, canonicalEnv);
+  await ctx.ready;
+  const headers = new Headers({ "x-moyo-region-internal": regionId });
+  const response = await object.fetch(new Request("https://moyo.example/api/world/snapshot", { headers }));
+  assert.equal(response.status, 200);
+  const state = await response.json();
+  assert.equal(state.regionId, regionId);
+  assert.ok(regionGlobalCellOrigin(regionId, state.width, state.height));
+});
+
 test("fresh canonical regions generate their full active terrain from the shared global cell frame",async()=>{
   const regionId="hex-q7-r-3";
   const canonicalEnv={...env,REGION_IDS:regionId};
