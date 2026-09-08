@@ -77,6 +77,35 @@ function elevationAt(worldSeed: number, globalX: number, globalY: number): numbe
 }
 
 /**
+ * Convert a short upwind elevation fetch into a bounded moisture tendency.
+ * The nearest cell remains authoritative while farther cells contribute a
+ * diminishing signal, so ridges can create a small rain-shadow / uplift effect
+ * without introducing a top-down biome or a new persisted climate field.
+ */
+export function orographicMoistureFromFetch(
+  currentElevation: number,
+  upwindElevations: readonly number[],
+  windStrength: number,
+): number {
+  const weights = [0.8, 0.15, 0.05] as const;
+  let weightedElevation = 0;
+  let totalWeight = 0;
+  for (let index = 0; index < Math.min(weights.length, upwindElevations.length); index += 1) {
+    const elevation = upwindElevations[index];
+    if (!Number.isFinite(elevation)) continue;
+    const weight = weights[index] ?? 0;
+    weightedElevation += elevation * weight;
+    totalWeight += weight;
+  }
+  if (totalWeight <= 0) return 0;
+  const profileElevation = weightedElevation / totalWeight;
+  return Math.max(
+    -0.12,
+    Math.min(0.12, (currentElevation - profileElevation) * 0.24 * clamp01(windStrength)),
+  );
+}
+
+/**
  * Sample a deterministic prevailing wind on the same six-direction axial grid
  * used by movement and halo exchange. The field varies only at broad spatial
  * scales, so adjacent regions share the same low-level wind instead of inventing
@@ -125,12 +154,16 @@ export function sampleWorldConditions(
   const moistureWave = Math.cos((x / 34 - y / 29) * Math.PI * 2 + phaseB);
   const wind = sampleWorldWind(worldSeed, globalX, globalY);
   const windStep = HEX_GRID_DIRECTION_STEPS[wind.direction];
-  const upwindElevation = elevationAt(
+  const upwindElevations = [1, 2, 3].map((distance) => elevationAt(
     worldSeed,
-    globalX - windStep.x,
-    globalY - windStep.y,
+    globalX - windStep.x * distance,
+    globalY - windStep.y * distance,
+  ));
+  const orographicMoisture = orographicMoistureFromFetch(
+    elevation,
+    upwindElevations,
+    wind.strength,
   );
-  const orographicMoisture = (elevation - upwindElevation) * 0.24 * wind.strength;
   const moisture = clamp01(
     0.43 +
     moistureWave * 0.17 +

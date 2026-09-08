@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  orographicMoistureFromFetch,
   sampleWorldConditions,
   sampleWorldWind,
 } from "../dist-ts/src/world-scale.js";
@@ -27,6 +28,28 @@ test("global wind is deterministic, bounded, and aligned to the six hex directio
   assert.ok(
     new Set(first.map((wind) => wind.direction)).size > 1,
     "the shared world wind must vary across broad global distances",
+  );
+});
+
+test("short upwind terrain fetch creates bounded uplift and rain-shadow tendencies", () => {
+  const uplift = orographicMoistureFromFetch(0.7, [0.58, 0.5, 0.42], 0.8);
+  const rainShadow = orographicMoistureFromFetch(0.38, [0.58, 0.68, 0.72], 0.8);
+  const calm = orographicMoistureFromFetch(0.7, [0.58, 0.5, 0.42], 0);
+
+  assert.ok(uplift > 0, "rising terrain along the wind fetch should gain moisture");
+  assert.ok(rainShadow < 0, "terrain below a higher upwind profile should dry slightly");
+  assert.equal(calm, 0, "orographic transport must vanish when wind strength is zero");
+  assert.ok(Math.abs(uplift) <= 0.12);
+  assert.ok(Math.abs(rainShadow) <= 0.12);
+});
+
+test("farther upwind relief contributes less than the immediately adjacent cell", () => {
+  const nearRidge = orographicMoistureFromFetch(0.6, [0.8, 0.6, 0.6], 1);
+  const farRidge = orographicMoistureFromFetch(0.6, [0.6, 0.6, 0.8], 1);
+
+  assert.ok(
+    Math.abs(nearRidge) > Math.abs(farRidge),
+    "the nearest upwind cell must remain authoritative over the third fetch cell",
   );
 });
 
