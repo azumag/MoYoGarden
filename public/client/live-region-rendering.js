@@ -82,20 +82,38 @@ function windowRegionIds(payload, centerRegionId) {
   return ids;
 }
 
-function windowEntries(payload, centerRegionId) {
+function windowPlacements(payload, centerRegionId) {
   const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
   const center = chunks.find((chunk) =>
     chunk?.regionId === centerRegionId && finiteHexOrigin(chunk?.hexOrigin)
   );
-  if (!center) return [];
+  const placements = new Map();
+  if (!center) return placements;
 
+  for (const chunk of chunks) {
+    if (
+      typeof chunk?.regionId !== "string"
+      || chunk.regionId === centerRegionId
+      || !finiteHexOrigin(chunk?.hexOrigin)
+    ) continue;
+    placements.set(chunk.regionId, {
+      offsetX: chunk.hexOrigin.x - center.hexOrigin.x,
+      offsetZ: chunk.hexOrigin.y - center.hexOrigin.y,
+    });
+  }
+  return placements;
+}
+
+function windowEntries(payload, centerRegionId) {
+  const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
+  const placements = windowPlacements(payload, centerRegionId);
   const entries = [];
   const seen = new Set();
   for (const chunk of chunks) {
+    const placement = placements.get(chunk?.regionId);
     if (
-      chunk?.regionId === centerRegionId
+      placement === undefined
       || seen.has(chunk?.regionId)
-      || !finiteHexOrigin(chunk?.hexOrigin)
       || !chunk?.state?.agents
       || !chunk?.state?.structures
       || !chunk?.state?.tiles
@@ -104,8 +122,7 @@ function windowEntries(payload, centerRegionId) {
     entries.push({
       regionId: chunk.regionId,
       state: chunk.state,
-      offsetX: chunk.hexOrigin.x - center.hexOrigin.x,
-      offsetZ: chunk.hexOrigin.y - center.hexOrigin.y,
+      ...placement,
     });
     if (entries.length >= 6) break;
   }
@@ -133,12 +150,21 @@ class LiveNeighborSimulation {
 
   syncWindow(payload, centerRegionId, tickMs) {
     const requestedIds = windowRegionIds(payload, centerRegionId);
+    const placements = windowPlacements(payload, centerRegionId);
     const nextEntries = windowEntries(payload, centerRegionId);
     for (const [regionId, entry] of this.entries) {
       // A live-window request can return an error/partial chunk for one neighbor.
       // Keep its last-known graphics while the region is still part of this
-      // window; the next healthy snapshot will update it in place.
-      if (requestedIds.has(regionId)) continue;
+      // window; the next healthy snapshot will update it in place. Placement is
+      // independent of simulation state, so rebase retained graphics immediately
+      // when the center region changes instead of leaving them at the old offset.
+      if (requestedIds.has(regionId)) {
+        const placement = placements.get(regionId);
+        if (placement !== undefined) {
+          entry.group.position.set(placement.offsetX, 0, placement.offsetZ);
+        }
+        continue;
+      }
       disposeProxy(entry);
       this.entries.delete(regionId);
     }

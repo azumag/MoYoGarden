@@ -29,9 +29,20 @@ test("neighbor simulation graphics survive center clipping and authored model re
 
 test("temporary live-window snapshot gaps keep last-known neighbor objects visible", () => {
   assert.match(liveRegionSource, /const requestedIds = windowRegionIds\(payload, centerRegionId\)/);
-  assert.match(liveRegionSource, /if \(requestedIds\.has\(regionId\)\) continue;/);
+  assert.match(liveRegionSource, /if \(requestedIds\.has\(regionId\)\) \{/);
   assert.doesNotMatch(
     liveRegionSource,
     /new Set\(nextEntries\.map\(\(entry\) => entry\.regionId\)\)/,
   );
+});
+
+test("retained partial neighbors rebase from placement metadata even without a fresh state", () => {
+  assert.match(liveRegionSource, /const placements = windowPlacements\(payload, centerRegionId\)/);
+  assert.match(
+    liveRegionSource,
+    /const placement = placements\.get\(regionId\);[\s\S]*entry\.group\.position\.set\(placement\.offsetX, 0, placement\.offsetZ\);/,
+  );
+  const placementUpdate = liveRegionSource.indexOf("const placement = placements.get(regionId)");
+  const healthyStateLoop = liveRegionSource.indexOf("for (const next of nextEntries)");
+  assert.ok(placementUpdate >= 0 && placementUpdate < healthyStateLoop);
 });
