@@ -16,7 +16,7 @@ import {
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
 import type { WorldState } from "./protocol.js";
-import { regionGlobalCellOrigin, regionHexWindow } from "./region-topology.js";
+import { parseAxialRegionId, regionGlobalCellOrigin, regionHexWindow } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { getTile } from "./world.js";
 
@@ -314,14 +314,20 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   private haloEnvironmentFrame(state: WorldState): HaloEnvironmentFrame {
-    const entry = regionHexWindow(
-      configuredRegionIds(this.haloEnv),
-      state.regionId,
-      0,
-      state.width,
-      state.height,
-    ).find((candidate) => candidate.id === state.regionId);
-    const origin = entry?.physicalOrigin
+    const canonicalOrigin = parseAxialRegionId(state.regionId) === undefined
+      ? undefined
+      : regionGlobalCellOrigin(state.regionId, state.width, state.height);
+    const entry = canonicalOrigin === undefined
+      ? regionHexWindow(
+          configuredRegionIds(this.haloEnv),
+          state.regionId,
+          0,
+          state.width,
+          state.height,
+        ).find((candidate) => candidate.id === state.regionId)
+      : undefined;
+    const origin = canonicalOrigin
+      ?? entry?.physicalOrigin
       ?? regionGlobalCellOrigin(state.regionId, state.width, state.height)
       ?? { x: 0, y: 0 };
     return {
@@ -332,13 +338,14 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
-    const regionIds = configuredRegionIds(this.haloEnv);
-    const links = haloLinksForActivity(
-      state,
-      regionIds,
-      state.regionId,
-      this.activityTier(),
-    );
+    const links = parseAxialRegionId(state.regionId) !== undefined
+      ? buildDynamicHexHaloLinks(state, state.regionId)
+      : haloLinksForActivity(
+          state,
+          configuredRegionIds(this.haloEnv),
+          state.regionId,
+          this.activityTier(),
+        );
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
       const direction = link.neighborDirection;

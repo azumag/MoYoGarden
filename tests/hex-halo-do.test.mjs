@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
+import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
 class MemoryStorage {
   constructor() { this.values = new Map(); this.alarm = null; }
@@ -185,4 +186,35 @@ test("canonical world halo materializes a bounded six-neighbor dynamic ring", as
     assert.equal(health.response.status, 200);
     assert.equal(health.body.tickMode, "cold", `${regionId} must stay cold after internal halo sampling`);
   }
+});
+
+
+test("canonical halo alarms do not enumerate REGION_IDS", async () => {
+  const env = environment();
+  const regionId = "hex-q12-r-7";
+  const initial = await call(env, `/api/world/snapshot?region=${regionId}`);
+  assert.equal(initial.response.status, 200);
+  const entry = env.REGIONS.entries.get(regionId);
+  assert.ok(entry);
+  await entry.state.ready;
+
+  const state = entry.object.runtime.snapshot();
+  state.tick = 29;
+  for (const agent of state.agents) agent.autonomy = false;
+  const organic = state.tiles.find((tile) =>
+    tile.terrain !== "water" && tile.resource?.kind === "wood"
+  );
+  assert.ok(organic);
+  organic.resource.amount = 0;
+  organic.resource.maxAmount = Math.max(organic.resource.maxAmount, 2);
+  entry.object.runtime = new WorldRuntime({ state });
+  await entry.object.persist();
+
+  Object.defineProperty(env, "REGION_IDS", {
+    configurable: true,
+    get() { throw new Error("canonical halo must not enumerate REGION_IDS"); },
+  });
+
+  await entry.object.alarm();
+  assert.equal(entry.object.runtime.snapshot().tick, 30);
 });
