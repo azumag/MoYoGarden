@@ -186,9 +186,12 @@ export function materializeHexHalo(
   const edgeIndex = new Map<string, Tile>();
   for (const edge of edgeSnapshots) {
     for (const entry of edge.tiles) {
+      // Edge snapshots are request-local, read-only inputs. Keep their tile
+      // references while indexing and clone only when materializing a ghost
+      // cell, avoiding two structured clones per halo tile on the hot path.
       edgeIndex.set(
         `${edge.regionId}:${edge.direction}:${entry.position.x},${entry.position.y}`,
-        structuredClone(entry.tile),
+        entry.tile,
       );
     }
   }

@@ -26,7 +26,9 @@ test("halo hot paths resolve only a bounded axial window", () => {
   assert.doesNotMatch(haloRegionSource, /regionHexTopology/);
 });
 
-
+test("halo materialization indexes edge tiles without cloning them twice", () => {
+  assert.doesNotMatch(hexHaloSource, /structuredClone\(entry\.tile\)/);
+});
 
 test("active legacy regions expand environmental halo to all six dynamic neighbors", () => {
   const configured = ["garden-1", "garden-2", "garden-3"];
@@ -90,6 +92,18 @@ test("materialized halo attaches neighbor boundary tiles to source-cell directio
     assert.equal(ghost.tile.x, link.neighborPosition.x);
     assert.equal(ghost.tile.y, link.neighborPosition.y);
   }
+
+  const sourceTile = snapshots[0].tiles[0].tile;
+  const ghost = halo.find((entry) =>
+    entry.neighborRegionId === snapshots[0].regionId
+    && entry.neighborDirection === snapshots[0].direction
+    && entry.neighborPosition.x === snapshots[0].tiles[0].position.x
+    && entry.neighborPosition.y === snapshots[0].tiles[0].position.y
+  );
+  assert.ok(ghost);
+  const sourceTerrain = sourceTile.terrain;
+  ghost.tile.terrain = "water";
+  assert.equal(sourceTile.terrain, sourceTerrain, "materialized ghost tiles must remain detached from edge snapshots");
 });
 
 test("missing neighbor edge data leaves only unavailable ghost links unmaterialized", () => {
