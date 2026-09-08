@@ -476,7 +476,7 @@ test("autonomous handoff follows exact global cell ownership on a slanted seam",
   );
 });
 
-test("completed one-hop expedition returns gathered cargo to its source storage", async () => {
+test("completed one-hop expedition routes interior cargo back to its source storage", async () => {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
   const east = await assignRegion(env, "garden-2");
@@ -520,10 +520,30 @@ test("completed one-hop expedition returns gathered cargo to its source storage"
     sourceState.height,
   );
   assert.ok(transition);
-  const targetTile = eastState.tiles[transition.targetPosition.y * eastState.width + transition.targetPosition.x];
+  const eastStep = HEX_GRID_DIRECTION_STEPS.east;
+  const intermediatePosition = {
+    x: transition.targetPosition.x + eastStep.x,
+    y: transition.targetPosition.y + eastStep.y,
+  };
+  const interiorPosition = {
+    x: intermediatePosition.x + eastStep.x,
+    y: intermediatePosition.y + eastStep.y,
+  };
+  assert.equal(isHexGridCell(eastState, intermediatePosition), true);
+  assert.equal(isHexGridCell(eastState, interiorPosition), true);
+  const arrivalTile = eastState.tiles[
+    transition.targetPosition.y * eastState.width + transition.targetPosition.x
+  ];
+  const intermediateTile = eastState.tiles[intermediatePosition.y * eastState.width + intermediatePosition.x];
+  const targetTile = eastState.tiles[interiorPosition.y * eastState.width + interiorPosition.x];
+  assert.ok(arrivalTile);
+  assert.ok(intermediateTile);
   assert.ok(targetTile);
+  arrivalTile.terrain = "forest";
+  arrivalTile.resource = { kind: "wood", amount: 1, maxAmount: 1 };
+  intermediateTile.terrain = "plain";
   targetTile.terrain = "forest";
-  targetTile.resource = { kind: "wood", amount: 4, maxAmount: 4 };
+  targetTile.resource = { kind: "wood", amount: 3, maxAmount: 3 };
   east.object.runtime = new WorldRuntime({ state: eastState });
   await east.object.persist();
 
@@ -542,17 +562,27 @@ test("completed one-hop expedition returns gathered cargo to its source storage"
   const arrived = east.object.runtime.snapshot().agents.find((entry) => entry.id.endsWith(`:${agent.id}`));
   assert.ok(arrived);
 
-  await east.object.alarm();
-  await east.object.alarm();
-  const pendingReturn = await east.state.storage.get(HANDOFF_KEY);
-  assert.ok(pendingReturn, "finished gathering should queue a crash-safe return handoff");
-  const returning = east.object.runtime.snapshot().agents.find((entry) => entry.id === arrived.id);
-  assert.ok(returning);
-  assert.equal(returning.task?.type, "deposit");
-
-  await east.object.alarm();
-  const backAtSource = source.object.runtime.snapshot().agents.find((entry) => entry.id === arrived.id);
-  assert.ok(backAtSource, "the globally-owned agent should return to the source region");
+  let sawInteriorCargo = false;
+  let backAtSource;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await east.object.alarm();
+    const eastAgent = east.object.runtime.snapshot().agents.find((entry) => entry.id === arrived.id);
+    if (
+      eastAgent?.inventory.wood === 4 &&
+      eastAgent.position.x === interiorPosition.x &&
+      eastAgent.position.y === interiorPosition.y
+    ) {
+      sawInteriorCargo = true;
+    }
+    backAtSource = source.object.runtime.snapshot().agents.find((entry) => entry.id === arrived.id);
+    if (backAtSource !== undefined) break;
+  }
+  assert.equal(
+    sawInteriorCargo || backAtSource?.inventory.wood === 4,
+    true,
+    "the expedition should gather the interior deposit before returning",
+  );
+  assert.ok(backAtSource, "the globally-owned agent should route back to the source region");
   assert.equal(backAtSource.task?.type, "deposit");
   assert.equal(backAtSource.inventory.wood, 4);
 

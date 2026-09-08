@@ -314,6 +314,45 @@ function returnHandoffForArrival(
   return undefined;
 }
 
+function returnTravelTargetForArrival(
+  state: WorldState,
+  agent: Agent,
+  claim: AutonomousArrivalClaim,
+): GridPosition | undefined {
+  if (
+    claim.returnToSourceStorage !== true ||
+    inventoryAmount(agent) <= 0 ||
+    hasActiveFactionStructure(state, agent.factionId)
+  ) return undefined;
+
+  const distances = localPathDistances(state, agent.position);
+  const candidates: Array<{ position: GridPosition; distance: number; direction: HexGridDirection }> = [];
+  for (const tile of state.tiles) {
+    const position = { x: tile.x, y: tile.y };
+    if (!isHexGridCell(state, position) || !isPassable(state, position)) continue;
+    const distance = distances.get(positionKey(position));
+    if (distance === undefined) continue;
+    for (const direction of boundaryDirections(state, position)) {
+      const step = HEX_GRID_DIRECTION_STEPS[direction];
+      const transition = regionCellTransition(
+        state.regionId,
+        { x: position.x + step.x, y: position.y + step.y },
+        state.width,
+        state.height,
+      );
+      if (transition?.targetRegionId !== claim.sourceRegionId) continue;
+      candidates.push({ position, distance, direction });
+    }
+  }
+  return candidates
+    .sort((a, b) =>
+      a.distance - b.distance ||
+      directionRank(a.direction) - directionRank(b.direction) ||
+      a.position.y - b.position.y ||
+      a.position.x - b.position.x
+    )[0]?.position;
+}
+
 function samePosition(
   a: { x: number; y: number },
   b: { x: number; y: number },
@@ -934,7 +973,25 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         agent.task.type === "gather" &&
         agent.task.resource === claim.resource;
 
-      if (!stillGathering && agent?.autonomy === true) {
+      if (!stillGathering && agent?.autonomy === true && agent.task?.source !== "external") {
+        if (
+          updatedClaim.returnToSourceStorage === true &&
+          !reservationExhausted &&
+          remainingInventoryCapacity(agent) > 0 &&
+          localResourceAvailable(after, updatedClaim.resource)
+        ) {
+          agent.task = {
+            source: "autonomy",
+            issuedAtTick: after.tick,
+            type: "gather",
+            resource: updatedClaim.resource,
+          };
+          agent.status = `continuing ${updatedClaim.resource} expedition`;
+          keep.push(updatedClaim);
+          this.replaceRuntimeState(after);
+          dirty = true;
+          continue;
+        }
         const pendingReturn = returnHandoffForArrival(after, agent, updatedClaim);
         const existingHandoff = await this.autonomyState.storage.get<PendingAutonomousHandoff | null>(
           AUTONOMOUS_HANDOFF_KEY,
@@ -949,6 +1006,24 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pendingReturn);
           this.replaceRuntimeState(after);
           dirty = true;
+          continue;
+        }
+
+        if (pendingReturn === undefined && (existingHandoff === undefined || existingHandoff === null)) {
+          const returnTarget = returnTravelTargetForArrival(after, agent, updatedClaim);
+          if (returnTarget !== undefined && !samePosition(agent.position, returnTarget)) {
+            agent.task = {
+              source: "autonomy",
+              issuedAtTick: after.tick,
+              type: "move",
+              target: { ...returnTarget },
+            };
+            agent.status = `traveling back toward ${claim.sourceRegionId} with gathered cargo`;
+            keep.push(updatedClaim);
+            this.replaceRuntimeState(after);
+            dirty = true;
+            continue;
+          }
         }
       }
 
