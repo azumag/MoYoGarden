@@ -188,7 +188,8 @@ function haloUpwindWaterVaporMoisture(
   return wind.strength * HALO_UPWIND_WATER_VAPOR_GAIN;
 }
 
-function haloNeighborPropaguleInfluence(
+function neighboringPropaguleInfluence(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
   resourceKind: Exclude<ResourceKind, "stone">,
   lookup: HaloLookup,
@@ -207,14 +208,23 @@ function haloNeighborPropaguleInfluence(
     : oppositeHexGridDirection(wind.direction);
 
   for (const direction of HEX_GRID_DIRECTIONS) {
-    const resource = lookup.get(hexHaloKey(position, direction))?.tile.resource;
+    // A halo link means this direction crosses the active macro-hex boundary.
+    // Prefer that exact ghost owner over the rectangular storage-envelope cell;
+    // otherwise use the ordinary local six-neighbor tile. This makes seed and
+    // propagule pressure continuous across a region seam instead of giving the
+    // same biomass different behavior merely because it lives in another DO.
+    const ghost = lookup.get(hexHaloKey(position, direction));
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    const local = ghost === undefined
+      ? getTile(state, { x: position.x + step.x, y: position.y + step.y })
+      : undefined;
+    const resource = (ghost?.tile ?? local)?.resource;
     if (resource?.kind !== resourceKind || resource.maxAmount <= 0) continue;
     let cover = clamp01(resource.amount / resource.maxAmount);
     if (direction === upwindDirection && wind !== undefined) {
-      // Preserve the existing isotropic seed pressure as the baseline, then let
-      // the shared world wind add a small directional advantage to biomass that
-      // is actually upwind of this boundary cell. Downwind/crosswind sources are
-      // never penalized, so existing halo behavior remains backward-compatible.
+      // Preserve the isotropic seed pressure as the baseline, then let the
+      // shared world wind add a small directional advantage to biomass that is
+      // actually upwind. Local and cross-region sources use the same rule.
       cover = clamp01(cover * (1 + wind.strength * HALO_UPWIND_PROPAGULE_GAIN));
     }
     // Independent neighboring stands provide additional seed/propagule sources.
@@ -560,7 +570,8 @@ function resourceRegrowthChanceWithHaloLookup(
     catchmentContribution,
     environment,
   );
-  const propaguleInfluence = haloNeighborPropaguleInfluence(
+  const propaguleInfluence = neighboringPropaguleInfluence(
+    state,
     tile,
     tile.resource.kind,
     lookup,
@@ -591,11 +602,11 @@ export function resourceRegrowthChanceWithHalo(
 
 /**
  * The core simulation has already performed its ordinary local regrowth draw.
- * If halo water or matching neighboring organic biomass raises p0 to p1, a
- * second draw with probability `(p1-p0)/(1-p0)` conditioned on the first draw
- * having failed produces the exact combined probability p1 without allowing
- * two growth increments in the same tick. The before/after snapshots tell us
- * whether the base draw already succeeded.
+ * If neighboring local/ghost biomass or halo water raises p0 to p1, a second
+ * draw with probability `(p1-p0)/(1-p0)` conditioned on the first draw having
+ * failed produces the exact combined probability p1 without allowing two growth
+ * increments in the same tick. The before/after snapshots tell us whether the
+ * base draw already succeeded.
  */
 export function applyHaloRegrowthCompensation(
   before: WorldState,
@@ -604,7 +615,7 @@ export function applyHaloRegrowthCompensation(
   interval = 30,
   environment?: HaloEnvironmentFrame,
 ): number {
-  if (interval <= 0 || after.tick === 0 || after.tick % interval !== 0 || halo.length === 0) {
+  if (interval <= 0 || after.tick === 0 || after.tick % interval !== 0) {
     return 0;
   }
 
