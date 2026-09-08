@@ -83,6 +83,17 @@ function worldSeedValue(value: string | undefined): number {
     : DEFAULT_WORLD_SEED;
 }
 
+export function haloEnvironmentOrigin(
+  regionId: string,
+  width: number,
+  height: number,
+  legacyPhysicalOrigin?: { x: number; y: number },
+): { x: number; y: number } {
+  return regionGlobalCellOrigin(regionId, width, height)
+    ?? legacyPhysicalOrigin
+    ?? { x: 0, y: 0 };
+}
+
 function directionValue(value: string | null): HexGridDirection | undefined {
   return value !== null && HEX_GRID_DIRECTIONS.includes(value as HexGridDirection)
     ? value as HexGridDirection
@@ -314,22 +325,22 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   private haloEnvironmentFrame(state: WorldState): HaloEnvironmentFrame {
-    const canonicalOrigin = parseAxialRegionId(state.regionId) === undefined
-      ? undefined
-      : regionGlobalCellOrigin(state.regionId, state.width, state.height);
-    const entry = canonicalOrigin === undefined
+    const globalOrigin = regionGlobalCellOrigin(state.regionId, state.width, state.height);
+    const legacyPhysicalOrigin = globalOrigin === undefined
       ? regionHexWindow(
           configuredRegionIds(this.haloEnv),
           state.regionId,
           0,
           state.width,
           state.height,
-        ).find((candidate) => candidate.id === state.regionId)
+        ).find((candidate) => candidate.id === state.regionId)?.physicalOrigin
       : undefined;
-    const origin = canonicalOrigin
-      ?? entry?.physicalOrigin
-      ?? regionGlobalCellOrigin(state.regionId, state.width, state.height)
-      ?? { x: 0, y: 0 };
+    const origin = haloEnvironmentOrigin(
+      state.regionId,
+      state.width,
+      state.height,
+      legacyPhysicalOrigin,
+    );
     return {
       worldSeed: worldSeedValue(this.haloEnv.WORLD_SEED),
       originX: origin.x,
