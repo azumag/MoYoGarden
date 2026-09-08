@@ -205,7 +205,11 @@ export function materializeHexHalo(
 }
 
 export function hexHaloLookup(halo: readonly HexHaloTile[]): Map<string, HexHaloTile> {
+  // Materialized ghost tiles are already detached from their edge snapshots.
+  // Halo consumers treat the lookup as read-only, so indexing those ghosts by
+  // reference avoids cloning the complete depth-1 halo again for every
+  // environmental query while preserving source-snapshot isolation.
   return new Map(
-    halo.map((entry) => [hexHaloKey(entry.sourcePosition, entry.direction), structuredClone(entry)]),
+    halo.map((entry) => [hexHaloKey(entry.sourcePosition, entry.direction), entry]),
   );
 }

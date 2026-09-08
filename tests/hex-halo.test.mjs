@@ -30,6 +30,24 @@ test("halo materialization indexes edge tiles without cloning them twice", () =>
   assert.doesNotMatch(hexHaloSource, /structuredClone\(entry\.tile\)/);
 });
 
+test("halo lookup reuses already-detached ghost entries instead of cloning the full halo", () => {
+  const ghost = {
+    sourceRegionId: "hex-q0-r0",
+    sourcePosition: { x: 39, y: 11 },
+    direction: "east",
+    neighborRegionId: "hex-q1-r0",
+    neighborPosition: { x: 0, y: 11 },
+    neighborDirection: "west",
+    tile: { x: 0, y: 11, terrain: "forest", elevation: 0.4 },
+  };
+  const lookup = hexHaloLookup([ghost]);
+  assert.equal(
+    lookup.get(hexHaloKey(ghost.sourcePosition, ghost.direction)),
+    ghost,
+    "lookup should index the materialized ghost by reference rather than cloning it again",
+  );
+});
+
 test("active legacy regions expand environmental halo to all six dynamic neighbors", () => {
   const configured = ["garden-1", "garden-2", "garden-3"];
   const active = haloLinksForActivity(extent, configured, "garden-1", "active");
