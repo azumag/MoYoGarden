@@ -91,6 +91,7 @@ export interface AutonomousHaloTravelPlan extends PendingAutonomousTravel {}
 
 const AUTONOMOUS_HANDOFF_KEY = "handoff:autonomy:v1";
 const AUTONOMOUS_TRAVEL_KEY = "handoff:autonomy:travel:v1";
+const AUTONOMOUS_TRAVELS_KEY = "handoff:autonomy:travel:v2";
 const AUTONOMOUS_SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
@@ -102,6 +103,7 @@ const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
 const AUTONOMOUS_SUPPLY_CLAIM_TTL = AUTONOMOUS_TRAVEL_TTL + AUTONOMOUS_SCOUT_INTERVAL;
+const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;
 
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
@@ -155,6 +157,26 @@ function isEdgeSnapshot(value: unknown): value is HexHaloEdgeSnapshot {
 
 function isResourceKind(value: unknown): value is ResourceKind {
   return value === "wood" || value === "stone" || value === "food";
+}
+
+function isPendingAutonomousTravel(value: unknown): value is PendingAutonomousTravel {
+  return isRecord(value)
+    && typeof value.agentId === "string"
+    && isResourceKind(value.resource)
+    && typeof value.direction === "string"
+    && HEX_GRID_DIRECTIONS.includes(value.direction as HexGridDirection)
+    && typeof value.neighborRegionId === "string"
+    && isRecord(value.boundaryTarget)
+    && Number.isInteger(value.boundaryTarget.x)
+    && Number.isInteger(value.boundaryTarget.y)
+    && Number.isInteger(value.issuedAtTick)
+    && Number.isInteger(value.startedAtTick)
+    && (value.claimId === undefined || typeof value.claimId === "string")
+    && (value.claimedSupply === undefined || (
+      typeof value.claimedSupply === "number"
+      && Number.isFinite(value.claimedSupply)
+      && value.claimedSupply >= 0
+    ));
 }
 
 function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim {
@@ -607,14 +629,6 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return active;
   }
 
-  private async persistAutonomousSupplyClaim(claim: AutonomousSupplyClaim, tick: number): Promise<void> {
-    const active = await this.activeAutonomousSupplyClaims(tick);
-    await this.autonomyState.storage.put(
-      AUTONOMOUS_SUPPLY_CLAIMS_KEY,
-      [...active.filter((entry) => entry.claimId !== claim.claimId), claim],
-    );
-  }
-
   private async releaseAutonomousSupplyClaim(claimId: string | undefined): Promise<void> {
     if (claimId === undefined) return;
     const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_SUPPLY_CLAIMS_KEY);
@@ -964,61 +978,98 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, null);
   }
 
-  private async resumeAutonomousTravel(state: WorldState): Promise<boolean> {
-    const pending = await this.autonomyState.storage.get<PendingAutonomousTravel | null>(AUTONOMOUS_TRAVEL_KEY);
-    if (pending === undefined || pending === null) return false;
+  private async autonomousTravels(): Promise<PendingAutonomousTravel[]> {
+    const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_TRAVELS_KEY);
+    const travels = Array.isArray(stored)
+      ? stored.filter(isPendingAutonomousTravel)
+      : [];
+    const legacy = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_TRAVEL_KEY);
+    let dirty = !Array.isArray(stored) && stored !== undefined;
 
-    const agent = state.agents.find((entry) => entry.id === pending.agentId);
-    if (agent === undefined || !agent.autonomy || agent.task?.source === "external") {
-      await this.releaseAutonomousSupplyClaim(pending.claimId);
+    if (isPendingAutonomousTravel(legacy)) {
+      const duplicate = travels.some((entry) =>
+        entry.agentId === legacy.agentId
+        || (entry.claimId !== undefined && entry.claimId === legacy.claimId)
+      );
+      if (!duplicate) travels.push(legacy);
       await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
-      return false;
-    }
-
-    if (
-      agent.energy <= LOW_ENERGY_THRESHOLD ||
-      localResourceAvailable(state, pending.resource) ||
-      state.tick - pending.startedAtTick > AUTONOMOUS_TRAVEL_TTL
-    ) {
-      if (isMatchingTravelTask(agent, pending)) delete agent.task;
-      await this.releaseAutonomousSupplyClaim(pending.claimId);
+      dirty = true;
+    } else if (legacy !== undefined && legacy !== null) {
       await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
-      this.replaceRuntimeState(state);
-      return false;
     }
 
-    if (samePosition(agent.position, pending.boundaryTarget)) {
-      agent.task = {
-        source: "autonomy",
-        issuedAtTick: pending.issuedAtTick,
-        type: "gather",
-        resource: pending.resource,
-      };
-      agent.status = `scouting ${pending.neighborRegionId} for ${pending.resource}`;
-      await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, null);
-      this.replaceRuntimeState(state);
-      return false;
+    if (dirty || (Array.isArray(stored) && travels.length !== stored.length)) {
+      await this.autonomyState.storage.put(AUTONOMOUS_TRAVELS_KEY, travels);
     }
-
-    if (!isMatchingTravelTask(agent, pending)) {
-      agent.task = {
-        source: "autonomy",
-        issuedAtTick: pending.issuedAtTick,
-        type: "move",
-        target: { ...pending.boundaryTarget },
-      };
-      agent.status = `traveling toward ${pending.neighborRegionId} for ${pending.resource}`;
-      this.replaceRuntimeState(state);
-    }
-    return true;
+    return travels;
   }
 
-  private async startAutonomousTravel(
+  private async resumeAutonomousTravels(state: WorldState): Promise<number> {
+    const travels = await this.autonomousTravels();
+    if (travels.length === 0) return 0;
+
+    const keep: PendingAutonomousTravel[] = [];
+    let stateDirty = false;
+    for (const pending of travels) {
+      const agent = state.agents.find((entry) => entry.id === pending.agentId);
+      if (agent === undefined || !agent.autonomy || agent.task?.source === "external") {
+        await this.releaseAutonomousSupplyClaim(pending.claimId);
+        continue;
+      }
+
+      if (
+        agent.energy <= LOW_ENERGY_THRESHOLD ||
+        remainingInventoryCapacity(agent) <= 0 ||
+        localResourceAvailable(state, pending.resource) ||
+        state.tick - pending.startedAtTick > AUTONOMOUS_TRAVEL_TTL
+      ) {
+        if (isMatchingTravelTask(agent, pending)) {
+          delete agent.task;
+          stateDirty = true;
+        }
+        await this.releaseAutonomousSupplyClaim(pending.claimId);
+        continue;
+      }
+
+      if (samePosition(agent.position, pending.boundaryTarget)) {
+        agent.task = {
+          source: "autonomy",
+          issuedAtTick: pending.issuedAtTick,
+          type: "gather",
+          resource: pending.resource,
+        };
+        agent.status = `scouting ${pending.neighborRegionId} for ${pending.resource}`;
+        stateDirty = true;
+        continue;
+      }
+
+      if (!isMatchingTravelTask(agent, pending)) {
+        agent.task = {
+          source: "autonomy",
+          issuedAtTick: pending.issuedAtTick,
+          type: "move",
+          target: { ...pending.boundaryTarget },
+        };
+        agent.status = `traveling toward ${pending.neighborRegionId} for ${pending.resource}`;
+        stateDirty = true;
+      }
+      keep.push(pending);
+    }
+
+    if (keep.length !== travels.length) {
+      await this.autonomyState.storage.put(AUTONOMOUS_TRAVELS_KEY, keep);
+    }
+    if (stateDirty) this.replaceRuntimeState(state);
+    return keep.length;
+  }
+
+  private async startAutonomousTravels(
     state: WorldState,
+    availableSlots: number,
     cachedHalo: readonly HexHaloTile[] = [],
     cachedDirections: readonly HexGridDirection[] = [],
-  ): Promise<boolean> {
-    if (!shouldScoutAutonomyHalo(state)) return false;
+  ): Promise<number> {
+    if (availableSlots <= 0 || !shouldScoutAutonomyHalo(state)) return 0;
     const loadedDirections = new Set(cachedDirections);
     const missingDirections = HEX_GRID_DIRECTIONS.filter((direction) => !loadedDirections.has(direction));
     const halo = missingDirections.length === 0
@@ -1028,38 +1079,45 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           ...(await this.materializeAutonomyHalo(state, missingDirections)),
         ];
     const claims = await this.activeAutonomousSupplyClaims(state.tick);
-    const plan = planAutonomousHaloTravel(state, halo, claims);
-    if (plan === undefined) return false;
+    const travels = await this.autonomousTravels();
+    const workingClaims = [...claims];
+    const added: PendingAutonomousTravel[] = [];
 
-    const agent = state.agents.find((entry) => entry.id === plan.agentId);
-    if (agent === undefined) return false;
-    const claimId = `autonomy-claim:${state.regionId}:${plan.agentId}:${state.tick}:${plan.direction}:${plan.neighborRegionId}`;
-    const pendingPlan: PendingAutonomousTravel = {
-      ...plan,
-      claimId,
-    };
-    const claimedSupply = plan.claimedSupply ?? 0;
-    if (claimedSupply > 0) {
-      await this.persistAutonomousSupplyClaim({
-        claimId,
-        agentId: plan.agentId,
-        resource: plan.resource,
-        direction: plan.direction,
-        neighborRegionId: plan.neighborRegionId,
-        amount: claimedSupply,
-        expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
-      }, state.tick);
+    while (added.length < availableSlots) {
+      const plan = planAutonomousHaloTravel(state, halo, workingClaims);
+      if (plan === undefined) break;
+      const agent = state.agents.find((entry) => entry.id === plan.agentId);
+      if (agent === undefined) break;
+
+      const claimId = `autonomy-claim:${state.regionId}:${plan.agentId}:${state.tick}:${plan.direction}:${plan.neighborRegionId}`;
+      const pendingPlan: PendingAutonomousTravel = { ...plan, claimId };
+      const claimedSupply = plan.claimedSupply ?? 0;
+      if (claimedSupply > 0) {
+        workingClaims.push({
+          claimId,
+          agentId: plan.agentId,
+          resource: plan.resource,
+          direction: plan.direction,
+          neighborRegionId: plan.neighborRegionId,
+          amount: claimedSupply,
+          expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
+        });
+      }
+      agent.task = {
+        source: "autonomy",
+        issuedAtTick: plan.issuedAtTick,
+        type: "move",
+        target: { ...plan.boundaryTarget },
+      };
+      agent.status = `traveling toward ${plan.neighborRegionId} for ${plan.resource}`;
+      added.push(pendingPlan);
     }
-    agent.task = {
-      source: "autonomy",
-      issuedAtTick: plan.issuedAtTick,
-      type: "move",
-      target: { ...plan.boundaryTarget },
-    };
-    agent.status = `traveling toward ${plan.neighborRegionId} for ${plan.resource}`;
-    await this.autonomyState.storage.put(AUTONOMOUS_TRAVEL_KEY, pendingPlan);
+
+    if (added.length === 0) return 0;
+    await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, workingClaims);
+    await this.autonomyState.storage.put(AUTONOMOUS_TRAVELS_KEY, [...travels, ...added]);
     this.replaceRuntimeState(state);
-    return true;
+    return added.length;
   }
 
   private async resumeOrPlanAutonomousHandoff(state: WorldState): Promise<void> {
@@ -1068,7 +1126,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       await this.attemptPendingHandoff(pending);
       return;
     }
-    if (await this.resumeAutonomousTravel(state)) return;
+    const activeTravels = await this.resumeAutonomousTravels(state);
 
     const directions = autonomyHaloPlanningDirections(state);
     const scoutDue = shouldScoutAutonomyHalo(state);
@@ -1099,7 +1157,12 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       }
     }
 
-    await this.startAutonomousTravel(state, halo, loadedDirections);
+    await this.startAutonomousTravels(
+      state,
+      Math.max(0, MAX_CONCURRENT_AUTONOMOUS_TRAVELS - activeTravels),
+      halo,
+      loadedDirections,
+    );
   }
 
   override async fetch(request: Request): Promise<Response> {

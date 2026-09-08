@@ -8,7 +8,7 @@ import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
 const CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const HANDOFF_KEY = "handoff:autonomy:v1";
-const TRAVEL_KEY = "handoff:autonomy:travel:v1";
+const TRAVEL_KEY = "handoff:autonomy:travel:v2";
 const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
 
 class MemoryStorage {
@@ -172,10 +172,11 @@ test("persisted supply claims keep the next scout from double-booking the same n
 
   await source.object.alarm();
 
-  const travel = await source.state.storage.get(TRAVEL_KEY);
-  assert.ok(travel);
+  const travels = await source.state.storage.get(TRAVEL_KEY);
+  assert.ok(Array.isArray(travels));
+  assert.equal(travels.length, 1);
   assert.equal(
-    travel.neighborRegionId,
+    travels[0].neighborRegionId,
     "garden-3",
     "the persisted east claim should leave the north-east supply as the better available expedition",
   );
