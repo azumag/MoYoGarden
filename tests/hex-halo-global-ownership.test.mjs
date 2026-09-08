@@ -25,6 +25,32 @@ test("configured halo reads the exact adjacent global cells", () => {
   }
 });
 
+test("historical configured ids do not downgrade migrated halo neighbors", () => {
+  const knownIds = ["garden-1", "garden-2", "garden-3"];
+  const exactKnown = buildConfiguredHexHaloLinks(extent, knownIds, "garden-1");
+  const mixed = buildConfiguredHexHaloLinks(
+    extent,
+    [...knownIds, "historical-garden-4"],
+    "garden-1",
+  );
+
+  assert.deepEqual(
+    mixed.filter((link) => link.neighborRegionId !== "historical-garden-4"),
+    exactKnown,
+    "known axial neighbors must keep exact global-cell ownership",
+  );
+  assert.ok(
+    mixed.some((link) => link.neighborRegionId === "historical-garden-4"),
+    "the unresolved historical neighbor must retain a compatibility halo",
+  );
+  const keys = mixed.map((link) => `${link.sourcePosition.x},${link.sourcePosition.y}:${link.direction}`);
+  assert.equal(
+    new Set(keys).size,
+    keys.length,
+    "historical fallback must never overwrite an exact source-direction slot",
+  );
+});
+
 test("dynamic canonical halo covers all six exact global neighbors", () => {
   const sourceRegionId = "hex-q0-r1";
   const links = buildDynamicHexHaloLinks(extent, sourceRegionId);

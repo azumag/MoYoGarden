@@ -77,18 +77,18 @@ export function buildHexHaloLinks(
 
 /**
  * Build a configured-only halo using the shared global cell ownership frame.
- * This deliberately does not synthesize unconfigured neighbors: it fixes which
- * cells existing halo reads observe without increasing cross-DO fan-out.
+ * Known axial neighbors stay on exact global ownership even when REGION_IDS
+ * still contains an unresolved historical entry. Historical neighbors retain
+ * the old side-pair mapping only for source-direction slots that exact axial
+ * ownership did not already claim, so one compatibility ID cannot downgrade
+ * water/vegetation/wind propagation between otherwise-migrated regions.
  */
 export function buildConfiguredHexHaloLinks(
   extent: HexGridExtent,
   regionIds: readonly string[],
   sourceRegionId: string,
 ): HexHaloLink[] {
-  if (
-    regionAxialCoordinate(sourceRegionId) === undefined ||
-    regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)
-  ) {
+  if (regionAxialCoordinate(sourceRegionId) === undefined) {
     return buildHexHaloLinks(extent, regionIds, sourceRegionId);
   }
   const links: HexHaloLink[] = [];
@@ -117,7 +117,20 @@ export function buildConfiguredHexHaloLinks(
       });
     }
   }
-  return links;
+
+  if (!regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)) {
+    return links;
+  }
+
+  const exactKeys = new Set(
+    links.map((link) => hexHaloKey(link.sourcePosition, link.direction)),
+  );
+  const historicalFallback = buildHexHaloLinks(extent, regionIds, sourceRegionId).filter(
+    (link) =>
+      regionAxialCoordinate(link.neighborRegionId) === undefined &&
+      !exactKeys.has(hexHaloKey(link.sourcePosition, link.direction)),
+  );
+  return [...links, ...historicalFallback];
 }
 
 /**
