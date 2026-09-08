@@ -475,3 +475,92 @@ test("autonomous handoff follows exact global cell ownership on a slanted seam",
     "the macro north-east alias must not receive a cell owned by garden-2",
   );
 });
+
+test("completed one-hop expedition returns gathered cargo to its source storage", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  const east = await assignRegion(env, "garden-2");
+
+  const sourceState = source.object.runtime.snapshot();
+  depleteWood(sourceState);
+  for (const candidate of sourceState.agents) candidate.autonomy = false;
+  const agent = sourceState.agents[0];
+  assert.ok(agent);
+  const eastBoundary = hexGridBoundaryCells(sourceState, "east");
+  const sourcePosition = eastBoundary[Math.floor(eastBoundary.length / 2)];
+  assert.ok(sourcePosition);
+  sourceState.tick = 24;
+  agent.autonomy = true;
+  agent.position = { ...sourcePosition };
+  agent.role = "woodcutter";
+  agent.capacity = 4;
+  agent.inventory = { wood: 0, stone: 0, food: 0 };
+  agent.energy = 100;
+  agent.task = { source: "autonomy", issuedAtTick: 20, type: "gather", resource: "wood" };
+  sourceState.structures.push({
+    id: "source-storehouse",
+    factionId: agent.factionId,
+    type: "storehouse",
+    position: { ...sourcePosition },
+    status: "active",
+    progress: 1,
+    requiredProgress: 1,
+    storage: { wood: 0, stone: 0, food: 0 },
+  });
+  source.object.runtime = new WorldRuntime({ state: sourceState });
+  await source.object.persist();
+
+  const eastState = east.object.runtime.snapshot();
+  depleteWood(eastState);
+  const step = HEX_GRID_DIRECTION_STEPS.east;
+  const transition = regionCellTransition(
+    "garden-1",
+    { x: sourcePosition.x + step.x, y: sourcePosition.y + step.y },
+    sourceState.width,
+    sourceState.height,
+  );
+  assert.ok(transition);
+  const targetTile = eastState.tiles[transition.targetPosition.y * eastState.width + transition.targetPosition.x];
+  assert.ok(targetTile);
+  targetTile.terrain = "forest";
+  targetTile.resource = { kind: "wood", amount: 4, maxAmount: 4 };
+  east.object.runtime = new WorldRuntime({ state: eastState });
+  await east.object.persist();
+
+  await source.state.storage.put(CLAIMS_KEY, [{
+    claimId: "returning-east-claim",
+    agentId: agent.id,
+    resource: "wood",
+    direction: "east",
+    neighborRegionId: "garden-2",
+    amount: 4,
+    expiresAtTick: 84,
+    returnToSourceStorage: true,
+  }]);
+
+  await source.object.alarm();
+  const arrived = east.object.runtime.snapshot().agents.find((entry) => entry.id.endsWith(`:${agent.id}`));
+  assert.ok(arrived);
+
+  await east.object.alarm();
+  await east.object.alarm();
+  const pendingReturn = await east.state.storage.get(HANDOFF_KEY);
+  assert.ok(pendingReturn, "finished gathering should queue a crash-safe return handoff");
+  const returning = east.object.runtime.snapshot().agents.find((entry) => entry.id === arrived.id);
+  assert.ok(returning);
+  assert.equal(returning.task?.type, "deposit");
+
+  await east.object.alarm();
+  const backAtSource = source.object.runtime.snapshot().agents.find((entry) => entry.id === arrived.id);
+  assert.ok(backAtSource, "the globally-owned agent should return to the source region");
+  assert.equal(backAtSource.task?.type, "deposit");
+  assert.equal(backAtSource.inventory.wood, 4);
+
+  await source.object.alarm();
+  const deposited = source.object.runtime.snapshot().agents.find((entry) => entry.id === arrived.id);
+  const storehouse = source.object.runtime.snapshot().structures.find((entry) => entry.id === "source-storehouse");
+  assert.ok(deposited);
+  assert.ok(storehouse);
+  assert.equal(deposited.inventory.wood, 0);
+  assert.equal(storehouse.storage.wood, 4);
+});

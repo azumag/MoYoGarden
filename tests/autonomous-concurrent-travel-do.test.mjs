@@ -255,3 +255,27 @@ test("simultaneous arrivals keep ownership handoffs serial without losing waitin
   assert.equal(after.agents.length + east.object.runtime.snapshot().agents.length, totalAgents);
   assert.equal(trips.filter((trip) => after.agents.some((x) => x.id === trip.agentId)).length, 2);
 });
+
+test("resource expeditions remember when their source has storage for the return trip", async () => {
+  const { source } = await expeditionFixture(2);
+  const state = source.object.runtime.snapshot();
+  const scout = state.agents.find((agent) => agent.autonomy);
+  assert.ok(scout);
+  state.structures.push({
+    id: "return-home-storehouse",
+    factionId: scout.factionId,
+    type: "storehouse",
+    position: hexGridCenter(state),
+    status: "active",
+    progress: 1,
+    requiredProgress: 1,
+    storage: { wood: 0, stone: 0, food: 0 },
+  });
+  source.object.runtime = new WorldRuntime({ state });
+  await source.object.persist();
+
+  await source.object.alarm();
+  const claims = await source.state.storage.get(CLAIMS_KEY);
+  assert.equal(claims.length, 1);
+  assert.equal(claims[0].returnToSourceStorage, true);
+});

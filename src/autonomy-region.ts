@@ -21,7 +21,7 @@ import {
   type ResourceKind,
   type WorldState,
 } from "./protocol.js";
-import { regionAxialCoordinate } from "./region-topology.js";
+import { regionAxialCoordinate, regionCellTransition } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { isPassable } from "./world.js";
 
@@ -48,6 +48,7 @@ interface PendingAutonomousHandoff {
   resource: ResourceKind;
   claimId?: string;
   desiredPosition?: GridPosition;
+  returnToSourceStorage?: boolean;
 }
 
 interface PendingAutonomousTravel {
@@ -71,6 +72,7 @@ export interface AutonomousSupplyClaim {
   amount: number;
   settledAmount?: number;
   expiresAtTick: number;
+  returnToSourceStorage?: boolean;
 }
 
 interface AutonomousArrivalClaim {
@@ -81,6 +83,7 @@ interface AutonomousArrivalClaim {
   registeredAtTick: number;
   gatheredAmount?: number;
   settledAmount?: number;
+  returnToSourceStorage?: boolean;
 }
 
 export interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {
@@ -196,7 +199,8 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
       && value.settledAmount >= 0
     ))
     && typeof value.expiresAtTick === "number"
-    && Number.isInteger(value.expiresAtTick);
+    && Number.isInteger(value.expiresAtTick)
+    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");
 }
 
 function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalClaim {
@@ -215,7 +219,8 @@ function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalCla
       typeof value.settledAmount === "number"
       && Number.isFinite(value.settledAmount)
       && value.settledAmount >= 0
-    ));
+    ))
+    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");
 }
 
 function inventoryAmount(agent: Agent): number {
@@ -272,6 +277,41 @@ function boundaryDirections(
 
 function isBoundaryPosition(state: WorldState, position: Agent["position"]): boolean {
   return boundaryDirections(state, position).length > 0;
+}
+
+function returnHandoffForArrival(
+  state: WorldState,
+  agent: Agent,
+  claim: AutonomousArrivalClaim,
+): PendingAutonomousHandoff | undefined {
+  if (
+    claim.returnToSourceStorage !== true ||
+    inventoryAmount(agent) <= 0 ||
+    hasActiveFactionStructure(state, agent.factionId)
+  ) return undefined;
+
+  for (const direction of boundaryDirections(state, agent.position)) {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    const desiredPosition = {
+      x: agent.position.x + step.x,
+      y: agent.position.y + step.y,
+    };
+    const transition = regionCellTransition(
+      state.regionId,
+      desiredPosition,
+      state.width,
+      state.height,
+    );
+    if (transition?.targetRegionId !== claim.sourceRegionId) continue;
+    return {
+      transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${direction}`,
+      agentId: agent.id,
+      direction,
+      resource: claim.resource,
+      desiredPosition,
+    };
+  }
+  return undefined;
 }
 
 function samePosition(
@@ -571,6 +611,7 @@ export function planAutonomousHaloHandoff(
         y: candidate.entry.sourcePosition.y + HEX_GRID_DIRECTION_STEPS[candidate.entry.direction].y,
       },
       ...(claimId === undefined ? {} : { claimId }),
+      ...(candidate.claim?.returnToSourceStorage === true ? { returnToSourceStorage: true } : {}),
     };
   }
   return undefined;
@@ -679,7 +720,8 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId) ||
       typeof body.agentId !== "string" ||
       body.agentId.trim() === "" ||
-      !isResourceKind(body.resource)
+      !isResourceKind(body.resource) ||
+      (body.returnToSourceStorage !== undefined && typeof body.returnToSourceStorage !== "boolean")
     ) {
       return new Response(JSON.stringify({ error: "invalid arrival claim" }), { status: 400 });
     }
@@ -705,6 +747,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       registeredAtTick: existing?.registeredAtTick ?? state.tick,
       gatheredAmount: existing?.gatheredAmount ?? 0,
       settledAmount: existing?.settledAmount ?? 0,
+      returnToSourceStorage: existing?.returnToSourceStorage ?? body.returnToSourceStorage === true,
     };
     await this.autonomyState.storage.put(
       AUTONOMOUS_ARRIVAL_CLAIMS_KEY,
@@ -817,6 +860,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           sourceRegionId,
           agentId: payload.agentId,
           resource: pending.resource,
+          ...(pending.returnToSourceStorage === true ? { returnToSourceStorage: true } : {}),
         }),
       }));
     } catch {
@@ -884,16 +928,34 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         gatheredAmount,
         settledAmount,
       };
-      if (reservationExhausted) {
-        dirty = true;
-        continue;
-      }
-
       const stillGathering =
         agent?.autonomy === true &&
         agent.task?.source === "autonomy" &&
         agent.task.type === "gather" &&
         agent.task.resource === claim.resource;
+
+      if (!stillGathering && agent?.autonomy === true) {
+        const pendingReturn = returnHandoffForArrival(after, agent, updatedClaim);
+        const existingHandoff = await this.autonomyState.storage.get<PendingAutonomousHandoff | null>(
+          AUTONOMOUS_HANDOFF_KEY,
+        );
+        if (pendingReturn !== undefined && (existingHandoff === undefined || existingHandoff === null)) {
+          agent.task = {
+            source: "autonomy",
+            issuedAtTick: after.tick,
+            type: "deposit",
+          };
+          agent.status = `returning to ${claim.sourceRegionId} with gathered cargo`;
+          await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pendingReturn);
+          this.replaceRuntimeState(after);
+          dirty = true;
+        }
+      }
+
+      if (reservationExhausted) {
+        dirty = true;
+        continue;
+      }
       if (stillGathering) {
         keep.push(updatedClaim);
         continue;
@@ -1101,6 +1163,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           neighborRegionId: plan.neighborRegionId,
           amount: claimedSupply,
           expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
+          returnToSourceStorage: hasActiveFactionStructure(state, agent.factionId),
         });
       }
       agent.task = {
@@ -1150,6 +1213,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
             ? {}
             : { desiredPosition: { ...plan.desiredPosition } }),
           ...(plan.claimId === undefined ? {} : { claimId: plan.claimId }),
+          ...(plan.returnToSourceStorage === true ? { returnToSourceStorage: true } : {}),
         };
         await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pendingPlan);
         await this.attemptPendingHandoff(pendingPlan);
