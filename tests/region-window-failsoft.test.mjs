@@ -55,3 +55,12 @@ test("one neighbor transport failure stays an error chunk instead of aborting th
   assert.equal(center?.state?.regionId, "garden-1");
   assert.equal(payload.chunks.filter((chunk) => chunk.state).length, 6);
 });
+
+test("center transport failure rejects a centerless live window", async () => {
+  const response = await worker.fetch(
+    new Request("https://moyo.example/api/world/window?region=garden-1&radius=1&live=1"),
+    envWithTransportFailure("garden-1"),
+  );
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "center region snapshot unavailable" });
+});

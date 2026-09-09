@@ -161,7 +161,29 @@ function unavailableRegionSnapshot(): Response {
   });
 }
 
-function failSoftRegionWindowEnv(env: WorkerEnv): WorkerEnv {
+function unavailableCenterRegionWindow(): Response {
+  return new Response(JSON.stringify({ error: "center region snapshot unavailable" }), {
+    status: 503,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+    },
+  });
+}
+
+class CenterRegionSnapshotUnavailable extends Error {}
+
+function regionWindowCenter(request: Request, env: WorkerEnv): string {
+  const url = new URL(request.url);
+  const requested =
+    url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
+  return requested === undefined || requested === ""
+    ? configuredRegionIds(env)[0] ?? "garden-1"
+    : requested;
+}
+
+function failSoftRegionWindowEnv(env: WorkerEnv, centerRegionId: string): WorkerEnv {
   const regions = {
     idFromName: (...args: Parameters<WorkerEnv["REGIONS"]["idFromName"]>) =>
       env.REGIONS.idFromName(...args),
@@ -172,6 +194,13 @@ function failSoftRegionWindowEnv(env: WorkerEnv): WorkerEnv {
           try {
             return await stub.fetch(...fetchArgs);
           } catch {
+            const snapshotRequest = fetchArgs[0];
+            const routedRegionId = snapshotRequest instanceof Request
+              ? snapshotRequest.headers.get("x-moyo-region-internal")?.trim()
+              : undefined;
+            if (routedRegionId === centerRegionId) {
+              throw new CenterRegionSnapshotUnavailable();
+            }
             return unavailableRegionSnapshot();
           }
         },
@@ -194,15 +223,23 @@ export default {
       return hiddenInternalEndpoint();
     }
 
-    // A radius window is a best-effort aggregation of independent region DOs.
-    // Isolate a transient stub transport failure to that one chunk so the base
-    // worker can return its existing non-OK chunk shape instead of rejecting the
-    // entire six-neighbor window. Other API routes keep their original failure
-    // semantics; only the read-only window fan-out gets this fail-soft wrapper.
-    const baseEnv = request.method === "GET" && url.pathname === "/api/world/window"
-      ? failSoftRegionWindowEnv(env)
+    const isRegionWindow = request.method === "GET" && url.pathname === "/api/world/window";
+    // A radius window is a best-effort aggregation of independent neighboring
+    // region DOs, but the center snapshot is the coordinate/state authority for
+    // the entire payload. Fail soft only for neighbors; a missing center must
+    // fail the request instead of publishing a misleading centerless window.
+    const baseEnv = isRegionWindow
+      ? failSoftRegionWindowEnv(env, regionWindowCenter(request, env))
       : env;
-    const response = await baseWorker.fetch(request, baseEnv);
+    let response: Response;
+    try {
+      response = await baseWorker.fetch(request, baseEnv);
+    } catch (error) {
+      if (isRegionWindow && error instanceof CenterRegionSnapshotUnavailable) {
+        return unavailableCenterRegionWindow();
+      }
+      throw error;
+    }
 
     if (request.method !== "GET" || !response.ok) return response;
 
