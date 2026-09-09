@@ -151,6 +151,36 @@ function hiddenInternalEndpoint(): Response {
   });
 }
 
+function unavailableRegionSnapshot(): Response {
+  return new Response(JSON.stringify({ error: "snapshot unavailable" }), {
+    status: 503,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function failSoftRegionWindowEnv(env: WorkerEnv): WorkerEnv {
+  const regions = {
+    idFromName: (...args: Parameters<WorkerEnv["REGIONS"]["idFromName"]>) =>
+      env.REGIONS.idFromName(...args),
+    get: (...args: Parameters<WorkerEnv["REGIONS"]["get"]>) => {
+      const stub = env.REGIONS.get(...args);
+      return {
+        fetch: async (...fetchArgs: Parameters<typeof stub.fetch>) => {
+          try {
+            return await stub.fetch(...fetchArgs);
+          } catch {
+            return unavailableRegionSnapshot();
+          }
+        },
+      } as typeof stub;
+    },
+  } as unknown as WorkerEnv["REGIONS"];
+  return { ...env, REGIONS: regions };
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -164,7 +194,15 @@ export default {
       return hiddenInternalEndpoint();
     }
 
-    const response = await baseWorker.fetch(request, env);
+    // A radius window is a best-effort aggregation of independent region DOs.
+    // Isolate a transient stub transport failure to that one chunk so the base
+    // worker can return its existing non-OK chunk shape instead of rejecting the
+    // entire six-neighbor window. Other API routes keep their original failure
+    // semantics; only the read-only window fan-out gets this fail-soft wrapper.
+    const baseEnv = request.method === "GET" && url.pathname === "/api/world/window"
+      ? failSoftRegionWindowEnv(env)
+      : env;
+    const response = await baseWorker.fetch(request, baseEnv);
 
     if (request.method !== "GET" || !response.ok) return response;
 
