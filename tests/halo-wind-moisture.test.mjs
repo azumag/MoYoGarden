@@ -51,17 +51,21 @@ function environmentFrameForWind(tile, direction) {
   assert.fail(`could not find deterministic ${direction} wind fixture`);
 }
 
+function windAt(tile, frame) {
+  return sampleWorldWind(
+    frame.worldSeed,
+    frame.originX + tile.x,
+    frame.originY + tile.y,
+  );
+}
+
 test("upwind ghost water carries a bounded windborne moisture bonus across the hex halo", () => {
   const { state, tile, halo } = fixture();
   const baseline = surfaceMoistureWithHaloAt(state, tile, halo);
   const upwindFrame = environmentFrameForWind(tile, "west");
   const crosswindFrame = environmentFrameForWind(tile, "southEast");
 
-  const upwindWind = sampleWorldWind(
-    upwindFrame.worldSeed,
-    upwindFrame.originX + tile.x,
-    upwindFrame.originY + tile.y,
-  );
+  const upwindWind = windAt(tile, upwindFrame);
   assert.equal(upwindWind.direction, "west");
   assert.ok(upwindWind.strength >= 0.2);
 
@@ -72,30 +76,54 @@ test("upwind ghost water carries a bounded windborne moisture bonus across the h
   assert.ok(upwind - baseline <= 0.08 + 1e-12);
 });
 
-test("local and cross-region upwind water receive the same vapor bonus", () => {
-  const { state, tile, halo } = fixture();
-  const upwindFrame = environmentFrameForWind(tile, "west");
-  const eastLocal = state.tiles[tile.y * state.width + tile.x + 1];
-  assert.ok(eastLocal);
-  eastLocal.terrain = "water";
-  eastLocal.elevation = 0;
-
-  const localBaseline = surfaceMoistureWithHaloAt(state, tile, []);
-  const localUpwind = surfaceMoistureWithHaloAt(state, tile, [], upwindFrame);
-  const haloBaseline = surfaceMoistureWithHaloAt(state, tile, halo);
-  const haloUpwind = surfaceMoistureWithHaloAt(state, tile, halo, upwindFrame);
-
-  assert.ok(localUpwind > localBaseline);
+test("local and cross-region upwind water receive the same vapor rule", () => {
+  const haloCase = fixture();
+  const haloFrame = environmentFrameForWind(haloCase.tile, "west");
+  const haloWind = windAt(haloCase.tile, haloFrame);
+  const haloBaseline = surfaceMoistureWithHaloAt(haloCase.state, haloCase.tile, haloCase.halo);
+  const haloUpwind = surfaceMoistureWithHaloAt(
+    haloCase.state,
+    haloCase.tile,
+    haloCase.halo,
+    haloFrame,
+  );
   assert.ok(haloUpwind > haloBaseline);
   assert.ok(
-    Math.abs((localUpwind - localBaseline) - (haloUpwind - haloBaseline)) < 1e-12,
-    "one-step water should gain identical windborne moisture on either side of the DO seam",
+    Math.abs((haloUpwind - haloBaseline) - haloWind.strength * 0.08) < 1e-12,
+    "cross-region upwind water should add wind strength times the shared vapor gain",
   );
 
-  halo[0].tile.terrain = "plain";
+  const localCase = fixture();
+  const localTile = localCase.state.tiles[11 * localCase.state.width + 19];
+  const localWater = localCase.state.tiles[11 * localCase.state.width + 20];
+  assert.ok(localTile);
+  assert.ok(localWater);
+  localTile.terrain = "plain";
+  localTile.elevation = 0.8;
+  delete localTile.resource;
+  localWater.terrain = "water";
+  localWater.elevation = 0;
+  delete localWater.resource;
+
+  const localFrame = environmentFrameForWind(localTile, "west");
+  const localWind = windAt(localTile, localFrame);
+  const localBaseline = surfaceMoistureWithHaloAt(localCase.state, localTile, []);
+  const localUpwind = surfaceMoistureWithHaloAt(localCase.state, localTile, [], localFrame);
+  assert.ok(localUpwind > localBaseline);
+  assert.ok(
+    Math.abs((localUpwind - localBaseline) - localWind.strength * 0.08) < 1e-12,
+    "local upwind water should use the identical shared vapor gain",
+  );
+
+  const compatibilityCell = haloCase.state.tiles[
+    haloCase.tile.y * haloCase.state.width + haloCase.tile.x + 1
+  ];
+  assert.ok(compatibilityCell);
+  compatibilityCell.terrain = "water";
+  haloCase.halo[0].tile.terrain = "plain";
   assert.equal(
-    surfaceMoistureWithHaloAt(state, tile, halo, upwindFrame),
-    surfaceMoistureWithHaloAt(state, tile, halo),
-    "an exact ghost owner must suppress vapor from the rectangular compatibility cell",
+    surfaceMoistureWithHaloAt(haloCase.state, haloCase.tile, haloCase.halo, haloFrame),
+    surfaceMoistureWithHaloAt(haloCase.state, haloCase.tile, haloCase.halo),
+    "an exact ghost owner must suppress directional vapor from the rectangular compatibility cell",
   );
 });
