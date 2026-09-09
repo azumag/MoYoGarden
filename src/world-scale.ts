@@ -89,8 +89,10 @@ export function sampleWorldMicroVariation(
   const y0 = Math.floor(latticeY);
   const tx = smoothstep(latticeX - x0);
   const ty = smoothstep(latticeY - y0);
+  // coordinateSeed already folds in worldSeed. Use it as the hashed seed with
+  // a fixed domain salt so the shared world seed cannot cancel itself via XOR.
   const sample = (x: number, y: number) =>
-    seededUnit(worldSeed, coordinateSeed(worldSeed, x, y)) - 0.5;
+    seededUnit(coordinateSeed(worldSeed, x, y), 0x3c6ef372) - 0.5;
   const north = lerp(sample(x0, y0), sample(x0 + 1, y0), tx);
   const south = lerp(sample(x0, y0 + 1), sample(x0 + 1, y0 + 1), tx);
   return lerp(north, south, ty);

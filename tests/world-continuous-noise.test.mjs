@@ -29,6 +29,26 @@ test("global environmental microvariation is deterministic, bounded, and locally
   assert.ok(Math.max(...samples) - Math.min(...samples) > 0.35);
 });
 
+test("global environmental microvariation remains keyed by the shared world seed", () => {
+  const coordinates = [
+    [0, 0],
+    [7, -3],
+    [19, 11],
+    [46, -1],
+    [-23, 11],
+    [64, -48],
+    [-37, -29],
+  ];
+  const first = coordinates.map(([x, y]) => sampleWorldMicroVariation(424242, x, y));
+  const second = coordinates.map(([x, y]) => sampleWorldMicroVariation(424243, x, y));
+
+  assert.notDeepEqual(first, second);
+  assert.ok(
+    first.some((value, index) => Math.abs(value - second[index]) > 0.05),
+    "different world seeds should materially alter the microvariation field",
+  );
+});
+
 test("fresh world conditions stay smooth across macro-region-scale coordinate seams", () => {
   const seed = 424242;
   const seamPairs = [
