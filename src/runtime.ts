@@ -48,6 +48,7 @@ const POPULATION_GROWTH_FOOD_COST = 6;
 const POPULATION_HEALTH_THRESHOLD = 70;
 const POPULATION_ENERGY_THRESHOLD = 35;
 const POPULATION_SETTLEMENT_RADIUS = 3;
+const POPULATION_RESIDENT_CAPACITY_PER_CAMP = 6;
 const SOCIAL_INTERVAL = 12;
 const SOCIAL_RADIUS = 2;
 const SOCIAL_PAIR_COOLDOWN = 48;
@@ -251,6 +252,12 @@ function settlementGrowthSite(state: WorldState, factionId: string): GridPositio
   return candidate === undefined ? undefined : { x: candidate.x, y: candidate.y };
 }
 
+function settlementResidentCapacity(state: WorldState, factionId: string): number {
+  return activeFactionStructures(state, factionId)
+    .filter((structure) => structure.type === "camp")
+    .length * POPULATION_RESIDENT_CAPACITY_PER_CAMP;
+}
+
 function populationRole(state: WorldState, factionId: string): AgentRole {
   const agents = state.agents.filter((agent) => agent.factionId === factionId);
   if (!agents.some((agent) => agent.role === "builder")) return "builder";
@@ -284,6 +291,7 @@ function applyPopulationGrowth(state: WorldState): void {
   for (const faction of [...state.factions].sort((a, b) => a.id.localeCompare(b.id))) {
     const population = state.agents.filter((agent) => agent.factionId === faction.id);
     if (population.length < 2) continue;
+    if (population.length >= settlementResidentCapacity(state, faction.id)) continue;
     const healthyPopulation = population.filter(
       (agent) => agent.hp >= POPULATION_HEALTH_THRESHOLD && agent.energy >= POPULATION_ENERGY_THRESHOLD,
     );
