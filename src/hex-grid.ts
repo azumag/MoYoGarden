@@ -121,15 +121,29 @@ function boundaryTangentScore(
   return projected.x * tangent.x + projected.y * tangent.y;
 }
 
-/**
- * Return the local cells whose next step in `direction` leaves the active hex.
- * The ordering follows the side tangent, making it deterministic and suitable
- * for one-to-one transfer onto the opposite side of a neighboring region.
- */
-export function hexGridBoundaryCells(
+interface HexGridBoundaryCacheEntry {
+  cells: readonly HexGridPosition[];
+  indexByPosition: ReadonlyMap<string, number>;
+}
+
+const HEX_GRID_BOUNDARY_CACHE_LIMIT = 24;
+const hexGridBoundaryCache = new Map<string, HexGridBoundaryCacheEntry>();
+
+function hexGridBoundaryCacheKey(
   extent: HexGridExtent,
   direction: HexGridDirection,
-): HexGridPosition[] {
+): string {
+  return `${extent.width}x${extent.height}:${direction}`;
+}
+
+function cachedHexGridBoundary(
+  extent: HexGridExtent,
+  direction: HexGridDirection,
+): HexGridBoundaryCacheEntry {
+  const key = hexGridBoundaryCacheKey(extent, direction);
+  const cached = hexGridBoundaryCache.get(key);
+  if (cached !== undefined) return cached;
+
   const step = HEX_GRID_DIRECTION_STEPS[direction];
   const cells: HexGridPosition[] = [];
   for (let y = 0; y < extent.height; y += 1) {
@@ -140,11 +154,38 @@ export function hexGridBoundaryCells(
       cells.push(position);
     }
   }
-  return cells.sort((a, b) =>
+  cells.sort((a, b) =>
     boundaryTangentScore(extent, a, direction) - boundaryTangentScore(extent, b, direction) ||
     a.y - b.y ||
     a.x - b.x
   );
+  const entry: HexGridBoundaryCacheEntry = {
+    cells,
+    indexByPosition: new Map(cells.map((position, index) => [`${position.x},${position.y}`, index])),
+  };
+
+  if (hexGridBoundaryCache.size >= HEX_GRID_BOUNDARY_CACHE_LIMIT) {
+    const oldest = hexGridBoundaryCache.keys().next().value;
+    if (oldest !== undefined) hexGridBoundaryCache.delete(oldest);
+  }
+  hexGridBoundaryCache.set(key, entry);
+  return entry;
+}
+
+/**
+ * Return the local cells whose next step in `direction` leaves the active hex.
+ * The ordering follows the side tangent, making it deterministic and suitable
+ * for one-to-one transfer onto the opposite side of a neighboring region.
+ *
+ * Boundary discovery is cached by extent/direction because halo, handoff and
+ * topology code repeatedly asks for the same six sides. Return fresh positions
+ * so callers cannot mutate the shared geometry cache.
+ */
+export function hexGridBoundaryCells(
+  extent: HexGridExtent,
+  direction: HexGridDirection,
+): HexGridPosition[] {
+  return cachedHexGridBoundary(extent, direction).cells.map((position) => ({ ...position }));
 }
 
 /**
@@ -159,15 +200,14 @@ export function hexGridHandoffTarget(
   direction: HexGridDirection,
 ): HexGridPosition | undefined {
   if (!isHexGridCell(extent, source)) return undefined;
-  const sourceSide = hexGridBoundaryCells(extent, direction);
-  const sourceIndex = sourceSide.findIndex(
-    (position) => position.x === source.x && position.y === source.y,
-  );
-  if (sourceIndex < 0) return undefined;
+  const sourceSide = cachedHexGridBoundary(extent, direction);
+  const sourceIndex = sourceSide.indexByPosition.get(`${source.x},${source.y}`);
+  if (sourceIndex === undefined) return undefined;
 
-  const targetSide = hexGridBoundaryCells(extent, oppositeHexGridDirection(direction));
-  if (targetSide.length !== sourceSide.length) return undefined;
-  return targetSide[targetSide.length - 1 - sourceIndex];
+  const targetSide = cachedHexGridBoundary(extent, oppositeHexGridDirection(direction)).cells;
+  if (targetSide.length !== sourceSide.cells.length) return undefined;
+  const target = targetSide[targetSide.length - 1 - sourceIndex];
+  return target === undefined ? undefined : { ...target };
 }
 
 export function hexGridCrossingDirection(

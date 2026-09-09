@@ -70,6 +70,25 @@ test("each logical exit has a deterministic opposite-side handoff bijection", ()
   }
 });
 
+test("cached boundary geometry stays isolated from caller mutation", () => {
+  const extent = { width: 40, height: 24 };
+  const sourceSide = hexGridBoundaryCells(extent, "east");
+  const source = { ...sourceSide[0] };
+  const expectedTarget = hexGridHandoffTarget(extent, source, "east");
+  assert.ok(expectedTarget);
+
+  sourceSide.reverse();
+  sourceSide[0].x = -999;
+  expectedTarget.x = -999;
+
+  const freshSide = hexGridBoundaryCells(extent, "east");
+  assert.deepEqual(freshSide[0], source);
+  const freshTarget = hexGridHandoffTarget(extent, source, "east");
+  assert.ok(freshTarget);
+  assert.notEqual(freshTarget.x, -999);
+  assert.ok(isHexGridCell(extent, freshTarget));
+});
+
 test("handoff mapping rejects interior movement and non-boundary agents", () => {
   const extent = { width: 40, height: 24 };
   const center = hexGridCenter(extent);
