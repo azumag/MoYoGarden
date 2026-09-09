@@ -562,12 +562,20 @@ function buildCongestionAt(
   }, 0);
 }
 
+function storageCapacityLeft(structure: Structure): number {
+  return Math.max(
+    0,
+    BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
+  );
+}
+
 function nearestDepositStructure(
   state: WorldState,
   factionId: string,
   position: GridPosition,
 ): Structure | undefined {
   return activeFactionStructures(state, factionId)
+    .filter((structure) => storageCapacityLeft(structure) > 0)
     .sort((a, b) => {
       const distance = manhattanDistance(a.position, position) - manhattanDistance(b.position, position);
       if (distance !== 0) return distance;
@@ -780,7 +788,8 @@ function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask
   if (
     structure === undefined ||
     structure.factionId !== agent.factionId ||
-    structure.status !== "active"
+    structure.status !== "active" ||
+    storageCapacityLeft(structure) <= 0
   ) {
     structure = nearestDepositStructure(state, agent.factionId, agent.position);
   }
@@ -800,17 +809,31 @@ function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask
     delete agent.task;
     return;
   }
-  const deposited = { ...agent.inventory };
+  const deposited = emptyInventory();
+  let remainingCapacity = storageCapacityLeft(structure);
   for (const kind of RESOURCE_KINDS) {
-    faction.resources[kind] += agent.inventory[kind];
-    structure.storage[kind] += agent.inventory[kind];
-    agent.inventory[kind] = 0;
+    const amount = Math.min(agent.inventory[kind], remainingCapacity);
+    if (amount <= 0) continue;
+    faction.resources[kind] += amount;
+    structure.storage[kind] += amount;
+    agent.inventory[kind] -= amount;
+    deposited[kind] = amount;
+    remainingCapacity -= amount;
   }
-  delete agent.task;
-  agent.status = "resources deposited";
+
+  const depositedTotal = inventoryTotal(deposited);
+  const remainingInventory = inventoryTotal(agent.inventory);
+  if (remainingInventory === 0) {
+    delete agent.task;
+    agent.status = "resources deposited";
+  } else {
+    delete task.structureId;
+    agent.status = `${remainingInventory} resources await storage`;
+  }
+  if (depositedTotal <= 0) return;
   addEvent(state, {
     kind: "resources_deposited",
-    message: `${agent.name} deposited ${inventoryTotal(deposited)} resources at ${structure.type}.`,
+    message: `${agent.name} deposited ${depositedTotal} resources at ${structure.type}.`,
     agentId: agent.id,
     factionId: agent.factionId,
     position: { ...agent.position },
