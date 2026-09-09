@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { isHexGridCell } from "./hex-grid.js";
 import { hexFootprintVertices } from "./hex-footprint.js";
 import { WorldView } from "./world-view.js";
 
@@ -64,6 +65,12 @@ export function applyHexFootprintClipping(root, width, height, centerX = 0, cent
     }
   });
 }
+
+const baseTileAt = WorldView.prototype.tileAt;
+WorldView.prototype.tileAt = function tileAtWithinHexFootprint(x, y) {
+  if (!this.state || !isHexGridCell({ x, y }, this.state.width, this.state.height)) return null;
+  return baseTileAt.call(this, x, y);
+};
 
 const baseSetState = WorldView.prototype.setState;
 WorldView.prototype.setState = function setStateWithHexFootprint(state, tickMs) {
