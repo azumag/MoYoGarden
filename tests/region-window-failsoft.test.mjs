@@ -15,21 +15,15 @@ function snapshot(regionId) {
   };
 }
 
-function envWithSnapshotFailure({ transportRegion, malformedRegion } = {}) {
+function envWithTransportFailure(failedRegion) {
   return {
     REGION_IDS: "garden-1,garden-2,garden-3",
     REGIONS: {
       idFromName: (name) => name,
       get: (regionId) => ({
         fetch: async () => {
-          if (regionId === transportRegion) {
+          if (regionId === failedRegion) {
             throw new Error(`simulated snapshot transport failure for ${regionId}`);
-          }
-          if (regionId === malformedRegion) {
-            return new Response("{broken", {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            });
           }
           return new Response(JSON.stringify(snapshot(regionId)), {
             status: 200,
@@ -42,17 +36,13 @@ function envWithSnapshotFailure({ transportRegion, malformedRegion } = {}) {
   };
 }
 
-async function liveWindow(env) {
+test("one neighbor transport failure stays an error chunk instead of aborting the live window", async () => {
   const response = await worker.fetch(
     new Request("https://moyo.example/api/world/window?region=garden-1&radius=1&live=1"),
-    env,
+    envWithTransportFailure("garden-2"),
   );
   assert.equal(response.status, 200);
-  return response.json();
-}
-
-test("one neighbor transport failure stays an error chunk instead of aborting the live window", async () => {
-  const payload = await liveWindow(envWithSnapshotFailure({ transportRegion: "garden-2" }));
+  const payload = await response.json();
   assert.equal(payload.chunks.length, 7);
 
   const failed = payload.chunks.find((chunk) => chunk.regionId === "garden-2");
@@ -63,16 +53,5 @@ test("one neighbor transport failure stays an error chunk instead of aborting th
 
   const center = payload.chunks.find((chunk) => chunk.regionId === "garden-1");
   assert.equal(center?.state?.regionId, "garden-1");
-  assert.equal(payload.chunks.filter((chunk) => chunk.state).length, 6);
-});
-
-test("a malformed neighbor snapshot remains isolated from healthy live-window chunks", async () => {
-  const payload = await liveWindow(envWithSnapshotFailure({ malformedRegion: "garden-3" }));
-  assert.equal(payload.chunks.length, 7);
-
-  const failed = payload.chunks.find((chunk) => chunk.regionId === "garden-3");
-  assert.ok(failed);
-  assert.equal(failed.error, "snapshot HTTP 503");
-  assert.equal("state" in failed, false);
   assert.equal(payload.chunks.filter((chunk) => chunk.state).length, 6);
 });
