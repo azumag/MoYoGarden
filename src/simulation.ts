@@ -639,8 +639,13 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
   const base = { source: "autonomy" as const, issuedAtTick };
   const structures = activeFactionStructures(state, agent.factionId);
   const inventoryAmount = inventoryTotal(agent.inventory);
+  const hasAvailableStorage = structures.some((structure) => storageCapacityLeft(structure) > 0);
 
-  if (structures.length > 0 && inventoryAmount >= Math.min(6, agent.capacity)) {
+  if (
+    structures.length > 0 &&
+    hasAvailableStorage &&
+    inventoryAmount >= Math.min(6, agent.capacity)
+  ) {
     return { ...base, type: "deposit" };
   }
 
@@ -689,7 +694,7 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
           const target = findBuildSite(state, camp.position, agent.factionId);
           if (target !== undefined) return { ...base, type: "build", structureType: type, target };
         }
-        if (inventoryAmount > 0) return { ...base, type: "deposit" };
+        if (inventoryAmount > 0 && hasAvailableStorage) return { ...base, type: "deposit" };
         const resource = factionMissingForRecipe(state, agent.factionId, type);
         const target = nearestResource(state, agent.position, resource);
         return target === undefined
