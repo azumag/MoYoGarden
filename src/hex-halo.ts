@@ -37,6 +37,21 @@ export interface HexHaloEdgeSnapshot {
   tiles: Array<{ position: HexGridPosition; tile: Tile }>;
 }
 
+function cloneHaloLink(link: HexHaloLink): HexHaloLink {
+  return {
+    ...link,
+    sourcePosition: { ...link.sourcePosition },
+    neighborPosition: { ...link.neighborPosition },
+  };
+}
+
+function cloneHaloTile(tile: Tile): Tile {
+  const clone = { ...tile };
+  if (tile.flowTo !== undefined) clone.flowTo = { ...tile.flowTo };
+  if (tile.resource !== undefined) clone.resource = { ...tile.resource };
+  return clone;
+}
+
 export function hexHaloKey(position: HexGridPosition, direction: HexGridDirection): string {
   return `${position.x},${position.y}:${direction}`;
 }
@@ -229,7 +244,12 @@ export function materializeHexHalo(
       `${link.neighborRegionId}:${link.neighborDirection}:${link.neighborPosition.x},${link.neighborPosition.y}`,
     );
     if (tile === undefined) return [];
-    return [{ ...structuredClone(link), tile: structuredClone(tile) }];
+    // HexHaloLink and Tile are shallow records with only two nested coordinate /
+    // resource records. Copy those fields explicitly instead of invoking the
+    // general structured-clone algorithm twice for every depth-1 ghost cell.
+    // This keeps the materialized halo fully detached from request snapshots
+    // while reducing work on the bounded (up to 138-cell) environment hot path.
+    return [{ ...cloneHaloLink(link), tile: cloneHaloTile(tile) }];
   });
 }
 
