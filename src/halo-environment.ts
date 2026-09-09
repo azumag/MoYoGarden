@@ -166,7 +166,8 @@ function haloNeighborWaterInfluence(
   return 0;
 }
 
-function haloUpwindWaterVaporMoisture(
+function upwindWaterVaporMoisture(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
   lookup: HaloLookup,
   environment?: HaloEnvironmentFrame,
@@ -179,12 +180,16 @@ function haloUpwindWaterVaporMoisture(
   );
   const upwindDirection = oppositeHexGridDirection(wind.direction);
   const ghost = lookup.get(hexHaloKey(position, upwindDirection));
-  if (ghost?.tile.terrain !== "water") return 0;
+  const step = HEX_GRID_DIRECTION_STEPS[upwindDirection];
+  const local = ghost === undefined
+    ? getTile(state, { x: position.x + step.x, y: position.y + step.y })
+    : undefined;
+  if ((ghost?.tile ?? local)?.terrain !== "water") return 0;
 
-  // Keep the existing distance-one water influence untouched, then add a small
-  // directional vapor term only when the shared world wind actually arrives
-  // from an adjacent ghost-water cell. Crosswind/downwind water therefore
-  // preserves the previous halo moisture result exactly.
+  // Preserve the isotropic distance-one water influence, then add the same
+  // directional vapor term whether the upwind source is a local hex or the
+  // exact ghost owner across a macro-region seam. A real halo link remains
+  // authoritative over the rectangular storage-envelope compatibility cell.
   return wind.strength * HALO_UPWIND_WATER_VAPOR_GAIN;
 }
 
@@ -511,7 +516,7 @@ function surfaceMoistureWithHaloLookup(
   }
 
   waterInfluence = Math.max(waterInfluence, haloNeighborWaterInfluence(position, lookup));
-  const windborneMoisture = haloUpwindWaterVaporMoisture(position, lookup, environment);
+  const windborneMoisture = upwindWaterVaporMoisture(state, position, lookup, environment);
   const vegetationCover =
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
       ? tile.resource.amount / tile.resource.maxAmount

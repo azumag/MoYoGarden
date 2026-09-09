@@ -71,3 +71,31 @@ test("upwind ghost water carries a bounded windborne moisture bonus across the h
   assert.equal(crosswind, baseline);
   assert.ok(upwind - baseline <= 0.08 + 1e-12);
 });
+
+test("local and cross-region upwind water receive the same vapor bonus", () => {
+  const { state, tile, halo } = fixture();
+  const upwindFrame = environmentFrameForWind(tile, "west");
+  const eastLocal = state.tiles[tile.y * state.width + tile.x + 1];
+  assert.ok(eastLocal);
+  eastLocal.terrain = "water";
+  eastLocal.elevation = 0;
+
+  const localBaseline = surfaceMoistureWithHaloAt(state, tile, []);
+  const localUpwind = surfaceMoistureWithHaloAt(state, tile, [], upwindFrame);
+  const haloBaseline = surfaceMoistureWithHaloAt(state, tile, halo);
+  const haloUpwind = surfaceMoistureWithHaloAt(state, tile, halo, upwindFrame);
+
+  assert.ok(localUpwind > localBaseline);
+  assert.ok(haloUpwind > haloBaseline);
+  assert.ok(
+    Math.abs((localUpwind - localBaseline) - (haloUpwind - haloBaseline)) < 1e-12,
+    "one-step water should gain identical windborne moisture on either side of the DO seam",
+  );
+
+  halo[0].tile.terrain = "plain";
+  assert.equal(
+    surfaceMoistureWithHaloAt(state, tile, halo, upwindFrame),
+    surfaceMoistureWithHaloAt(state, tile, halo),
+    "an exact ghost owner must suppress vapor from the rectangular compatibility cell",
+  );
+});
