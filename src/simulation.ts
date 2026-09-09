@@ -524,6 +524,22 @@ function agentCrowdingAt(state: Pick<WorldState, "agents">, position: GridPositi
   );
 }
 
+function resourceCongestionAt(
+  state: Pick<WorldState, "agents">,
+  position: GridPosition,
+  resource: ResourceKind,
+): number {
+  return state.agents.reduce((count, agent) => {
+    const occupying = samePosition(agent.position, position);
+    const inbound =
+      agent.task?.type === "gather" &&
+      agent.task.resource === resource &&
+      agent.task.target !== undefined &&
+      samePosition(agent.task.target, position);
+    return count + (occupying || inbound ? 1 : 0);
+  }, 0);
+}
+
 function depositCongestionAt(state: Pick<WorldState, "agents">, structure: Structure): number {
   return state.agents.reduce((count, agent) => {
     const occupying = samePosition(agent.position, structure.position);
@@ -560,8 +576,9 @@ function nearestResource(
     .sort((a, b) => {
       const distance = manhattanDistance(a, origin) - manhattanDistance(b, origin);
       if (distance !== 0) return distance;
-      const crowding = agentCrowdingAt(state, a) - agentCrowdingAt(state, b);
-      return crowding || a.y - b.y || a.x - b.x;
+      const congestion =
+        resourceCongestionAt(state, a, resource) - resourceCongestionAt(state, b, resource);
+      return congestion || a.y - b.y || a.x - b.x;
     })[0];
   return tile === undefined ? undefined : { x: tile.x, y: tile.y };
 }
