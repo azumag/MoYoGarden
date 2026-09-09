@@ -54,6 +54,47 @@ test("autonomous gatherer prefers the less crowded resource hex when distance is
   assert.deepEqual(moved.task?.target, { x: open.x, y: open.y });
 });
 
+test("autonomous gatherer avoids an equally near resource already targeted by another gatherer", () => {
+  const state = plainResourceFixture();
+  const worker = state.agents.find((agent) => agent.role === "woodcutter");
+  const inbound = state.agents.find((agent) => agent.id !== worker?.id);
+  assert.ok(worker);
+  assert.ok(inbound);
+
+  worker.position = { x: 7, y: 5 };
+  worker.energy = 100;
+  worker.inventory = { wood: 0, stone: 0, food: 0 };
+  worker.autonomy = true;
+  delete worker.task;
+
+  const claimed = state.tiles.find((tile) => tile.x === 8 && tile.y === 5);
+  const open = state.tiles.find((tile) => tile.x === 7 && tile.y === 6);
+  assert.ok(claimed);
+  assert.ok(open);
+  claimed.terrain = "forest";
+  claimed.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+  open.terrain = "forest";
+  open.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+
+  inbound.position = { x: 6, y: 5 };
+  inbound.autonomy = false;
+  inbound.task = {
+    source: "autonomy",
+    issuedAtTick: state.tick,
+    type: "gather",
+    resource: "wood",
+    target: { x: claimed.x, y: claimed.y },
+  };
+  state.agents = [worker, inbound];
+
+  const next = simulate(state).state;
+  const moved = next.agents.find((agent) => agent.id === worker.id);
+  assert.ok(moved);
+  assert.equal(moved.task?.type, "gather");
+  assert.deepEqual(moved.task?.target, { x: open.x, y: open.y });
+  assert.deepEqual(moved.position, { x: open.x, y: open.y });
+});
+
 test("resource distance remains authoritative over crowding", () => {
   const state = plainResourceFixture();
   const worker = state.agents.find((agent) => agent.role === "woodcutter");
