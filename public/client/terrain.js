@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { hexGridDistance } from "./hex-grid.js";
 import { TERRAIN_COLORS, disposeObject, hash2 } from "./shared.js";
 
 const WATER_MOISTURE_RADIUS = 4;
@@ -42,14 +43,14 @@ function localRelief(stateTile, tile) {
   return clamp01((maximum - minimum) / 0.22);
 }
 
-function environmentalMoisture(stateTile, tile) {
+export function environmentalMoisture(stateTile, tile) {
   if (!tile) return 0;
   if (tile.terrain === "water") return 1;
 
   let waterInfluence = 0;
   for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
     for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
-      const distance = Math.abs(dx) + Math.abs(dy);
+      const distance = hexGridDistance({ x: 0, y: 0 }, { x: dx, y: dy });
       if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
       if (stateTile(tile.x + dx, tile.y + dy)?.terrain !== "water") continue;
       waterInfluence = Math.max(
@@ -448,7 +449,7 @@ export const terrainMethods = {
 
     if (pebbleTiles.length > 0) {
       const pebbles = new THREE.InstancedMesh(pebbleGeometry, pebbleMaterial, pebbleTiles.length);
-      pebbleTiles.forEach((tile, index) => {
+      pebbbleTiles.forEach((tile, index) => {
         const matrix = new THREE.Matrix4();
         matrix.compose(
           this.worldPosition(tile, 0.05).add(new THREE.Vector3(
