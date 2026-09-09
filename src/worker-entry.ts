@@ -169,6 +169,27 @@ export function routeConfiguredDefaultRegion(
   return new Request(request, { headers });
 }
 
+/**
+ * Base /api/meta scoping predates x-moyo-region and only reads the query string.
+ * Normalize an explicit header into that existing scoped path so canonical
+ * metadata requests stay bounded and do not fall back to REGION_IDS enumeration.
+ * Query routing remains authoritative when both forms are present.
+ */
+export function routeMetaRegionHeader(request: Request): Request {
+  if (request.method !== "GET") return request;
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/meta") return request;
+  const queryRegion = url.searchParams.get("region")?.trim();
+  if (queryRegion !== undefined && queryRegion !== "") return request;
+  const headerRegion = request.headers.get("x-moyo-region")?.trim();
+  if (headerRegion === undefined || headerRegion === "") return request;
+  url.searchParams.set("region", headerRegion);
+  return new Request(url.toString(), {
+    method: "GET",
+    headers: request.headers,
+  });
+}
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null;
 }
@@ -267,7 +288,7 @@ export default {
       return hiddenInternalEndpoint();
     }
 
-    const routedRequest = routeConfiguredDefaultRegion(request, env);
+    const routedRequest = routeConfiguredDefaultRegion(routeMetaRegionHeader(request), env);
     const isRegionWindow = request.method === "GET" && url.pathname === "/api/world/window";
     // A radius window is a best-effort aggregation of independent neighboring
     // region DOs, but the center snapshot is the coordinate/state authority for
