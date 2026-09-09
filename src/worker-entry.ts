@@ -253,6 +253,8 @@ function failSoftRegionWindowEnv(env: WorkerEnv, centerRegionId: string): Worker
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
+    const requestedRegion =
+      url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
     // Internal cross-region endpoints are reachable only through direct Durable
     // Object stub calls. Never proxy them from the public Worker surface.
     if (
@@ -290,7 +292,7 @@ export default {
         enrichMetaPayload(
           await response.json() as unknown,
           DEFAULT_BUILD_METADATA,
-          configuredDefaultRegionId(env),
+          requestedRegion ? undefined : configuredDefaultRegionId(env),
         ),
       );
     }
