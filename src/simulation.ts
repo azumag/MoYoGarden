@@ -904,17 +904,24 @@ function resolveBuildTaskTarget(
   if (task.target !== undefined && isPassable(state, task.target)) return task.target;
   delete task.target;
 
-  const existing = state.structures.find(
+  const existingBuilding = state.structures.find(
     (structure) =>
       structure.factionId === agent.factionId &&
-      structure.type === task.structureType,
+      structure.type === task.structureType &&
+      structure.status === "building",
   );
-  if (existing?.status === "building") {
-    task.structureId = existing.id;
-    task.target = { ...existing.position };
+  if (existingBuilding !== undefined) {
+    task.structureId = existingBuilding.id;
+    task.target = { ...existingBuilding.position };
     return task.target;
   }
-  if (existing?.status === "active") {
+  const activeAlreadyAvailable = state.structures.some(
+    (structure) =>
+      structure.factionId === agent.factionId &&
+      structure.type === task.structureType &&
+      structure.status === "active",
+  );
+  if (activeAlreadyAvailable && task.structureType !== "camp") {
     delete agent.task;
     agent.status = `${task.structureType} already available`;
     return undefined;
