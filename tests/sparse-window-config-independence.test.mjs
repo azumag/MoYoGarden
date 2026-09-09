@@ -44,7 +44,7 @@ class MemoryNamespace {
   }
 }
 
-function canonicalEnvWithoutRegionEnumeration() {
+function regionEnvWithoutRegionEnumeration() {
   const env = {
     WORLD_SEED: "424242",
     DEFAULT_REGION_ID: "garden-1",
@@ -53,14 +53,14 @@ function canonicalEnvWithoutRegionEnumeration() {
     ASSETS: { fetch: async () => new Response("not found", { status: 404 }) },
   };
   Object.defineProperty(env, "REGION_IDS", {
-    get() { throw new Error("canonical public windows must not enumerate REGION_IDS"); },
+    get() { throw new Error("sparse public windows must not enumerate REGION_IDS"); },
   });
   env.REGIONS = new MemoryNamespace(env);
   return env;
 }
 
 test("canonical scoped metadata does not enumerate REGION_IDS", async () => {
-  const env = canonicalEnvWithoutRegionEnumeration();
+  const env = regionEnvWithoutRegionEnumeration();
   const regionId = "hex-q12-r-7";
   const response = await worker.fetch(new Request(
     `https://moyo.example/api/meta?region=${regionId}&radius=1`,
@@ -73,7 +73,7 @@ test("canonical scoped metadata does not enumerate REGION_IDS", async () => {
 });
 
 test("canonical radius-one world window does not enumerate REGION_IDS", async () => {
-  const env = canonicalEnvWithoutRegionEnumeration();
+  const env = regionEnvWithoutRegionEnumeration();
   const regionId = "hex-q12-r-7";
   const response = await worker.fetch(new Request(
     `https://moyo.example/api/world/window?region=${regionId}&radius=1`,
@@ -83,5 +83,34 @@ test("canonical radius-one world window does not enumerate REGION_IDS", async ()
   assert.equal(payload.centerRegion, regionId);
   assert.equal(payload.chunks.length, 7);
   assert.equal(env.REGIONS.entries.size, 7);
+  assert.equal(payload.chunks.every((chunk) => chunk.axial && chunk.hexOrigin && chunk.globalCellOrigin), true);
+});
+
+test("persisted legacy scoped metadata does not enumerate REGION_IDS", async () => {
+  const env = regionEnvWithoutRegionEnumeration();
+  const response = await worker.fetch(new Request(
+    "https://moyo.example/api/meta?region=garden-1&radius=1",
+  ), env);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.regions.length, 7);
+  assert.equal(payload.regions.includes("garden-1"), true);
+  assert.equal(payload.regions.includes("garden-2"), true);
+  assert.equal(payload.regions.includes("garden-3"), true);
+  assert.equal(payload.world.regionTopology.regions.length, 7);
+});
+
+test("persisted legacy default world window does not enumerate REGION_IDS", async () => {
+  const env = regionEnvWithoutRegionEnumeration();
+  const response = await worker.fetch(new Request(
+    "https://moyo.example/api/world/window?radius=1",
+  ), env);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.centerRegion, "garden-1");
+  assert.equal(payload.chunks.length, 7);
+  assert.equal(env.REGIONS.entries.size, 7);
+  assert.equal(payload.chunks.some((chunk) => chunk.regionId === "garden-2"), true);
+  assert.equal(payload.chunks.some((chunk) => chunk.regionId === "garden-3"), true);
   assert.equal(payload.chunks.every((chunk) => chunk.axial && chunk.hexOrigin && chunk.globalCellOrigin), true);
 });
