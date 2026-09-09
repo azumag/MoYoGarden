@@ -138,12 +138,11 @@ function configuredRegionIds(env: RegionConfigEnv): string[] {
  */
 export function configuredDefaultRegionId(env: RegionConfigEnv): string {
   const requested = env.DEFAULT_REGION_ID?.trim();
+  if (requested !== undefined && requested !== "" && parseAxialRegionId(requested) !== undefined) {
+    return requested;
+  }
   const regions = configuredRegionIds(env);
-  if (
-    requested !== undefined &&
-    requested !== "" &&
-    (parseAxialRegionId(requested) !== undefined || regions.includes(requested))
-  ) {
+  if (requested !== undefined && requested !== "" && regions.includes(requested)) {
     return requested;
   }
   return regions[0] ?? "garden-1";
