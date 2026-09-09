@@ -75,6 +75,7 @@ function compactPassiveRegionState(value: unknown): unknown {
 export function enrichRegionWindowPayload(
   payload: unknown,
   regionIds: readonly string[],
+  options: { compactCenter?: boolean } = {},
 ): unknown {
   if (!isRecord(payload) || !Array.isArray(payload.chunks)) return payload;
 
@@ -94,9 +95,10 @@ export function enrichRegionWindowPayload(
     if (!isRecord(value) || typeof value.regionId !== "string") return value;
     const placement = topology.get(value.regionId);
     if (placement === undefined) return value;
-    const state = centerRegion !== undefined && value.regionId !== centerRegion
-      ? compactPassiveRegionState(value.state)
-      : value.state;
+    const shouldCompactState =
+      centerRegion !== undefined &&
+      (value.regionId !== centerRegion || options.compactCenter === true);
+    const state = shouldCompactState ? compactPassiveRegionState(value.state) : value.state;
     return {
       ...value,
       ...(state === value.state ? {} : { state }),
@@ -305,7 +307,12 @@ export default {
       const regionIds = centerRegion !== undefined && parseAxialRegionId(centerRegion) !== undefined
         ? []
         : configuredRegionIds(env);
-      return jsonResponse(response, enrichRegionWindowPayload(payload, regionIds));
+      return jsonResponse(
+        response,
+        enrichRegionWindowPayload(payload, regionIds, {
+          compactCenter: url.searchParams.get("terrain") === "1",
+        }),
+      );
     }
 
     return response;
