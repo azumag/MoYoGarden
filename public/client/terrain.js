@@ -449,7 +449,7 @@ export const terrainMethods = {
 
     if (pebbleTiles.length > 0) {
       const pebbles = new THREE.InstancedMesh(pebbleGeometry, pebbleMaterial, pebbleTiles.length);
-      pebbbleTiles.forEach((tile, index) => {
+      pebbleTiles.forEach((tile, index) => {
         const matrix = new THREE.Matrix4();
         matrix.compose(
           this.worldPosition(tile, 0.05).add(new THREE.Vector3(
