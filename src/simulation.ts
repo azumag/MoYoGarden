@@ -548,6 +548,20 @@ function depositCongestionAt(state: Pick<WorldState, "agents">, structure: Struc
   }, 0);
 }
 
+function buildCongestionAt(
+  state: Pick<WorldState, "agents">,
+  position: GridPosition,
+): number {
+  return state.agents.reduce((count, agent) => {
+    const occupying = samePosition(agent.position, position);
+    const inbound =
+      agent.task?.type === "build" &&
+      agent.task.target !== undefined &&
+      samePosition(agent.task.target, position);
+    return count + (occupying || inbound ? 1 : 0);
+  }, 0);
+}
+
 function nearestDepositStructure(
   state: WorldState,
   factionId: string,
@@ -598,7 +612,7 @@ function findBuildSite(
       return (
         resourcePenaltyA - resourcePenaltyB ||
         manhattanDistance(a, origin) - manhattanDistance(b, origin) ||
-        agentCrowdingAt(state, a) - agentCrowdingAt(state, b) ||
+        buildCongestionAt(state, a) - buildCongestionAt(state, b) ||
         a.y - b.y ||
         a.x - b.x
       );
