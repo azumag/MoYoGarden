@@ -49,6 +49,7 @@ const HYDROLOGY_EPSILON = 1e-6;
 const TERRAIN_EVOLUTION_INTERVAL = 120;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
+const SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP = 6;
 
 function tileElevation(tile: Tile | undefined): number | undefined {
   const elevation = tile?.elevation;
@@ -650,10 +651,22 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
   }
 
   if (agent.role === "builder") {
-    const camp = state.structures.find(
-      (structure) => structure.factionId === agent.factionId && structure.type === "camp",
-    );
+    const camps = state.structures
+      .filter((structure) => structure.factionId === agent.factionId && structure.type === "camp")
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const buildingCamp = camps.find((structure) => structure.status === "building");
+    const activeCamps = camps.filter((structure) => structure.status === "active");
+    const camp = activeCamps[0];
     if (camp === undefined) {
+      if (buildingCamp !== undefined) {
+        return {
+          ...base,
+          type: "build",
+          structureType: "camp",
+          target: buildingCamp.position,
+          structureId: buildingCamp.id,
+        };
+      }
       const recipe = BUILD_RECIPES.camp;
       if (hasInventory(agent.inventory, recipe.cost)) {
         const target = findBuildSite(state, agent.position, agent.factionId) ?? agent.position;
@@ -665,13 +678,13 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
         ? undefined
         : { ...base, type: "gather", resource, target };
     }
-    if (camp.status === "building") {
+    if (buildingCamp !== undefined) {
       return {
         ...base,
         type: "build",
         structureType: "camp",
-        target: camp.position,
-        structureId: camp.id,
+        target: buildingCamp.position,
+        structureId: buildingCamp.id,
       };
     }
 
@@ -701,6 +714,30 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
           ? undefined
           : { ...base, type: "gather", resource, target };
       }
+    }
+
+    const population = state.agents.filter((candidate) => candidate.factionId === agent.factionId).length;
+    const residentCapacity = activeCamps.length * SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP;
+    if (population >= residentCapacity) {
+      const campBuildReserved = state.agents.some(
+        (candidate) =>
+          candidate.id !== agent.id &&
+          candidate.factionId === agent.factionId &&
+          candidate.task?.type === "build" &&
+          candidate.task.structureType === "camp",
+      );
+      if (campBuildReserved) return undefined;
+
+      if (factionCanAfford(state, agent.factionId, BUILD_RECIPES.camp.cost)) {
+        const target = findBuildSite(state, camp.position, agent.factionId);
+        if (target !== undefined) return { ...base, type: "build", structureType: "camp", target };
+      }
+      if (inventoryAmount > 0 && hasAvailableStorage) return { ...base, type: "deposit" };
+      const resource = factionMissingForRecipe(state, agent.factionId, "camp");
+      const target = nearestResource(state, agent.position, resource);
+      return target === undefined
+        ? undefined
+        : { ...base, type: "gather", resource, target };
     }
   }
 
