@@ -21,6 +21,7 @@ interface WorkerEnv {
   ADMIN_TOKEN?: string;
 }
 
+type RegionConfigEnv = Pick<WorkerEnv, "DEFAULT_REGION_ID" | "REGION_IDS">;
 type JsonRecord = Record<string, unknown>;
 
 export interface BuildMetadata {
@@ -40,10 +41,12 @@ export { RegionDurableObject };
 export function enrichMetaPayload(
   payload: unknown,
   build: BuildMetadata = DEFAULT_BUILD_METADATA,
+  defaultRegion?: string,
 ): unknown {
   if (!isRecord(payload)) return payload;
   return {
     ...payload,
+    ...(defaultRegion === undefined ? {} : { defaultRegion }),
     build,
   };
 }
@@ -118,13 +121,51 @@ export function enrichRegionWindowPayload(
   };
 }
 
-function configuredRegionIds(env: WorkerEnv): string[] {
+function configuredRegionIds(env: RegionConfigEnv): string[] {
   const configured = env.REGION_IDS ?? env.DEFAULT_REGION_ID ?? "garden-1";
   const regions = configured
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry));
   return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
+}
+
+/**
+ * DEFAULT_REGION_ID is the public routing authority. REGION_IDS remains a
+ * compatibility allow-list/order for historical region IDs, but changing that
+ * list's order must not silently change which region opens by default. Canonical
+ * axial IDs are valid defaults even before they are enumerated in REGION_IDS.
+ */
+export function configuredDefaultRegionId(env: RegionConfigEnv): string {
+  const requested = env.DEFAULT_REGION_ID?.trim();
+  const regions = configuredRegionIds(env);
+  if (
+    requested !== undefined &&
+    requested !== "" &&
+    (parseAxialRegionId(requested) !== undefined || regions.includes(requested))
+  ) {
+    return requested;
+  }
+  return regions[0] ?? "garden-1";
+}
+
+/**
+ * The legacy worker resolves omitted regions from REGION_IDS[0]. Production is
+ * wrapped here so DEFAULT_REGION_ID remains authoritative without changing the
+ * compatibility semantics of explicit ?region= / x-moyo-region requests.
+ */
+export function routeConfiguredDefaultRegion(
+  request: Request,
+  env: RegionConfigEnv,
+): Request {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith("/api/") || url.pathname === "/api/meta") return request;
+  const requested =
+    url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
+  if (requested !== undefined && requested !== "") return request;
+  const headers = new Headers(request.headers);
+  headers.set("x-moyo-region", configuredDefaultRegionId(env));
+  return new Request(request, { headers });
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -179,7 +220,7 @@ function regionWindowCenter(request: Request, env: WorkerEnv): string {
   const requested =
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
   return requested === undefined || requested === ""
-    ? configuredRegionIds(env)[0] ?? "garden-1"
+    ? configuredDefaultRegionId(env)
     : requested;
 }
 
@@ -223,17 +264,18 @@ export default {
       return hiddenInternalEndpoint();
     }
 
+    const routedRequest = routeConfiguredDefaultRegion(request, env);
     const isRegionWindow = request.method === "GET" && url.pathname === "/api/world/window";
     // A radius window is a best-effort aggregation of independent neighboring
     // region DOs, but the center snapshot is the coordinate/state authority for
     // the entire payload. Fail soft only for neighbors; a missing center must
     // fail the request instead of publishing a misleading centerless window.
     const baseEnv = isRegionWindow
-      ? failSoftRegionWindowEnv(env, regionWindowCenter(request, env))
+      ? failSoftRegionWindowEnv(env, regionWindowCenter(routedRequest, env))
       : env;
     let response: Response;
     try {
-      response = await baseWorker.fetch(request, baseEnv);
+      response = await baseWorker.fetch(routedRequest, baseEnv);
     } catch (error) {
       if (isRegionWindow && error instanceof CenterRegionSnapshotUnavailable) {
         return unavailableCenterRegionWindow();
@@ -244,7 +286,14 @@ export default {
     if (request.method !== "GET" || !response.ok) return response;
 
     if (url.pathname === "/api/meta") {
-      return jsonResponse(response, enrichMetaPayload(await response.json() as unknown));
+      return jsonResponse(
+        response,
+        enrichMetaPayload(
+          await response.json() as unknown,
+          DEFAULT_BUILD_METADATA,
+          configuredDefaultRegionId(env),
+        ),
+      );
     }
 
     if (url.pathname === "/api/world/window") {
