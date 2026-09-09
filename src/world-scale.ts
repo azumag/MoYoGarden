@@ -61,6 +61,41 @@ function coordinateSeed(seed: number, x: number, y: number): number {
   return (seed ^ xHash ^ yHash ^ 0x27d4eb2d) >>> 0;
 }
 
+function smoothstep(value: number): number {
+  return value * value * (3 - 2 * value);
+}
+
+function lerp(a: number, b: number, amount: number): number {
+  return a + (b - a) * amount;
+}
+
+/**
+ * Produce deterministic micro-scale environmental variation from a coarse
+ * global lattice instead of independent per-cell white noise. Interpolation is
+ * performed in the shared axial coordinate frame, so neighboring cells and
+ * cells on opposite sides of a macro-region seam see one coherent low-level
+ * field while still retaining seed-dependent local variation.
+ */
+export function sampleWorldMicroVariation(
+  worldSeed: number,
+  globalX: number,
+  globalY: number,
+  scale = 8,
+): number {
+  const safeScale = Math.max(2, Math.floor(scale));
+  const latticeX = globalX / safeScale;
+  const latticeY = globalY / safeScale;
+  const x0 = Math.floor(latticeX);
+  const y0 = Math.floor(latticeY);
+  const tx = smoothstep(latticeX - x0);
+  const ty = smoothstep(latticeY - y0);
+  const sample = (x: number, y: number) =>
+    seededUnit(worldSeed, coordinateSeed(worldSeed, x, y)) - 0.5;
+  const north = lerp(sample(x0, y0), sample(x0 + 1, y0), tx);
+  const south = lerp(sample(x0, y0 + 1), sample(x0 + 1, y0 + 1), tx);
+  return lerp(north, south, ty);
+}
+
 function elevationAt(worldSeed: number, globalX: number, globalY: number): number {
   const x = globalX + 0.5;
   const y = globalY + 0.5;
@@ -72,7 +107,7 @@ function elevationAt(worldSeed: number, globalX: number, globalY: number): numbe
     Math.cos((y / 24) * Math.PI * 2 + phaseB)
   ) * 0.5;
   const ridge = Math.sin((x / 19 + y / 23) * Math.PI * 2 + phaseC);
-  const local = seededUnit(worldSeed, coordinateSeed(worldSeed, globalX, globalY)) - 0.5;
+  const local = sampleWorldMicroVariation(worldSeed, globalX, globalY);
   return clamp01(0.46 + broad * 0.18 + ridge * 0.1 + local * 0.075);
 }
 
@@ -150,7 +185,7 @@ export function sampleWorldConditions(
   const phaseB = seededUnit(worldSeed, 0x9e3779b9) * Math.PI * 2;
   const phaseTemperature = seededUnit(worldSeed, 0x6a09e667) * Math.PI * 2;
   const elevation = elevationAt(worldSeed, globalX, globalY);
-  const local = seededUnit(worldSeed, coordinateSeed(worldSeed, globalX, globalY)) - 0.5;
+  const local = sampleWorldMicroVariation(worldSeed, globalX, globalY);
   const moistureWave = Math.cos((x / 34 - y / 29) * Math.PI * 2 + phaseB);
   const wind = sampleWorldWind(worldSeed, globalX, globalY);
   const windStep = HEX_GRID_DIRECTION_STEPS[wind.direction];
