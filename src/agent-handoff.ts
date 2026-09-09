@@ -48,6 +48,10 @@ function validIdentifier(value: string): boolean {
   return /^[a-z0-9][a-z0-9:._-]{0,159}$/i.test(value);
 }
 
+function validJournalTick(value: number): boolean {
+  return Number.isInteger(value) && value >= 0;
+}
+
 export function validateAgentHandoffEnvelope(envelope: AgentHandoffEnvelope): string | undefined {
   if (!validIdentifier(envelope.transferId)) return "invalid transfer id";
   if (!validIdentifier(envelope.fromRegionId) || !validIdentifier(envelope.toRegionId)) {
@@ -101,6 +105,9 @@ export function reserveOutgoingHandoff(
 ): HandoffMutationResult<OutgoingAgentHandoff> {
   const reason = validateAgentHandoffEnvelope(envelope);
   if (reason !== undefined) return { ok: false, records: cloneRecords(records), reason };
+  if (!validJournalTick(updatedAtTick)) {
+    return { ok: false, records: cloneRecords(records), reason: "invalid handoff update tick" };
+  }
 
   const existing = records.find((record) => record.envelope.transferId === envelope.transferId);
   if (existing !== undefined) {
@@ -146,6 +153,9 @@ export function advanceOutgoingHandoff(
   if (current === undefined) {
     return { ok: false, records: cloneRecords(records), reason: "unknown outgoing handoff" };
   }
+  if (!validJournalTick(updatedAtTick)) {
+    return { ok: false, records: cloneRecords(records), reason: "invalid handoff update tick" };
+  }
   if (OUTGOING_PHASE_ORDER[phase] < OUTGOING_PHASE_ORDER[current.phase]) {
     return {
       ok: false,
@@ -155,6 +165,13 @@ export function advanceOutgoingHandoff(
   }
   if (phase === current.phase) {
     return { ok: true, records: cloneRecords(records), record: structuredClone(current) };
+  }
+  if (updatedAtTick < current.updatedAtTick) {
+    return {
+      ok: false,
+      records: cloneRecords(records),
+      reason: "outgoing handoff update tick cannot move backwards",
+    };
   }
   const next: OutgoingAgentHandoff = {
     envelope: cloneEnvelope(current.envelope),
@@ -173,6 +190,9 @@ export function prepareIncomingHandoff(
 ): HandoffMutationResult<IncomingAgentHandoff> {
   const reason = validateAgentHandoffEnvelope(envelope);
   if (reason !== undefined) return { ok: false, records: cloneRecords(records), reason };
+  if (!validJournalTick(updatedAtTick)) {
+    return { ok: false, records: cloneRecords(records), reason: "invalid handoff update tick" };
+  }
 
   const existing = records.find((record) => record.envelope.transferId === envelope.transferId);
   if (existing !== undefined) {
@@ -215,8 +235,18 @@ export function commitIncomingHandoff(
   if (current === undefined) {
     return { ok: false, records: cloneRecords(records), reason: "unknown incoming handoff" };
   }
+  if (!validJournalTick(updatedAtTick)) {
+    return { ok: false, records: cloneRecords(records), reason: "invalid handoff update tick" };
+  }
   if (current.phase === "committed") {
     return { ok: true, records: cloneRecords(records), record: structuredClone(current) };
+  }
+  if (updatedAtTick < current.updatedAtTick) {
+    return {
+      ok: false,
+      records: cloneRecords(records),
+      reason: "incoming handoff update tick cannot move backwards",
+    };
   }
   const next: IncomingAgentHandoff = {
     envelope: cloneEnvelope(current.envelope),
