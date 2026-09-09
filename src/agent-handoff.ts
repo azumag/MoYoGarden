@@ -1,5 +1,5 @@
 import type { Agent, GridPosition } from "./protocol.js";
-import type { HexGridDirection } from "./hex-grid.js";
+import { HEX_GRID_DIRECTIONS, type HexGridDirection } from "./hex-grid.js";
 
 export interface AgentHandoffEnvelope {
   transferId: string;
@@ -54,6 +54,9 @@ export function validateAgentHandoffEnvelope(envelope: AgentHandoffEnvelope): st
     return "invalid region id";
   }
   if (envelope.fromRegionId === envelope.toRegionId) return "handoff regions must differ";
+  if (!(HEX_GRID_DIRECTIONS as readonly string[]).includes(envelope.direction)) {
+    return "invalid handoff direction";
+  }
   if (!validIdentifier(envelope.agent.id)) return "invalid agent id";
   if (!Number.isInteger(envelope.createdAtTick) || envelope.createdAtTick < 0) {
     return "invalid creation tick";

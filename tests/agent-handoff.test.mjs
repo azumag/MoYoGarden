@@ -42,6 +42,19 @@ test("outgoing reservation is idempotent and keeps the full agent snapshot", () 
   assert.deepEqual(retry.record.envelope.agent, transfer.agent);
 });
 
+test("handoff journal rejects malformed directions before reserving or preparing ownership", () => {
+  const invalid = envelope({ direction: "north" });
+  const outgoing = reserveOutgoingHandoff([], invalid, 120);
+  assert.equal(outgoing.ok, false);
+  assert.match(outgoing.reason, /invalid handoff direction/);
+  assert.equal(outgoing.records.length, 0);
+
+  const incoming = prepareIncomingHandoff([], invalid, 120);
+  assert.equal(incoming.ok, false);
+  assert.match(incoming.reason, /invalid handoff direction/);
+  assert.equal(incoming.records.length, 0);
+});
+
 test("same transfer id cannot be reused for a different handoff", () => {
   const first = reserveOutgoingHandoff([], envelope(), 120);
   assert.equal(first.ok, true);
