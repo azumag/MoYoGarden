@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { resolveNavigationBounds } from "./navigation-bounds.js";
-import { regionMetaUrl, regionWarmSnapshotRequestInit, resolveRegionPrefetch, resolveRegionRebase } from "./region-navigation.js";
+import { regionMetaUrl, regionWarmSnapshotRequestInit, resolveRegionPrefetches, resolveRegionRebase } from "./region-navigation.js";
 import { clamp, disposeObject } from "./shared.js";
 import {
   buildWeldedPreviewSurface,
@@ -224,7 +224,7 @@ function maybeWarmRegionAhead(view) {
     ensureRegionLayout(view.state.regionId);
     return;
   }
-  const prefetch = resolveRegionPrefetch(
+  const prefetches = resolveRegionPrefetches(
     regionLayout,
     view.state.regionId,
     {
@@ -233,7 +233,7 @@ function maybeWarmRegionAhead(view) {
     },
     PREFETCH_MARGIN_TILES,
   );
-  if (prefetch?.regionId) warmRegion(prefetch.regionId);
+  for (const prefetch of prefetches) warmRegion(prefetch.regionId);
 }
 
 function beginRegionRebase(view, transition) {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { regionMetaUrl, regionWarmSnapshotRequestInit, resolveRegionPrefetch, resolveRegionRebase } from "../public/client/region-navigation.js";
+import { regionMetaUrl, regionWarmSnapshotRequestInit, resolveRegionPrefetch, resolveRegionPrefetches, resolveRegionRebase } from "../public/client/region-navigation.js";
 
 const layout = [
   { id: "garden-1", origin: { x: 0, y: 0 }, extent: { width: 40, height: 24 } },
@@ -123,6 +123,18 @@ test("region prefetch resolves all six directions from axial metadata near hex s
       direction: expectedDirection,
     });
   }
+});
+
+test("region prefetch warms both possible neighbors near a hex corner", () => {
+  assert.deepEqual(resolveRegionPrefetches(hexLayout, "garden-c", { x: 0, z: -8 }, 6), [
+    { regionId: "garden-ne", direction: "northEast" },
+    { regionId: "garden-nw", direction: "northWest" },
+  ]);
+
+  const partial = hexLayout.filter((entry) => entry.id !== "garden-nw");
+  assert.deepEqual(resolveRegionPrefetches(partial, "garden-c", { x: 0, z: -8 }, 6), [
+    { regionId: "garden-ne", direction: "northEast" },
+  ]);
 });
 
 test("region prefetch no longer uses physical same-row adjacency as a topology fallback", () => {

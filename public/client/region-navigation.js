@@ -114,33 +114,42 @@ function resolvePhysicalRegionRebase(regionLayout, center, target) {
 }
 
 export function resolveRegionPrefetch(regionLayout, centerRegionId, target, margin = 6) {
-  if (!Array.isArray(regionLayout) || !centerRegionId || !target) return null;
-  if (!Number.isFinite(target.x) || !Number.isFinite(target.z)) return null;
+  return resolveRegionPrefetches(regionLayout, centerRegionId, target, margin)[0] ?? null;
+}
+
+export function resolveRegionPrefetches(regionLayout, centerRegionId, target, margin = 6) {
+  if (!Array.isArray(regionLayout) || !centerRegionId || !target) return [];
+  if (!Number.isFinite(target.x) || !Number.isFinite(target.z)) return [];
 
   const center = regionLayout.find((entry) => entry?.id === centerRegionId);
-  if (!validEntry(center)) return null;
+  if (!validEntry(center)) return [];
 
   const footprint = regularHexFootprintSize(center.extent.width, center.extent.height);
   const safeMargin = Number.isFinite(margin)
     ? Math.max(0, Math.min(footprint.radius, margin))
     : 0;
-  if (safeMargin <= 0) return null;
+  if (safeMargin <= 0) return [];
 
-  const direction = nearestHexBoundaryDirection(
+  const directions = hexBoundaryDirectionsWithinMargin(
     target,
     center.extent.width,
     center.extent.height,
     safeMargin,
   );
-  if (direction === null) return null;
-
-  const regionId = resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction);
-  return regionId === null ? null : { regionId, direction };
+  const seen = new Set();
+  const prefetches = [];
+  for (const direction of directions) {
+    const regionId = resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction);
+    if (regionId === null || seen.has(regionId)) continue;
+    seen.add(regionId);
+    prefetches.push({ regionId, direction });
+  }
+  return prefetches;
 }
 
-function nearestHexBoundaryDirection(target, width, height, margin) {
+function hexBoundaryDirectionsWithinMargin(target, width, height, margin) {
   const vertices = hexFootprintVertices(width, height);
-  let nearest = null;
+  const nearby = [];
 
   for (let index = 0; index < vertices.length; index += 1) {
     const start = vertices[index];
@@ -158,15 +167,21 @@ function nearestHexBoundaryDirection(target, width, height, margin) {
     }
     const signedDistance =
       (target.x - start.x) * normalX + (target.z - start.z) * normalZ;
-    if (nearest === null || signedDistance < nearest.distance) {
-      nearest = {
+    if (signedDistance <= margin) {
+      nearby.push({
         direction: HEX_SIDE_DIRECTIONS[index],
         distance: signedDistance,
-      };
+        order: index,
+      });
     }
   }
 
-  return nearest !== null && nearest.distance <= margin ? nearest.direction : null;
+  return nearby
+    .sort((a, b) => {
+      const distance = a.distance - b.distance;
+      return Math.abs(distance) > 1e-9 ? distance : a.order - b.order;
+    })
+    .map((entry) => entry.direction);
 }
 
 function resolveLogicalHexNeighbor(regionLayout, centerRegionId, direction) {
