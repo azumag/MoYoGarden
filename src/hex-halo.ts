@@ -196,8 +196,24 @@ export function materializeHexHalo(
   links: readonly HexHaloLink[],
   edgeSnapshots: readonly HexHaloEdgeSnapshot[],
 ): HexHaloTile[] {
-  const edgeIndex = new Map<string, Tile>();
+  // Retry/cache merges can surface more than one snapshot for the same edge.
+  // Select one coherent freshest edge before indexing tiles so array order can
+  // never let stale environmental state overwrite a newer revision.
+  const latestEdges = new Map<string, HexHaloEdgeSnapshot>();
   for (const edge of edgeSnapshots) {
+    const key = `${edge.regionId}:${edge.direction}`;
+    const current = latestEdges.get(key);
+    if (
+      current === undefined ||
+      edge.revision > current.revision ||
+      (edge.revision === current.revision && edge.tick > current.tick)
+    ) {
+      latestEdges.set(key, edge);
+    }
+  }
+
+  const edgeIndex = new Map<string, Tile>();
+  for (const edge of latestEdges.values()) {
     for (const entry of edge.tiles) {
       // Edge snapshots are request-local, read-only inputs. Keep their tile
       // references while indexing and clone only when materializing a ghost

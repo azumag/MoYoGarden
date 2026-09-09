@@ -124,6 +124,41 @@ test("materialized halo attaches neighbor boundary tiles to source-cell directio
   assert.equal(sourceTile.terrain, sourceTerrain, "materialized ghost tiles must remain detached from edge snapshots");
 });
 
+test("materialized halo selects the freshest duplicate edge snapshot independent of input order", () => {
+  const link = buildHexHaloLinks(extent, regionIds, "garden-1")
+    .find((entry) => entry.direction === "east");
+  assert.ok(link);
+
+  const snapshot = (revision, tick, terrain) => ({
+    regionId: link.neighborRegionId,
+    direction: link.neighborDirection,
+    revision,
+    tick,
+    tiles: [{
+      position: { ...link.neighborPosition },
+      tile: {
+        x: link.neighborPosition.x,
+        y: link.neighborPosition.y,
+        terrain,
+        elevation: terrain === "hill" ? 0.8 : terrain === "forest" ? 0.5 : 0,
+      },
+    }],
+  });
+  const stale = snapshot(7, 40, "water");
+  const newerRevision = snapshot(8, 30, "forest");
+  const freshest = snapshot(8, 31, "hill");
+
+  for (const snapshots of [
+    [freshest, stale, newerRevision],
+    [stale, newerRevision, freshest],
+  ]) {
+    const halo = materializeHexHalo([link], snapshots);
+    assert.equal(halo.length, 1);
+    assert.equal(halo[0].tile.terrain, "hill");
+    assert.equal(halo[0].tile.elevation, 0.8);
+  }
+});
+
 test("missing neighbor edge data leaves only unavailable ghost links unmaterialized", () => {
   const links = buildHexHaloLinks(extent, regionIds, "garden-1");
   const eastLinks = links.filter((entry) => entry.direction === "east");
