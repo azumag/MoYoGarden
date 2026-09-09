@@ -75,6 +75,11 @@ test("legacy physical rebase ignores targets outside every configured chunk", ()
   assert.equal(resolveRegionRebase(layout, "garden-3", { x: 60.5, z: 0 }), null);
 });
 
+test("legacy physical rebase fails closed when physical origins are absent", () => {
+  const noPhysicalOrigins = layout.map(({ origin: _origin, ...entry }) => entry);
+  assert.equal(resolveRegionRebase(noPhysicalOrigins, "garden-2", { x: 20.25, z: 3 }), null);
+});
+
 test("hex rebase crosses each of the six logical sides using hex origins", () => {
   assert.equal(resolveRegionRebase(hexLayout, "garden-c", { x: 0, z: 0 }), null);
   assert.equal(resolveRegionRebase(hexLayout, "garden-c", { x: hexWidth / 2, z: 0 }), null);
@@ -92,6 +97,25 @@ test("hex rebase crosses each of the six logical sides using hex origins", () =>
     close(transition.target.x, target.x - neighbor.hexOrigin.x);
     close(transition.target.z, target.z - neighbor.hexOrigin.y);
   }
+});
+
+test("hex navigation does not depend on legacy physical origins", () => {
+  const sparseHexLayout = hexLayout.map(({ origin: _origin, ...entry }) => entry);
+  const east = sparseHexLayout.find((entry) => entry.id === "garden-e");
+  assert.ok(east);
+  const target = { x: east.hexOrigin.x * 0.51, z: 0 };
+  const transition = resolveRegionRebase(sparseHexLayout, "garden-c", target);
+  assert.ok(transition);
+  assert.equal(transition.regionId, "garden-e");
+  close(transition.offsetX, east.hexOrigin.x);
+  close(transition.offsetZ, east.hexOrigin.y);
+  assert.deepEqual(resolveRegionPrefetch(sparseHexLayout, "garden-c", {
+    x: east.hexOrigin.x * 0.25,
+    z: 0,
+  }, 6), {
+    regionId: "garden-e",
+    direction: "east",
+  });
 });
 
 test("hex rebase does not skip across a missing immediate neighbor", () => {

@@ -78,6 +78,7 @@ function resolveHexRegionRebase(regionLayout, center, target) {
 }
 
 function resolvePhysicalRegionRebase(regionLayout, center, target) {
+  if (!validPhysicalEntry(center)) return null;
   const centerHalfWidth = center.extent.width / 2;
   const centerHalfHeight = center.extent.height / 2;
   const centerBounds = {
@@ -89,7 +90,7 @@ function resolvePhysicalRegionRebase(regionLayout, center, target) {
   if (contains(centerBounds, target)) return null;
 
   for (const entry of regionLayout) {
-    if (entry?.id === center.id || !validEntry(entry)) continue;
+    if (entry?.id === center.id || !validPhysicalEntry(entry)) continue;
     const offsetX = entry.origin.x - center.origin.x;
     const offsetZ = entry.origin.y - center.origin.y;
     const bounds = {
@@ -256,11 +257,17 @@ function validHexPlacement(entry) {
   return Number.isFinite(entry?.hexOrigin?.x) && Number.isFinite(entry?.hexOrigin?.y);
 }
 
+function validPhysicalEntry(entry) {
+  return Boolean(
+    validEntry(entry)
+      && Number.isFinite(entry.origin?.x)
+      && Number.isFinite(entry.origin?.y),
+  );
+}
+
 function validEntry(entry) {
   return Boolean(
     entry?.id
-      && Number.isFinite(entry.origin?.x)
-      && Number.isFinite(entry.origin?.y)
       && Number.isFinite(entry.extent?.width)
       && entry.extent.width > 0
       && Number.isFinite(entry.extent?.height)
