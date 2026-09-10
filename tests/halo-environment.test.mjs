@@ -213,9 +213,7 @@ test("shared world wind strengthens propagules arriving from the upwind halo sid
     resource: { kind: "food", amount: 5, maxAmount: 10 },
   };
 
-  const baseline = resourceRegrowthChanceWithHalo(state, tile, halo);
   const upwindFrame = environmentFrameForWind(tile, "west");
-  const crosswindFrame = environmentFrameForWind(tile, "southEast");
   const upwind = sampleWorldWind(
     upwindFrame.worldSeed,
     upwindFrame.originX + tile.x,
@@ -224,10 +222,14 @@ test("shared world wind strengthens propagules arriving from the upwind halo sid
   assert.equal(upwind.direction, "west");
   assert.ok(upwind.strength >= 0.2);
 
+  const crosswindHalo = [{
+    ...structuredClone(halo[0]),
+    direction: "northEast",
+  }];
   const upwindChance = resourceRegrowthChanceWithHalo(state, tile, halo, upwindFrame);
-  const crosswindChance = resourceRegrowthChanceWithHalo(state, tile, halo, crosswindFrame);
-  assert.ok(upwindChance > baseline);
-  assert.equal(crosswindChance, baseline);
+  const crosswindChance = resourceRegrowthChanceWithHalo(state, tile, crosswindHalo, upwindFrame);
+  assert.ok(upwindChance > crosswindChance);
+  assert.ok(crosswindChance > resourceRegrowthChance(state, tile));
   assert.ok(upwindChance <= resourceRegrowthChance(state, tile) + 0.04 + 1e-12);
   assert.equal(surfaceMoistureWithHaloAt(state, tile, halo), surfaceMoistureAt(state, tile));
 });
