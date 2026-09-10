@@ -53,15 +53,18 @@ test("halo lookup reuses already-detached ghost entries instead of cloning the f
   );
 });
 
-test("active legacy regions expand environmental halo to all six dynamic neighbors", () => {
+test("warm legacy regions keep all six environmental neighbors while cold stays configured", () => {
   const configured = ["garden-1", "garden-2", "garden-3"];
   const active = haloLinksForActivity(extent, configured, "garden-1", "active");
   const warm = haloLinksForActivity(extent, configured, "garden-1", "warm");
+  const cold = haloLinksForActivity(extent, configured, "garden-1", "cold");
   assert.equal(active.length, 6 * 23);
   assert.equal(new Set(active.map((entry) => entry.neighborRegionId)).size, 6);
-  assert.equal(warm.length, 2 * 23);
+  assert.equal(warm.length, 6 * 23);
+  assert.equal(new Set(warm.map((entry) => entry.neighborRegionId)).size, 6);
+  assert.equal(cold.length, 2 * 23);
   assert.deepEqual(
-    [...new Set(warm.map((entry) => entry.neighborRegionId))].sort(),
+    [...new Set(cold.map((entry) => entry.neighborRegionId))].sort(),
     ["garden-2", "garden-3"],
   );
 });
