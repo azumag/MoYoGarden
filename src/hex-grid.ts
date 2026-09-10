@@ -232,8 +232,14 @@ export function nearestHexGridCell(
   for (let y = 0; y < extent.height; y += 1) {
     for (let x = 0; x < extent.width; x += 1) {
       const candidate = { x, y };
-      if (!isHexGridCell(extent, candidate) || !predicate(candidate)) continue;
+      if (!isHexGridCell(extent, candidate)) continue;
       const distance = hexGridDistance(candidate, desired);
+      // Once a valid candidate is known, farther cells cannot change either
+      // the nearest-distance result or its deterministic y/x tie-break. Avoid
+      // invoking potentially expensive passability/resource predicates for
+      // those cells; handoff entry fallback and persisted-state migration both
+      // use this helper on the 397-cell active hex.
+      if (distance > bestDistance || !predicate(candidate)) continue;
       if (
         distance < bestDistance ||
         (distance === bestDistance && best !== undefined && (y < best.y || y === best.y && x < best.x))
