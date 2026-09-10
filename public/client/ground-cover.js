@@ -3,6 +3,8 @@ import { hexGridDistance, isHexGridCell, hexTileWorldXZ } from './hex-grid.js';
 import { hash2 } from './shared.js';
 import { createSurfaceSampler } from './surface-detail.js';
 
+const CONTACT_SHADOW_BUDGET = 400;
+
 export function groundCoverBudget(quality = {}) {
   if (quality.label === 'SAFE' || ['safe','low'].includes(quality.requested)) return 0;
   const budget = { balanced: 600, high: 1800, ultra: 2800 }[quality.id] ?? 600;
@@ -55,13 +57,39 @@ function grassMaterial(clock) {
   return material;
 }
 
+export function contactShadowEntries(state, limit = CONTACT_SHADOW_BUDGET) {
+  const safeLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : CONTACT_SHADOW_BUDGET;
+  if (safeLimit === 0) return [];
+
+  // Buildings need contact shadows most: without them authored structures appear to
+  // float above the terrain. Reserve budget for structures before sampling natural
+  // props, then rank props deterministically so a saturated resource field does not
+  // spend the remaining budget on one storage-order strip of the hex.
+  const structures = state.structures.map(s=>({
+    position:s.position,
+    radius:s.type==='market'?0.95:0.8,
+  }));
+  if (structures.length >= safeLimit) return structures.slice(0,safeLimit);
+
+  const resources=state.tiles.filter(t=>isHexGridCell(t,state.width,state.height)
+    && t.terrain!=='water' && t.resource?.amount>0 && ['wood','stone'].includes(t.resource.kind))
+    .map(t=>({
+      position:t,
+      radius:t.resource.kind==='wood'?0.48:0.29,
+      rank:hash2(t.x,t.y,9173),
+    }))
+    .sort((a,b)=>a.rank-b.rank || a.position.y-b.position.y || a.position.x-b.position.x);
+  const remaining = safeLimit - structures.length;
+  return [
+    ...structures,
+    ...resources.slice(0,remaining).map(({position,radius})=>({position,radius})),
+  ];
+}
+
 function contactShadows(state, sample) {
   const p=[],colors=[],indices=[];
-  const entries=state.tiles.filter(t=>isHexGridCell(t,state.width,state.height)
-    && t.terrain!=='water' && t.resource?.amount>0 && ['wood','stone'].includes(t.resource.kind))
-    .map(t=>({position:t, radius:t.resource.kind==='wood'?0.48:0.29}));
-  entries.push(...state.structures.map(s=>({position:s.position,radius:s.type==='market'?0.95:0.8})));
-  for(const entry of entries.slice(0,400)) {
+  const entries=contactShadowEntries(state);
+  for(const entry of entries) {
     const center=hexTileWorldXZ(entry.position,state.width,state.height);
     const y=sample(center.x,center.z);
     if (y===undefined || y < -0.1) continue;
