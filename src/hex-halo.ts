@@ -10,7 +10,6 @@ import {
 } from "./hex-grid.js";
 import type { Tile } from "./protocol.js";
 import {
-  configuredRegionCellTransition,
   regionAxialCoordinate,
   regionCellTransition,
   regionHexWindow,
@@ -106,6 +105,25 @@ export function buildConfiguredHexHaloLinks(
   if (regionAxialCoordinate(sourceRegionId) === undefined) {
     return buildHexHaloLinks(extent, regionIds, sourceRegionId);
   }
+
+  // Resolve the configured axial neighborhood once per halo materialization.
+  // The old path rebuilt the same REGION_IDS index inside
+  // configuredRegionCellTransition for every directed boundary cell (up to 138
+  // times for the radius-11 simulation hex). Keeping unresolved historical IDs
+  // out of this exact window preserves their side-pair fallback below, while
+  // known aliases/canonical IDs keep the same input-order ownership semantics.
+  const axialRegionIds = regionIds.filter(
+    (regionId) => regionAxialCoordinate(regionId) !== undefined,
+  );
+  const source = regionHexWindow(
+    axialRegionIds,
+    sourceRegionId,
+    1,
+    extent.width,
+    extent.height,
+  ).find((entry) => entry.id === sourceRegionId);
+  if (source === undefined) return [];
+
   const links: HexHaloLink[] = [];
   for (const direction of HEX_GRID_DIRECTIONS) {
     const step = HEX_GRID_DIRECTION_STEPS[direction];
@@ -114,19 +132,20 @@ export function buildConfiguredHexHaloLinks(
         x: sourcePosition.x + step.x,
         y: sourcePosition.y + step.y,
       };
-      const transition = configuredRegionCellTransition(
-        regionIds,
+      const transition = regionCellTransition(
         sourceRegionId,
         desiredPosition,
         extent.width,
         extent.height,
       );
       if (transition === undefined) continue;
+      const neighborRegionId = source.neighbors[transition.direction];
+      if (neighborRegionId === null) continue;
       links.push({
         sourceRegionId,
         sourcePosition,
         direction,
-        neighborRegionId: transition.targetRegionId,
+        neighborRegionId,
         neighborPosition: transition.targetPosition,
         neighborDirection: oppositeHexGridDirection(transition.direction),
       });

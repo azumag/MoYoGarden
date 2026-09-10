@@ -22,6 +22,11 @@ const haloRegionSource = await readFile(new URL("../src/halo-region.ts", import.
 test("halo hot paths resolve only a bounded axial window", () => {
   assert.match(hexHaloSource, /regionHexWindow/);
   assert.doesNotMatch(hexHaloSource, /regionHexTopology/);
+  assert.doesNotMatch(
+    hexHaloSource,
+    /configuredRegionCellTransition/,
+    "configured halo should not rebuild the REGION_IDS index for every boundary cell",
+  );
   assert.match(haloRegionSource, /regionHexWindow/);
   assert.doesNotMatch(haloRegionSource, /regionHexTopology/);
 });
