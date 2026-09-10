@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { isHexGridCell, hexTileWorldXZ } from './hex-grid.js';
+import { hexGridDistance, isHexGridCell, hexTileWorldXZ } from './hex-grid.js';
 import { hash2 } from './shared.js';
 import { createSurfaceSampler } from './surface-detail.js';
 
@@ -7,6 +7,10 @@ export function groundCoverBudget(quality = {}) {
   if (quality.label === 'SAFE' || ['safe','low'].includes(quality.requested)) return 0;
   const budget = { balanced: 600, high: 1800, ultra: 2800 }[quality.id] ?? 600;
   return Math.floor(budget * Math.min(1, Math.max(0, quality.detailDensity ?? 1)));
+}
+
+export function groundCoverBlockedByStructure(tile, structures = []) {
+  return structures.some(structure => hexGridDistance(structure.position, tile) <= 1);
 }
 
 function bladeGeometry() {
@@ -97,7 +101,7 @@ export function buildGroundCover(view, clock) {
   const candidates=[];
   for(const tile of state.tiles) {
     if (!isHexGridCell(tile,state.width,state.height) || tile.terrain==='water') continue;
-    if (state.structures.some(s=>Math.hypot(s.position.x-tile.x,s.position.y-tile.y)<1.65)) continue;
+    if (groundCoverBlockedByStructure(tile,state.structures)) continue;
     const center=hexTileWorldXZ(tile,state.width,state.height);
     const density=tile.terrain==='hill'?3:tile.terrain==='forest'?6:10;
     for(let j=0;j<density;j++) {
