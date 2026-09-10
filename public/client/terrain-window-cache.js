@@ -1,5 +1,5 @@
 function terrainTile(tile) {
-  if (!tile || !Number.isFinite(tile.x) || !Number.isFinite(tile.y)) return null;
+  if (!tile || !Number.isInteger(tile.x) || !Number.isInteger(tile.y)) return null;
   return {
     x: tile.x,
     y: tile.y,
@@ -12,17 +12,28 @@ function terrainTileKey(tile) {
   return `${tile.x},${tile.y}`;
 }
 
+function normalizedTerrainTiles(tiles) {
+  const byCell = new Map();
+  if (!Array.isArray(tiles)) return [];
+  for (const value of tiles) {
+    const tile = terrainTile(value);
+    if (tile) byCell.set(terrainTileKey(tile), tile);
+  }
+  return [...byCell.values()];
+}
+
 function mergeTerrainTiles(cachedTiles, liveTiles) {
-  const cached = Array.isArray(cachedTiles) ? cachedTiles.map(terrainTile).filter(Boolean) : [];
-  const live = Array.isArray(liveTiles) ? liveTiles.map(terrainTile).filter(Boolean) : [];
+  const cached = normalizedTerrainTiles(cachedTiles);
+  const live = normalizedTerrainTiles(liveTiles);
   if (live.length === 0) return cached;
   if (live.length >= cached.length) return live;
 
   // Live and terrain windows are independent requests. A newer live response can
-  // still be partial when one tile is malformed or a payload is truncated. Do
-  // not turn that transient incompleteness into visible holes: overlay every
-  // valid live tile while preserving cached terrain for coordinates that were
-  // not present. A complete live set continues to replace the cached set.
+  // still be partial when one tile is malformed, duplicated, or a payload is
+  // truncated. Judge completeness by unique valid integer cells rather than raw
+  // array length so duplicate/fractional entries cannot make an incomplete live
+  // set replace the cache and punch visible holes. Overlay every valid live tile
+  // while preserving cached terrain for coordinates that were not present.
   const merged = new Map(cached.map((tile) => [terrainTileKey(tile), tile]));
   for (const tile of live) merged.set(terrainTileKey(tile), tile);
   return [...merged.values()];
