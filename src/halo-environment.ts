@@ -171,16 +171,26 @@ function haloWaterInfluence(
   let influence = 0;
   for (const ghost of lookup.values()) {
     if (ghost.tile.terrain !== "water") continue;
-    // Axial-aware regions share an exact global cell frame. Measure the target
-    // directly against the ghost cell there: at slanted seams a ghost can be one
-    // hex from an interior target even when routing through sourcePosition would
-    // count two. Unknown historical IDs retain the conservative depth-1 fallback.
+    // Axial-aware dynamic halo links share an exact global cell frame. Measure
+    // the target directly against the ghost only when the link itself is an
+    // exact cross-region adjacency; legacy side-pair links retain the existing
+    // depth-1 compatibility distance until their topology is fully migrated.
     const neighborOrigin = regionGlobalCellOrigin(
       ghost.neighborRegionId,
       state.width,
       state.height,
     );
-    const distance = sourceGlobal !== undefined && neighborOrigin !== undefined
+    const exactAdjacency = sourceGlobal !== undefined &&
+      neighborOrigin !== undefined &&
+      usesExactGlobalHaloAdjacency(
+        state.regionId,
+        ghost.sourcePosition,
+        ghost.neighborRegionId,
+        ghost.neighborPosition,
+        state.width,
+        state.height,
+      );
+    const distance = exactAdjacency
       ? hexGridDistance(sourceGlobal, {
         x: neighborOrigin.x + ghost.neighborPosition.x,
         y: neighborOrigin.y + ghost.neighborPosition.y,
