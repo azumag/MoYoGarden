@@ -7,7 +7,10 @@ import {
   hexHaloLookup,
   materializeHexHalo,
 } from "../dist-ts/src/hex-halo.js";
-import { haloLinksForActivity } from "../dist-ts/src/halo-region.js";
+import {
+  haloLinksForActivity,
+  shouldUseDynamicEnvironmentalHalo,
+} from "../dist-ts/src/halo-region.js";
 import {
   HEX_GRID_DIRECTIONS,
   hexGridBoundaryCells,
@@ -53,20 +56,19 @@ test("halo lookup reuses already-detached ghost entries instead of cloning the f
   );
 });
 
-test("warm legacy regions keep all six environmental neighbors while cold stays configured", () => {
+test("warm legacy environmental halo becomes dynamic without widening background autonomy compatibility", () => {
   const configured = ["garden-1", "garden-2", "garden-3"];
-  const active = haloLinksForActivity(extent, configured, "garden-1", "active");
-  const warm = haloLinksForActivity(extent, configured, "garden-1", "warm");
-  const cold = haloLinksForActivity(extent, configured, "garden-1", "cold");
-  assert.equal(active.length, 6 * 23);
-  assert.equal(new Set(active.map((entry) => entry.neighborRegionId)).size, 6);
-  assert.equal(warm.length, 6 * 23);
-  assert.equal(new Set(warm.map((entry) => entry.neighborRegionId)).size, 6);
-  assert.equal(cold.length, 2 * 23);
-  assert.deepEqual(
-    [...new Set(cold.map((entry) => entry.neighborRegionId))].sort(),
-    ["garden-2", "garden-3"],
-  );
+  assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "garden-1", "active"), true);
+  assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "garden-1", "warm"), true);
+  assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "garden-1", "cold"), false);
+  assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "hex-q4-r-2", "cold"), true);
+
+  const activeCompatibility = haloLinksForActivity(extent, configured, "garden-1", "active");
+  const warmCompatibility = haloLinksForActivity(extent, configured, "garden-1", "warm");
+  const coldCompatibility = haloLinksForActivity(extent, configured, "garden-1", "cold");
+  assert.equal(activeCompatibility.length, 6 * 23);
+  assert.equal(warmCompatibility.length, 2 * 23);
+  assert.equal(coldCompatibility.length, 2 * 23);
 });
 
 test("full ring center exposes one ghost link for every cell on all six sides", () => {
