@@ -55,6 +55,11 @@ const COLD_TICK_MULTIPLIER = 60;
 const MAX_ACTIVITY_TICK_MS = 3_600_000;
 const HALO_REGROWTH_INTERVAL = 30;
 const DEFAULT_WORLD_SEED = 424_242;
+const PERSISTED_LEGACY_REGION_IDS = ["garden-1", "garden-2", "garden-3"] as const;
+
+function isPersistedLegacyRegionId(regionId: string): regionId is (typeof PERSISTED_LEGACY_REGION_IDS)[number] {
+  return PERSISTED_LEGACY_REGION_IDS.some((candidate) => candidate === regionId);
+}
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -350,17 +355,20 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const tier = this.activityTier();
-    // Active regions already use the bounded six-neighbor dynamic halo. Branch
-    // before consulting REGION_IDS so the normal live legacy world no longer
-    // pays for, or depends on, the configured global compatibility list.
+    // Active regions and canonical axial IDs use the bounded six-neighbor dynamic
+    // halo. Warm/cold persisted production aliases retain their existing bounded
+    // garden-1/2/3 compatibility fan-out without consulting REGION_IDS; unknown
+    // historical IDs keep the configured compatibility path.
     const links = tier === "active" || parseAxialRegionId(state.regionId) !== undefined
       ? buildDynamicHexHaloLinks(state, state.regionId)
-      : haloLinksForActivity(
-          state,
-          configuredRegionIds(this.haloEnv),
-          state.regionId,
-          tier,
-        );
+      : isPersistedLegacyRegionId(state.regionId)
+        ? buildConfiguredHexHaloLinks(state, PERSISTED_LEGACY_REGION_IDS, state.regionId)
+        : haloLinksForActivity(
+            state,
+            configuredRegionIds(this.haloEnv),
+            state.regionId,
+            tier,
+          );
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
       const direction = link.neighborDirection;
