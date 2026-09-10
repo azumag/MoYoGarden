@@ -1,4 +1,4 @@
-import { HEX_GRID_STEPS } from "./hex-grid.js";
+import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
 import {
   BUILD_RECIPES,
   DEFAULT_SIMULATION_CONFIG,
@@ -232,7 +232,7 @@ export function surfaceMoistureAt(
   let waterInfluence = 0;
   for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
     for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
-      const distance = manhattanDistance({ x: 0, y: 0 }, { x: dx, y: dy });
+      const distance = hexGridDistance({ x: 0, y: 0 }, { x: dx, y: dy });
       if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
       const neighbor = getTile(state, { x: position.x + dx, y: position.y + dy });
       if (neighbor?.terrain !== "water") continue;
