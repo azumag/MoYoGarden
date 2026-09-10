@@ -160,3 +160,45 @@ test("partial newer live terrain overlays valid cells without punching holes in 
     { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
   ]);
 });
+
+test("duplicate or fractional live cells cannot masquerade as a complete terrain refresh", async () => {
+  const mergeLiveTerrainWindow = await loadMerge();
+  assert.equal(typeof mergeLiveTerrainWindow, "function", "terrain window merge helper is missing");
+
+  const terrain = { chunks: [{
+    regionId: "hex-q0-r0",
+    state: {
+      width: 40,
+      height: 24,
+      tick: 70,
+      revision: 80,
+      tiles: [
+        { x: 10, y: 10, terrain: "plain", elevation: 0.4 },
+        { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
+      ],
+    },
+  }] };
+  const live = { chunks: [{
+    regionId: "hex-q0-r0",
+    state: {
+      width: 40,
+      height: 24,
+      tick: 71,
+      revision: 81,
+      tiles: [
+        { x: 10, y: 10, terrain: "hill", elevation: 0.45 },
+        { x: 10, y: 10, terrain: "water", elevation: 0.1 },
+        { x: 11.5, y: 10, terrain: "plain", elevation: 0.2 },
+      ],
+    },
+  }] };
+
+  const merged = mergeLiveTerrainWindow(terrain, live);
+  const state = merged.chunks[0].state;
+  assert.equal(state.tick, 71);
+  assert.equal(state.revision, 81);
+  assert.deepEqual(state.tiles, [
+    { x: 10, y: 10, terrain: "water", elevation: 0.1 },
+    { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
+  ]);
+});
