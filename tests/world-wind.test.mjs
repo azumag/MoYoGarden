@@ -7,6 +7,10 @@ import {
 } from "../dist-ts/src/world-scale.js";
 import { HEX_GRID_DIRECTIONS } from "../dist-ts/src/hex-grid.js";
 
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
 test("global wind is deterministic, bounded, and aligned to the six hex directions", () => {
   const seed = 424242;
   const coordinates = [
@@ -63,4 +67,34 @@ test("world conditions expose the same shared wind that drives frontier moisture
     assert.ok(conditions.moisture >= 0 && conditions.moisture <= 1);
     assert.ok(conditions.wetness >= 0 && conditions.wetness <= 1);
   }
+});
+
+test("shared heat and wind impose a bounded evaporative drying cost on soil wetness", () => {
+  const seed = 424242;
+  let observedDrying = false;
+  for (const [x, y] of [[0, 0], [17, 9], [39, 23], [80, -12], [-48, 32]]) {
+    const conditions = sampleWorldConditions(seed, x, y);
+    const evaporativeDrying = clamp01(
+      conditions.temperature * 0.65 + conditions.windStrength * 0.35,
+    ) * 0.055;
+    const wetnessBeforeDrying = clamp01(
+      conditions.moisture +
+      (1 - conditions.elevation) * 0.08 +
+      (conditions.convergence - 0.5) * 0.16 -
+      conditions.slope * 0.12,
+    );
+    const expectedWetness = clamp01(
+      conditions.moisture +
+      (1 - conditions.elevation) * 0.08 +
+      (conditions.convergence - 0.5) * 0.16 -
+      conditions.slope * 0.12 -
+      evaporativeDrying,
+    );
+
+    assert.ok(Math.abs(conditions.wetness - expectedWetness) < 1e-12);
+    assert.ok(conditions.wetness <= wetnessBeforeDrying + 1e-12);
+    if (wetnessBeforeDrying - conditions.wetness > 1e-6) observedDrying = true;
+  }
+
+  assert.equal(observedDrying, true, "at least one shared-world sample should lose effective wetness");
 });
