@@ -2,6 +2,7 @@ import { createRandom } from "./prng.js";
 import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
+  hexGridDistance,
   oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
@@ -156,17 +157,35 @@ function usesExactGlobalHaloAdjacency(
 }
 
 function haloWaterInfluence(
+  state: Pick<WorldState, "regionId" | "width" | "height">,
   position: GridPosition,
   lookup: HaloLookup,
 ): number {
+  const sourceOrigin = regionGlobalCellOrigin(state.regionId, state.width, state.height);
+  const sourceGlobal = sourceOrigin === undefined
+    ? undefined
+    : {
+      x: sourceOrigin.x + position.x,
+      y: sourceOrigin.y + position.y,
+    };
   let influence = 0;
   for (const ghost of lookup.values()) {
     if (ghost.tile.terrain !== "water") continue;
-    // A depth-1 ghost is exactly one hex beyond its local sourcePosition. Let
-    // that known water cell contribute through the same radius/decay rule as a
-    // local water tile so crossing a Durable Object seam does not abruptly cut
-    // off soil moisture one cell past the boundary.
-    const distance = manhattanDistance(position, ghost.sourcePosition) + 1;
+    // Axial-aware regions share an exact global cell frame. Measure the target
+    // directly against the ghost cell there: at slanted seams a ghost can be one
+    // hex from an interior target even when routing through sourcePosition would
+    // count two. Unknown historical IDs retain the conservative depth-1 fallback.
+    const neighborOrigin = regionGlobalCellOrigin(
+      ghost.neighborRegionId,
+      state.width,
+      state.height,
+    );
+    const distance = sourceGlobal !== undefined && neighborOrigin !== undefined
+      ? hexGridDistance(sourceGlobal, {
+        x: neighborOrigin.x + ghost.neighborPosition.x,
+        y: neighborOrigin.y + ghost.neighborPosition.y,
+      })
+      : manhattanDistance(position, ghost.sourcePosition) + 1;
     if (distance > WATER_MOISTURE_RADIUS) continue;
     influence = Math.max(
       influence,
@@ -525,7 +544,7 @@ function surfaceMoistureWithHaloLookup(
     }
   }
 
-  waterInfluence = Math.max(waterInfluence, haloWaterInfluence(position, lookup));
+  waterInfluence = Math.max(waterInfluence, haloWaterInfluence(state, position, lookup));
   const windborneMoisture = upwindWaterVaporMoisture(state, position, lookup, environment);
   const vegetationCover =
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0

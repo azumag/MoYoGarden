@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { surfaceMoistureWithHaloAt } from "../dist-ts/src/halo-environment.js";
-import { buildHexHaloLinks } from "../dist-ts/src/hex-halo.js";
+import { buildDynamicHexHaloLinks, buildHexHaloLinks } from "../dist-ts/src/hex-halo.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
 function fixture() {
@@ -56,4 +56,32 @@ test("ghost water does not leak past the shared four-hex moisture radius", () =>
     surfaceMoistureWithHaloAt(state, target, halo),
     surfaceMoistureWithHaloAt(state, target, []),
   );
+});
+
+test("ghost water uses exact global hex distance across a slanted seam", () => {
+  const { state } = fixture();
+  const link = buildDynamicHexHaloLinks(state, "garden-1").find(
+    (entry) =>
+      entry.direction === "east" &&
+      entry.sourcePosition.x === 30 &&
+      entry.sourcePosition.y === 0,
+  );
+  assert.ok(link);
+  const target = { x: 30, y: 1 };
+  const halo = [{
+    ...link,
+    tile: {
+      x: link.neighborPosition.x,
+      y: link.neighborPosition.y,
+      terrain: "water",
+      elevation: 0,
+    },
+  }];
+
+  const baseline = surfaceMoistureWithHaloAt(state, target, []);
+  const withHalo = surfaceMoistureWithHaloAt(state, target, halo);
+
+  // In the shared global-cell frame this ghost is one axial hex from the
+  // interior target. Measuring via sourcePosition would incorrectly count two.
+  assert.ok(Math.abs((withHalo - baseline) - 0.64) < 1e-12);
 });
