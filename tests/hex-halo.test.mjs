@@ -101,7 +101,7 @@ test("materialized halo attaches neighbor boundary tiles to source-cell directio
           elevation: index / 100,
         },
       })),
-    }));
+    });
   }
 
   const halo = materializeHexHalo(links, snapshots);
