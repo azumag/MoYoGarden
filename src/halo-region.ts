@@ -149,10 +149,7 @@ export function haloLinksForActivity(
   sourceRegionId: string,
   tier: RegionActivityTier,
 ): ReturnType<typeof buildConfiguredHexHaloLinks> {
-  if (
-    shouldUseDynamicEnvironmentalHalo(extent, sourceRegionId, tier) ||
-    !regionIds.includes(sourceRegionId)
-  ) {
+  if (tier === "active" || !regionIds.includes(sourceRegionId)) {
     return buildDynamicHexHaloLinks(extent, sourceRegionId);
   }
   return buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId);
