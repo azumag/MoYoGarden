@@ -349,13 +349,17 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
-    const links = parseAxialRegionId(state.regionId) !== undefined
+    const tier = this.activityTier();
+    // Active regions already use the bounded six-neighbor dynamic halo. Branch
+    // before consulting REGION_IDS so the normal live legacy world no longer
+    // pays for, or depends on, the configured global compatibility list.
+    const links = tier === "active" || parseAxialRegionId(state.regionId) !== undefined
       ? buildDynamicHexHaloLinks(state, state.regionId)
       : haloLinksForActivity(
           state,
           configuredRegionIds(this.haloEnv),
           state.regionId,
-          this.activityTier(),
+          tier,
         );
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
