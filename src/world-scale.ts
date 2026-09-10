@@ -39,6 +39,7 @@ export interface WorldConditions {
   slope: number;
   convergence: number;
   wetness: number;
+  soilFertility: number;
   windDirection: HexGridDirection;
   windStrength: number;
 }
@@ -173,6 +174,27 @@ export function sampleWorldWind(
 }
 
 /**
+ * Convert the low-level water, temperature and land-shape fields into a bounded
+ * soil-fertility potential. This is derived rather than persisted: neighboring
+ * macro regions therefore agree automatically wherever their global axial cells
+ * meet, and fertility cannot drift into a separate top-down biome label.
+ */
+function soilFertilityFromConditions(
+  wetness: number,
+  temperature: number,
+  slope: number,
+  convergence: number,
+): number {
+  const temperatureSuitability = clamp01(1 - Math.abs(temperature - 0.58) / 0.58);
+  return clamp01(
+    wetness * 0.42 +
+    convergence * 0.18 +
+    temperatureSuitability * 0.24 +
+    (1 - slope) * 0.16,
+  );
+}
+
+/**
  * Sample low-level environment state on the same axial coordinate system used by
  * movement, perception and hydrology. Slope/convergence use all six equidistant
  * hex neighbors; no square-grid cardinal/diagonal distinction remains.
@@ -234,6 +256,12 @@ export function sampleWorldConditions(
       (convergence - 0.5) * 0.16 -
       slope * 0.12,
   );
+  const soilFertility = soilFertilityFromConditions(
+    wetness,
+    temperature,
+    slope,
+    convergence,
+  );
 
   return {
     elevation,
@@ -242,6 +270,7 @@ export function sampleWorldConditions(
     slope,
     convergence,
     wetness,
+    soilFertility,
     windDirection: wind.direction,
     windStrength: wind.strength,
   };
@@ -355,13 +384,15 @@ export function createGlobalTerrainTile(
       conditions.wetness * 0.38 +
       conditions.convergence * 0.06 -
       conditions.slope * 0.16 +
-      (temperatureSuitability - 0.5) * 0.08,
+      (temperatureSuitability - 0.5) * 0.08 +
+      (conditions.soilFertility - 0.5) * 0.1,
   );
   if (random.next() < foodChance) {
     const maxAmount =
       random.int(12, 24) +
       Math.round(conditions.wetness * 6) +
-      Math.round(temperatureSuitability * 4);
+      Math.round(temperatureSuitability * 4) +
+      Math.round((conditions.soilFertility - 0.5) * 6);
     tile.resource = { kind: "food", amount: maxAmount, maxAmount };
   }
   return tile;
