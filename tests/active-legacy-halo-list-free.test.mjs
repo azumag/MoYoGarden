@@ -52,31 +52,41 @@ class MemoryNamespace {
   }
 }
 
-test("active legacy halo materialization does not enumerate REGION_IDS", async () => {
-  let regionListReads = 0;
+test("active legacy halo hot path does not enumerate REGION_IDS after assignment", async () => {
   const env = {
     WORLD_SEED: "424242",
+    REGION_IDS: "garden-1,garden-2,garden-3",
     TICK_MS: "10000",
     OPEN_COMMANDS: "false",
     COMMAND_TOKEN: "command-secret",
     ADMIN_TOKEN: "admin-secret",
     ASSETS: { fetch: async () => new Response("not found", { status: 404 }) },
   };
-  Object.defineProperty(env, "REGION_IDS", {
-    configurable: true,
-    get() {
-      regionListReads += 1;
-      throw new Error("active legacy halo must not enumerate REGION_IDS");
-    },
-  });
   env.REGIONS = new MemoryNamespace(env);
 
   const state = new MemoryState();
   const object = new RegionDurableObject(state, env);
   await state.ready;
-  const response = await object.fetch(new Request("https://moyo.example/api/world/halo", {
+  const request = () => new Request("https://moyo.example/api/world/halo", {
     headers: { "x-moyo-region-internal": "garden-1" },
-  }));
+  });
+
+  const initial = await object.fetch(request());
+  assert.equal(initial.status, 200, "warm-up assigns the persisted region and its dynamic neighbors");
+  const initialPayload = await initial.json();
+  assert.equal(initialPayload.expectedLinks, 138);
+  assert.equal(initialPayload.neighborEdges.length, 6);
+
+  let regionListReads = 0;
+  Object.defineProperty(env, "REGION_IDS", {
+    configurable: true,
+    get() {
+      regionListReads += 1;
+      throw new Error("active legacy halo hot path must not enumerate REGION_IDS");
+    },
+  });
+
+  const response = await object.fetch(request());
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.centerRegion, "garden-1");
