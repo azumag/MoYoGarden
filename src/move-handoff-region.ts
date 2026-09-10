@@ -44,6 +44,14 @@ function parsePosition(value: unknown): { x: number; y: number } | undefined {
   return Number.isInteger(x) && Number.isInteger(y) ? { x, y } : undefined;
 }
 
+function decodeAgentId(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function commandAuthorized(request: Request, env: MoveHandoffEnv): boolean {
   const hostname = new URL(request.url).hostname;
   if (
@@ -198,7 +206,9 @@ export class RegionDurableObject extends HandoffRegionDurableObject {
     const url = new URL(request.url);
     const match = request.method === "POST" ? COMMAND_PATH.exec(url.pathname) : null;
     if (match !== null) {
-      const agentId = decodeURIComponent(match[1] ?? "");
+      const encodedAgentId = match[1] ?? "";
+      const agentId = decodeAgentId(encodedAgentId);
+      if (agentId === undefined) return json({ error: "invalid agent id encoding" }, 400);
       const crossing = await this.maybeCrossRegionMove(request, agentId);
       if (crossing !== undefined) return crossing;
     }
