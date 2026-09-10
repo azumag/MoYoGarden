@@ -155,15 +155,25 @@ function usesExactGlobalHaloAdjacency(
   });
 }
 
-function haloNeighborWaterInfluence(
+function haloWaterInfluence(
   position: GridPosition,
   lookup: HaloLookup,
 ): number {
-  for (const direction of HEX_GRID_DIRECTIONS) {
-    const ghost = lookup.get(hexHaloKey(position, direction));
-    if (ghost?.tile.terrain === "water") return 1;
+  let influence = 0;
+  for (const ghost of lookup.values()) {
+    if (ghost.tile.terrain !== "water") continue;
+    // A depth-1 ghost is exactly one hex beyond its local sourcePosition. Let
+    // that known water cell contribute through the same radius/decay rule as a
+    // local water tile so crossing a Durable Object seam does not abruptly cut
+    // off soil moisture one cell past the boundary.
+    const distance = manhattanDistance(position, ghost.sourcePosition) + 1;
+    if (distance > WATER_MOISTURE_RADIUS) continue;
+    influence = Math.max(
+      influence,
+      (WATER_MOISTURE_RADIUS + 1 - distance) / WATER_MOISTURE_RADIUS,
+    );
   }
-  return 0;
+  return influence;
 }
 
 function upwindWaterVaporMoisture(
@@ -515,7 +525,7 @@ function surfaceMoistureWithHaloLookup(
     }
   }
 
-  waterInfluence = Math.max(waterInfluence, haloNeighborWaterInfluence(position, lookup));
+  waterInfluence = Math.max(waterInfluence, haloWaterInfluence(position, lookup));
   const windborneMoisture = upwindWaterVaporMoisture(state, position, lookup, environment);
   const vegetationCover =
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
