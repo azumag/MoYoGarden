@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sampleWorldConditions } from "../dist-ts/src/world-scale.js";
+import { createRandom } from "../dist-ts/src/prng.js";
+import {
+  createGlobalTerrainTile,
+  sampleWorldConditions,
+} from "../dist-ts/src/world-scale.js";
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
@@ -16,6 +20,12 @@ function expectedSoilFertility(conditions) {
     temperatureSuitability * 0.24 +
     (1 - conditions.slope) * 0.16,
   );
+}
+
+function coordinateSeed(seed, x, y) {
+  const xHash = Math.imul(x + 1, 0x9e3779b1);
+  const yHash = Math.imul(y + 1, 0x85ebca6b);
+  return (seed ^ xHash ^ yHash ^ 0x27d4eb2d) >>> 0;
 }
 
 test("soil fertility is a bounded low-level consequence of shared world conditions", () => {
@@ -50,4 +60,36 @@ test("soil fertility stays deterministic in absolute axial world space", () => {
   const first = coordinates.map(([x, y]) => sampleWorldConditions(seed, x, y).soilFertility);
   const second = coordinates.map(([x, y]) => sampleWorldConditions(seed, x, y).soilFertility);
   assert.deepEqual(first, second);
+});
+
+test("derived soil fertility changes fresh forest carrying capacity", () => {
+  const seed = 424242;
+  let sample;
+
+  for (let y = -80; y <= 80 && sample === undefined; y += 1) {
+    for (let x = -80; x <= 80; x += 1) {
+      const conditions = sampleWorldConditions(seed, x, y);
+      const fertilityDelta = Math.round((conditions.soilFertility - 0.5) * 8);
+      if (fertilityDelta === 0) continue;
+      const tile = createGlobalTerrainTile(x, y, seed, 0, 0);
+      if (tile.resource?.kind !== "wood") continue;
+      sample = { x, y, conditions, fertilityDelta, tile };
+      break;
+    }
+  }
+
+  assert.ok(sample, "expected a forest sample with a non-zero fertility capacity delta");
+  const temperatureSuitability = clamp01(
+    1 - Math.abs(sample.conditions.temperature - 0.58) / 0.58,
+  );
+  const random = createRandom(coordinateSeed(seed, sample.x, sample.y));
+  const moistureAndClimateCapacity =
+    random.int(18, 28) +
+    Math.round(sample.conditions.wetness * 10) +
+    Math.round(temperatureSuitability * 4);
+  const expectedCapacity = moistureAndClimateCapacity + sample.fertilityDelta;
+
+  assert.equal(sample.tile.resource.maxAmount, expectedCapacity);
+  assert.equal(sample.tile.resource.amount, expectedCapacity);
+  assert.notEqual(sample.tile.resource.maxAmount, moistureAndClimateCapacity);
 });

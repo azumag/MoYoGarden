@@ -363,7 +363,8 @@ export function createGlobalTerrainTile(
     const maxAmount =
       random.int(18, 28) +
       Math.round(conditions.wetness * 10) +
-      Math.round(temperatureSuitability * 4);
+      Math.round(temperatureSuitability * 4) +
+      Math.round((conditions.soilFertility - 0.5) * 8);
     return {
       x: localX,
       y: localY,
