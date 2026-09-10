@@ -250,11 +250,18 @@ export function sampleWorldConditions(
   const neighborMean = neighborElevations.reduce((sum, value) => sum + value, 0) /
     Math.max(1, neighborElevations.length);
   const convergence = clamp01(0.5 + (neighborMean - elevation) * 6);
+  // Warm air and stronger wind both increase evaporative demand. Keep this
+  // derived and deliberately weak so it can shape soil/vegetation continuously
+  // across macro-region seams without introducing a persisted weather category.
+  const evaporativeDrying = clamp01(
+    temperature * 0.65 + wind.strength * 0.35,
+  ) * 0.055;
   const wetness = clamp01(
     moisture +
       (1 - elevation) * 0.08 +
       (convergence - 0.5) * 0.16 -
-      slope * 0.12,
+      slope * 0.12 -
+      evaporativeDrying,
   );
   const soilFertility = soilFertilityFromConditions(
     wetness,
