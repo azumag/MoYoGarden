@@ -119,3 +119,44 @@ test("same-tick terrain merge refuses an older revision", async () => {
   assert.equal(merged.chunks[0].state.revision, 52);
   assert.equal(merged.chunks[0].state.tiles[0].terrain, "hill");
 });
+
+test("partial newer live terrain overlays valid cells without punching holes in cached terrain", async () => {
+  const mergeLiveTerrainWindow = await loadMerge();
+  assert.equal(typeof mergeLiveTerrainWindow, "function", "terrain window merge helper is missing");
+
+  const terrain = { chunks: [{
+    regionId: "hex-q0-r0",
+    state: {
+      width: 40,
+      height: 24,
+      tick: 50,
+      revision: 60,
+      tiles: [
+        { x: 10, y: 10, terrain: "plain", elevation: 0.4 },
+        { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
+      ],
+    },
+  }] };
+  const live = { chunks: [{
+    regionId: "hex-q0-r0",
+    state: {
+      width: 40,
+      height: 24,
+      tick: 51,
+      revision: 61,
+      tiles: [
+        { x: 10, y: 10, terrain: "hill", elevation: 0.45 },
+        { x: "bad", y: 10, terrain: "water", elevation: 0 },
+      ],
+    },
+  }] };
+
+  const merged = mergeLiveTerrainWindow(terrain, live);
+  const state = merged.chunks[0].state;
+  assert.equal(state.tick, 51);
+  assert.equal(state.revision, 61);
+  assert.deepEqual(state.tiles, [
+    { x: 10, y: 10, terrain: "hill", elevation: 0.45 },
+    { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
+  ]);
+});

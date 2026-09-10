@@ -8,6 +8,26 @@ function terrainTile(tile) {
   };
 }
 
+function terrainTileKey(tile) {
+  return `${tile.x},${tile.y}`;
+}
+
+function mergeTerrainTiles(cachedTiles, liveTiles) {
+  const cached = Array.isArray(cachedTiles) ? cachedTiles.map(terrainTile).filter(Boolean) : [];
+  const live = Array.isArray(liveTiles) ? liveTiles.map(terrainTile).filter(Boolean) : [];
+  if (live.length === 0) return cached;
+  if (live.length >= cached.length) return live;
+
+  // Live and terrain windows are independent requests. A newer live response can
+  // still be partial when one tile is malformed or a payload is truncated. Do
+  // not turn that transient incompleteness into visible holes: overlay every
+  // valid live tile while preserving cached terrain for coordinates that were
+  // not present. A complete live set continues to replace the cached set.
+  const merged = new Map(cached.map((tile) => [terrainTileKey(tile), tile]));
+  for (const tile of live) merged.set(terrainTileKey(tile), tile);
+  return [...merged.values()];
+}
+
 function isStaleTerrainState(cachedState, liveState) {
   const cachedTick = Number.isFinite(cachedState?.tick) ? cachedState.tick : undefined;
   const liveTick = Number.isFinite(liveState?.tick) ? liveState.tick : undefined;
@@ -34,7 +54,7 @@ function mergeTerrainState(cachedState, liveState) {
     ...cachedState,
     ...(Number.isFinite(liveState.tick) ? { tick: liveState.tick } : {}),
     ...(Number.isFinite(liveState.revision) ? { revision: liveState.revision } : {}),
-    tiles: liveState.tiles.map(terrainTile).filter(Boolean),
+    tiles: mergeTerrainTiles(cachedState.tiles, liveState.tiles),
   };
 }
 
