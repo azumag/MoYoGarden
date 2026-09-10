@@ -8,8 +8,28 @@ function terrainTile(tile) {
   };
 }
 
+function isStaleTerrainState(cachedState, liveState) {
+  const cachedTick = Number.isFinite(cachedState?.tick) ? cachedState.tick : undefined;
+  const liveTick = Number.isFinite(liveState?.tick) ? liveState.tick : undefined;
+  if (cachedTick !== undefined && liveTick !== undefined) {
+    if (liveTick < cachedTick) return true;
+    if (liveTick > cachedTick) return false;
+  }
+
+  const cachedRevision = Number.isFinite(cachedState?.revision) ? cachedState.revision : undefined;
+  const liveRevision = Number.isFinite(liveState?.revision) ? liveState.revision : undefined;
+  return cachedRevision !== undefined
+    && liveRevision !== undefined
+    && liveRevision < cachedRevision;
+}
+
 function mergeTerrainState(cachedState, liveState) {
   if (!cachedState || !Array.isArray(liveState?.tiles)) return cachedState;
+  // Terrain and live windows are fetched independently and can overlap near a
+  // region handoff or refresh timeout. Keep the terrain cache monotonic so an
+  // older live response cannot roll an already-rendered neighbor back to stale
+  // terrain. Equal ticks still use revision as the deterministic tie-break.
+  if (isStaleTerrainState(cachedState, liveState)) return cachedState;
   return {
     ...cachedState,
     ...(Number.isFinite(liveState.tick) ? { tick: liveState.tick } : {}),
