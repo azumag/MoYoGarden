@@ -17,7 +17,7 @@ import {
 } from "./protocol.js";
 import { drainageAt, resourceRegrowthChance } from "./simulation.js";
 import { regionCellTransition, regionGlobalCellOrigin } from "./region-topology.js";
-import { sampleWorldWind } from "./world-scale.js";
+import { sampleWorldConditions, sampleWorldWind } from "./world-scale.js";
 import { getTile } from "./world.js";
 
 const WATER_MOISTURE_RADIUS = 4;
@@ -277,6 +277,26 @@ function neighboringPropaguleInfluence(
     influence = 1 - (1 - influence) * (1 - cover);
   }
   return clamp01(influence);
+}
+
+/**
+ * Convert the receiving global cell's derived soil state into a conservative
+ * seed-establishment multiplier. The frame uses the same world seed and axial
+ * coordinates as terrain generation, so local and ghost propagules see one
+ * continuous substrate instead of gaining an equal bonus on unsuitable soil.
+ * Missing legacy coordinate metadata deliberately preserves the old multiplier.
+ */
+function propaguleEstablishmentFactor(
+  position: GridPosition,
+  environment?: HaloEnvironmentFrame,
+): number {
+  if (environment === undefined) return 1;
+  const fertility = sampleWorldConditions(
+    environment.worldSeed,
+    environment.originX + position.x,
+    environment.originY + position.y,
+  ).soilFertility;
+  return 0.5 + clamp01(fertility) * 0.5;
 }
 
 /**
@@ -620,7 +640,10 @@ function resourceRegrowthChanceWithHaloLookup(
     lookup,
     environment,
   );
-  const propaguleBonus = propaguleInfluence * HALO_ORGANIC_PROPAGULE_BONUS[tile.resource.kind];
+  const propaguleBonus =
+    propaguleInfluence *
+    HALO_ORGANIC_PROPAGULE_BONUS[tile.resource.kind] *
+    propaguleEstablishmentFactor(tile, environment);
   return tile.resource.kind === "wood"
     ? Math.min(0.32, 0.08 + moisture * 0.22 + propaguleBonus)
     : Math.min(0.34, 0.06 + moisture * 0.26 + propaguleBonus);
