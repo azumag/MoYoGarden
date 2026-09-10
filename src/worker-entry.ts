@@ -202,6 +202,32 @@ export function routeMetaRegionHeader(request: Request): Request {
   });
 }
 
+/**
+ * An unscoped metadata request with a canonical DEFAULT_REGION_ID already has a
+ * complete axial identity, so route it through the base worker's existing sparse
+ * scoped-meta path instead of falling back to REGION_IDS enumeration. Persisted
+ * garden aliases intentionally keep their fixed three-region compatibility view,
+ * and unknown historical defaults keep the legacy allow-list behavior.
+ */
+export function routeImplicitCanonicalMetaRegion(
+  request: Request,
+  env: RegionConfigEnv,
+): Request {
+  if (request.method !== "GET") return request;
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/meta") return request;
+  const requested =
+    url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
+  if (requested !== undefined && requested !== "") return request;
+  const defaultRegion = env.DEFAULT_REGION_ID?.trim();
+  if (defaultRegion === undefined || parseAxialRegionId(defaultRegion) === undefined) return request;
+  url.searchParams.set("region", defaultRegion);
+  return new Request(url.toString(), {
+    method: "GET",
+    headers: request.headers,
+  });
+}
+
 function routedRegionId(request: Request): string | undefined {
   const url = new URL(request.url);
   return url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim() || undefined;
@@ -341,7 +367,10 @@ export default {
       return hiddenInternalEndpoint();
     }
 
-    const routedRequest = routeConfiguredDefaultRegion(routeMetaRegionHeader(request), env);
+    const routedRequest = routeConfiguredDefaultRegion(
+      routeImplicitCanonicalMetaRegion(routeMetaRegionHeader(request), env),
+      env,
+    );
     const routedEnv = listIndependentLegacyRoutingEnv(routedRequest, env);
     const isRegionWindow = request.method === "GET" && url.pathname === "/api/world/window";
     // A radius window is a best-effort aggregation of independent neighboring
