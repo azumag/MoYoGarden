@@ -496,7 +496,6 @@ function haloCatchmentContributionMapFromLookup(
     if (tile.terrain === "water" || tile.flowTo === undefined) continue;
     const sourceContribution = contribution.get(positionKey(tile)) ?? 0;
     if (sourceContribution <= 0) continue;
-
     const sourceElevation = tileElevation(tile);
     const target = getTile(state, tile.flowTo);
     const targetElevation = tileElevation(target);
@@ -543,7 +542,7 @@ function surfaceMoistureWithHaloLookup(
   let waterInfluence = 0;
   for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
     for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
-      const distance = manhattanDistance({ x: 0, y: 0 }, { x: dx, y: dy });
+      const distance = hexGridDistance({ x: 0, y: 0 }, { x: dx, y: dy });
       if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
       const neighbor = getTile(state, { x: position.x + dx, y: position.y + dy });
       if (neighbor?.terrain !== "water") continue;
