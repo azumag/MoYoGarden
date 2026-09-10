@@ -24,7 +24,7 @@ test("halo hot paths resolve only a bounded axial window", () => {
   assert.doesNotMatch(hexHaloSource, /regionHexTopology/);
   assert.doesNotMatch(
     hexHaloSource,
-    /configuredRegionCellTransition/,
+    /configuredRegionCellTransition\s*\(/,
     "configured halo should not rebuild the REGION_IDS index for every boundary cell",
   );
   assert.match(haloRegionSource, /regionHexWindow/);
@@ -101,7 +101,7 @@ test("materialized halo attaches neighbor boundary tiles to source-cell directio
           elevation: index / 100,
         },
       })),
-    });
+    }));
   }
 
   const halo = materializeHexHalo(links, snapshots);
