@@ -207,16 +207,31 @@ function routedRegionId(request: Request): string | undefined {
   return url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim() || undefined;
 }
 
+function implicitPersistedLegacyMetaRegion(request: Request, env: RegionConfigEnv): string | undefined {
+  if (request.method !== "GET") return undefined;
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/meta") return undefined;
+  const requested =
+    url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
+  if (requested !== undefined && requested !== "") return undefined;
+  const defaultRegion = env.DEFAULT_REGION_ID?.trim();
+  return isPersistedLegacyRegionId(defaultRegion) ? defaultRegion : undefined;
+}
+
 /**
  * Public requests scoped to the three persisted production aliases have a
  * complete built-in axial identity. Feed the legacy base worker only that fixed
  * compatibility set instead of consulting REGION_IDS, so normal garden-1/2/3
  * routing remains available even while REGION_IDS is being downgraded to an
- * optional historical allow-list. Unknown historical IDs keep the old config
- * path and canonical IDs already use their list-free sparse path.
+ * optional historical allow-list. The same bounded compatibility view now also
+ * backs unscoped /api/meta when DEFAULT_REGION_ID is one of those aliases, which
+ * keeps the production metadata/verification path independent of REGION_IDS.
+ * Unknown historical IDs keep the old config path and canonical IDs already use
+ * their list-free sparse path.
  */
 function listIndependentLegacyRoutingEnv(request: Request, env: WorkerEnv): WorkerEnv {
-  if (!isPersistedLegacyRegionId(routedRegionId(request))) return env;
+  const regionId = routedRegionId(request) ?? implicitPersistedLegacyMetaRegion(request, env);
+  if (!isPersistedLegacyRegionId(regionId)) return env;
   return new Proxy(env, {
     get(target, property, receiver) {
       if (property === "REGION_IDS") return PERSISTED_LEGACY_REGION_LIST;
