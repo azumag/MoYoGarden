@@ -133,13 +133,26 @@ function activityDelayMs(tickMs: number, tier: RegionActivityTier): number {
   return Math.min(MAX_ACTIVITY_TICK_MS, tickMs * multiplier);
 }
 
+export function shouldUseDynamicEnvironmentalHalo(
+  extent: Pick<WorldState, "width" | "height">,
+  sourceRegionId: string,
+  tier: RegionActivityTier,
+): boolean {
+  if (tier === "active" || parseAxialRegionId(sourceRegionId) !== undefined) return true;
+  return tier === "warm" &&
+    regionGlobalCellOrigin(sourceRegionId, extent.width, extent.height) !== undefined;
+}
+
 export function haloLinksForActivity(
   extent: Pick<WorldState, "width" | "height">,
   regionIds: readonly string[],
   sourceRegionId: string,
   tier: RegionActivityTier,
 ): ReturnType<typeof buildConfiguredHexHaloLinks> {
-  if (tier === "active" || !regionIds.includes(sourceRegionId)) {
+  if (
+    shouldUseDynamicEnvironmentalHalo(extent, sourceRegionId, tier) ||
+    !regionIds.includes(sourceRegionId)
+  ) {
     return buildDynamicHexHaloLinks(extent, sourceRegionId);
   }
   return buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId);
@@ -355,11 +368,12 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const tier = this.activityTier();
-    // Active regions and canonical axial IDs use the bounded six-neighbor dynamic
-    // halo. Warm/cold persisted production aliases retain their existing bounded
-    // garden-1/2/3 compatibility fan-out without consulting REGION_IDS; unknown
-    // historical IDs keep the configured compatibility path.
-    const links = tier === "active" || parseAxialRegionId(state.regionId) !== undefined
+    // Active and warm regions with a shared global frame use the bounded
+    // six-neighbor dynamic halo, so a prefetched neighbor already sees the same
+    // environmental seams before camera/BOT ownership arrives. Canonical axial
+    // IDs stay dynamic even when cold. Cold persisted production aliases retain
+    // the bounded garden-1/2/3 compatibility fan-out to avoid background cost.
+    const links = shouldUseDynamicEnvironmentalHalo(state, state.regionId, tier)
       ? buildDynamicHexHaloLinks(state, state.regionId)
       : isPersistedLegacyRegionId(state.regionId)
         ? buildConfiguredHexHaloLinks(state, PERSISTED_LEGACY_REGION_IDS, state.regionId)
