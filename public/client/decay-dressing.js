@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { isHexGridCell } from "./hex-grid.js";
+import { hexGridDistance, isHexGridCell } from "./hex-grid.js";
 import { hash2, setShadows } from "./shared.js";
 import { WorldView } from "./world-view.js";
 
@@ -76,12 +76,12 @@ function tileAt(state, x, y) {
   return isHexGridCell(tile, state.width, state.height) ? tile : null;
 }
 
-function wetnessHint(state, tile) {
+export function wetnessHint(state, tile) {
   if (!tile || tile.terrain === "water") return 1;
   let waterInfluence = 0;
   for (let dy = -2; dy <= 2; dy += 1) {
     for (let dx = -2; dx <= 2; dx += 1) {
-      const distance = Math.abs(dx) + Math.abs(dy);
+      const distance = hexGridDistance({ x: 0, y: 0 }, { x: dx, y: dy });
       if (distance === 0 || distance > 2) continue;
       if (tileAt(state, tile.x + dx, tile.y + dy)?.terrain !== "water") continue;
       waterInfluence = Math.max(waterInfluence, (3 - distance) / 2);
@@ -93,13 +93,8 @@ function wetnessHint(state, tile) {
   return Math.min(1, waterInfluence * 0.72 + drainage * 0.42);
 }
 
-function nearSettlement(state, tile, radius = 2.2) {
-  const radiusSq = radius * radius;
-  return state.structures.some((structure) => {
-    const dx = structure.position.x - tile.x;
-    const dy = structure.position.y - tile.y;
-    return dx * dx + dy * dy <= radiusSq;
-  });
+export function nearSettlement(state, tile, radius = 2.2) {
+  return state.structures.some((structure) => hexGridDistance(structure.position, tile) <= radius);
 }
 
 function setStaticInstances(mesh, entries, makeMatrix) {
