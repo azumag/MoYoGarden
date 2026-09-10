@@ -39,9 +39,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parsePosition(value: unknown): { x: number; y: number } | undefined {
   if (!isRecord(value)) return undefined;
-  const x = Number(value.x);
-  const y = Number(value.y);
-  return Number.isInteger(x) && Number.isInteger(y) ? { x, y } : undefined;
+  const x = value.x;
+  const y = value.y;
+  return typeof x === "number" && Number.isInteger(x) &&
+    typeof y === "number" && Number.isInteger(y)
+    ? { x, y }
+    : undefined;
 }
 
 function decodeAgentId(value: string): string | undefined {
