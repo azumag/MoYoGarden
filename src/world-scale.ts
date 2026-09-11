@@ -339,6 +339,19 @@ export function alignRegionBoundaryElevations(
   return changed;
 }
 
+/**
+ * Turn the shared low-level soil state into a small carrying-capacity modifier.
+ * Fertile cells can sustain modestly more organic biomass while poor or
+ * waterlogged soils (already reflected in soilFertility) sustain modestly less.
+ * Keeping the range to ±10% makes this a gradual ecological pressure rather
+ * than a top-down biome switch, and it requires no persisted schema change.
+ */
+export function scaleOrganicCarryingCapacity(baseAmount: number, soilFertility: number): number {
+  const safeBase = Math.max(1, Math.round(baseAmount));
+  const factor = 0.9 + clamp01(soilFertility) * 0.2;
+  return Math.max(1, Math.round(safeBase * factor));
+}
+
 export function createGlobalTerrainTile(
   localX: number,
   localY: number,
@@ -373,11 +386,13 @@ export function createGlobalTerrainTile(
   }
 
   if (conditions.wetness > 0.585 && conditions.slope < 0.78) {
-    const maxAmount =
+    const maxAmount = scaleOrganicCarryingCapacity(
       random.int(18, 28) +
-      Math.round(conditions.wetness * 10) +
-      Math.round(temperatureSuitability * 4) +
-      Math.round((conditions.soilFertility - 0.5) * 8);
+        Math.round(conditions.wetness * 10) +
+        Math.round(temperatureSuitability * 4) +
+        Math.round((conditions.soilFertility - 0.5) * 8),
+      conditions.soilFertility,
+    );
     return {
       x: localX,
       y: localY,
@@ -402,11 +417,13 @@ export function createGlobalTerrainTile(
       (conditions.soilFertility - 0.5) * 0.1,
   );
   if (random.next() < foodChance) {
-    const maxAmount =
+    const maxAmount = scaleOrganicCarryingCapacity(
       random.int(12, 24) +
-      Math.round(conditions.wetness * 6) +
-      Math.round(temperatureSuitability * 4) +
-      Math.round((conditions.soilFertility - 0.5) * 6);
+        Math.round(conditions.wetness * 6) +
+        Math.round(temperatureSuitability * 4) +
+        Math.round((conditions.soilFertility - 0.5) * 6),
+      conditions.soilFertility,
+    );
     tile.resource = { kind: "food", amount: maxAmount, maxAmount };
   }
   return tile;
