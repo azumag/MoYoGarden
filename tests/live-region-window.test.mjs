@@ -37,11 +37,30 @@ test("neighbor resources stay low-detail without cloning authored nature models"
     /proxy\.createResource = \(tile\) => createNeighborResourceGlyph\(proxy, tile\)/,
   );
   const glyphStart = liveRegionSource.indexOf("function createNeighborResourceGlyph");
+  const glyphEnd = liveRegionSource.indexOf("function createNeighborStructureGlyph", glyphStart);
+  const glyphSource = liveRegionSource.slice(glyphStart, glyphEnd);
+  assert.doesNotMatch(glyphSource, /models\.clone/);
+  assert.doesNotMatch(glyphSource, /createLod/);
+  assert.match(glyphSource, /object\.castShadow = false/);
+});
+
+test("neighbor structures keep low-detail silhouettes without authored building clones", () => {
+  assert.match(liveRegionSource, /function createNeighborStructureGlyph\(proxy, structure, faction\)/);
+  assert.match(
+    liveRegionSource,
+    /const glyph = proxy\.makeLowBuilding\(structure\.type, faction\?\.color \|\| "#999999"\)/,
+  );
+  assert.match(
+    liveRegionSource,
+    /proxy\.createStructure = \(structure, faction\) =>[\s\S]*createNeighborStructureGlyph\(proxy, structure, faction\)/,
+  );
+  const glyphStart = liveRegionSource.indexOf("function createNeighborStructureGlyph");
   const glyphEnd = liveRegionSource.indexOf("function animateNeighborAgentGlyph", glyphStart);
   const glyphSource = liveRegionSource.slice(glyphStart, glyphEnd);
   assert.doesNotMatch(glyphSource, /models\.clone/);
   assert.doesNotMatch(glyphSource, /createLod/);
   assert.match(glyphSource, /object\.castShadow = false/);
+  assert.match(glyphSource, /structureId = structure\.id/);
 });
 
 test("neighbor BOTs use a readable low-cost head-and-stick glyph", () => {

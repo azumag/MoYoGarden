@@ -56,6 +56,27 @@ function createNeighborResourceGlyph(proxy, tile) {
   return { lod: glyph, kind: tile.resource.kind, authored: false };
 }
 
+function createNeighborStructureGlyph(proxy, structure, faction) {
+  const glyph = proxy.makeLowBuilding(structure.type, faction?.color || "#999999");
+  glyph.name = "MoyoNeighborStructureGlyph";
+  glyph.userData.moyoNeighborStructureGlyph = true;
+  glyph.userData.structureId = structure.id;
+  glyph.traverse((object) => {
+    if (!object.isMesh) return;
+    object.castShadow = false;
+    object.receiveShadow = true;
+  });
+  proxy.structureRoot.add(glyph);
+  return {
+    lod: glyph,
+    high: null,
+    medium: null,
+    low: glyph,
+    type: structure.type,
+    factionId: structure.factionId,
+  };
+}
+
 function animateNeighborAgentGlyph(entry, time, tickMs) {
   const duration = Math.max(300, tickMs * 0.82);
   const amount = Math.max(0, Math.min(1, (time - entry.start) / duration));
@@ -137,6 +158,11 @@ function createProxy(view, group, state, tickMs) {
   // region remains the visual focus. Reuse the existing low-detail tree/rock/
   // forage silhouettes and skip authored nature clones and shadow casting here.
   proxy.createResource = (tile) => createNeighborResourceGlyph(proxy, tile);
+  // Structures in the live radius-one ring are also contextual rather than the
+  // visual focus. Keep their type/faction silhouette and construction progress,
+  // but avoid cloning authored high/medium building shells for every neighbor.
+  proxy.createStructure = (structure, faction) =>
+    createNeighborStructureGlyph(proxy, structure, faction);
   proxy.createAgent = (agent, faction) => createNeighborAgentGlyph(proxy, agent, faction);
   // Neighbor BOTs are two-mesh glyphs with no mixer, limbs, contact shadow, or
   // selection ring animation. Keep only the movement interpolation instead of
