@@ -35,6 +35,15 @@ test("neighbor BOTs use a readable low-cost head-and-stick glyph", () => {
   assert.match(liveRegionSource, /contactShadow: null/);
 });
 
+test("neighbor BOT glyphs bypass full focused-agent animation work", () => {
+  assert.match(liveRegionSource, /function animateNeighborAgentGlyph\(entry, time, tickMs\)/);
+  assert.match(liveRegionSource, /entry\.lod\.position\.lerpVectors\(entry\.from, entry\.to, amount\)/);
+  assert.match(
+    liveRegionSource,
+    /proxy\.animateAgent = \(entry, time\) => animateNeighborAgentGlyph\(entry, time, proxy\.tickMs\)/,
+  );
+});
+
 test("temporary live-window snapshot gaps keep last-known neighbor objects visible", () => {
   assert.match(liveRegionSource, /const requestedIds = windowRegionIds\(payload, centerRegionId\)/);
   assert.match(liveRegionSource, /if \(requestedIds\.has\(regionId\)\) \{/);

@@ -30,6 +30,12 @@ function surfaceHeightMap(state) {
   return result;
 }
 
+function animateNeighborAgentGlyph(entry, time, tickMs) {
+  const duration = Math.max(300, tickMs * 0.82);
+  const amount = Math.max(0, Math.min(1, (time - entry.start) / duration));
+  entry.lod.position.lerpVectors(entry.from, entry.to, amount);
+}
+
 function createNeighborAgentGlyph(proxy, agent, faction) {
   const glyph = new THREE.Group();
   glyph.name = "MoyoNeighborAgentGlyph";
@@ -101,6 +107,10 @@ function createProxy(view, group, state, tickMs) {
   proxy.onSelect = () => {};
   proxy.markShadowsDirty = () => {};
   proxy.createAgent = (agent, faction) => createNeighborAgentGlyph(proxy, agent, faction);
+  // Neighbor BOTs are two-mesh glyphs with no mixer, limbs, contact shadow, or
+  // selection ring animation. Keep only the movement interpolation instead of
+  // running the full focused-region agent animation path for every visible BOT.
+  proxy.animateAgent = (entry, time) => animateNeighborAgentGlyph(entry, time, proxy.tickMs);
   group.add(proxy.resourceRoot, proxy.structureRoot, proxy.agentRoot);
   proxy.syncResources(state);
   proxy.syncStructures(state);
