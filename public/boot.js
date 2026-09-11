@@ -1,10 +1,10 @@
 (() => {
   "use strict";
 
-  // This query key only bootstraps the commit-aware loader itself. Runtime
-  // modules use /api/meta's deployed build.commit, so every production deploy
-  // receives a new browser/CDN cache key without manually bumping app version.
-  let VERSION = "commit-aware-1";
+  // This fallback key matches the packaged release. Runtime modules use
+  // /api/meta's deployed build.commit, so every production deploy receives a
+  // new browser/CDN cache key without manually bumping the package version.
+  let VERSION = "0.3.11";
   const WATCHDOG_MS = 12_000;
   const ASSET_VERSION_TIMEOUT_MS = 1_500;
   const PRODUCTION_URL = "https://moyo.bluemoon.works/";
@@ -88,7 +88,7 @@
       if (typeof commit === "string" && /^[0-9a-f]{7,64}$/i.test(commit)) return commit;
     } catch (error) {
       if (error?.name !== "AbortError") {
-        console.warn("MoYoGarden: build commit lookup failed; using bootstrap cache key", error);
+        console.warn("MoYoGarden: build commit lookup failed; using packaged cache key", error);
       }
     } finally {
       clearTimeout(timeout);
