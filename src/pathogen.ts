@@ -26,7 +26,8 @@ type PathogenAgent = Agent & { pathogenLoad?: number };
 
 export const PATHOGEN_LOCAL_INTERVAL = 6;
 export const PATHOGEN_HALO_INTERVAL = 30;
-const PATHOGEN_RECOVERY_RATE = 0.06;
+const PATHOGEN_BASE_RECOVERY_RATE = 0.06;
+const PATHOGEN_RECOVERY_ENERGY_BAND = 0.015;
 const PATHOGEN_AMBIENT_GAIN = 0.012;
 const PATHOGEN_SAME_CELL_CONTACT_GAIN = 0.11;
 const PATHOGEN_ADJACENT_CONTACT_GAIN = 0.06;
@@ -42,6 +43,20 @@ function clamp01(value: number): number {
 export function agentPathogenLoad(agent: Agent): number {
   const value = (agent as PathogenAgent).pathogenLoad;
   return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : 0;
+}
+
+/**
+ * Convert the existing low-level energy reserve into a modest recovery modifier.
+ *
+ * A well-fed BOT can clear pathogen burden a little faster while an exhausted
+ * BOT recovers a little slower. Keep the range tightly bounded around the old
+ * fixed 6% rate (4.5%..7.5%) so food/energy state becomes epidemiologically
+ * meaningful without turning disease recovery into a hard threshold or changing
+ * persisted schema. At 50 energy the legacy 6% behavior is preserved exactly.
+ */
+export function pathogenRecoveryRate(agent: Pick<Agent, "energy">): number {
+  const energy = clamp01(agent.energy / 100);
+  return PATHOGEN_BASE_RECOVERY_RATE + (energy - 0.5) * PATHOGEN_RECOVERY_ENERGY_BAND * 2;
 }
 
 /**
@@ -197,7 +212,8 @@ function singlePathogenStep(
     const ambient = ambientPathogenPressure(agent.position, environment) * PATHOGEN_AMBIENT_GAIN;
     const contact = localContactExposure(previousState, agent);
     const exposure = unionPressure(ambient, contact);
-    const next = clamp01(current * (1 - PATHOGEN_RECOVERY_RATE) + (1 - current) * exposure);
+    const recoveryRate = pathogenRecoveryRate(agent);
+    const next = clamp01(current * (1 - recoveryRate) + (1 - current) * exposure);
     const target = agent as PathogenAgent;
     if (next <= PATHOGEN_EPSILON) {
       if (target.pathogenLoad !== undefined) {
@@ -226,7 +242,9 @@ function singlePathogenStep(
  * Same-cell crowding is intentionally a stronger contact than sharing an edge.
  * An exact cross-region halo contact uses the same adjacent-cell gain as an
  * ordinary local six-neighbor contact, so a Durable Object seam does not change
- * transmission strength.
+ * transmission strength. Recovery is coupled conservatively to the existing
+ * energy reserve, so nutrition and disease interact without a new persisted
+ * health subsystem.
  */
 export function applyPathogenSteps(
   state: WorldState,
