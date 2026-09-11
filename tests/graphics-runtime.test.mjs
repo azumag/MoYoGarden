@@ -77,9 +77,9 @@ test('live neighbor low-detail BOTs keep a readable minimum scale without adding
   assert.equal(neighborLow.userData.moyoReadableNeighborAgent, true);
   assert.equal(neighborLow.children.length, 1);
   assert.equal(neighborLow.children[0].name, 'BaseLowAgent');
-  assert.equal(neighborLow.children[0].scale.x, 1.35);
-  assert.equal(neighborLow.children[0].scale.y, 1.35);
-  assert.equal(neighborLow.children[0].scale.z, 1.35);
+  assert.equal(neighborLow.children[0].scale.x, 2);
+  assert.equal(neighborLow.children[0].scale.y, 2);
+  assert.equal(neighborLow.children[0].scale.z, 2);
   assert.deepEqual(calls, [
     ['#578ba3', 'scout', 'low'],
     ['#578ba3', 'scout', 'low'],
