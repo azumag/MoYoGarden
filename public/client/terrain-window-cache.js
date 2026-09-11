@@ -26,14 +26,22 @@ function mergeTerrainTiles(cachedTiles, liveTiles) {
   const cached = normalizedTerrainTiles(cachedTiles);
   const live = normalizedTerrainTiles(liveTiles);
   if (live.length === 0) return cached;
-  if (live.length >= cached.length) return live;
+
+  // Cardinality alone is not enough to prove a live refresh is complete. A
+  // same-sized payload can omit one cached cell while introducing a different
+  // valid coordinate, which would still punch a visible hole if it replaced
+  // the cache wholesale. Only treat live terrain as complete when it covers
+  // every cached coordinate; supersets can still replace the cache normally.
+  const liveKeys = new Set(live.map(terrainTileKey));
+  const coversCached = cached.every((tile) => liveKeys.has(terrainTileKey(tile)));
+  if (coversCached) return live;
 
   // Live and terrain windows are independent requests. A newer live response can
-  // still be partial when one tile is malformed, duplicated, or a payload is
-  // truncated. Judge completeness by unique valid integer cells rather than raw
-  // array length so duplicate/fractional entries cannot make an incomplete live
-  // set replace the cache and punch visible holes. Overlay every valid live tile
-  // while preserving cached terrain for coordinates that were not present.
+  // still be partial when one tile is malformed, duplicated, shifted, or a
+  // payload is truncated. Judge completeness by coordinate coverage rather than
+  // raw array length so an incomplete live set cannot replace the cache and
+  // punch visible holes. Overlay every valid live tile while preserving cached
+  // terrain for coordinates that were not present.
   const merged = new Map(cached.map((tile) => [terrainTileKey(tile), tile]));
   for (const tile of live) merged.set(terrainTileKey(tile), tile);
   return [...merged.values()];
