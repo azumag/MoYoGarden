@@ -17,7 +17,11 @@ import {
 } from "./protocol.js";
 import { drainageAt, resourceRegrowthChance } from "./simulation.js";
 import { regionCellTransition, regionGlobalCellOrigin } from "./region-topology.js";
-import { sampleWorldConditions, sampleWorldWind } from "./world-scale.js";
+import {
+  organicTemperatureSuitability,
+  sampleWorldConditions,
+  sampleWorldWind,
+} from "./world-scale.js";
 import { getTile } from "./world.js";
 
 const WATER_MOISTURE_RADIUS = 4;
@@ -294,23 +298,31 @@ function neighboringPropaguleInfluence(
 }
 
 /**
- * Convert the receiving global cell's derived soil state into a conservative
- * seed-establishment multiplier. The frame uses the same world seed and axial
- * coordinates as terrain generation, so local and ghost propagules see one
- * continuous substrate instead of gaining an equal bonus on unsuitable soil.
- * Missing legacy coordinate metadata deliberately preserves the old multiplier.
+ * Convert the receiving global cell's derived soil and temperature state into
+ * a conservative seed-establishment multiplier. The frame uses the same world
+ * seed and axial coordinates as terrain generation, so local and ghost
+ * propagules see one continuous substrate and the same broad organic
+ * temperature niches used for fresh frontier generation.
+ *
+ * Temperature only modulates the propagule bonus by at most 10%; established
+ * biomass keeps its existing local regrowth probability. Missing legacy
+ * coordinate metadata deliberately preserves the old multiplier.
  */
 function propaguleEstablishmentFactor(
   position: GridPosition,
+  resourceKind: Exclude<ResourceKind, "stone">,
   environment?: HaloEnvironmentFrame,
 ): number {
   if (environment === undefined) return 1;
-  const fertility = sampleWorldConditions(
+  const conditions = sampleWorldConditions(
     environment.worldSeed,
     environment.originX + position.x,
     environment.originY + position.y,
-  ).soilFertility;
-  return 0.5 + clamp01(fertility) * 0.5;
+  );
+  const fertilityFactor = 0.5 + clamp01(conditions.soilFertility) * 0.5;
+  const temperatureFactor = 0.9 +
+    organicTemperatureSuitability(resourceKind, conditions.temperature) * 0.1;
+  return fertilityFactor * temperatureFactor;
 }
 
 /**
@@ -657,7 +669,7 @@ function resourceRegrowthChanceWithHaloLookup(
   const propaguleBonus =
     propaguleInfluence *
     HALO_ORGANIC_PROPAGULE_BONUS[tile.resource.kind] *
-    propaguleEstablishmentFactor(tile, environment);
+    propaguleEstablishmentFactor(tile, tile.resource.kind, environment);
   return tile.resource.kind === "wood"
     ? Math.min(0.32, 0.08 + moisture * 0.22 + propaguleBonus)
     : Math.min(0.34, 0.06 + moisture * 0.26 + propaguleBonus);
