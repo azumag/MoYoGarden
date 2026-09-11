@@ -7,6 +7,7 @@ import { createInitialWorld } from "../dist-ts/src/world.js";
 
 const WORLD_SEED = 424242;
 const VEGETATION_VAPOR_GAIN = 0.025;
+const FOOD_VAPOR_GAIN = 0.0125;
 const EPSILON = 1e-12;
 
 function clearedWorld() {
@@ -131,6 +132,53 @@ test("local and cross-region forest use the same evapotranspiration rule", () =>
     haloDownwind - haloBaseline,
     haloWind.strength * 0.75 * VEGETATION_VAPOR_GAIN,
     "cross-region forest should use the same biomass-scaled vapor rule",
+  );
+});
+
+test("food biomass carries weaker evapotranspiration through the same local and halo path", () => {
+  const cover = 0.6;
+  const localState = clearedWorld();
+  const localReceiver = localState.tiles[11 * localState.width + 19];
+  const localSource = localState.tiles[11 * localState.width + 20];
+  assert.ok(localReceiver);
+  assert.ok(localSource);
+  localSource.resource = { kind: "food", amount: 12, maxAmount: 20 };
+
+  const frame = environmentFrameForWind(localReceiver, "west");
+  const wind = windAt(localReceiver, frame);
+  const localBaseline = surfaceMoistureWithHaloAt(localState, localReceiver, []);
+  const localDownwind = surfaceMoistureWithHaloAt(localState, localReceiver, [], frame);
+  approximately(
+    localDownwind - localBaseline,
+    wind.strength * cover * FOOD_VAPOR_GAIN,
+    "local food cover should return a smaller biomass-scaled vapor flux",
+  );
+
+  const haloState = clearedWorld();
+  const link = buildHexHaloLinks(haloState, ["garden-1", "garden-2"], "garden-1")
+    .filter((entry) => entry.direction === "east")[11];
+  assert.ok(link);
+  const haloReceiver = haloState.tiles[link.sourcePosition.y * haloState.width + link.sourcePosition.x];
+  assert.ok(haloReceiver);
+  const haloFrame = environmentFrameForWind(haloReceiver, "west");
+  const haloWind = windAt(haloReceiver, haloFrame);
+  const halo = [{
+    ...link,
+    tile: {
+      x: link.neighborPosition.x,
+      y: link.neighborPosition.y,
+      terrain: "plain",
+      elevation: 0.8,
+      drainage: 0,
+      resource: { kind: "food", amount: 12, maxAmount: 20 },
+    },
+  }];
+  const haloBaseline = surfaceMoistureWithHaloAt(haloState, haloReceiver, halo);
+  const haloDownwind = surfaceMoistureWithHaloAt(haloState, haloReceiver, halo, haloFrame);
+  approximately(
+    haloDownwind - haloBaseline,
+    haloWind.strength * cover * FOOD_VAPOR_GAIN,
+    "cross-region food cover should use the same weaker vapor rule",
   );
 });
 

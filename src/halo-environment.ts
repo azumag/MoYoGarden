@@ -28,6 +28,7 @@ const HALO_ORGANIC_PROPAGULE_BONUS: Readonly<Record<Exclude<ResourceKind, "stone
 const HALO_UPWIND_PROPAGULE_GAIN = 0.35;
 const HALO_UPWIND_WATER_VAPOR_GAIN = 0.08;
 const HALO_UPWIND_VEGETATION_VAPOR_GAIN = 0.025;
+const HALO_UPWIND_FOOD_VAPOR_GAIN = 0.0125;
 const HALO_HYDROLOGY_EPSILON = 1e-6;
 const HALO_RUNOFF_SLOPE_SCALE = 0.18;
 
@@ -231,15 +232,18 @@ function upwindWaterVaporMoisture(
     return wind.strength * HALO_UPWIND_WATER_VAPOR_GAIN;
   }
 
-  // Established woody biomass returns a small fraction of available moisture
-  // through evapotranspiration. Carry that vapor one hex downwind using the same
-  // shared wind and exact ghost-owner precedence as open water, so a forest does
-  // not lose this feedback merely because it sits across a macro-region seam.
+  // Established vegetation returns a small fraction of available moisture
+  // through evapotranspiration. Woody biomass remains the stronger source while
+  // food/forage cover contributes a smaller flux. Carry both one hex downwind
+  // with the same shared wind and exact ghost-owner precedence so the feedback
+  // stays continuous across macro-region seams.
   const resource = source?.resource;
-  const vegetationCover = resource?.kind === "wood" && resource.maxAmount > 0
-    ? clamp01(resource.amount / resource.maxAmount)
-    : 0;
-  return wind.strength * vegetationCover * HALO_UPWIND_VEGETATION_VAPOR_GAIN;
+  if (resource === undefined || resource.maxAmount <= 0 || resource.kind === "stone") return 0;
+  const vegetationCover = clamp01(resource.amount / resource.maxAmount);
+  const vaporGain = resource.kind === "wood"
+    ? HALO_UPWIND_VEGETATION_VAPOR_GAIN
+    : HALO_UPWIND_FOOD_VAPOR_GAIN;
+  return wind.strength * vegetationCover * vaporGain;
 }
 
 function neighboringPropaguleInfluence(
