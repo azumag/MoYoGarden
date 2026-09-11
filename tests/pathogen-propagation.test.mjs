@@ -3,6 +3,7 @@ import test from "node:test";
 import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";
 import {
   agentPathogenLoad,
+  agentPathogenPressure,
   applyPathogenSteps,
   pathogenEdgeSnapshot,
   pathogenHaloPressureMap,
@@ -40,6 +41,25 @@ test("six-neighbor contact transmits pathogen load without order-dependent long 
   assert.equal(agentPathogenLoad(distant), 0, "infection must not jump beyond local hex contact in one step");
 });
 
+test("subclinical pathogen load must build before an agent sheds infectious pressure", () => {
+  const subclinical = agent("subclinical", { x: 0, y: 0 }, 0.1);
+  const target = agent("target", { x: 1, y: 0 });
+  assert.equal(agentPathogenPressure(subclinical), 0);
+
+  applyPathogenSteps({ agents: [subclinical, target] }, 1);
+  assert.equal(
+    agentPathogenLoad(target),
+    0,
+    "latent ambient-scale burden should not immediately seed contact transmission",
+  );
+
+  const shedding = agent("shedding", { x: 0, y: 0 }, 0.56);
+  assert.ok(
+    Math.abs(agentPathogenPressure(shedding) - 0.5) < 1e-12,
+    "infectious pressure should rise smoothly once burden exceeds the threshold",
+  );
+});
+
 test("pathogen halo maps exact neighbor edge pressure onto the paired local boundary cell", () => {
   const link = {
     sourceRegionId: "garden-1",
@@ -64,10 +84,13 @@ test("pathogen halo maps exact neighbor edge pressure onto the paired local boun
   assert.ok(agentPathogenLoad(target) > 0, "exact cross-region contact should transmit bounded load");
 });
 
-test("edge snapshots export only boundary pathogen pressure and union co-located carriers", () => {
+test("edge snapshots export only infectious boundary pressure and union co-located carriers", () => {
   const extent = { width: 40, height: 24 };
-  const boundary = hexGridBoundaryCells(extent, "east")[0];
+  const eastBoundary = hexGridBoundaryCells(extent, "east");
+  const boundary = eastBoundary[0];
+  const latentBoundary = eastBoundary[1];
   assert.ok(boundary);
+  assert.ok(latentBoundary);
   const interior = { x: 19, y: 11 };
   const state = {
     regionId: "garden-1",
@@ -75,15 +98,16 @@ test("edge snapshots export only boundary pathogen pressure and union co-located
     tick: 30,
     ...extent,
     agents: [
-      agent("a", boundary, 0.5),
-      agent("b", boundary, 0.5),
+      agent("a", boundary, 0.56),
+      agent("b", boundary, 0.56),
+      agent("latent", latentBoundary, 0.1),
       agent("interior", interior, 1),
     ],
   };
   const snapshot = pathogenEdgeSnapshot(state, "east");
-  assert.equal(snapshot.agents.length, 1);
+  assert.equal(snapshot.agents.length, 1, "latent burden should not be exported across a region seam");
   assert.deepEqual(snapshot.agents[0].position, boundary);
-  assert.equal(snapshot.agents[0].pressure, 0.75);
+  assert.ok(Math.abs(snapshot.agents[0].pressure - 0.75) < 1e-12);
 });
 
 test("pathogen cadence survives virtual catch-up and halo reads stay boundary-scoped", () => {
