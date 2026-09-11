@@ -38,6 +38,17 @@ Deploy command:    npx wrangler deploy --config wrangler.pbr.jsonc
 
 The resulting address is the `workers.dev` address shown by Wrangler or the Cloudflare dashboard.
 
+This Worker is also branch-scoped. In **Settings > Build** keep:
+
+```text
+Builds for non-production branches: OFF
+Build cache:                        ON
+```
+
+Do not use this second Worker as a catch-all PR preview target. Its production branch is exactly `pbr-preview`; feature branches should be covered by GitHub CI. Use the same non-deploy watch-path exclusions as `docs/CLOUDFLARE_DEPLOY.md` (`.github/*`, `docs/*`, `tests/*`, `AGENTS.md`, `README.md`).
+
+`wrangler.pbr.jsonc` has no custom build hook, so it does not have the production Worker's duplicate `build:web` issue. The deduplication wrapper documented in `docs/CLOUDFLARE_DEPLOY.md` applies to `wrangler.jsonc` / `moyo-garden` only.
+
 ## Quality profiles
 
 ```text
