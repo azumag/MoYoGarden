@@ -7,7 +7,10 @@ import {
 } from "../dist-ts/src/halo-environment.js";
 import { resourceRegrowthChance } from "../dist-ts/src/simulation.js";
 import { regionGlobalCellOrigin } from "../dist-ts/src/region-topology.js";
-import { sampleWorldConditions } from "../dist-ts/src/world-scale.js";
+import {
+  organicTemperatureSuitability,
+  sampleWorldConditions,
+} from "../dist-ts/src/world-scale.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
 const WORLD_SEED = 424242;
@@ -17,7 +20,14 @@ function approximate(actual, expected, message) {
   assert.ok(Math.abs(actual - expected) <= EPSILON, `${message}: expected ${expected}, got ${actual}`);
 }
 
-test("shared soil fertility gates local propagule establishment in global hex space", () => {
+function expectedFoodEstablishmentFactor(conditions) {
+  const fertilityFactor = 0.5 + conditions.soilFertility * 0.5;
+  const temperatureFactor = 0.9 +
+    organicTemperatureSuitability("food", conditions.temperature) * 0.1;
+  return fertilityFactor * temperatureFactor;
+}
+
+test("shared soil and temperature gate local propagule establishment in global hex space", () => {
   const state = createInitialWorld({ seed: 9407, width: 40, height: 24, regionId: "garden-1" });
   for (const entry of state.tiles) {
     entry.terrain = "plain";
@@ -52,6 +62,7 @@ test("shared soil fertility gates local propagule establishment in global hex sp
       );
       const candidate = {
         fertility: conditions.soilFertility,
+        conditions,
         frame: { worldSeed: WORLD_SEED, originX: origin.x, originY: origin.y },
       };
       if (least === undefined || candidate.fertility < least.fertility) least = candidate;
@@ -67,19 +78,26 @@ test("shared soil fertility gates local propagule establishment in global hex sp
   const highChance = resourceRegrowthChanceWithHalo(state, tile, [], most.frame);
   const lowMoisture = surfaceMoistureWithHaloAt(state, tile, [], least.frame);
   const highMoisture = surfaceMoistureWithHaloAt(state, tile, [], most.frame);
+  const lowEstablishment = expectedFoodEstablishmentFactor(least.conditions);
+  const highEstablishment = expectedFoodEstablishmentFactor(most.conditions);
 
   approximate(compatibilityChance, localChance + 0.04, "frame-free compatibility bonus");
   approximate(
     lowChance,
-    Math.min(0.34, 0.06 + lowMoisture * 0.26 + 0.04 * (0.5 + least.fertility * 0.5)),
+    Math.min(0.34, 0.06 + lowMoisture * 0.26 + 0.04 * lowEstablishment),
     "low-fertility establishment bonus",
   );
   approximate(
     highChance,
-    Math.min(0.34, 0.06 + highMoisture * 0.26 + 0.04 * (0.5 + most.fertility * 0.5)),
+    Math.min(0.34, 0.06 + highMoisture * 0.26 + 0.04 * highEstablishment),
     "high-fertility establishment bonus",
   );
-  assert.ok(highChance > lowChance);
+  assert.ok(lowEstablishment <= 0.5 + least.fertility * 0.5 + EPSILON);
+  assert.ok(highEstablishment <= 0.5 + most.fertility * 0.5 + EPSILON);
+  assert.ok(
+    organicTemperatureSuitability("food", least.conditions.temperature) < 0.999 ||
+      organicTemperatureSuitability("food", most.conditions.temperature) < 0.999,
+  );
   assert.ok(lowChance < compatibilityChance);
   assert.ok(highChance <= compatibilityChance + EPSILON);
 });
