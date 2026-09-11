@@ -122,12 +122,22 @@ function snapshotTick(state) {
   return Number.isFinite(tick) ? tick : undefined;
 }
 
+function snapshotRevision(state) {
+  const revision = state?.revision;
+  return Number.isFinite(revision) ? revision : undefined;
+}
+
 function isStaleSnapshot(proxy, state) {
   const currentTick = snapshotTick(proxy?.state);
   const incomingTick = snapshotTick(state);
-  return currentTick !== undefined
-    && incomingTick !== undefined
-    && incomingTick < currentTick;
+  if (currentTick === undefined) return false;
+  if (incomingTick === undefined) return true;
+  if (incomingTick !== currentTick) return incomingTick < currentTick;
+
+  const currentRevision = snapshotRevision(proxy?.state);
+  if (currentRevision === undefined) return false;
+  const incomingRevision = snapshotRevision(state);
+  return incomingRevision === undefined || incomingRevision < currentRevision;
 }
 
 function disposeProxy(entry) {
@@ -253,6 +263,8 @@ class LiveNeighborSimulation {
         // Same-region live window requests can overlap near their timeout boundary
         // or during a soft handoff. Never let a slower, older response roll BOT,
         // structure, or resource graphics back after a newer tick was rendered.
+        // Once a rendered state has version metadata, fail closed on an incoming
+        // snapshot that omits it or regresses a same-tick revision.
         syncProxy(entry.proxy, next.state, tickMs);
       }
       // Placement metadata is independent of simulation tick freshness, so even

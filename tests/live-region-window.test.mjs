@@ -66,3 +66,15 @@ test("out-of-order live windows cannot roll neighbor simulation graphics backwar
   const placementUpdate = liveRegionSource.indexOf("entry.group.position.set(next.offsetX, 0, next.offsetZ)", staleGuard);
   assert.ok(staleGuard >= 0 && placementUpdate > staleGuard);
 });
+
+test("versioned live neighbors fail closed on missing metadata and stale same-tick revisions", () => {
+  assert.match(liveRegionSource, /function snapshotRevision\(state\)/);
+  assert.match(liveRegionSource, /if \(currentTick === undefined\) return false/);
+  assert.match(liveRegionSource, /if \(incomingTick === undefined\) return true/);
+  assert.match(liveRegionSource, /if \(incomingTick !== currentTick\) return incomingTick < currentTick/);
+  assert.match(liveRegionSource, /if \(currentRevision === undefined\) return false/);
+  assert.match(
+    liveRegionSource,
+    /return incomingRevision === undefined \|\| incomingRevision < currentRevision/,
+  );
+});
