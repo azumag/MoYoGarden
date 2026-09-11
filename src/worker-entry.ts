@@ -1,5 +1,5 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
-import { RegionDurableObject } from "./autonomy-region.js";
+import { RegionDurableObject } from "./pathogen-region.js";
 import { isHexGridCell } from "./hex-grid.js";
 import {
   parseAxialRegionId,
@@ -362,7 +362,8 @@ export default {
     if (
       url.pathname.startsWith("/api/internal/handoff/") ||
       url.pathname.startsWith("/api/internal/halo/") ||
-      url.pathname.startsWith("/api/internal/autonomy/")
+      url.pathname.startsWith("/api/internal/autonomy/") ||
+      url.pathname.startsWith("/api/internal/pathogen/")
     ) {
       return hiddenInternalEndpoint();
     }
