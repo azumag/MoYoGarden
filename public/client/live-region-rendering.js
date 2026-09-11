@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { disposeObject } from "./shared.js";
+import { disposeObject, hash2 } from "./shared.js";
 import { WorldView } from "./world-view.js";
 
 const controllers = new WeakMap();
@@ -28,6 +28,32 @@ function surfaceHeightMap(state) {
     result.set(`${tile.x}:${tile.y}`, previewSurfaceHeight(tile));
   }
   return result;
+}
+
+function createNeighborResourceGlyph(proxy, tile) {
+  const glyph = new THREE.Group();
+  glyph.name = "MoyoNeighborResourceGlyph";
+  glyph.userData.moyoNeighborResourceGlyph = true;
+
+  let low;
+  if (tile.resource.kind === "wood") {
+    low = proxy.makeLowTree(tile);
+  } else if (tile.resource.kind === "stone") {
+    low = proxy.makeLowRock(tile);
+  } else {
+    low = proxy.makeBush(false);
+    low.scale.setScalar(0.76);
+  }
+  low.traverse((object) => {
+    if (!object.isMesh) return;
+    object.castShadow = false;
+    object.receiveShadow = true;
+  });
+  glyph.add(low);
+  glyph.rotation.y = hash2(tile.x, tile.y, 99) * Math.PI * 2;
+  glyph.rotation.z = (hash2(tile.x, tile.y, 213) - 0.5) * 0.052;
+  proxy.resourceRoot.add(glyph);
+  return { lod: glyph, kind: tile.resource.kind, authored: false };
 }
 
 function animateNeighborAgentGlyph(entry, time, tickMs) {
@@ -106,6 +132,11 @@ function createProxy(view, group, state, tickMs) {
   proxy.selectedAgentId = null;
   proxy.onSelect = () => {};
   proxy.markShadowsDirty = () => {};
+  // Neighbor regions can expose hundreds of natural-resource cells. Their
+  // high/medium authored meshes add clone/material work even though the center
+  // region remains the visual focus. Reuse the existing low-detail tree/rock/
+  // forage silhouettes and skip authored nature clones and shadow casting here.
+  proxy.createResource = (tile) => createNeighborResourceGlyph(proxy, tile);
   proxy.createAgent = (agent, faction) => createNeighborAgentGlyph(proxy, agent, faction);
   // Neighbor BOTs are two-mesh glyphs with no mixer, limbs, contact shadow, or
   // selection ring animation. Keep only the movement interpolation instead of

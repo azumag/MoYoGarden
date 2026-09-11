@@ -27,6 +27,23 @@ test("neighbor simulation graphics survive center clipping and authored model re
   assert.match(footprintSource, /live-neighbor-simulation/);
 });
 
+test("neighbor resources stay low-detail without cloning authored nature models", () => {
+  assert.match(liveRegionSource, /function createNeighborResourceGlyph\(proxy, tile\)/);
+  assert.match(liveRegionSource, /low = proxy\.makeLowTree\(tile\)/);
+  assert.match(liveRegionSource, /low = proxy\.makeLowRock\(tile\)/);
+  assert.match(liveRegionSource, /low = proxy\.makeBush\(false\)/);
+  assert.match(
+    liveRegionSource,
+    /proxy\.createResource = \(tile\) => createNeighborResourceGlyph\(proxy, tile\)/,
+  );
+  const glyphStart = liveRegionSource.indexOf("function createNeighborResourceGlyph");
+  const glyphEnd = liveRegionSource.indexOf("function animateNeighborAgentGlyph", glyphStart);
+  const glyphSource = liveRegionSource.slice(glyphStart, glyphEnd);
+  assert.doesNotMatch(glyphSource, /models\.clone/);
+  assert.doesNotMatch(glyphSource, /createLod/);
+  assert.match(glyphSource, /object\.castShadow = false/);
+});
+
 test("neighbor BOTs use a readable low-cost head-and-stick glyph", () => {
   assert.match(liveRegionSource, /function createNeighborAgentGlyph\(proxy, agent, faction\)/);
   assert.match(liveRegionSource, /new THREE\.CylinderGeometry\(0\.085, 0\.1, 0\.82, 6\)/);
