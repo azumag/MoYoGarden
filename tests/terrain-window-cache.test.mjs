@@ -244,3 +244,64 @@ test("equal-cardinality live terrain cannot replace a cached coordinate with a s
     { x: 12, y: 10, terrain: "plain", elevation: 0.35 },
   ]);
 });
+
+test("unchanged newer live terrain reuses cached tiles and can skip a far terrain redraw", async () => {
+  const module = await import("../public/client/terrain-window-cache.js");
+  assert.equal(typeof module.terrainWindowTilesChanged, "function", "terrain redraw change detector is missing");
+
+  const centerTiles = [{ x: 19, y: 11, terrain: "plain", elevation: 0.4 }];
+  const neighborTiles = [
+    { x: 8, y: 8, terrain: "forest", elevation: 0.61 },
+    { x: 9, y: 8, terrain: "plain", elevation: 0.44 },
+  ];
+  const terrain = { chunks: [
+    {
+      regionId: "garden-1",
+      state: { tick: 100, revision: 100, tiles: centerTiles },
+    },
+    {
+      regionId: "hex-q1-r0",
+      state: { tick: 100, revision: 100, tiles: neighborTiles },
+    },
+  ] };
+  const live = { chunks: [
+    {
+      regionId: "garden-1",
+      state: { tick: 106, revision: 106, tiles: [{ ...centerTiles[0], terrain: "hill" }] },
+    },
+    {
+      regionId: "hex-q1-r0",
+      state: {
+        tick: 106,
+        revision: 106,
+        tiles: neighborTiles.map((tile) => ({ ...tile })),
+        agents: [{ id: "ignored" }],
+      },
+    },
+  ] };
+
+  const merged = module.mergeLiveTerrainWindow(terrain, live);
+  assert.equal(merged.chunks[1].state.tick, 106, "version metadata must still advance");
+  assert.equal(merged.chunks[1].state.tiles, neighborTiles, "visually identical neighbor terrain should reuse the cached array");
+  assert.equal(
+    module.terrainWindowTilesChanged(terrain, merged, "garden-1"),
+    false,
+    "center-only changes and newer versions must not force rebuilding the radius-two neighbor mesh",
+  );
+
+  const changed = module.mergeLiveTerrainWindow(merged, {
+    chunks: [{
+      regionId: "hex-q1-r0",
+      state: {
+        tick: 112,
+        revision: 112,
+        tiles: [
+          { x: 8, y: 8, terrain: "forest", elevation: 0.64 },
+          { x: 9, y: 8, terrain: "plain", elevation: 0.44 },
+        ],
+      },
+    }],
+  });
+  assert.notEqual(changed.chunks[1].state.tiles, neighborTiles);
+  assert.equal(module.terrainWindowTilesChanged(merged, changed, "garden-1"), true);
+});
