@@ -30,6 +30,7 @@ const PATHOGEN_RECOVERY_RATE = 0.06;
 const PATHOGEN_AMBIENT_GAIN = 0.012;
 const PATHOGEN_CONTACT_GAIN = 0.11;
 const PATHOGEN_HALO_GAIN = 0.10;
+const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
 const PATHOGEN_SYMPTOM_THRESHOLD = 0.65;
 const PATHOGEN_SYMPTOM_ENERGY_COST = 1;
 const PATHOGEN_EPSILON = 1e-4;
@@ -41,6 +42,24 @@ function clamp01(value: number): number {
 export function agentPathogenLoad(agent: Agent): number {
   const value = (agent as PathogenAgent).pathogenLoad;
   return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : 0;
+}
+
+/**
+ * Convert internal pathogen burden into transmissible pressure.
+ *
+ * Very small loads can arise from the continuous ambient climate field and are
+ * useful as latent ecological state, but treating every non-zero value as fully
+ * infectious makes damp regions seed immediate person-to-person and cross-DO
+ * spread. Keep burden continuous while requiring a modest subclinical buildup
+ * before shedding begins. Infectiousness then rises smoothly to 1, well before
+ * the separate symptom threshold, so asymptomatic transmission still exists.
+ */
+export function agentPathogenPressure(agent: Agent): number {
+  const load = agentPathogenLoad(agent);
+  if (load <= PATHOGEN_INFECTIOUS_THRESHOLD) return 0;
+  return clamp01(
+    (load - PATHOGEN_INFECTIOUS_THRESHOLD) / (1 - PATHOGEN_INFECTIOUS_THRESHOLD),
+  );
 }
 
 function unionPressure(current: number, incoming: number): number {
@@ -81,14 +100,15 @@ function localContactPressure(state: Pick<WorldState, "agents">, target: Agent):
   let pressure = 0;
   for (const source of state.agents) {
     if (source.id === target.id || hexGridDistance(source.position, target.position) > 1) continue;
-    pressure = unionPressure(pressure, agentPathogenLoad(source));
+    pressure = unionPressure(pressure, agentPathogenPressure(source));
   }
   return pressure;
 }
 
 /**
  * Aggregate infectious pressure on one macro-hex edge. Multiple BOTs may share
- * a cell, so combine them as a bounded union rather than adding load above 1.
+ * a cell, so combine them as a bounded union rather than adding pressure above
+ * 1. Latent/subclinical burden is intentionally not exported across the seam.
  */
 export function pathogenEdgeSnapshot(
   state: Pick<WorldState, "regionId" | "revision" | "tick" | "width" | "height" | "agents">,
@@ -101,12 +121,12 @@ export function pathogenEdgeSnapshot(
   for (const agent of state.agents) {
     const key = positionKey(agent.position);
     if (!boundary.has(key)) continue;
-    const load = agentPathogenLoad(agent);
-    if (load <= PATHOGEN_EPSILON) continue;
+    const infectiousPressure = agentPathogenPressure(agent);
+    if (infectiousPressure <= PATHOGEN_EPSILON) continue;
     const current = pressure.get(key);
     pressure.set(key, {
       position: { ...agent.position },
-      pressure: unionPressure(current?.pressure ?? 0, load),
+      pressure: unionPressure(current?.pressure ?? 0, infectiousPressure),
     });
   }
   return {
