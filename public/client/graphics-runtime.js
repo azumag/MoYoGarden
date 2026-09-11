@@ -1,6 +1,25 @@
+import * as THREE from 'three';
 import { frameIsDue } from './graphics-settings.js';
 
 const installed = new WeakSet();
+const LIVE_NEIGHBOR_REGION_PREFIX = 'live-neighbor-region:';
+const LIVE_NEIGHBOR_LOW_DETAIL_SCALE = 1.35;
+
+function readableLowAgent(view, createWanderer, color, role) {
+  const agent = createWanderer(color, role, 'low');
+  if (!view.worldRoot?.name?.startsWith(LIVE_NEIGHBOR_REGION_PREFIX)) return agent;
+
+  // The live radius-one renderer applies its own 0.8 shell scale. Keep the
+  // actual low-detail model slightly larger inside that shell so adjacent-region
+  // BOTs remain recognisably human at normal camera distances instead of
+  // collapsing into dark points. This wrapper adds no draw calls or mixers.
+  const wrapper = new THREE.Group();
+  wrapper.name = 'MoyoReadableNeighborAgent';
+  wrapper.userData.moyoReadableNeighborAgent = true;
+  agent.scale.setScalar(LIVE_NEIGHBOR_LOW_DETAIL_SCALE);
+  wrapper.add(agent);
+  return wrapper;
+}
 
 // Same pre-start extension point as the existing atmosphere/hex renderers.
 // Keep settings fixed for this view's lifetime; applying settings reloads once.
@@ -24,7 +43,7 @@ export function installGraphicsRuntime(WorldView, ModelLibrary, quality, { creat
     return environment.call(this);
   };
   WorldView.prototype.makeLowAgent = function(color, role) {
-    return createWanderer(color, role, 'low');
+    return readableLowAgent(this, createWanderer, color, role);
   };
 
   const clone = ModelLibrary.prototype.clone;
