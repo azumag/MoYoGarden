@@ -50,16 +50,23 @@ function mergeTerrainTiles(cachedTiles, liveTiles) {
 function isStaleTerrainState(cachedState, liveState) {
   const cachedTick = Number.isFinite(cachedState?.tick) ? cachedState.tick : undefined;
   const liveTick = Number.isFinite(liveState?.tick) ? liveState.tick : undefined;
-  if (cachedTick !== undefined && liveTick !== undefined) {
+  if (cachedTick !== undefined) {
+    // Once the cache has a monotonic tick, an unversioned live payload cannot
+    // prove that it is newer. Fail closed instead of letting a partial/malformed
+    // response overwrite terrain that is already known to be fresh.
+    if (liveTick === undefined) return true;
     if (liveTick < cachedTick) return true;
     if (liveTick > cachedTick) return false;
   }
 
   const cachedRevision = Number.isFinite(cachedState?.revision) ? cachedState.revision : undefined;
   const liveRevision = Number.isFinite(liveState?.revision) ? liveState.revision : undefined;
-  return cachedRevision !== undefined
-    && liveRevision !== undefined
-    && liveRevision < cachedRevision;
+  if (cachedRevision === undefined) return false;
+  // Equal-tick refreshes use revision as the deterministic tie-break. If the
+  // cached state has a revision but the live response omits it, accepting that
+  // response would make the monotonicity check fail open.
+  if (liveRevision === undefined) return true;
+  return liveRevision < cachedRevision;
 }
 
 function mergeTerrainState(cachedState, liveState) {
