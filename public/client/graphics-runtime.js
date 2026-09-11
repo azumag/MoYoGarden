@@ -3,16 +3,19 @@ import { frameIsDue } from './graphics-settings.js';
 
 const installed = new WeakSet();
 const LIVE_NEIGHBOR_REGION_PREFIX = 'live-neighbor-region:';
-const LIVE_NEIGHBOR_LOW_DETAIL_SCALE = 1.35;
+// live-region-rendering applies a 0.8 shell scale after makeLowAgent(). Keep the
+// low-detail model large enough inside that shell that its effective scale is
+// 1.6x (2.0 * 0.8) at radius-one distances. This is a readability correction
+// for distant proxy rendering, not a simulation/world-coordinate size change.
+const LIVE_NEIGHBOR_LOW_DETAIL_SCALE = 2.0;
 
 function readableLowAgent(view, createWanderer, color, role) {
   const agent = createWanderer(color, role, 'low');
   if (!view.worldRoot?.name?.startsWith(LIVE_NEIGHBOR_REGION_PREFIX)) return agent;
 
-  // The live radius-one renderer applies its own 0.8 shell scale. Keep the
-  // actual low-detail model slightly larger inside that shell so adjacent-region
-  // BOTs remain recognisably human at normal camera distances instead of
-  // collapsing into dark points. This wrapper adds no draw calls or mixers.
+  // The live radius-one renderer owns the outer proxy shell. Scale only the
+  // inner low-detail character, preserving the same faction/role silhouette,
+  // draw count, and no-mixer path while preventing it from collapsing to a dot.
   const wrapper = new THREE.Group();
   wrapper.name = 'MoyoReadableNeighborAgent';
   wrapper.userData.moyoReadableNeighborAgent = true;
