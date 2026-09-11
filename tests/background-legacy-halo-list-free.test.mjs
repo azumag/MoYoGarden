@@ -77,7 +77,7 @@ async function assign(stub, regionId) {
   assert.equal(response.status, 200, `expected ${regionId} to be assigned`);
 }
 
-test("warm persisted legacy environmental halo expands to six neighbors without enumerating REGION_IDS while cold stays configured", async () => {
+test("persisted legacy environmental halo stays six-directional from warm through cold without enumerating REGION_IDS", async () => {
   const env = createEnv();
   const sourceState = new MemoryState();
   const source = new RegionDurableObject(sourceState, env);
@@ -108,12 +108,9 @@ test("warm persisted legacy environmental halo expands to six neighbors without 
   source.lastWarmActivityAt = 0;
   assert.equal(source.activityTier(), "cold");
   const cold = await source.materializeHaloForState(source.runtime.snapshot());
-  assert.equal(cold.links.length, 2 * 23);
-  assert.equal(cold.halo.length, 2 * 23);
-  assert.equal(cold.edges.length, 2);
-  assert.deepEqual(
-    [...new Set(cold.links.map((entry) => entry.neighborRegionId))].sort(),
-    ["garden-2", "garden-3"],
-  );
+  assert.equal(cold.links.length, 6 * 23);
+  assert.equal(cold.halo.length, 6 * 23);
+  assert.equal(cold.edges.length, 6);
+  assert.equal(new Set(cold.links.map((entry) => entry.neighborRegionId)).size, 6);
   assert.equal(regionListReads, 0);
 });
