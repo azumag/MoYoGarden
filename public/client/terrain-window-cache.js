@@ -22,10 +22,30 @@ function normalizedTerrainTiles(tiles) {
   return [...byCell.values()];
 }
 
+function sameTerrainValue(left, right) {
+  return left.terrain === right.terrain
+    && (left.elevation ?? null) === (right.elevation ?? null);
+}
+
+function reuseCachedTerrainTiles(cachedTiles, nextTiles) {
+  if (!Array.isArray(cachedTiles) || cachedTiles.length !== nextTiles.length) return nextTiles;
+  const cached = normalizedTerrainTiles(cachedTiles);
+  // Do not preserve malformed/duplicated cached arrays merely to keep identity;
+  // normalization is still part of the cache's defensive contract.
+  if (cached.length !== cachedTiles.length) return nextTiles;
+  const nextByCell = new Map(nextTiles.map((tile) => [terrainTileKey(tile), tile]));
+  if (nextByCell.size !== cached.length) return nextTiles;
+  for (const tile of cached) {
+    const next = nextByCell.get(terrainTileKey(tile));
+    if (!next || !sameTerrainValue(tile, next)) return nextTiles;
+  }
+  return cachedTiles;
+}
+
 function mergeTerrainTiles(cachedTiles, liveTiles) {
   const cached = normalizedTerrainTiles(cachedTiles);
   const live = normalizedTerrainTiles(liveTiles);
-  if (live.length === 0) return cached;
+  if (live.length === 0) return reuseCachedTerrainTiles(cachedTiles, cached);
 
   // Cardinality alone is not enough to prove a live refresh is complete. A
   // same-sized payload can omit one cached cell while introducing a different
@@ -34,7 +54,7 @@ function mergeTerrainTiles(cachedTiles, liveTiles) {
   // every cached coordinate; supersets can still replace the cache normally.
   const liveKeys = new Set(live.map(terrainTileKey));
   const coversCached = cached.every((tile) => liveKeys.has(terrainTileKey(tile)));
-  if (coversCached) return live;
+  if (coversCached) return reuseCachedTerrainTiles(cachedTiles, live);
 
   // Live and terrain windows are independent requests. A newer live response can
   // still be partial when one tile is malformed, duplicated, shifted, or a
@@ -44,7 +64,7 @@ function mergeTerrainTiles(cachedTiles, liveTiles) {
   // terrain for coordinates that were not present.
   const merged = new Map(cached.map((tile) => [terrainTileKey(tile), tile]));
   for (const tile of live) merged.set(terrainTileKey(tile), tile);
-  return [...merged.values()];
+  return reuseCachedTerrainTiles(cachedTiles, [...merged.values()]);
 }
 
 function isStaleTerrainState(cachedState, liveState) {
@@ -104,4 +124,21 @@ export function mergeLiveTerrainWindow(terrainPayload, livePayload) {
       };
     }),
   };
+}
+
+export function terrainWindowTilesChanged(previousPayload, nextPayload, centerRegionId) {
+  if (previousPayload === nextPayload) return false;
+  if (!Array.isArray(previousPayload?.chunks) || !Array.isArray(nextPayload?.chunks)) return true;
+  const previousByRegion = new Map(
+    previousPayload.chunks
+      .filter((chunk) => typeof chunk?.regionId === "string")
+      .map((chunk) => [chunk.regionId, chunk]),
+  );
+  const nextVisible = nextPayload.chunks.filter((chunk) => chunk?.regionId !== centerRegionId);
+  const previousVisibleCount = previousPayload.chunks.filter((chunk) => chunk?.regionId !== centerRegionId).length;
+  if (nextVisible.length !== previousVisibleCount) return true;
+  return nextVisible.some((chunk) => {
+    const previous = previousByRegion.get(chunk?.regionId);
+    return !previous || previous.state?.tiles !== chunk?.state?.tiles;
+  });
 }
