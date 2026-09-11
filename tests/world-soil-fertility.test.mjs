@@ -14,11 +14,13 @@ function expectedSoilFertility(conditions) {
   const temperatureSuitability = clamp01(
     1 - Math.abs(conditions.temperature - 0.58) / 0.58,
   );
+  const waterloggingStress = clamp01((conditions.wetness - 0.78) / 0.22);
   return clamp01(
     conditions.wetness * 0.42 +
     conditions.convergence * 0.18 +
     temperatureSuitability * 0.24 +
-    (1 - conditions.slope) * 0.16,
+    (1 - conditions.slope) * 0.16 -
+    waterloggingStress * 0.18,
   );
 }
 
