@@ -178,19 +178,25 @@ export function sampleWorldWind(
  * soil-fertility potential. This is derived rather than persisted: neighboring
  * macro regions therefore agree automatically wherever their global axial cells
  * meet, and fertility cannot drift into a separate top-down biome label.
+ *
+ * Very wet soil is no longer treated as monotonically better. Once saturation
+ * becomes extreme, a bounded aeration penalty represents oxygen-poor roots and
+ * waterlogging without inventing a swamp biome or another persisted state.
  */
-function soilFertilityFromConditions(
+export function soilFertilityFromConditions(
   wetness: number,
   temperature: number,
   slope: number,
   convergence: number,
 ): number {
   const temperatureSuitability = clamp01(1 - Math.abs(temperature - 0.58) / 0.58);
+  const waterloggingStress = clamp01((wetness - 0.78) / 0.22);
   return clamp01(
     wetness * 0.42 +
     convergence * 0.18 +
     temperatureSuitability * 0.24 +
-    (1 - slope) * 0.16,
+    (1 - slope) * 0.16 -
+    waterloggingStress * 0.18,
   );
 }
 
