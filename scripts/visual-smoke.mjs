@@ -30,12 +30,12 @@ const server=createServer(async(req,res)=>{
     if(!path.startsWith(root+sep)){res.writeHead(403);res.end();return;}
     if(url.pathname==='/favicon.ico'){res.writeHead(204);res.end();return;}
     let body=await readFile(path);
-    if(url.pathname==='/')body=body.toString().replace('<script src="/boot.js?v=0.3.11"></script>',`<script type="module">
+    if(url.pathname==='/')body=body.toString().replace(/<script src="\/boot\.js\?[^\"]+"><\/script>/,`<script type="module">
       import {WorldView} from '/client/world-view.js';
       const previous=WorldView.prototype.setState;
       WorldView.prototype.setState=function(...args){window.__view=this;return previous.apply(this,args)};
       window.addEventListener('moyo:pbr-ready',()=>window.__ready=true);
-      await import('/boot.js?v=0.3.11');
+      await import('/boot.js?visual-smoke=1');
     </script>`);
     if(baseline && url.pathname==='/boot.js')body=body.toString().replace(/    try \{\n      await import\(`\/client\/atmosphere\.js[\s\S]*?\n    \}\n/,'');
     res.writeHead(200,{'content-type':mime[extname(path)]||'application/octet-stream'});res.end(body);
