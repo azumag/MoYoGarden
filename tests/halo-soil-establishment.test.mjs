@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HEX_GRID_STEPS } from "../dist-ts/src/hex-grid.js";
-import { resourceRegrowthChanceWithHalo } from "../dist-ts/src/halo-environment.js";
+import {
+  resourceRegrowthChanceWithHalo,
+  surfaceMoistureWithHaloAt,
+} from "../dist-ts/src/halo-environment.js";
 import { resourceRegrowthChance } from "../dist-ts/src/simulation.js";
 import { regionGlobalCellOrigin } from "../dist-ts/src/region-topology.js";
 import { sampleWorldConditions } from "../dist-ts/src/world-scale.js";
@@ -62,16 +65,18 @@ test("shared soil fertility gates local propagule establishment in global hex sp
   const compatibilityChance = resourceRegrowthChanceWithHalo(state, tile, []);
   const lowChance = resourceRegrowthChanceWithHalo(state, tile, [], least.frame);
   const highChance = resourceRegrowthChanceWithHalo(state, tile, [], most.frame);
+  const lowMoisture = surfaceMoistureWithHaloAt(state, tile, [], least.frame);
+  const highMoisture = surfaceMoistureWithHaloAt(state, tile, [], most.frame);
 
   approximate(compatibilityChance, localChance + 0.04, "frame-free compatibility bonus");
   approximate(
     lowChance,
-    localChance + 0.04 * (0.5 + least.fertility * 0.5),
+    Math.min(0.34, 0.06 + lowMoisture * 0.26 + 0.04 * (0.5 + least.fertility * 0.5)),
     "low-fertility establishment bonus",
   );
   approximate(
     highChance,
-    localChance + 0.04 * (0.5 + most.fertility * 0.5),
+    Math.min(0.34, 0.06 + highMoisture * 0.26 + 0.04 * (0.5 + most.fertility * 0.5)),
     "high-fertility establishment bonus",
   );
   assert.ok(highChance > lowChance);
