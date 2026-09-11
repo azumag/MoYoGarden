@@ -56,7 +56,9 @@ export function agentPathogenLoad(agent: Agent): number {
  */
 export function pathogenRecoveryRate(agent: Pick<Agent, "energy">): number {
   const energy = clamp01(agent.energy / 100);
-  return PATHOGEN_BASE_RECOVERY_RATE + (energy - 0.5) * PATHOGEN_RECOVERY_ENERGY_BAND * 2;
+  return clamp01(
+    PATHOGEN_BASE_RECOVERY_RATE + (energy - 0.5) * PATHOGEN_RECOVERY_ENERGY_BAND * 2,
+  );
 }
 
 /**
