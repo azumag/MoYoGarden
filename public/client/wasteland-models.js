@@ -117,6 +117,24 @@ export function createWanderer(factionColor = '#879077', role = 'scout', detail 
   if (!templates.has(key)) templates.set(key, buildTemplate(role, detail));
   const root = templates.get(key).clone(true);
   const color = new THREE.Color(factionColor).lerp(new THREE.Color(PALETTE.wrap), 0.25);
+
+  if (detail === 'low') {
+    // Radius-one live regions can contain many BOTs, and the low-detail body is
+    // already a single baked silhouette. Tint that one vertex-coloured mesh by
+    // faction instead of adding a second faction-band mesh/draw call per BOT.
+    // Lightening the multiplier keeps skin/wrap vertex colours readable while
+    // preserving clear faction separation at the distances where low LOD is used.
+    const body = root.children.find(object => object.isMesh);
+    if (body) {
+      const material = bodyMaterial.clone();
+      material.color.copy(color).lerp(new THREE.Color(0xffffff), 0.45);
+      material.userData = { moyoDecayStyled: true };
+      body.material = material;
+      body.name = 'MoyoFactionBodyLow';
+    }
+    return root;
+  }
+
   const material = new THREE.MeshStandardMaterial({ color, roughness: 0.94, envMapIntensity: 0.2 });
   material.userData.moyoDecayStyled = true;
   const band = new THREE.Mesh(bandGeometry, material);

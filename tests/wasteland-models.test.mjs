@@ -16,7 +16,7 @@ for (const role of ['builder', 'miner', 'woodcutter', 'forager', 'scout', 'trade
       assert.ok(Math.abs(box.min.y) < 0.02);
       let draws = 0, triangles = 0;
       root.traverse(object => { if (object.isMesh) { draws++; triangles += (object.geometry.index?.count ?? object.geometry.getAttribute('position').count) / 3; } });
-      assert.ok(draws <= (detail === 'low' ? 2 : 6), `${draws} draws`);
+      assert.ok(draws <= (detail === 'low' ? 1 : 6), `${draws} draws`);
       assert.ok(triangles < 2200, `${triangles} triangles`);
       if (detail !== 'low') for (const name of ['FactionTorso', 'LeftLegPivot', 'RightLegPivot', 'LeftArmPivot', 'RightArmPivot']) assert.ok(root.getObjectByName(name));
       assert.ok(root.getObjectByName('MoyoAgentSilhouette'));
@@ -37,6 +37,29 @@ test('clones share bounded geometry but keep independently disposable faction ma
   assert.notEqual(a.getObjectByName('MoyoFactionBand').material, b.getObjectByName('MoyoFactionBand').material);
   disposeObject(a);
   assert.equal(releasedShared, false); assert.equal(releasedBand, true);
+});
+
+test('low-detail clones keep faction readability in one disposable draw', () => {
+  const a = createWanderer('#ff5555', 'scout', 'low');
+  const b = createWanderer('#5555ff', 'scout', 'low');
+  const aBody = a.getObjectByName('MoyoFactionBodyLow');
+  const bBody = b.getObjectByName('MoyoFactionBodyLow');
+  assert.ok(aBody?.isMesh);
+  assert.ok(bBody?.isMesh);
+  assert.equal(a.getObjectByName('MoyoFactionBand'), undefined);
+  assert.equal(b.getObjectByName('MoyoFactionBand'), undefined);
+  assert.equal(aBody.geometry, bBody.geometry);
+  assert.notEqual(aBody.material, bBody.material);
+  assert.ok(!aBody.material.color.equals(bBody.material.color));
+
+  let draws = 0, releasedGeometry = false, releasedMaterial = false;
+  a.traverse(object => { if (object.isMesh) draws++; });
+  aBody.geometry.addEventListener('dispose', () => { releasedGeometry = true; });
+  aBody.material.addEventListener('dispose', () => { releasedMaterial = true; });
+  disposeObject(a);
+  assert.equal(draws, 1);
+  assert.equal(releasedGeometry, false);
+  assert.equal(releasedMaterial, true);
 });
 
 test('asset finish is idempotent and preserves geometry and texture maps', () => {
