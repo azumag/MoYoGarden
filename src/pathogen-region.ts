@@ -23,7 +23,7 @@ import {
   type PathogenEdgeSnapshot,
   type PathogenEnvironmentFrame,
 } from "./pathogen.js";
-import type { WorldState } from "./protocol.js";
+import { positionKey, type WorldState } from "./protocol.js";
 import { regionGlobalCellOrigin } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 
@@ -125,6 +125,24 @@ export function shouldMaterializePathogenHalo(
   );
 }
 
+/**
+ * Keep pathogen edge reads proportional to actual cross-seam contact.
+ *
+ * A full dynamic depth-1 halo can reference all six neighboring Durable Objects,
+ * but pathogen pressure is consumed only by BOTs standing on the paired local
+ * boundary cell. Filtering links before any neighbor fetch preserves every
+ * possible exposure (including corner cells that legitimately map to multiple
+ * neighbors) while avoiding unrelated DO wakeups for empty seams.
+ */
+export function pathogenHaloLinksForAgents(
+  state: Pick<WorldState, "agents">,
+  links: readonly HexHaloLink[],
+): HexHaloLink[] {
+  if (state.agents.length === 0 || links.length === 0) return [];
+  const occupied = new Set(state.agents.map((agent) => positionKey(agent.position)));
+  return links.filter((link) => occupied.has(positionKey(link.sourcePosition)));
+}
+
 export class RegionDurableObject extends AutonomyRegionDurableObject {
   constructor(
     private readonly pathogenState: DurableObjectState,
@@ -193,7 +211,8 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
   }
 
   private async materializePathogenPressure(state: WorldState): Promise<Map<string, number>> {
-    const links = this.pathogenHaloLinks(state);
+    const links = pathogenHaloLinksForAgents(state, this.pathogenHaloLinks(state));
+    if (links.length === 0) return new Map();
     const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
     for (const link of links) {
       requested.set(`${link.neighborRegionId}:${link.neighborDirection}`, {
