@@ -25,6 +25,8 @@ test("scheduled alarms fetch halo edges only for ticks that can apply regrowth c
 
 test("halo regrowth prefetch skips worlds with no depleted organic resource", () => {
   const state = {
+    width: 9,
+    height: 9,
     tiles: [
       { x: 1, y: 1, terrain: "plain" },
       { x: 2, y: 1, terrain: "plain", resource: { kind: "stone", amount: 0, maxAmount: 10 } },
@@ -35,6 +37,36 @@ test("halo regrowth prefetch skips worlds with no depleted organic resource", ()
 
   assert.equal(shouldMaterializeHaloForRegrowth(state, 29), false);
   state.tiles[2].resource.amount = 9;
-  assert.equal(shouldMaterializeHaloForRegrowth(state, 29), true, "depleted wood can receive halo compensation");
+  assert.equal(shouldMaterializeHaloForRegrowth(state, 29), true, "depleted boundary wood can receive halo compensation");
   assert.equal(shouldMaterializeHaloForRegrowth(state, 30), false, "non-regrowth ticks still skip halo reads");
+});
+
+test("interior depleted resources do not wake neighboring regions for halo regrowth", () => {
+  const state = {
+    width: 40,
+    height: 24,
+    tiles: [
+      { x: 19, y: 11, terrain: "forest", resource: { kind: "wood", amount: 9, maxAmount: 10 } },
+    ],
+  };
+
+  assert.equal(
+    shouldMaterializeHaloForRegrowth(state, 29),
+    false,
+    "the center is too far from any ghost cell for current halo signals to matter",
+  );
+
+  state.tiles[0].y = 4;
+  assert.equal(
+    shouldMaterializeHaloForRegrowth(state, 29),
+    false,
+    "boundary depth four is still one cell beyond the four-cell ghost-water radius",
+  );
+
+  state.tiles[0].y = 3;
+  assert.equal(
+    shouldMaterializeHaloForRegrowth(state, 29),
+    true,
+    "boundary depth three can still observe a ghost-water source four cells away",
+  );
 });

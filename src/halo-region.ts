@@ -12,6 +12,10 @@ import {
 import {
   HEX_GRID_DIRECTIONS,
   hexGridBoundaryCells,
+  hexGridCenter,
+  hexGridDistance,
+  hexGridRadius,
+  isHexGridCell,
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
@@ -54,6 +58,11 @@ const WARM_TICK_MULTIPLIER = 6;
 const COLD_TICK_MULTIPLIER = 60;
 const MAX_ACTIVITY_TICK_MS = 3_600_000;
 const HALO_REGROWTH_INTERVAL = 30;
+// The strongest current halo-to-regrowth signal is ghost water with a four-cell
+// moisture radius. Because a ghost is one step beyond the macro-hex boundary,
+// only depleted organic resources in boundary depth 0..3 can observe any halo
+// input. Propagules and windborne vapor are one-step effects and are narrower.
+const HALO_REGROWTH_BOUNDARY_DEPTH = 3;
 const DEFAULT_WORLD_SEED = 424_242;
 const PERSISTED_LEGACY_REGION_IDS = ["garden-1", "garden-2", "garden-3"] as const;
 
@@ -161,21 +170,30 @@ export function shouldMaterializeHaloForTick(currentTick: number): boolean {
 
 /**
  * Halo reads are only useful for regrowth compensation when the next tick can
- * run compensation and at least one organic resource is actually below its
- * carrying capacity. Stone uses the local-only regrowth rate, while full
- * wood/food deposits cannot grow, so fetching neighboring edges in those
- * states only adds cross-DO work without changing simulation output.
+ * run compensation and at least one depleted organic resource lies close enough
+ * to the macro-hex boundary to observe a ghost-cell signal. Interior deposits
+ * cannot see ghost water, propagules or windborne vapor, so waking up to six
+ * neighboring Durable Objects for them cannot change the simulation result.
  */
 export function shouldMaterializeHaloForRegrowth(
-  state: Pick<WorldState, "tiles">,
+  state: Pick<WorldState, "width" | "height" | "tiles">,
   currentTick: number,
 ): boolean {
   if (!shouldMaterializeHaloForTick(currentTick)) return false;
+  const center = hexGridCenter(state);
+  const radius = hexGridRadius(state);
   return state.tiles.some((tile) => {
     const resource = tile.resource;
-    return resource !== undefined
-      && resource.kind !== "stone"
-      && resource.amount < resource.maxAmount;
+    if (
+      resource === undefined ||
+      resource.kind === "stone" ||
+      resource.amount >= resource.maxAmount ||
+      !isHexGridCell(state, tile)
+    ) {
+      return false;
+    }
+    const boundaryDepth = radius - hexGridDistance(tile, center);
+    return boundaryDepth >= 0 && boundaryDepth <= HALO_REGROWTH_BOUNDARY_DEPTH;
   });
 }
 
