@@ -1,6 +1,8 @@
 # Cloudflare Workers Buildsによる自動デプロイ
 
-GitHub Actionsは使用しません。CloudflareのGitHub AppとWorkers Buildsで、`main`へのpushをCloudflare側から検知してデプロイします。
+`main` へのpushは Cloudflare の GitHub App / Workers Builds が検知して `moyo-garden` を本番へデプロイする。同時に GitHub Actions は build/test と本番commit確認を行う。
+
+**Cloudflareのbuild成功だけ、またはGitHub Actionsのbuild成功だけでは本番反映完了とみなさない。** 完了条件は `AGENTS.md` の「本番反映の必須手順」を正本とする。
 
 ## 1. GitHubリポジトリを接続
 
@@ -42,7 +44,7 @@ ADMIN_TOKEN   = pause/reset/manual tick等の管理用
 
 ```text
 DEFAULT_REGION_ID = garden-1
-REGION_IDS         = garden-1
+REGION_IDS         = garden-1,garden-2,garden-3
 WORLD_SEED         = 424242
 TICK_MS            = 10000
 OPEN_COMMANDS      = false
@@ -50,26 +52,58 @@ OPEN_COMMANDS      = false
 
 `OPEN_COMMANDS=true`は誰でもBOTへ命令できる公開実験向けです。通常運用ではfalseのままにします。
 
-## 4. 初回デプロイ
+## 4. `main` push後の実行経路
 
-設定を保存してDeployします。以後、`main`へpushされるたびに次がCloudflare側で実行されます。
+`main`へpushすると、少なくとも次の2系統が動く。
+
+### Cloudflare Workers Builds
 
 ```text
-bun install
+install dependencies
 npm run build
 npx wrangler deploy
 ```
 
-初回アクセス時に `garden-1` のSQLite-backed Durable Objectが初期化され、10秒後のAlarmが予約されます。
+成功時は GitHub check `Workers Builds: moyo-garden` が success になり、Cloudflare Build ID / Version ID が記録される。
 
-## 5. 動作確認
+### GitHub Actions CI
+
+`.github/workflows/ci.yml` が次を行う。
+
+1. `Validate build`
+   - dependency install
+   - TypeScript
+   - tests
+   - browser JavaScript syntax
+   - authored / PBR / Quaternius validation
+2. `Verify production commit`
+   - `https://moyo.bluemoon.works/api/meta` をcache-bust付きでpollする
+   - `build.commit` がそのworkflowの最終SHAと一致するまで待つ
+   - 一致後、`garden-1` のhealthを確認する
+
+## 5. 本番反映の完了条件
+
+最終 `main` commit について、以下がすべて必要。
+
+1. `Validate build` = success
+2. `Workers Builds: moyo-garden` = success
+3. `/api/meta` の `build.commit` = 最終 `main` SHA
+4. `/api/health?region=garden-1` = success
+5. **描画/UX/LOD/model/streaming変更の場合は、本番実表示または本番配信assetでも変更を確認**
+
+5を確認できない環境では「deploy済み・実表示確認待ち」とし、「直った」「修正完了」と断定しない。
+
+手動確認例:
 
 ```bash
-curl https://moyo.bluemoon.works/api/meta
-curl 'https://moyo.bluemoon.works/api/health?region=garden-1'
+curl -H 'cache-control: no-cache' \
+  'https://moyo.bluemoon.works/api/meta?verify=manual'
+
+curl -H 'cache-control: no-cache' \
+  'https://moyo.bluemoon.works/api/health?region=garden-1&verify=manual'
 ```
 
-ブラウザで `https://moyo.bluemoon.works` を開くと3Dクライアントが表示されます。
+ブラウザ表示の変更では、必要に応じてhard reload / cache-bustを行い、古い静的assetを見ていないことも確認する。
 
 ## 6. カスタムドメイン
 
