@@ -56,11 +56,11 @@ test("halo lookup reuses already-detached ghost entries instead of cloning the f
   );
 });
 
-test("warm legacy environmental halo becomes dynamic without widening background autonomy compatibility", () => {
+test("legacy environmental halo stays dynamic across activity tiers without widening autonomy compatibility", () => {
   const configured = ["garden-1", "garden-2", "garden-3"];
   assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "garden-1", "active"), true);
   assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "garden-1", "warm"), true);
-  assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "garden-1", "cold"), false);
+  assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "garden-1", "cold"), true);
   assert.equal(shouldUseDynamicEnvironmentalHalo(extent, "hex-q4-r-2", "cold"), true);
 
   const activeCompatibility = haloLinksForActivity(extent, configured, "garden-1", "active");
