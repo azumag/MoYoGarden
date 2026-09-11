@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import * as THREE from 'three';
 import { installGraphicsRuntime } from '../public/client/graphics-runtime.js';
 
 test('light mode skips shadows, environment, GLB fetches and duplicate frames', async () => {
@@ -41,4 +42,46 @@ test('normal mode retains enhancement and load callbacks and does not stack wrap
   let progress = 0;
   assert.equal(await new Models().load({ onProgress() { progress++; } }), 'loaded');
   assert.deepEqual([frames, shadows, environments, progress], [1, 1, 1, 1]);
+});
+
+test('live neighbor low-detail BOTs keep a readable minimum scale without adding LOD work', () => {
+  class View {
+    constructor(worldRootName = '') {
+      this.quality = { frameRate: 60 };
+      this.worldRoot = { name: worldRootName };
+    }
+    frame() {}
+    enableShadows() {}
+    initializeEnvironment() {}
+    makeLowAgent() {}
+  }
+  class Models { clone() { return {}; } async load() { return {}; } }
+  const calls = [];
+  installGraphicsRuntime(View, Models, { loadModels: true }, {
+    createWanderer(color, role, detail) {
+      calls.push([color, role, detail]);
+      const root = new THREE.Group();
+      root.name = 'BaseLowAgent';
+      return root;
+    },
+    styleAsset: value => value,
+  });
+
+  const focused = new View();
+  const neighbor = new View('live-neighbor-region:garden-2');
+  const focusedLow = focused.makeLowAgent('#578ba3', 'scout');
+  const neighborLow = neighbor.makeLowAgent('#578ba3', 'scout');
+
+  assert.equal(focusedLow.name, 'BaseLowAgent');
+  assert.equal(neighborLow.name, 'MoyoReadableNeighborAgent');
+  assert.equal(neighborLow.userData.moyoReadableNeighborAgent, true);
+  assert.equal(neighborLow.children.length, 1);
+  assert.equal(neighborLow.children[0].name, 'BaseLowAgent');
+  assert.equal(neighborLow.children[0].scale.x, 1.35);
+  assert.equal(neighborLow.children[0].scale.y, 1.35);
+  assert.equal(neighborLow.children[0].scale.z, 1.35);
+  assert.deepEqual(calls, [
+    ['#578ba3', 'scout', 'low'],
+    ['#578ba3', 'scout', 'low'],
+  ]);
 });
