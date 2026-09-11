@@ -7,6 +7,7 @@ import {
   applyPathogenSteps,
   pathogenEdgeSnapshot,
   pathogenHaloPressureMap,
+  pathogenRecoveryRate,
   pathogenStepCount,
 } from "../dist-ts/src/pathogen.js";
 import { shouldMaterializePathogenHalo } from "../dist-ts/src/pathogen-region.js";
@@ -88,6 +89,28 @@ test("subclinical pathogen load must build before an agent sheds infectious pres
     Math.abs(agentPathogenPressure(shedding) - 0.5) < 1e-12,
     "infectious pressure should rise smoothly once burden exceeds the threshold",
   );
+});
+
+test("well-fed agents recover pathogen burden faster than exhausted agents", () => {
+  const wellFed = agent("well-fed", { x: 0, y: 0 }, 1);
+  const exhausted = agent("exhausted", { x: 0, y: 0 }, 1);
+  wellFed.energy = 100;
+  exhausted.energy = 0;
+
+  assert.ok(pathogenRecoveryRate(wellFed) > pathogenRecoveryRate(exhausted));
+  assert.ok(Math.abs(pathogenRecoveryRate({ energy: 50 }) - 0.06) < 1e-12);
+
+  applyPathogenSteps({ agents: [wellFed] }, 1);
+  applyPathogenSteps({ agents: [exhausted] }, 1);
+  assert.ok(
+    agentPathogenLoad(wellFed) < agentPathogenLoad(exhausted),
+    "existing food/energy state should create a modest recovery advantage",
+  );
+
+  const susceptible = agent("susceptible", { x: 0, y: 0 });
+  susceptible.energy = 0;
+  applyPathogenSteps({ agents: [susceptible] }, 1);
+  assert.equal(agentPathogenLoad(susceptible), 0, "low energy alone must never create infection");
 });
 
 test("pathogen halo maps exact neighbor edge pressure onto the paired local boundary cell", () => {
