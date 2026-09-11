@@ -202,3 +202,45 @@ test("duplicate or fractional live cells cannot masquerade as a complete terrain
     { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
   ]);
 });
+
+test("equal-cardinality live terrain cannot replace a cached coordinate with a shifted cell", async () => {
+  const mergeLiveTerrainWindow = await loadMerge();
+  assert.equal(typeof mergeLiveTerrainWindow, "function", "terrain window merge helper is missing");
+
+  const terrain = { chunks: [{
+    regionId: "hex-q0-r0",
+    state: {
+      width: 40,
+      height: 24,
+      tick: 90,
+      revision: 100,
+      tiles: [
+        { x: 10, y: 10, terrain: "plain", elevation: 0.4 },
+        { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
+      ],
+    },
+  }] };
+  const live = { chunks: [{
+    regionId: "hex-q0-r0",
+    state: {
+      width: 40,
+      height: 24,
+      tick: 91,
+      revision: 101,
+      tiles: [
+        { x: 10, y: 10, terrain: "hill", elevation: 0.45 },
+        { x: 12, y: 10, terrain: "plain", elevation: 0.35 },
+      ],
+    },
+  }] };
+
+  const merged = mergeLiveTerrainWindow(terrain, live);
+  const state = merged.chunks[0].state;
+  assert.equal(state.tick, 91);
+  assert.equal(state.revision, 101);
+  assert.deepEqual(state.tiles, [
+    { x: 10, y: 10, terrain: "hill", elevation: 0.45 },
+    { x: 11, y: 10, terrain: "forest", elevation: 0.5 },
+    { x: 12, y: 10, terrain: "plain", elevation: 0.35 },
+  ]);
+});
