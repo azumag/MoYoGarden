@@ -352,6 +352,22 @@ export function scaleOrganicCarryingCapacity(baseAmount: number, soilFertility: 
   return Math.max(1, Math.round(safeBase * factor));
 }
 
+/**
+ * Give woody vegetation and forage slightly different continuous temperature
+ * responses while staying on the shared low-level climate field. This is not a
+ * biome label: both niches remain broad and overlap heavily, but cooler cells
+ * modestly favor wood while warmer cells modestly favor food/forage.
+ */
+export function organicTemperatureSuitability(
+  kind: "wood" | "food",
+  temperature: number,
+): number {
+  const safeTemperature = clamp01(temperature);
+  const optimum = kind === "wood" ? 0.54 : 0.62;
+  const tolerance = kind === "wood" ? 0.62 : 0.58;
+  return clamp01(1 - Math.abs(safeTemperature - optimum) / tolerance);
+}
+
 export function createGlobalTerrainTile(
   localX: number,
   localY: number,
@@ -363,9 +379,8 @@ export function createGlobalTerrainTile(
   const globalY = originY + localY;
   const random = createRandom(coordinateSeed(worldSeed, globalX, globalY));
   const conditions = sampleWorldConditions(worldSeed, globalX, globalY);
-  const temperatureSuitability = clamp01(
-    1 - Math.abs(conditions.temperature - 0.58) / 0.58,
-  );
+  const woodTemperatureSuitability = organicTemperatureSuitability("wood", conditions.temperature);
+  const foodTemperatureSuitability = organicTemperatureSuitability("food", conditions.temperature);
 
   if (conditions.elevation < 0.245) {
     return { x: localX, y: localY, terrain: "water", elevation: 0 };
@@ -389,7 +404,7 @@ export function createGlobalTerrainTile(
     const maxAmount = scaleOrganicCarryingCapacity(
       random.int(18, 28) +
         Math.round(conditions.wetness * 10) +
-        Math.round(temperatureSuitability * 4) +
+        Math.round(woodTemperatureSuitability * 4) +
         Math.round((conditions.soilFertility - 0.5) * 8),
       conditions.soilFertility,
     );
@@ -413,14 +428,14 @@ export function createGlobalTerrainTile(
       conditions.wetness * 0.38 +
       conditions.convergence * 0.06 -
       conditions.slope * 0.16 +
-      (temperatureSuitability - 0.5) * 0.08 +
+      (foodTemperatureSuitability - 0.5) * 0.08 +
       (conditions.soilFertility - 0.5) * 0.1,
   );
   if (random.next() < foodChance) {
     const maxAmount = scaleOrganicCarryingCapacity(
       random.int(12, 24) +
         Math.round(conditions.wetness * 6) +
-        Math.round(temperatureSuitability * 4) +
+        Math.round(foodTemperatureSuitability * 4) +
         Math.round((conditions.soilFertility - 0.5) * 6),
       conditions.soilFertility,
     );
