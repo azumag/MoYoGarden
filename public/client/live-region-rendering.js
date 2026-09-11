@@ -81,20 +81,36 @@ function animateNeighborAgentGlyph(entry, time, tickMs) {
   const duration = Math.max(300, tickMs * 0.82);
   const amount = Math.max(0, Math.min(1, (time - entry.start) / duration));
   entry.lod.position.lerpVectors(entry.from, entry.to, amount);
+
+  // Keep the radius-one population visibly alive without paying for authored
+  // mixers or limb traversal. A tiny local bob/lean on the shared low-detail
+  // shell matches the focused region's locomotion language while leaving the
+  // root position exact for the next snapshot interpolation.
+  const shell = entry.shell;
+  if (!shell) return;
+  const moving = entry.from.distanceToSquared(entry.to) > 0.001
+    || /moving|travel|gather|haul/i.test(entry.agent?.status || "");
+  const position = entry.agent?.position || { x: 0, y: 0 };
+  const phase = time * 0.0075
+    + hash2(position.x, position.y, entry.agent?.id?.length || 0) * Math.PI * 2;
+  shell.position.y = moving
+    ? Math.abs(Math.sin(phase)) * 0.025
+    : Math.sin(phase * 0.2) * 0.004;
+  shell.rotation.z = moving ? Math.sin(phase) * 0.025 : 0;
 }
 
 function createNeighborAgentGlyph(proxy, agent, faction) {
   // Keep neighbor BOTs cheap, but use the exact same low-detail character
   // vocabulary as the focused region. This preserves faction cloth, skin tone,
   // proportions, and role headgear without cloning high/medium authored GLTFs.
-  let glyph = typeof proxy.makeLowAgent === "function"
+  let shell = typeof proxy.makeLowAgent === "function"
     ? proxy.makeLowAgent(faction?.color || "#999999", agent.role)
     : null;
 
   // Compatibility fallback for an unexpectedly incomplete proxy. Production
   // WorldView exposes makeLowAgent(), so this path should not be used normally.
-  if (!glyph) {
-    glyph = new THREE.Group();
+  if (!shell) {
+    shell = new THREE.Group();
     const body = new THREE.Mesh(
       new THREE.CylinderGeometry(0.085, 0.1, 0.82, 6),
       new THREE.MeshBasicMaterial({
@@ -111,17 +127,20 @@ function createNeighborAgentGlyph(proxy, agent, faction) {
       }),
     );
     head.position.y = 1.18;
-    glyph.add(body, head);
+    shell.add(body, head);
   }
 
+  const glyph = new THREE.Group();
   glyph.name = "MoyoNeighborAgentGlyph";
   glyph.userData.moyoNeighborGlyph = true;
-  glyph.scale.setScalar(0.8);
-  glyph.traverse((object) => {
+  shell.name = "MoyoNeighborAgentShell";
+  shell.scale.setScalar(0.8);
+  shell.traverse((object) => {
     if (!object.isMesh) return;
     object.castShadow = false;
     object.receiveShadow = true;
   });
+  glyph.add(shell);
 
   const ring = new THREE.Object3D();
   ring.visible = false;
@@ -135,7 +154,8 @@ function createNeighborAgentGlyph(proxy, agent, faction) {
     lod: glyph,
     high: null,
     medium: null,
-    low: glyph,
+    low: shell,
+    shell,
     ring,
     contactShadow: null,
     authoredKey: null,
@@ -180,8 +200,8 @@ function createProxy(view, group, state, tickMs) {
     createNeighborStructureGlyph(proxy, structure, faction);
   proxy.createAgent = (agent, faction) => createNeighborAgentGlyph(proxy, agent, faction);
   // Neighbor BOTs have no mixer, limb animation, contact shadow, or selection
-  // ring animation. Keep only movement interpolation while their visible shell
-  // now shares the focused region's low-detail character vocabulary.
+  // ring animation. Keep only root interpolation plus the cheap shell-level
+  // locomotion cue while sharing the focused region's low-detail vocabulary.
   proxy.animateAgent = (entry, time) => animateNeighborAgentGlyph(entry, time, proxy.tickMs);
   group.add(proxy.resourceRoot, proxy.structureRoot, proxy.agentRoot);
   proxy.syncResources(state);
