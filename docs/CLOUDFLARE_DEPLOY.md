@@ -27,7 +27,40 @@ Deploy command:    npx wrangler deploy
 
 `npm run build`はTypeScript型検査に加え、ブラウザ3Dクライアントと詳細モデル拡張の構文・静的検査を行います。Worker名は`wrangler.jsonc`の`name`と同じ `moyo-garden` にします。Cloudflareは通常、Workers Builds用API tokenを自動生成します。
 
-非production branch buildは最初はOFFを推奨します。Durable Objectsを実装するWorkerには通常のpreview URLが生成されないため、preview環境は後で別Worker名・別DO namespaceとして追加します。
+### Build Minutes のコスト制御
+
+`moyo-garden` は Durable Objects を持つため、feature branchをWorkers Buildsで毎回デプロイしても通常のpreview URLは得られません。Cloudflare Dashboardの **Settings > Build** は次を正本とします。
+
+```text
+Production branch:                  main
+Builds for non-production branches: OFF
+Build cache:                        ON
+```
+
+Build watch paths では、少なくともdeploy artifactを変えない次の変更を除外します。
+
+```text
+.github/*
+docs/*
+tests/*
+AGENTS.md
+README.md
+```
+
+`src/`、`scripts/`、`public/`、`package*.json`、`wrangler*.jsonc`、TypeScript設定はdeploy内容またはbuild生成物へ影響するため除外しません。複数種類のファイルを同じpushで変更した場合、除外対象外のファイルが1つでもあれば通常どおりbuildします。
+
+### Cloudflare内の二重buildを防ぐ
+
+Workers BuildsはDashboardのBuild commandを実行した後にDeploy commandを実行します。一方、`wrangler.jsonc`にもcustom build hookがあります。従来は、
+
+1. `npm run build` → `build:web`
+2. `npx wrangler deploy` → `wrangler.jsonc` の `build.command` → `build:web`
+
+となり、同じCloudflare Build内でテスト・モデル生成・asset vendoring・検証をほぼ二重実行していました。
+
+現在は最初の`build:web`完了時にCloudflareの`WORKERS_CI_COMMIT_SHA`だけをmarkerへ記録し、同じcommitの`wrangler deploy`では`node scripts/wrangler-build.mjs`が二度目の`build:web`をskipします。markerが無い、commitが違う、またはWorkers Builds外では従来どおり再buildするfail-safe設計です。
+
+このdeduplicationはBranch controlの代替ではありません。feature branch buildそのものを起動しない一次対策は、引き続き **non-production branch builds=OFF** です。
 
 ## 3. Runtime Secrets
 
@@ -63,6 +96,8 @@ install dependencies
 npm run build
 npx wrangler deploy
 ```
+
+`npm run build`で生成済みのartifactは同じWorkers Build commit内で再利用されるため、`wrangler deploy`のcustom build hookは同一commitの`build:web`を重複実行しない。
 
 成功時は GitHub check `Workers Builds: moyo-garden` が success になり、Cloudflare Build ID / Version ID が記録される。
 
@@ -118,3 +153,4 @@ Cloudflare DashboardのWorkerから過去deploymentを選び、ロールバッ�
 - https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/github-integration/
 - https://developers.cloudflare.com/workers/ci-cd/builds/configuration/
 - https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/
+- https://developers.cloudflare.com/workers/ci-cd/builds/build-watch-paths/
