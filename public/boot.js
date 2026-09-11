@@ -8,6 +8,7 @@
   const WATCHDOG_MS = 12_000;
   const ASSET_VERSION_TIMEOUT_MS = 1_500;
   const PRODUCTION_URL = "https://moyo.bluemoon.works/";
+  const SHELL_STYLE_ID = "moyo-shell-style";
   const params = new URLSearchParams(location.search);
   const loading = document.querySelector("#loading");
   const label = document.querySelector("#loading-label");
@@ -104,11 +105,47 @@
     document.head.append(link);
   };
 
+  const refreshShellStyle = () => {
+    const current = document.querySelector(`#${SHELL_STYLE_ID}`);
+    if (!current) return;
+    const href = `/style.css?v=${VERSION}`;
+    if (current.getAttribute("href") === href) return;
+
+    // Keep the packaged stylesheet active until the commit-keyed replacement
+    // finishes loading so a slow /api/meta or CSS fetch never flashes an
+    // unstyled loading screen.
+    const replacement = current.cloneNode();
+    replacement.id = `${SHELL_STYLE_ID}-next`;
+    replacement.href = href;
+    replacement.addEventListener("load", () => {
+      current.remove();
+      replacement.id = SHELL_STYLE_ID;
+    }, { once: true });
+    replacement.addEventListener("error", () => replacement.remove(), { once: true });
+    current.after(replacement);
+  };
+
+  const loadShellUi = async () => {
+    const modules = [
+      ["sidebar collapse", () => import(`/sidebar-collapse.js?v=${VERSION}`)],
+      ["conversation popover", () => import(`/conversation-popover.js?v=${VERSION}`)],
+    ];
+    await Promise.all(modules.map(async ([label, load]) => {
+      try {
+        await load();
+      } catch (error) {
+        console.warn(`MoYoGarden: ${label} helper failed; continuing without it`, error);
+      }
+    }));
+  };
+
   // Three.js is vendor-versioned independently and can be preloaded before the
   // deployed commit is known. All mutable client modules wait for VERSION.
   preload("/vendor/three-r185/build/three.module.min.js");
 
   const preloadRuntime = () => {
+    preload(`/sidebar-collapse.js?v=${VERSION}`);
+    preload(`/conversation-popover.js?v=${VERSION}`);
     preload(`/client/sky-fix.js?v=${VERSION}`);
     preload(`/client/hex-footprint-rendering.js?v=${VERSION}`);
     preload(`/client/seamless-navigation.js?v=${VERSION}`);
@@ -125,7 +162,9 @@
   const launch = async () => {
     VERSION = await resolveAssetVersion();
     window.__MOYO_PBR_BOOT__ = Object.freeze({ version: VERSION, startedAt: performance.now() });
+    refreshShellStyle();
     preloadRuntime();
+    await loadShellUi();
 
     if (compatibilityRequested) {
       setMessage("軽量セーフモードで起動しています", "描画負荷を抑えて3Dワールドを起動します");
