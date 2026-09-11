@@ -3,6 +3,7 @@ import test from "node:test";
 import { createRandom } from "../dist-ts/src/prng.js";
 import {
   createGlobalTerrainTile,
+  organicTemperatureSuitability,
   sampleWorldConditions,
   scaleOrganicCarryingCapacity,
 } from "../dist-ts/src/world-scale.js";
@@ -65,6 +66,27 @@ test("soil fertility stays deterministic in absolute axial world space", () => {
   assert.deepEqual(first, second);
 });
 
+test("wood and forage derive overlapping but distinct temperature niches", () => {
+  assert.equal(organicTemperatureSuitability("wood", 0.54), 1);
+  assert.equal(organicTemperatureSuitability("food", 0.62), 1);
+  assert.ok(
+    organicTemperatureSuitability("wood", 0.32) >
+      organicTemperatureSuitability("food", 0.32),
+  );
+  assert.ok(
+    organicTemperatureSuitability("food", 0.84) >
+      organicTemperatureSuitability("wood", 0.84),
+  );
+
+  for (const temperature of [-1, 0, 0.5, 1, 2]) {
+    for (const kind of ["wood", "food"]) {
+      const value = organicTemperatureSuitability(kind, temperature);
+      assert.ok(Number.isFinite(value));
+      assert.ok(value >= 0 && value <= 1);
+    }
+  }
+});
+
 test("derived soil fertility changes fresh forest carrying capacity", () => {
   const seed = 424242;
   let sample;
@@ -82,8 +104,9 @@ test("derived soil fertility changes fresh forest carrying capacity", () => {
   }
 
   assert.ok(sample, "expected a forest sample with a non-zero fertility capacity delta");
-  const temperatureSuitability = clamp01(
-    1 - Math.abs(sample.conditions.temperature - 0.58) / 0.58,
+  const temperatureSuitability = organicTemperatureSuitability(
+    "wood",
+    sample.conditions.temperature,
   );
   const random = createRandom(coordinateSeed(seed, sample.x, sample.y));
   const moistureAndClimateCapacity =
