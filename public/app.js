@@ -362,221 +362,295 @@ function updateUi() {
 }
 
 function updateAgentDetail() {
-  if (!app.state || !view.selectedAgentId) {
-    ui.agentEmpty.hidden = false;
-    ui.agentDetail.hidden = true;
-    return;
-  }
-  const agent = app.state.agents.find((entry) => entry.id === view.selectedAgentId);
+  const state = app.state;
+  const agent = state?.agents.find((entry) => entry.id === view.selectedAgentId);
   if (!agent) {
     ui.agentEmpty.hidden = false;
     ui.agentDetail.hidden = true;
     return;
   }
-  const faction = app.state.factions.find((entry) => entry.id === agent.factionId);
+  const faction = state.factions.find((entry) => entry.id === agent.factionId);
   ui.agentEmpty.hidden = true;
   ui.agentDetail.hidden = false;
-  ui.agentSwatch.style.background = faction?.color || "#999";
+  ui.agentSwatch.style.background = faction?.color || "#c8ff66";
   ui.agentName.textContent = agent.name;
   ui.agentRole.textContent = ROLE_LABELS[agent.role] || agent.role;
   ui.agentFaction.textContent = faction?.name || agent.factionId;
   ui.agentPosition.textContent = `${agent.position.x}, ${agent.position.y}`;
-  ui.agentHp.textContent = `${Math.round(agent.health)} / ${Math.round(agent.energy)}`;
-  ui.agentAutonomy.textContent = agent.autonomyEnabled === false ? "OFF" : "ON";
-  ui.agentStatus.textContent = agent.status || "idle";
-  ui.invWood.textContent = String(agent.inventory.wood || 0);
-  ui.invStone.textContent = String(agent.inventory.stone || 0);
-  ui.invFood.textContent = String(agent.inventory.food || 0);
-  ui.agentGoal.textContent = agent.goal || "—";
+  ui.agentHp.textContent = String(agent.hp);
+  ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
+  ui.agentStatus.textContent = agent.status;
+  ui.invWood.textContent = String(agent.inventory.wood);
+  ui.invStone.textContent = String(agent.inventory.stone);
+  ui.invFood.textContent = String(agent.inventory.food);
+  ui.agentGoal.textContent = agent.goal || "目標未設定";
 }
 
-async function refreshMeta() {
-  const meta = await requestJson("/api/meta");
-  const regions = meta.world?.regionTopology?.regions;
-  if (Array.isArray(regions) && regions.length > 0) {
-    app.regions = regions.map((entry) => entry.id).filter(Boolean);
-  } else if (Array.isArray(meta.regions) && meta.regions.length > 0) {
-    app.regions = meta.regions;
-  }
-  const targetRegion = meta.defaultRegion && app.regions.includes(meta.defaultRegion)
-    ? meta.defaultRegion
-    : app.regions.includes(app.region)
-      ? app.region
-      : app.regions[0] || app.region;
-  app.region = targetRegion;
+async function loadSnapshot() {
+  const [state, health] = await Promise.all([
+    requestJson("/api/world/snapshot"),
+    requestJson("/api/health"),
+  ]);
+  applyEnvelope({ state, paused: health.paused, tickMs: health.tickMs });
+}
+
+function startPolling() {
+  clearInterval(app.pollTimer);
+  app.pollTimer = setInterval(
+    () => loadSnapshot().catch(() => {}),
+    Math.max(2_500, app.tickMs / 2),
+  );
+}
+
+function connectSocket() {
+  app.socket?.close();
+  clearTimeout(app.reconnectTimer);
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL(`${protocol}//${location.host}/api/stream`);
+  url.searchParams.set("region", app.region);
+  const socket = new WebSocket(url);
+  app.socket = socket;
+  socket.addEventListener("open", () => {
+    setConnection("online", "LIVE");
+    clearInterval(app.pollTimer);
+  });
+  socket.addEventListener("message", (event) => {
+    try { applyEnvelope(JSON.parse(event.data)); } catch {}
+  });
+  socket.addEventListener("close", () => {
+    if (app.socket !== socket) return;
+    setConnection("offline", "再接続中");
+    startPolling();
+    app.reconnectTimer = setTimeout(connectSocket, 4_000);
+  });
+  socket.addEventListener("error", () => socket.close());
+}
+
+function populateRegions() {
   ui.regionSelect.replaceChildren();
   for (const region of app.regions) {
     const option = document.createElement("option");
     option.value = region;
     option.textContent = region;
+    option.selected = region === app.region;
     ui.regionSelect.append(option);
   }
-  ui.regionSelect.value = app.region;
 }
 
-function connectSocket() {
-  if (app.socket) app.socket.close();
-  setConnection("pending", "接続中");
-  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = new URL(`${scheme}//${location.host}/api/stream`);
-  url.searchParams.set("region", app.region);
-  app.socket = new WebSocket(url);
-  app.socket.onopen = () => setConnection("good", "リアルタイム");
-  app.socket.onmessage = (event) => {
-    try {
-      applyEnvelope(JSON.parse(event.data));
-    } catch (error) {
-      console.warn("MoYoGarden stream payload failed", error);
-    }
-  };
-  app.socket.onerror = () => setConnection("bad", "接続エラー");
-  app.socket.onclose = () => {
-    setConnection("pending", "再接続中");
-    clearTimeout(app.reconnectTimer);
-    app.reconnectTimer = setTimeout(connectSocket, 2_000);
-  };
-}
-
-async function pollSnapshot() {
-  try {
-    const snapshot = await requestJson("/api/snapshot");
-    applyEnvelope(snapshot);
-    setConnection("good", "ポーリング");
-  } catch (error) {
-    console.debug("MoYoGarden snapshot poll failed", error);
-    setConnection("bad", "切断");
-  }
-}
-
-function startPolling() {
+async function connect() {
   clearInterval(app.pollTimer);
-  app.pollTimer = setInterval(() => { void pollSnapshot(); }, 10_000);
-}
-
-async function loadInitialState() {
-  try {
-    const snapshot = await requestJson("/api/snapshot");
-    applyEnvelope(snapshot);
-  } catch (error) {
-    console.warn("MoYoGarden API unavailable; using demo state", error);
-    applyEnvelope({ state: createDemoState(), tickMs: 10_000 });
-  }
-}
-
-async function sendCommand(command) {
-  try {
-    const result = await requestJson("/api/command", {
-      method: "POST",
-      headers: authHeaders(true),
-      body: JSON.stringify(command),
-    });
-    applyEnvelope(result);
-    toast("コマンドを送信しました");
-    return true;
-  } catch (error) {
-    toast(error.message || "コマンドに失敗しました", true);
-    return false;
-  }
-}
-
-async function switchRegion(regionId) {
-  if (!app.regions.includes(regionId) || regionId === app.region) return;
-  app.region = regionId;
-  ui.regionSelect.value = regionId;
+  clearInterval(app.windowTimer);
+  app.socket?.close();
   clearNeighborPreview();
-  liveNeighborSimulation?.setCenter(regionId);
-  terrainWindowCenter = undefined;
-  terrainWindowPayload = undefined;
-  neighborTerrainUpdatedAt = 0;
-  await loadInitialState();
-  await loadTerrainWindow(true);
-  await loadRegionWindow();
-  connectSocket();
-  toast(`${regionId} に移動しました`);
-}
-
-function bindUi() {
-  ui.pauseButton.addEventListener("click", () => { void sendCommand({ type: "pause", id: crypto.randomUUID() }); });
-  ui.stepButton.addEventListener("click", () => { void sendCommand({ type: "step", id: crypto.randomUUID() }); });
-  ui.resetButton.addEventListener("click", () => { void sendCommand({ type: "reset", id: crypto.randomUUID() }); });
-  ui.focusButton.addEventListener("click", () => {
-    if (view.selectedAgentId) view.focusAgent(view.selectedAgentId);
-    else view.focusCenter();
-  });
-  ui.settingsButton.addEventListener("click", () => { ui.settingsPanel.hidden = false; });
-  ui.settingsClose.addEventListener("click", () => { ui.settingsPanel.hidden = true; });
-  ui.regionSelect.addEventListener("change", () => { void switchRegion(ui.regionSelect.value); });
-  ui.tokenInput.addEventListener("change", () => {
-    app.token = ui.tokenInput.value.trim();
-    sessionStorage.setItem("moyo-token", app.token);
-  });
-  ui.reconnectButton.addEventListener("click", () => {
+  setConnection("", "同期中");
+  try {
+    const meta = await requestJson("/api/meta");
+    app.regions = meta.regions || [meta.defaultRegion || "garden-1"];
+    if (!app.regions.includes(app.region)) app.region = meta.defaultRegion || app.regions[0];
+    liveNeighborSimulation?.setCenter(app.region);
+    terrainWindowCenter = undefined;
+    terrainWindowPayload = undefined;
+    neighborTerrainUpdatedAt = 0;
+    populateRegions();
+    await loadSnapshot();
+    void loadTerrainWindow();
+    void loadRegionWindow();
+    startRegionWindowRefresh();
     connectSocket();
-    void pollSnapshot();
-  });
-  window.addEventListener("moyo:auto-region-handoff", (event) => {
-    const regionId = event?.detail?.regionId;
-    if (typeof regionId === "string" && app.regions.includes(regionId) && regionId !== app.region) {
-      void switchRegion(regionId);
+  } catch (error) {
+    if (!app.state) {
+      applyEnvelope({ state: createDemoState(), paused: false, tickMs: 10_000 });
     }
-  });
+    setConnection("offline", "OFFLINE DEMO");
+    toast(`API未接続: ${error.message}`, true);
+    startPolling();
+    if (location.protocol !== "file:") app.reconnectTimer = setTimeout(connect, 6_000);
+  }
 }
 
-async function initModels() {
-  if (quality.loadModels === false) {
-    renderState.modelsTotal = 0;
-    updateRenderStatus();
-    return;
+async function transitionRegion(regionId) {
+  const targetRegion = typeof regionId === "string" ? regionId.trim() : "";
+  if (!targetRegion || targetRegion === app.region) return;
+
+  const previousRegion = app.region;
+  const previousSocket = app.socket;
+  app.socket = null;
+  previousSocket?.close();
+  clearInterval(app.pollTimer);
+  clearTimeout(app.reconnectTimer);
+  app.region = targetRegion;
+  setConnection("", "境界同期中");
+
+  try {
+    const [windowPayload, health, terrainPayload] = await Promise.all([
+      requestJson("/api/world/window?radius=1&live=1", {}, 10_000),
+      requestJson("/api/health"),
+      requestJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000),
+    ]);
+    if (app.region !== targetRegion) return;
+
+    const chunks = Array.isArray(windowPayload?.chunks) ? windowPayload.chunks : [];
+    const center = chunks.find((chunk) =>
+      chunk?.regionId === targetRegion
+      && chunk?.state?.tiles
+      && chunk?.state?.agents
+      && chunk?.state?.structures
+    );
+    if (!center) throw new Error(`live window did not include full center ${targetRegion}`);
+
+    app.regions = chunks.map((chunk) => chunk?.regionId).filter(Boolean);
+    populateRegions();
+    liveNeighborSimulation?.syncWindow(
+      windowPayload,
+      targetRegion,
+      Number(health?.tickMs) || app.tickMs,
+    );
+    applyEnvelope({ state: center.state, paused: health?.paused, tickMs: health?.tickMs });
+
+    terrainWindowPayload = mergeLiveTerrainWindow(terrainPayload, windowPayload);
+    terrainWindowCenter = targetRegion;
+    neighborTerrainUpdatedAt = Date.now();
+    buildNeighborPreview(terrainWindowPayload);
+
+    startRegionWindowRefresh();
+    connectSocket();
+  } catch (error) {
+    if (app.region !== targetRegion) return;
+    app.region = previousRegion;
+    populateRegions();
+    setConnection("offline", "境界同期を再試行");
+    window.dispatchEvent(new CustomEvent("moyo:region-transition-failed", {
+      detail: { regionId: targetRegion },
+    }));
+    connectSocket();
+    toast(`リージョン移動を再同期します: ${error.message}`, true);
   }
+}
+
+window.addEventListener("moyo:region-transition", (event) => {
+  void transitionRegion(event.detail?.regionId);
+});
+
+async function loadHighResolutionModels() {
   const result = await models.load({
     timeoutMs: quality.modelTimeoutMs,
     concurrency: quality.modelConcurrency,
-    onProgress: ({ completed, total }) => {
-      renderState.modelsLoaded = completed;
-      renderState.modelsTotal = total;
-      updateRenderStatus();
+    onProgress: ({ completed, total, key }) => {
+      if (ui.loadingDetail) ui.loadingDetail.textContent = `背景読込: ${key} ${completed}/${total}`;
+      if (ui.loadingProgress) ui.loadingProgress.value = completed / total;
     },
     onModelLoaded: ({ key }) => {
+      renderState.modelsLoaded += 1;
       view.refreshModelType(key);
       liveNeighborSimulation?.refreshModelType(key);
+      updateRenderStatus();
     },
   });
-  renderState.modelsLoaded = result.loaded.length;
   renderState.modelsFailed = result.failed.length;
-  renderState.modelsTotal = models.size;
   updateRenderStatus();
+  if (result.failed.length > 0) {
+    console.warn("MoYoGarden model fallbacks:", result.failed);
+    toast(`${result.failed.length}種類のモデルを軽量LODで表示します`, true);
+  }
+}
+
+async function admin(path, body = {}) {
+  try {
+    const result = await requestJson(path, {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify(body),
+    });
+    if (result.state) applyEnvelope({ state: result.state, paused: app.paused, tickMs: app.tickMs });
+    else await loadSnapshot();
+    return result;
+  } catch (error) {
+    if (error.status === 401) ui.settingsPanel.hidden = false;
+    toast(error.message, true);
+    throw error;
+  }
+}
+
+function bindUi() {
+  ui.pauseButton.addEventListener("click", async () => {
+    try {
+      const result = await admin(app.paused ? "/api/admin/resume" : "/api/admin/pause");
+      app.paused = Boolean(result.paused);
+      updateUi();
+    } catch {}
+  });
+  ui.stepButton.addEventListener("click", () => admin("/api/admin/tick", { count: 1 }).catch(() => {}));
+  ui.resetButton.addEventListener("click", () => {
+    if (confirm("現在の領域を初期状態へ戻しますか？")) admin("/api/admin/reset", {}).catch(() => {});
+  });
+  ui.focusButton.addEventListener("click", () => {
+    if (view.selectedAgentId) view.focusAgent(view.selectedAgentId);
+  });
+  ui.settingsButton.addEventListener("click", () => {
+    ui.settingsPanel.hidden = !ui.settingsPanel.hidden;
+  });
+  ui.settingsClose.addEventListener("click", () => { ui.settingsPanel.hidden = true; });
+  ui.reconnectButton.addEventListener("click", () => {
+    app.region = ui.regionSelect.value || app.region;
+    app.token = ui.tokenInput.value.trim();
+    if (app.token) sessionStorage.setItem("moyo-token", app.token);
+    else sessionStorage.removeItem("moyo-token");
+    ui.settingsPanel.hidden = true;
+    connect();
+  });
 }
 
 async function initialize() {
-  if (ui.loadingProgress) ui.loadingProgress.value = 0.08;
   updateRenderStatus();
-  await refreshMeta();
-  if (ui.loadingProgress) ui.loadingProgress.value = 0.18;
+  ui.loadingLabel.textContent = "本番ワールドに接続しています";
+  ui.loadingDetail.textContent = `${quality.label}プロファイル`;
+
   view = new WorldView(ui.canvas, models, quality);
   liveNeighborSimulation = createLiveNeighborSimulation(view);
-  window.moyoWorldView = view;
-  if (ui.loadingProgress) ui.loadingProgress.value = 0.32;
+  view.onSelect = updateAgentDetail;
+  view.onCommand = async (agentId, target) => {
+    try {
+      await requestJson(`/api/agents/${encodeURIComponent(agentId)}/commands`, {
+        method: "POST",
+        headers: authHeaders(true),
+        body: JSON.stringify({
+          id: `web-move-${crypto.randomUUID()}`,
+          type: "move",
+          target,
+        }),
+      });
+      toast(`移動命令: ${target.x}, ${target.y}`);
+    } catch (error) {
+      if (error.status === 401) ui.settingsPanel.hidden = false;
+      toast(error.message, true);
+    }
+  };
+  view.onEnhancement = ({ feature, active }) => {
+    if (feature === "environment") renderState.environment = active;
+    if (feature === "shadows") renderState.shadows = active;
+    updateRenderStatus();
+  };
+
   bindUi();
-  await loadInitialState();
-  if (ui.loadingProgress) ui.loadingProgress.value = 0.48;
-  void loadTerrainWindow();
-  void loadRegionWindow();
-  connectSocket();
-  startPolling();
-  startRegionWindowRefresh();
-  if (ui.loadingProgress) ui.loadingProgress.value = 0.62;
-  if (location.protocol !== "file:") void initModels();
-  if (ui.loadingProgress) ui.loadingProgress.value = 0.72;
-  view.focusCenter();
-  view.animate();
+  setConnection("", "同期中");
+  await connect();
+
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  ui.loading.classList.add("hidden");
   if (!readyDispatched) {
     readyDispatched = true;
-    window.dispatchEvent(new CustomEvent("moyo:pbr-ready"));
+    window.dispatchEvent(new CustomEvent("moyo:pbr-ready", {
+      detail: { quality: quality.id, startup: "procedural-lod" },
+    }));
   }
-  if (ui.loadingProgress) ui.loadingProgress.value = 1;
+
+  view.startEnhancements();
+  setTimeout(() => { void loadHighResolutionModels(); }, 80);
 }
 
-initialize().catch((error) => {
-  console.error("MoYoGarden PBR startup failed", error);
+try {
+  await initialize();
+} catch (error) {
+  console.error(error);
   window.dispatchEvent(new CustomEvent("moyo:pbr-error", { detail: { error } }));
-});
+}
