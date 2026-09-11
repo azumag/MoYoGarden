@@ -28,8 +28,8 @@ export const PATHOGEN_LOCAL_INTERVAL = 6;
 export const PATHOGEN_HALO_INTERVAL = 30;
 const PATHOGEN_RECOVERY_RATE = 0.06;
 const PATHOGEN_AMBIENT_GAIN = 0.012;
-const PATHOGEN_CONTACT_GAIN = 0.11;
-const PATHOGEN_HALO_GAIN = 0.10;
+const PATHOGEN_SAME_CELL_CONTACT_GAIN = 0.11;
+const PATHOGEN_ADJACENT_CONTACT_GAIN = 0.06;
 export const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
 const PATHOGEN_SYMPTOM_THRESHOLD = 0.65;
 const PATHOGEN_SYMPTOM_ENERGY_COST = 1;
@@ -96,13 +96,18 @@ function ambientPathogenPressure(
   return dampness * thermalSuitability;
 }
 
-function localContactPressure(state: Pick<WorldState, "agents">, target: Agent): number {
-  let pressure = 0;
+function localContactExposure(state: Pick<WorldState, "agents">, target: Agent): number {
+  let exposure = 0;
   for (const source of state.agents) {
-    if (source.id === target.id || hexGridDistance(source.position, target.position) > 1) continue;
-    pressure = unionPressure(pressure, agentPathogenPressure(source));
+    if (source.id === target.id) continue;
+    const distance = hexGridDistance(source.position, target.position);
+    if (distance > 1) continue;
+    const gain = distance === 0
+      ? PATHOGEN_SAME_CELL_CONTACT_GAIN
+      : PATHOGEN_ADJACENT_CONTACT_GAIN;
+    exposure = unionPressure(exposure, agentPathogenPressure(source) * gain);
   }
-  return pressure;
+  return exposure;
 }
 
 /**
@@ -190,7 +195,7 @@ function singlePathogenStep(
   for (const agent of state.agents) {
     const current = previousLoads.get(agent.id) ?? 0;
     const ambient = ambientPathogenPressure(agent.position, environment) * PATHOGEN_AMBIENT_GAIN;
-    const contact = localContactPressure(previousState, agent) * PATHOGEN_CONTACT_GAIN;
+    const contact = localContactExposure(previousState, agent);
     const exposure = unionPressure(ambient, contact);
     const next = clamp01(current * (1 - PATHOGEN_RECOVERY_RATE) + (1 - current) * exposure);
     const target = agent as PathogenAgent;
@@ -217,6 +222,11 @@ function singlePathogenStep(
  * ordinary structured-clone persistence and agent handoff retain it, and fresh
  * agents start susceptible. Local contact is six-neighbor hex contact; halo
  * exposure is applied only at exact boundary cells on its slower cadence.
+ *
+ * Same-cell crowding is intentionally a stronger contact than sharing an edge.
+ * An exact cross-region halo contact uses the same adjacent-cell gain as an
+ * ordinary local six-neighbor contact, so a Durable Object seam does not change
+ * transmission strength.
  */
 export function applyPathogenSteps(
   state: WorldState,
@@ -237,7 +247,7 @@ export function applyPathogenSteps(
     const pressure = haloPressure.get(positionKey(agent.position)) ?? 0;
     if (pressure <= 0) continue;
     const current = agentPathogenLoad(agent);
-    const perExposure = clamp01(pressure * PATHOGEN_HALO_GAIN);
+    const perExposure = clamp01(pressure * PATHOGEN_ADJACENT_CONTACT_GAIN);
     const combinedExposure = 1 - Math.pow(1 - perExposure, safeHaloSteps);
     const next = clamp01(current + (1 - current) * combinedExposure);
     if (next - current <= PATHOGEN_EPSILON) continue;

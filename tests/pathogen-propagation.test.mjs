@@ -41,6 +41,36 @@ test("six-neighbor contact transmits pathogen load without order-dependent long 
   assert.equal(agentPathogenLoad(distant), 0, "infection must not jump beyond local hex contact in one step");
 });
 
+test("same-cell crowding is riskier than adjacency and halo seams preserve adjacent contact strength", () => {
+  const sameCellTarget = agent("same-target", { x: 0, y: 0 });
+  applyPathogenSteps({
+    agents: [agent("same-source", { x: 0, y: 0 }, 1), sameCellTarget],
+  }, 1);
+  const sameCellLoad = agentPathogenLoad(sameCellTarget);
+
+  const adjacentTarget = agent("adjacent-target", { x: 1, y: 0 });
+  applyPathogenSteps({
+    agents: [agent("adjacent-source", { x: 0, y: 0 }, 1), adjacentTarget],
+  }, 1);
+  const adjacentLoad = agentPathogenLoad(adjacentTarget);
+
+  assert.ok(sameCellLoad > adjacentLoad, "co-located BOTs should have stronger direct contact exposure");
+  assert.ok(adjacentLoad > 0, "ordinary six-neighbor contact must remain transmissible");
+
+  const seamTarget = agent("seam-target", { x: 30, y: 11 });
+  applyPathogenSteps(
+    { agents: [seamTarget] },
+    0,
+    undefined,
+    new Map([["30,11", 1]]),
+    1,
+  );
+  assert.ok(
+    Math.abs(agentPathogenLoad(seamTarget) - adjacentLoad) < 1e-12,
+    "an exact cross-region neighbor must match local one-hex contact strength",
+  );
+});
+
 test("subclinical pathogen load must build before an agent sheds infectious pressure", () => {
   const subclinical = agent("subclinical", { x: 0, y: 0 }, 0.1);
   const target = agent("target", { x: 1, y: 0 });
