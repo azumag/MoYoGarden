@@ -27,6 +27,14 @@ test("neighbor simulation graphics survive center clipping and authored model re
   assert.match(footprintSource, /live-neighbor-simulation/);
 });
 
+test("neighbor BOTs use a readable low-cost head-and-stick glyph", () => {
+  assert.match(liveRegionSource, /function createNeighborAgentGlyph\(proxy, agent, faction\)/);
+  assert.match(liveRegionSource, /new THREE\.CylinderGeometry\(0\.085, 0\.1, 0\.82, 6\)/);
+  assert.match(liveRegionSource, /new THREE\.SphereGeometry\(0\.22, 8, 6\)/);
+  assert.match(liveRegionSource, /proxy\.createAgent = \(agent, faction\) => createNeighborAgentGlyph\(proxy, agent, faction\)/);
+  assert.match(liveRegionSource, /contactShadow: null/);
+});
+
 test("temporary live-window snapshot gaps keep last-known neighbor objects visible", () => {
   assert.match(liveRegionSource, /const requestedIds = windowRegionIds\(payload, centerRegionId\)/);
   assert.match(liveRegionSource, /if \(requestedIds\.has\(regionId\)\) \{/);

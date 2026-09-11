@@ -29,6 +29,62 @@ function surfaceHeightMap(state) {
   }
   return result;
 }
+
+function createNeighborAgentGlyph(proxy, agent, faction) {
+  const glyph = new THREE.Group();
+  glyph.name = "MoyoNeighborAgentGlyph";
+  glyph.userData.moyoNeighborGlyph = true;
+
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.085, 0.1, 0.82, 6),
+    new THREE.MeshBasicMaterial({
+      color: faction?.color || "#999999",
+      toneMapped: false,
+    }),
+  );
+  body.name = "MoyoNeighborAgentBody";
+  body.position.y = 0.58;
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color: 0xd7ad8b,
+      toneMapped: false,
+    }),
+  );
+  head.name = "MoyoNeighborAgentHead";
+  head.position.y = 1.18;
+
+  const ring = new THREE.Object3D();
+  ring.visible = false;
+  glyph.add(body, head, ring);
+  proxy.agentRoot.add(glyph);
+
+  const target = proxy.worldPosition(agent.position, 0);
+  const now = performance.now();
+  glyph.position.copy(target);
+  return {
+    lod: glyph,
+    high: null,
+    medium: null,
+    low: glyph,
+    ring,
+    contactShadow: null,
+    authoredKey: null,
+    mixer: null,
+    idleAction: null,
+    moveAction: null,
+    activeAction: null,
+    lastMixerTime: now,
+    from: target.clone(),
+    to: target.clone(),
+    start: now,
+    agent,
+    role: agent.role,
+    factionId: agent.factionId,
+  };
+}
+
 function createProxy(view, group, state, tickMs) {
   const proxy = Object.create(view);
   proxy.worldRoot = group;
@@ -44,6 +100,7 @@ function createProxy(view, group, state, tickMs) {
   proxy.selectedAgentId = null;
   proxy.onSelect = () => {};
   proxy.markShadowsDirty = () => {};
+  proxy.createAgent = (agent, faction) => createNeighborAgentGlyph(proxy, agent, faction);
   group.add(proxy.resourceRoot, proxy.structureRoot, proxy.agentRoot);
   proxy.syncResources(state);
   proxy.syncStructures(state);
