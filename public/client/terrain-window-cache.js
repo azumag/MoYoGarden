@@ -77,33 +77,6 @@ function mergeTerrainState(cachedState, liveState) {
   };
 }
 
-function liveTerrainChunk(chunk) {
-  if (typeof chunk?.regionId !== "string" || !Array.isArray(chunk?.state?.tiles)) return null;
-  const hexOrigin = chunk.hexOrigin;
-  const axial = chunk.axial;
-  if (
-    !Number.isFinite(hexOrigin?.x) ||
-    !Number.isFinite(hexOrigin?.y) ||
-    !Number.isInteger(axial?.q) ||
-    !Number.isInteger(axial?.r)
-  ) {
-    return null;
-  }
-
-  const tiles = normalizedTerrainTiles(chunk.state.tiles);
-  if (tiles.length === 0) return null;
-  return {
-    ...chunk,
-    state: {
-      ...(Number.isFinite(chunk.state.width) ? { width: chunk.state.width } : {}),
-      ...(Number.isFinite(chunk.state.height) ? { height: chunk.state.height } : {}),
-      ...(Number.isFinite(chunk.state.tick) ? { tick: chunk.state.tick } : {}),
-      ...(Number.isFinite(chunk.state.revision) ? { revision: chunk.state.revision } : {}),
-      tiles,
-    },
-  };
-}
-
 export function mergeLiveTerrainWindow(terrainPayload, livePayload) {
   if (!Array.isArray(terrainPayload?.chunks) || !Array.isArray(livePayload?.chunks)) {
     return terrainPayload;
@@ -113,36 +86,15 @@ export function mergeLiveTerrainWindow(terrainPayload, livePayload) {
       .filter((chunk) => typeof chunk?.regionId === "string")
       .map((chunk) => [chunk.regionId, chunk]),
   );
-  const cachedRegionIds = new Set(
-    terrainPayload.chunks
-      .map((chunk) => chunk?.regionId)
-      .filter((regionId) => typeof regionId === "string"),
-  );
-  const mergedChunks = terrainPayload.chunks.map((chunk) => {
-    const live = liveByRegion.get(chunk?.regionId);
-    if (!live) return chunk;
-    return {
-      ...chunk,
-      state: mergeTerrainState(chunk.state, live.state),
-    };
-  });
-
-  // A camera handoff can advance the radius-1 live window before the slower
-  // radius-2 terrain refresh completes. Previously a newly entered region was
-  // ignored until the terrain request caught up, creating a short-lived empty
-  // macro hex. Admit only live-only chunks that carry complete placement
-  // metadata and at least one valid terrain cell, and strip agents/structures
-  // from their state so this cache stays terrain-only.
-  for (const live of livePayload.chunks) {
-    if (cachedRegionIds.has(live?.regionId)) continue;
-    const terrain = liveTerrainChunk(live);
-    if (!terrain) continue;
-    mergedChunks.push(terrain);
-    cachedRegionIds.add(terrain.regionId);
-  }
-
   return {
     ...terrainPayload,
-    chunks: mergedChunks,
+    chunks: terrainPayload.chunks.map((chunk) => {
+      const live = liveByRegion.get(chunk?.regionId);
+      if (!live) return chunk;
+      return {
+        ...chunk,
+        state: mergeTerrainState(chunk.state, live.state),
+      };
+    }),
   };
 }
