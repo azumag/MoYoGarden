@@ -63,12 +63,24 @@ test("neighbor structures keep low-detail silhouettes without authored building 
   assert.match(glyphSource, /structureId = structure\.id/);
 });
 
-test("neighbor BOTs use a readable low-cost head-and-stick glyph", () => {
+test("neighbor BOTs reuse the focused-region low-detail character vocabulary", () => {
   assert.match(liveRegionSource, /function createNeighborAgentGlyph\(proxy, agent, faction\)/);
-  assert.match(liveRegionSource, /new THREE\.CylinderGeometry\(0\.085, 0\.1, 0\.82, 6\)/);
-  assert.match(liveRegionSource, /new THREE\.SphereGeometry\(0\.22, 8, 6\)/);
-  assert.match(liveRegionSource, /proxy\.createAgent = \(agent, faction\) => createNeighborAgentGlyph\(proxy, agent, faction\)/);
+  assert.match(
+    liveRegionSource,
+    /proxy\.makeLowAgent\(faction\?\.color \|\| "#999999", agent\.role\)/,
+  );
+  assert.match(liveRegionSource, /glyph\.scale\.setScalar\(0\.8\)/);
+  assert.match(liveRegionSource, /object\.castShadow = false/);
+  assert.match(
+    liveRegionSource,
+    /proxy\.createAgent = \(agent, faction\) => createNeighborAgentGlyph\(proxy, agent, faction\)/,
+  );
   assert.match(liveRegionSource, /contactShadow: null/);
+  const glyphStart = liveRegionSource.indexOf("function createNeighborAgentGlyph");
+  const glyphEnd = liveRegionSource.indexOf("function createProxy", glyphStart);
+  const glyphSource = liveRegionSource.slice(glyphStart, glyphEnd);
+  assert.doesNotMatch(glyphSource, /models\.clone/);
+  assert.doesNotMatch(glyphSource, /createLod/);
 });
 
 test("neighbor BOT glyphs bypass full focused-agent animation work", () => {
