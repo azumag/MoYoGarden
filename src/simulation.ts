@@ -461,41 +461,69 @@ function factionMissingForRecipe(state: WorldState, factionId: string, type: Str
 
 function nextStepTowards(state: WorldState, start: GridPosition, target: GridPosition): GridPosition {
   if (samePosition(start, target)) return start;
+  if (!isPassable(state, target)) return start;
 
-  const queue: GridPosition[] = [start];
-  const visited = new Set<string>([`${start.x},${start.y}`]);
-  const previous = new Map<string, GridPosition>();
-  let found = false;
-
-  for (let cursor = 0; cursor < queue.length && !found; cursor += 1) {
+  // Keep path length authoritative, then minimize the total crowding exposure
+  // among equally short routes. The previous queue-order heuristic only looked
+  // at crowding on the next expansion and could commit to an empty first hex
+  // whose later shortest-path cells were already packed with BOTs.
+  const distanceToTarget = new Map<string, number>();
+  const queue: GridPosition[] = [target];
+  distanceToTarget.set(positionKey(target), 0);
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
     const current = queue[cursor];
     if (current === undefined) break;
-    const candidates = NEIGHBORS.flatMap((delta, order) => {
+    const currentDistance = distanceToTarget.get(positionKey(current));
+    if (currentDistance === undefined) continue;
+    for (const delta of NEIGHBORS) {
       const next = { x: current.x + delta.x, y: current.y + delta.y };
-      const key = `${next.x},${next.y}`;
-      if (visited.has(key) || !isPassable(state, next)) return [];
-      return [{ next, key, order, crowding: agentCrowdingAt(state, next) }];
-    }).sort((a, b) => a.crowding - b.crowding || a.order - b.order);
-
-    for (const { next, key } of candidates) {
-      visited.add(key);
-      previous.set(key, current);
-      if (samePosition(next, target)) {
-        found = true;
-        break;
-      }
+      const key = positionKey(next);
+      if (distanceToTarget.has(key) || !isPassable(state, next)) continue;
+      distanceToTarget.set(key, currentDistance + 1);
       queue.push(next);
     }
   }
 
-  if (!found) return start;
-  let step = target;
-  let parent = previous.get(`${step.x},${step.y}`);
-  while (parent !== undefined && !samePosition(parent, start)) {
-    step = parent;
-    parent = previous.get(`${step.x},${step.y}`);
+  const startDistance = distanceToTarget.get(positionKey(start));
+  if (startDistance === undefined) return start;
+
+  const crowdingCost = new Map<string, number>();
+  const minimumCrowdingToTarget = (position: GridPosition): number => {
+    const key = positionKey(position);
+    const cached = crowdingCost.get(key);
+    if (cached !== undefined) return cached;
+    const distance = distanceToTarget.get(key);
+    if (distance === undefined) return Number.POSITIVE_INFINITY;
+
+    const localCrowding = agentCrowdingAt(state, position);
+    if (distance === 0) {
+      crowdingCost.set(key, localCrowding);
+      return localCrowding;
+    }
+
+    let downstream = Number.POSITIVE_INFINITY;
+    for (const delta of NEIGHBORS) {
+      const next = { x: position.x + delta.x, y: position.y + delta.y };
+      if (distanceToTarget.get(positionKey(next)) !== distance - 1) continue;
+      downstream = Math.min(downstream, minimumCrowdingToTarget(next));
+    }
+    const total = localCrowding + downstream;
+    crowdingCost.set(key, total);
+    return total;
+  };
+
+  let bestStep = start;
+  let bestCrowding = Number.POSITIVE_INFINITY;
+  for (const delta of NEIGHBORS) {
+    const next = { x: start.x + delta.x, y: start.y + delta.y };
+    if (distanceToTarget.get(positionKey(next)) !== startDistance - 1) continue;
+    const crowding = minimumCrowdingToTarget(next);
+    if (crowding < bestCrowding) {
+      bestCrowding = crowding;
+      bestStep = next;
+    }
   }
-  return step;
+  return bestStep;
 }
 
 function moveAgent(state: WorldState, agent: Agent, target: GridPosition): boolean {
