@@ -84,33 +84,48 @@ function animateNeighborAgentGlyph(entry, time, tickMs) {
 }
 
 function createNeighborAgentGlyph(proxy, agent, faction) {
-  const glyph = new THREE.Group();
+  // Keep neighbor BOTs cheap, but use the exact same low-detail character
+  // vocabulary as the focused region. This preserves faction cloth, skin tone,
+  // proportions, and role headgear without cloning high/medium authored GLTFs.
+  let glyph = typeof proxy.makeLowAgent === "function"
+    ? proxy.makeLowAgent(faction?.color || "#999999", agent.role)
+    : null;
+
+  // Compatibility fallback for an unexpectedly incomplete proxy. Production
+  // WorldView exposes makeLowAgent(), so this path should not be used normally.
+  if (!glyph) {
+    glyph = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.085, 0.1, 0.82, 6),
+      new THREE.MeshBasicMaterial({
+        color: faction?.color || "#999999",
+        toneMapped: false,
+      }),
+    );
+    body.position.y = 0.58;
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 8, 6),
+      new THREE.MeshBasicMaterial({
+        color: 0xd7ad8b,
+        toneMapped: false,
+      }),
+    );
+    head.position.y = 1.18;
+    glyph.add(body, head);
+  }
+
   glyph.name = "MoyoNeighborAgentGlyph";
   glyph.userData.moyoNeighborGlyph = true;
-
-  const body = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.085, 0.1, 0.82, 6),
-    new THREE.MeshBasicMaterial({
-      color: faction?.color || "#999999",
-      toneMapped: false,
-    }),
-  );
-  body.name = "MoyoNeighborAgentBody";
-  body.position.y = 0.58;
-
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.22, 8, 6),
-    new THREE.MeshBasicMaterial({
-      color: 0xd7ad8b,
-      toneMapped: false,
-    }),
-  );
-  head.name = "MoyoNeighborAgentHead";
-  head.position.y = 1.18;
+  glyph.scale.setScalar(0.8);
+  glyph.traverse((object) => {
+    if (!object.isMesh) return;
+    object.castShadow = false;
+    object.receiveShadow = true;
+  });
 
   const ring = new THREE.Object3D();
   ring.visible = false;
-  glyph.add(body, head, ring);
+  glyph.add(ring);
   proxy.agentRoot.add(glyph);
 
   const target = proxy.worldPosition(agent.position, 0);
@@ -164,9 +179,9 @@ function createProxy(view, group, state, tickMs) {
   proxy.createStructure = (structure, faction) =>
     createNeighborStructureGlyph(proxy, structure, faction);
   proxy.createAgent = (agent, faction) => createNeighborAgentGlyph(proxy, agent, faction);
-  // Neighbor BOTs are two-mesh glyphs with no mixer, limbs, contact shadow, or
-  // selection ring animation. Keep only the movement interpolation instead of
-  // running the full focused-region agent animation path for every visible BOT.
+  // Neighbor BOTs have no mixer, limb animation, contact shadow, or selection
+  // ring animation. Keep only movement interpolation while their visible shell
+  // now shares the focused region's low-detail character vocabulary.
   proxy.animateAgent = (entry, time) => animateNeighborAgentGlyph(entry, time, proxy.tickMs);
   group.add(proxy.resourceRoot, proxy.structureRoot, proxy.agentRoot);
   proxy.syncResources(state);
