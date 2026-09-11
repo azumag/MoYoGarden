@@ -136,10 +136,9 @@ function activityDelayMs(tickMs: number, tier: RegionActivityTier): number {
 export function shouldUseDynamicEnvironmentalHalo(
   extent: Pick<WorldState, "width" | "height">,
   sourceRegionId: string,
-  tier: RegionActivityTier,
+  _tier: RegionActivityTier,
 ): boolean {
-  if (tier === "active" || parseAxialRegionId(sourceRegionId) !== undefined) return true;
-  return tier === "warm" &&
+  return parseAxialRegionId(sourceRegionId) !== undefined ||
     regionGlobalCellOrigin(sourceRegionId, extent.width, extent.height) !== undefined;
 }
 
@@ -365,11 +364,11 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async materializeHaloForState(state: WorldState): Promise<HaloMaterialization> {
     const tier = this.activityTier();
-    // Active and warm regions with a shared global frame use the bounded
-    // six-neighbor dynamic halo, so a prefetched neighbor already sees the same
-    // environmental seams before camera/BOT ownership arrives. Canonical axial
-    // IDs stay dynamic even when cold. Cold persisted production aliases retain
-    // the bounded garden-1/2/3 compatibility fan-out to avoid background cost.
+    // Any region with a shared global frame uses the same bounded six-neighbor
+    // environmental halo, including cold persisted garden aliases. Cold regions
+    // still deep-idle once caught up, and scheduled halo reads remain limited to
+    // the 30-tick regrowth cadence with depleted organic resources, so continuity
+    // no longer depends on activity tier without reintroducing continuous fan-out.
     const links = shouldUseDynamicEnvironmentalHalo(state, state.regionId, tier)
       ? buildDynamicHexHaloLinks(state, state.regionId)
       : isPersistedLegacyRegionId(state.regionId)
