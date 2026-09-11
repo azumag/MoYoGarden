@@ -4,6 +4,7 @@ import { createRandom } from "../dist-ts/src/prng.js";
 import {
   createGlobalTerrainTile,
   sampleWorldConditions,
+  scaleOrganicCarryingCapacity,
 } from "../dist-ts/src/world-scale.js";
 
 function clamp01(value) {
@@ -89,7 +90,11 @@ test("derived soil fertility changes fresh forest carrying capacity", () => {
     random.int(18, 28) +
     Math.round(sample.conditions.wetness * 10) +
     Math.round(temperatureSuitability * 4);
-  const expectedCapacity = moistureAndClimateCapacity + sample.fertilityDelta;
+  const fertilityAdjustedBase = moistureAndClimateCapacity + sample.fertilityDelta;
+  const expectedCapacity = scaleOrganicCarryingCapacity(
+    fertilityAdjustedBase,
+    sample.conditions.soilFertility,
+  );
 
   assert.equal(sample.tile.resource.maxAmount, expectedCapacity);
   assert.equal(sample.tile.resource.amount, expectedCapacity);
