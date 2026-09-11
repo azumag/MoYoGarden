@@ -69,13 +69,14 @@ test("neighbor BOTs reuse the focused-region low-detail character vocabulary", (
     liveRegionSource,
     /proxy\.makeLowAgent\(faction\?\.color \|\| "#999999", agent\.role\)/,
   );
-  assert.match(liveRegionSource, /glyph\.scale\.setScalar\(0\.8\)/);
+  assert.match(liveRegionSource, /shell\.scale\.setScalar\(0\.8\)/);
   assert.match(liveRegionSource, /object\.castShadow = false/);
   assert.match(
     liveRegionSource,
     /proxy\.createAgent = \(agent, faction\) => createNeighborAgentGlyph\(proxy, agent, faction\)/,
   );
   assert.match(liveRegionSource, /contactShadow: null/);
+  assert.match(liveRegionSource, /shell,/);
   const glyphStart = liveRegionSource.indexOf("function createNeighborAgentGlyph");
   const glyphEnd = liveRegionSource.indexOf("function createProxy", glyphStart);
   const glyphSource = liveRegionSource.slice(glyphStart, glyphEnd);
@@ -83,13 +84,20 @@ test("neighbor BOTs reuse the focused-region low-detail character vocabulary", (
   assert.doesNotMatch(glyphSource, /createLod/);
 });
 
-test("neighbor BOT glyphs bypass full focused-agent animation work", () => {
+test("neighbor BOT glyphs keep cheap locomotion cues without full focused-agent animation work", () => {
   assert.match(liveRegionSource, /function animateNeighborAgentGlyph\(entry, time, tickMs\)/);
   assert.match(liveRegionSource, /entry\.lod\.position\.lerpVectors\(entry\.from, entry\.to, amount\)/);
+  assert.match(liveRegionSource, /entry\.from\.distanceToSquared\(entry\.to\) > 0\.001/);
+  assert.match(liveRegionSource, /shell\.position\.y = moving/);
+  assert.match(liveRegionSource, /shell\.rotation\.z = moving/);
   assert.match(
     liveRegionSource,
     /proxy\.animateAgent = \(entry, time\) => animateNeighborAgentGlyph\(entry, time, proxy\.tickMs\)/,
   );
+  const animateStart = liveRegionSource.indexOf("function animateNeighborAgentGlyph");
+  const animateEnd = liveRegionSource.indexOf("function createNeighborAgentGlyph", animateStart);
+  const animateSource = liveRegionSource.slice(animateStart, animateEnd);
+  assert.doesNotMatch(animateSource, /mixer\.update|getObjectByName/);
 });
 
 test("temporary live-window snapshot gaps keep last-known neighbor objects visible", () => {
