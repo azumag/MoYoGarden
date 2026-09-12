@@ -1,4 +1,10 @@
-import type { Agent, GridPosition, WorldCommand, WorldState } from "./protocol.js";
+import {
+  BUILD_RECIPES,
+  type Agent,
+  type GridPosition,
+  type WorldCommand,
+  type WorldState,
+} from "./protocol.js";
 import { getFaction, getTile, isPassable } from "./world.js";
 
 export interface RegionOwnershipSnapshot {
@@ -27,6 +33,21 @@ function cloneSnapshot(
     state: structuredClone(state),
     pendingCommands: pendingCommands.map((command) => structuredClone(command)),
   };
+}
+
+function carriesCampKit(agent: Agent): boolean {
+  const cost = BUILD_RECIPES.camp.cost;
+  return agent.inventory.wood >= cost.wood
+    && agent.inventory.stone >= cost.stone
+    && agent.inventory.food >= cost.food;
+}
+
+function targetHasActiveFactionCamp(agent: Agent, targetState: WorldState): boolean {
+  return targetState.structures.some((structure) =>
+    structure.factionId === agent.factionId
+    && structure.type === "camp"
+    && structure.status === "active"
+  );
 }
 
 function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["task"] | undefined {
@@ -73,6 +94,26 @@ function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["
       targetAgentId: task.targetAgentId,
       offer: { ...task.offer },
       request: { ...task.request },
+    };
+  }
+  if (
+    task.type === "move"
+    && agent.role === "builder"
+    && carriesCampKit(agent)
+    && !targetHasActiveFactionCamp(agent, targetState)
+  ) {
+    // Settlement migration reaches the seam as an autonomous move because the
+    // source-local boundary coordinate must not survive ownership handoff. A
+    // builder that physically carries a complete camp kit can safely recover
+    // the high-level founding intent from low-level conserved state on arrival.
+    // If this faction already has an active camp here, dropping the move means
+    // the pioneer joins that settlement instead of creating a duplicate camp;
+    // normal target-side autonomy can then deposit or reuse the carried kit.
+    return {
+      source: "autonomy",
+      issuedAtTick: targetTick,
+      type: "build",
+      structureType: "camp",
     };
   }
   return undefined;
