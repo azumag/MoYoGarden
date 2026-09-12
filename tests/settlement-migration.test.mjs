@@ -92,6 +92,77 @@ test("population pressure with no spaced local camp site plans a neighboring pio
   assert.deepEqual(plan.boundaryTarget, { x: 30, y: 11 });
 });
 
+test("pioneer prefers a resource-supported neighboring edge at equal travel cost", () => {
+  const { state } = fixture();
+  const sharedSeam = { x: 30, y: 11 };
+  const plan = planAutonomousSettlementMigration(state, [
+    {
+      direction: "E",
+      sourcePosition: sharedSeam,
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 8, y: 11 },
+      tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
+    },
+    {
+      direction: "W",
+      sourcePosition: sharedSeam,
+      neighborRegionId: "hex-q-1-r0",
+      neighborPosition: { x: 30, y: 11 },
+      tile: {
+        x: 30,
+        y: 11,
+        terrain: "plain",
+        elevation: 0.5,
+        resource: { kind: "food", amount: 8, maxAmount: 8 },
+      },
+    },
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.direction, "W");
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.deepEqual(plan.boundaryTarget, sharedSeam);
+});
+
+test("duplicate halo references do not inflate one neighbor's visible support", () => {
+  const { state } = fixture();
+  const sharedSeam = { x: 30, y: 11 };
+  const duplicatedEast = {
+    direction: "E",
+    sourcePosition: sharedSeam,
+    neighborRegionId: "hex-q1-r0",
+    neighborPosition: { x: 8, y: 11 },
+    tile: {
+      x: 8,
+      y: 11,
+      terrain: "plain",
+      elevation: 0.5,
+      resource: { kind: "food", amount: 5, maxAmount: 5 },
+    },
+  };
+  const plan = planAutonomousSettlementMigration(state, [
+    duplicatedEast,
+    { ...duplicatedEast, sourcePosition: { ...sharedSeam } },
+    {
+      direction: "W",
+      sourcePosition: sharedSeam,
+      neighborRegionId: "hex-q-1-r0",
+      neighborPosition: { x: 30, y: 11 },
+      tile: {
+        x: 30,
+        y: 11,
+        terrain: "plain",
+        elevation: 0.5,
+        resource: { kind: "food", amount: 6, maxAmount: 6 },
+      },
+    },
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.direction, "W");
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+});
+
 test("a viable spaced local camp site keeps growth local", () => {
   const { state, builder, blockers } = fixture();
   const removable = blockers[0];

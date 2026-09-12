@@ -12,6 +12,7 @@ import {
   RESOURCE_KINDS,
   type Agent,
   type GridPosition,
+  type ResourceKind,
   type WorldState,
 } from "./protocol.js";
 import { getAgent, getFaction, isPassable } from "./world.js";
@@ -31,8 +32,69 @@ export interface AutonomousSettlementMigrationPlan {
   startedAtTick: number;
 }
 
+interface SettlementNeighborSupport {
+  passableCells: number;
+  resources: Record<ResourceKind, number>;
+}
+
 function directionRank(direction: HexGridDirection): number {
   return HEX_GRID_DIRECTIONS.indexOf(direction);
+}
+
+function emptySettlementNeighborSupport(): SettlementNeighborSupport {
+  return {
+    passableCells: 0,
+    resources: { wood: 0, stone: 0, food: 0 },
+  };
+}
+
+function settlementNeighborSupports(
+  halo: readonly HexHaloTile[],
+): Map<string, SettlementNeighborSupport> {
+  const supportByRegion = new Map<string, SettlementNeighborSupport>();
+  const seenNeighborCells = new Set<string>();
+  for (const entry of halo) {
+    const cellKey = `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;
+    if (seenNeighborCells.has(cellKey)) continue;
+    seenNeighborCells.add(cellKey);
+
+    let support = supportByRegion.get(entry.neighborRegionId);
+    if (support === undefined) {
+      support = emptySettlementNeighborSupport();
+      supportByRegion.set(entry.neighborRegionId, support);
+    }
+    if (entry.tile.terrain === "water") continue;
+    support.passableCells += 1;
+    const resource = entry.tile.resource;
+    if (resource !== undefined && resource.amount > 0) {
+      support.resources[resource.kind] += resource.amount;
+    }
+  }
+  return supportByRegion;
+}
+
+function resourceDiversity(support: SettlementNeighborSupport): number {
+  return RESOURCE_KINDS.reduce(
+    (count, kind) => count + (support.resources[kind] > 0 ? 1 : 0),
+    0,
+  );
+}
+
+function compareSettlementSupport(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  // Prefer destinations whose already-visible edge can support more kinds of
+  // basic needs before comparing raw quantities. Food then wood then stone
+  // reflects subsistence, renewable construction material, and mineral supply
+  // without inventing a top-down biome or issuing extra cross-DO reads.
+  return (
+    resourceDiversity(b) - resourceDiversity(a)
+    || b.resources.food - a.resources.food
+    || b.resources.wood - a.resources.wood
+    || b.resources.stone - a.resources.stone
+    || b.passableCells - a.passableCells
+  );
 }
 
 function localPathDistances(state: WorldState, start: GridPosition): Map<string, number> {
@@ -153,6 +215,7 @@ export function planAutonomousSettlementMigration(
     entry: HexHaloTile;
     distance: number;
     issuedAtTick: number;
+    support: SettlementNeighborSupport;
   }> = [];
   const pressuredFactions = new Set(
     state.factions
@@ -160,6 +223,7 @@ export function planAutonomousSettlementMigration(
       .map((faction) => faction.id),
   );
   if (pressuredFactions.size === 0) return undefined;
+  const supportByRegion = settlementNeighborSupports(halo);
 
   for (const agent of [...state.agents].sort((a, b) => a.id.localeCompare(b.id))) {
     if (
@@ -174,10 +238,15 @@ export function planAutonomousSettlementMigration(
         if (entry.tile.terrain === "water") return [];
         const distance = distances.get(positionKey(entry.sourcePosition));
         if (distance === undefined || distance > energyBudget) return [];
-        return [{ entry, distance }];
+        return [{
+          entry,
+          distance,
+          support: supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport(),
+        }];
       })
       .sort((a, b) =>
-        a.distance - b.distance
+        compareSettlementSupport(a.support, b.support)
+        || a.distance - b.distance
         || directionRank(a.entry.direction) - directionRank(b.entry.direction)
         || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
         || a.entry.sourcePosition.y - b.entry.sourcePosition.y
@@ -187,11 +256,18 @@ export function planAutonomousSettlementMigration(
     const issuedAtTick = agent.task?.source === "autonomy" && agent.task.type === "build"
       ? agent.task.issuedAtTick
       : state.tick;
-    plans.push({ agent, entry: candidate.entry, distance: candidate.distance, issuedAtTick });
+    plans.push({
+      agent,
+      entry: candidate.entry,
+      distance: candidate.distance,
+      issuedAtTick,
+      support: candidate.support,
+    });
   }
 
   const selected = plans.sort((a, b) =>
-    a.distance - b.distance
+    compareSettlementSupport(a.support, b.support)
+    || a.distance - b.distance
     || a.agent.id.localeCompare(b.agent.id)
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
     || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
