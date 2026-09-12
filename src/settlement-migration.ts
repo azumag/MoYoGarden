@@ -34,6 +34,7 @@ export interface AutonomousSettlementMigrationPlan {
 
 interface SettlementNeighborSupport {
   passableCells: number;
+  waterCells: number;
   resources: Record<ResourceKind, number>;
   resourceCapacity: Record<ResourceKind, number>;
 }
@@ -45,6 +46,7 @@ function directionRank(direction: HexGridDirection): number {
 function emptySettlementNeighborSupport(): SettlementNeighborSupport {
   return {
     passableCells: 0,
+    waterCells: 0,
     resources: { wood: 0, stone: 0, food: 0 },
     resourceCapacity: { wood: 0, stone: 0, food: 0 },
   };
@@ -54,7 +56,10 @@ function addSettlementSupportTile(
   support: SettlementNeighborSupport,
   tile: Pick<HexHaloTile["tile"], "terrain" | "resource">,
 ): void {
-  if (tile.terrain === "water") return;
+  if (tile.terrain === "water") {
+    support.waterCells += 1;
+    return;
+  }
   support.passableCells += 1;
   const resource = tile.resource;
   if (resource === undefined) return;
@@ -118,7 +123,8 @@ function compareSettlementSupport(
   // deposit. maxAmount is already the low-level regeneration/storage ceiling on
   // a resource tile, so it gives settlement choice a sustainable signal without
   // inventing a biome or issuing deeper cross-DO reads. Current stock remains a
-  // secondary tie-break, followed by the amount of passable edge observed.
+  // secondary tie-break. Visible surface water is then preferred as another
+  // low-level settlement input, followed by the amount of passable edge observed.
   return (
     resourceDiversity(b) - resourceDiversity(a)
     || b.resourceCapacity.food - a.resourceCapacity.food
@@ -127,6 +133,7 @@ function compareSettlementSupport(
     || b.resources.food - a.resources.food
     || b.resources.wood - a.resources.wood
     || b.resources.stone - a.resources.stone
+    || b.waterCells - a.waterCells
     || b.passableCells - a.passableCells
   );
 }
