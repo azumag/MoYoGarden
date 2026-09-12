@@ -9,14 +9,14 @@ const AUTHORED_DECAY_VERSION = "0.3.11-q1";
 const AUTHORED_BUILDING_SHELL_VERSION = "0.3.11-q3";
 const MODEL_MANIFEST = Object.freeze([
   ["settler", `/models/settler.glb?v=${MODEL_VERSION}`],
+  // The procedural renderer is already visible before background GLB loading.
+  // Load the small settler fallback first, then upgrade the moving BOTs before
+  // spending the serial balanced-profile queue on static buildings/props.
+  ["authored:agent-worker", `/assets/authored/kaykit-adventurers/worker.glb?v=${AUTHORED_CHARACTER_VERSION}`],
+  ["authored:agent-roamer", `/assets/authored/kaykit-adventurers/roamer.glb?v=${AUTHORED_CHARACTER_VERSION}`],
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
   ["tree", `/models/tree.glb?v=${MODEL_VERSION}`],
   ["rock", `/models/rock.glb?v=${MODEL_VERSION}`],
-  // Core fallbacks above guarantee an immediate renderer. Prioritize authored
-  // BOT overrides next because agents are the most numerous moving objects and
-  // otherwise wait behind every optional authored building before upgrading.
-  ["authored:agent-worker", `/assets/authored/kaykit-adventurers/worker.glb?v=${AUTHORED_CHARACTER_VERSION}`],
-  ["authored:agent-roamer", `/assets/authored/kaykit-adventurers/roamer.glb?v=${AUTHORED_CHARACTER_VERSION}`],
   ["authored:building-camp", `/assets/authored/kaykit/camp.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-storehouse", `/assets/authored/kaykit/storehouse.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-market", `/assets/authored/kaykit/market.glb?v=${AUTHORED_BUILDING_VERSION}`],
@@ -270,9 +270,15 @@ export class ModelLibrary {
         const [key, url] = queue.shift();
         try {
           const loader = await this.getLoader();
+          // Start SkeletonUtils while the authored character GLB is still in
+          // flight. This removes an avoidable serial dynamic-import pause from
+          // the first visible BOT upgrade without increasing model concurrency.
+          const skeletonClonePromise = isAuthoredAgentKey(key)
+            ? this.ensureSkeletonClone()
+            : undefined;
           const itemTimeoutMs = isAuthoredKey(key) ? Math.max(timeoutMs, 12_000) : timeoutMs;
           const gltf = await loadWithTimeout(loader, key, url, itemTimeoutMs);
-          if (isAuthoredAgentKey(key)) await this.ensureSkeletonClone();
+          if (skeletonClonePromise) await skeletonClonePromise;
           this.templates.set(key, this.prepareTemplate(gltf.scene));
           this.animations.set(key, gltf.animations || []);
           const result = { key, ok: true };
