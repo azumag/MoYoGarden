@@ -201,6 +201,12 @@ for (const mode of ["transport", "malformed"]) {
 
 test("one simulation tick shares neighbor edge snapshots between autonomy and environmental halo", async () => {
   const { env, source } = await activeLegacyAutonomyScenario();
+  // This assertion is for a read-only tick. Available supply in a previously
+  // uninitialized neighbor can trigger a handoff, which must now invalidate the
+  // shared observation before later environmental reads in the same tick.
+  for (const regionId of ["hex-q-1-r0", "hex-q-1-r1", "hex-q0-r-1", "hex-q0-r1"]) {
+    await depleteWood(await assignRegion(env, regionId));
+  }
   const state = source.object.runtime.snapshot();
   state.tick = 59;
   source.object.runtime = new WorldRuntime({ state });

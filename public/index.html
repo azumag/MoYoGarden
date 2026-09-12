@@ -75,6 +75,11 @@
               <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
               <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
             </dl>
+            <div class="agent-vitals">
+              <label for="agent-energy-meter">エネルギー <b id="agent-energy">—</b></label>
+              <meter id="agent-energy-meter" min="0" max="100" low="25" high="60" optimum="100" value="100"></meter>
+              <p id="agent-pathogen" title="病原体負荷と獲得免疫はシミュレーション内の相対値です。">負荷 0% · 免疫 0%</p>
+            </div>
             <p id="agent-status" class="agent-status">—</p>
             <div class="inventory">
               <span>木 <b id="inv-wood">0</b></span>
@@ -83,6 +88,31 @@
             </div>
             <p id="agent-goal" class="agent-goal">—</p>
           </div>
+        </section>
+
+        <section id="world-observation" aria-label="地域の観測">
+          <p class="eyebrow">WORLD OBSERVATORY</p>
+          <p class="observation-note">この地域のいま</p>
+          <dl class="detail-grid observation-metrics">
+            <div><dt>平均エネルギー</dt><dd id="observation-energy">—</dd></div>
+            <div title="地面にある木・石・食料の最大量に対する残量。勢力の備蓄は含みません。"><dt>資源の残量</dt><dd id="observation-resources">—</dd></div>
+            <div><dt>最大の密集</dt><dd id="observation-crowding">—</dd></div>
+            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>
+          </dl>
+          <p id="observation-ground" class="observation-note">—</p>
+          <details class="observation-history">
+            <summary>閲覧中の推移 <span id="observation-range">—</span></summary>
+            <p id="observation-pending" class="observation-note">更新が届くとグラフを表示します。</p>
+            <div id="observation-chart" hidden>
+              <svg viewBox="0 0 256 58" role="img" aria-label="平均エネルギーと資源残量の推移。縦軸は0から100パーセント、横軸はtick。">
+                <path class="observation-grid" d="M3,5 H253 M3,29 H253 M3,53 H253" />
+                <path id="observation-energy-line" class="observation-energy-line" />
+                <path id="observation-resource-line" class="observation-resource-line" />
+              </svg>
+              <p class="observation-legend"><span>エネルギー</span><span>資源</span><small>0–100%</small></p>
+            </div>
+            <p class="observation-note">直近60標本。地域の移動・リセットで履歴を更新します。</p>
+          </details>
         </section>
 
         <section>

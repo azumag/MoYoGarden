@@ -235,14 +235,12 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
   }
 
   private async ensurePathogenAssigned(request: Request): Promise<Response | undefined> {
-    const url = new URL(request.url);
-    url.pathname = "/api/health";
-    url.search = "";
-    const response = await super.fetch(new Request(url, {
-      method: "GET",
-      headers: request.headers,
-    }));
-    return response.ok ? undefined : response;
+    try {
+      await this.ensureRegion(request, { activate: false });
+      return undefined;
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "region routing failed" }, 400);
+    }
   }
 
   private pathogenEnvironmentFrame(state: WorldState): PathogenEnvironmentFrame | undefined {

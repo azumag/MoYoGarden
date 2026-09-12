@@ -48,6 +48,13 @@ interface HaloMaterialization {
   halo: HexHaloTile[];
 }
 
+interface HaloEdgeReadCacheEntry {
+  startedAt: number;
+  pending: Promise<HexHaloEdgeSnapshot | undefined>;
+  settled: boolean;
+  failed: boolean;
+}
+
 export type RegionActivityTier = "active" | "warm" | "cold";
 
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
@@ -58,6 +65,10 @@ const WARM_TICK_MULTIPLIER = 6;
 const COLD_TICK_MULTIPLIER = 60;
 const MAX_ACTIVITY_TICK_MS = 3_600_000;
 const HALO_REGROWTH_INTERVAL = 30;
+// A catch-up may simulate many historical ticks in one short alarm. Share one
+// remote observation for at most one wall-clock second, never across alarms.
+// This is bounded snapshot freshness, not synchronization between independent DOs.
+const HALO_EDGE_OBSERVATION_MS = 1_000;
 // The strongest current halo-to-regrowth signal is ghost water with a four-cell
 // moisture radius. Because a ghost is one step beyond the macro-hex boundary,
 // only depleted organic resources in boundary depth 0..3 can observe any halo
@@ -201,7 +212,8 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   private readonly activityTickMs: number;
   private lastDirectActivityAt = 0;
   private lastWarmActivityAt = 0;
-  private haloEdgeReadCache: Map<string, Promise<HexHaloEdgeSnapshot | undefined>> | undefined;
+  private haloEdgeReadCache: Map<string, HaloEdgeReadCacheEntry> | undefined;
+  private haloEdgeMutationDepth = 0;
 
   constructor(
     private readonly activityState: DurableObjectState,
@@ -286,6 +298,14 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async ensureHaloAssigned(request: Request): Promise<Response | undefined> {
     const url = new URL(request.url);
+    if (url.pathname === INTERNAL_EDGE_PATH) {
+      try {
+        await this.ensureRegion(request, { activate: false });
+        return undefined;
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "region routing failed" }, 400);
+      }
+    }
     url.pathname = "/api/health";
     url.search = "";
     const response = await super.fetch(new Request(url, {
@@ -324,16 +344,48 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     if (owner) this.haloEdgeReadCache = undefined;
   }
 
+  protected async withHaloEdgeMutation<T>(operation: () => Promise<T>): Promise<T> {
+    // Handoffs and supply settlement can change remote tiles. Invalidate on
+    // both sides even if the mutation fails after the remote side has committed.
+    // Reads interleaved while a write is pending must not populate the cache.
+    this.haloEdgeReadCache?.clear();
+    this.haloEdgeMutationDepth += 1;
+    try {
+      return await operation();
+    } finally {
+      this.haloEdgeMutationDepth -= 1;
+      this.haloEdgeReadCache?.clear();
+    }
+  }
+
   protected fetchNeighborEdge(
     neighborRegionId: string,
     direction: HexGridDirection,
   ): Promise<HexHaloEdgeSnapshot | undefined> {
-    const cacheKey = `${neighborRegionId}:${direction}`;
+    if (this.haloEdgeMutationDepth > 0) return this.fetchNeighborEdgeUncached(neighborRegionId, direction);
+    // This endpoint returns a complete directional edge. Include that payload
+    // scope explicitly so a later cell-scoped reader cannot alias the full edge.
+    const cacheKey = `${neighborRegionId}:${direction}:full-edge`;
     const cached = this.haloEdgeReadCache?.get(cacheKey);
-    if (cached !== undefined) return cached;
-    const pending = this.fetchNeighborEdgeUncached(neighborRegionId, direction);
-    this.haloEdgeReadCache?.set(cacheKey, pending);
-    return pending;
+    const now = Date.now();
+    if (cached !== undefined && (
+      !cached.settled || cached.failed ||
+      (now >= cached.startedAt && now - cached.startedAt < HALO_EDGE_OBSERVATION_MS)
+    )) return cached.pending;
+    const entry: HaloEdgeReadCacheEntry = {
+      startedAt: now,
+      settled: false,
+      failed: false,
+      pending: this.fetchNeighborEdgeUncached(neighborRegionId, direction).then((snapshot) => {
+        entry.settled = true;
+        entry.failed = snapshot === undefined;
+        return snapshot;
+      }),
+    };
+    this.haloEdgeReadCache?.set(cacheKey, entry);
+    // Unavailable neighbors are retried on the next alarm (or after a known
+    // mutation), rather than once for every historical tick in this batch.
+    return entry.pending;
   }
 
   private async fetchNeighborEdgeUncached(
@@ -439,6 +491,13 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+      return this.withHaloEdgeMutation(() => this.fetchWithActivity(request));
+    }
+    return this.fetchWithActivity(request);
+  }
+
+  private async fetchWithActivity(request: Request): Promise<Response> {
     const touchedActivity = this.noteRequestActivity(request);
     const url = new URL(request.url);
     let response: Response;

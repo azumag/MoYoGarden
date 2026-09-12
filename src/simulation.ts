@@ -186,9 +186,11 @@ export function applyTerrainErosion(state: WorldState): number {
     const targetElevation = tileElevation(target);
     if (sourceElevation === undefined || target === undefined || targetElevation === undefined) continue;
 
-    const pressure = Number.isFinite(tile.erosionPressure ?? Number.NaN)
-      ? Math.max(0, Math.min(1, tile.erosionPressure ?? 0))
-      : terrainErosionPressureAt(state, tile);
+    // BOT work happens after the tick's hydrology update. Read current cover so
+    // harvesting on an erosion tick affects this transfer, rather than waiting
+    // another 120 ticks for a cached vegetation-dependent pressure to catch up.
+    // Keep the existing flowTo/drainage inputs; halo runoff is derived separately.
+    const pressure = terrainErosionPressureAt(state, tile);
     if (pressure <= 0) continue;
 
     const drop = sourceElevation - targetElevation;
@@ -487,6 +489,15 @@ function nextStepTowards(state: WorldState, start: GridPosition, target: GridPos
   const startDistance = distanceToTarget.get(positionKey(start));
   if (startDistance === undefined) return start;
 
+  // Count the current population once per route query, not once per visited
+  // shortest-path cell. Rebuild for each mover so earlier moves in this tick
+  // remain visible to later BOTs; a tick-start snapshot would change routing.
+  const occupancy = new Map<string, number>();
+  for (const agent of state.agents) {
+    const key = positionKey(agent.position);
+    occupancy.set(key, (occupancy.get(key) ?? 0) + 1);
+  }
+
   const crowdingCost = new Map<string, number>();
   const minimumCrowdingToTarget = (position: GridPosition): number => {
     const key = positionKey(position);
@@ -495,7 +506,7 @@ function nextStepTowards(state: WorldState, start: GridPosition, target: GridPos
     const distance = distanceToTarget.get(key);
     if (distance === undefined) return Number.POSITIVE_INFINITY;
 
-    const localCrowding = agentCrowdingAt(state, position);
+    const localCrowding = occupancy.get(key) ?? 0;
     if (distance === 0) {
       crowdingCost.set(key, localCrowding);
       return localCrowding;
@@ -544,13 +555,6 @@ function moveAgent(state: WorldState, agent: Agent, target: GridPosition): boole
     position: { ...next },
   });
   return samePosition(next, target);
-}
-
-function agentCrowdingAt(state: Pick<WorldState, "agents">, position: GridPosition): number {
-  return state.agents.reduce(
-    (count, agent) => count + (samePosition(agent.position, position) ? 1 : 0),
-    0,
-  );
 }
 
 function resourceCongestionAt(

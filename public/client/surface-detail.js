@@ -3,6 +3,7 @@ import { patchWaterShader } from './water-shading.js';
 // Detail in world space keeps every independently rendered hex on the same
 // material field. No displacement: picking, shorelines and welded seams stay put.
 const styled = new WeakSet();
+const ZERO_ORIGIN = { value: { x: 0, y: 0 } };
 export const NOISE_GLSL = `
 float moyoHash(vec2 p) { return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
 float moyoNoise(vec2 p) {
@@ -17,10 +18,13 @@ export function styleSurface(material, kind, clock, options = {}) {
   styled.add(material);
   material.userData.moyoSurfaceKind = kind;
   material.userData.moyoDecayStyled = true;
-  const waterQuality = kind === 'water' ? (options.waterQuality ?? resolveQualityProfile().waterQuality) : 'none';
+  const quality = options.quality ?? resolveQualityProfile();
+  const waterQuality = kind === 'water' ? (options.waterQuality ?? quality.waterQuality) : 'none';
+  const simpleLand = kind === 'land' && (quality.label === 'SAFE' || ['safe', 'low', 'light'].includes(quality.requested));
+  const worldOrigin = options.worldOrigin ?? ZERO_ORIGIN;
   const previous = material.onBeforeCompile;
   const previousKey = material.customProgramCacheKey();
-  material.customProgramCacheKey = () => `${previousKey}:moyo-surface-v2:${kind}:${waterQuality}`;
+  material.customProgramCacheKey = () => `${previousKey}:moyo-surface-v3:${kind}:${waterQuality}:${simpleLand ? 'simple' : 'detail'}`;
   if (kind === 'water') {
     material.color.set(0x678d89);
     material.roughness = waterQuality === 'simple' ? 0.42 : 0.19;
@@ -35,9 +39,10 @@ export function styleSurface(material, kind, clock, options = {}) {
   }
   material.onBeforeCompile = function(shader, renderer) {
     previous.call(this, shader, renderer);
-    if (kind === 'water' && waterQuality === 'simple') return;
+    if ((kind === 'water' && waterQuality === 'simple') || simpleLand) return;
     shader.uniforms.moyoTime = clock;
-    shader.vertexShader = 'varying vec3 vMoyoWorld;\n' + shader.vertexShader;
+    shader.uniforms.moyoWorldOrigin = worldOrigin;
+    shader.vertexShader = 'varying vec3 vMoyoWorld;\nuniform vec2 moyoWorldOrigin;\n' + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `
       #include <project_vertex>
       vec4 moyoWorld = vec4(transformed, 1.0);
@@ -45,6 +50,7 @@ export function styleSurface(material, kind, clock, options = {}) {
         moyoWorld = instanceMatrix * moyoWorld;
       #endif
       vMoyoWorld = (modelMatrix * moyoWorld).xyz;
+      vMoyoWorld.xz += moyoWorldOrigin;
     `);
     shader.fragmentShader = `varying vec3 vMoyoWorld;\nuniform float moyoTime;\n${NOISE_GLSL}` + shader.fragmentShader;
     if (kind === 'water') {
@@ -53,17 +59,36 @@ export function styleSurface(material, kind, clock, options = {}) {
       shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `
         #include <color_fragment>
         vec2 p = vMoyoWorld.xz;
+        float moyoFootprint = length(fwidth(p));
+        float moyoFineFade = 1.0 - smoothstep(0.035, 0.18, moyoFootprint);
         float broad = moyoNoise(p * 0.42);
-        float grain = moyoNoise(p * 19.0);
-        float patches = smoothstep(0.4, 0.75, moyoNoise(p * 1.6 + broad));
-        diffuseColor.rgb *= 0.72 + broad * 0.46 + grain * 0.15;
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.13,0.99,0.75), patches * 0.45);
+        float grain = mix(0.5, moyoNoise(p * 19.0), moyoFineFade);
+        float patches = smoothstep(0.36, 0.75, moyoNoise(p * 1.6 + broad));
+        // Broken mineral veins and stratified soil remain continuous across hex seams.
+        float veinField = moyoNoise(p * 3.4 + vec2(broad * 1.7));
+        float veins = (1.0 - smoothstep(0.012, 0.052 + moyoFootprint * 0.10, abs(veinField - 0.51))) * moyoFineFade;
+        float strata = sin(vMoyoWorld.y * 33.0 + broad * 7.0) * 0.5 + 0.5;
+        float dry = smoothstep(-0.14, 0.2, vMoyoWorld.y);
+        diffuseColor.rgb *= 0.70 + broad * 0.40 + grain * 0.14;
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.14,1.02,0.82), patches * 0.48);
+        diffuseColor.rgb *= 1.0 - veins * 0.19;
+        diffuseColor.rgb *= mix(0.69, 1.0, dry);
+        float moyoRelief = (grain - 0.5) * 0.016 - veins * 0.020 + patches * 0.025;
+      `).replace('#include <roughnessmap_fragment>', `
+        #include <roughnessmap_fragment>
+        roughnessFactor = clamp(roughnessFactor - (1.0-dry) * 0.22 - patches * 0.06, 0.64, 1.0);
       `).replace('#include <normal_fragment_maps>', `
         #include <normal_fragment_maps>
-        // Screen-space footprint suppresses subpixel grit instead of shimmering.
-        float detailFade = 1.0 - smoothstep(0.045, 0.22, length(fwidth(vMoyoWorld.xz)));
-        vec2 grit = vec2(moyoNoise(vMoyoWorld.xz*16.0), moyoNoise(vMoyoWorld.zx*16.0+7.0)) - 0.5;
-        normal = normalize(normal + mat3(viewMatrix) * vec3(grit.x,0.0,grit.y) * 0.19 * detailFade);
+        // Derivative bump mapping follows the actual slope, not a fixed up-plane.
+        vec3 moyoDx = dFdx(-vViewPosition), moyoDy = dFdy(-vViewPosition);
+        vec3 moyoR1 = cross(moyoDy, normal), moyoR2 = cross(normal, moyoDx);
+        float moyoDet = dot(moyoDx, moyoR1);
+        float moyoBumpScale = min(1.0, abs(moyoDet) / 0.00001);
+        vec3 moyoGradient = sign(moyoDet) * (dFdx(moyoRelief) * moyoR1 + dFdy(moyoRelief) * moyoR2);
+        normal = normalize(abs(moyoDet) * normal - moyoGradient * moyoBumpScale + normal * 0.0000001);
+        vec3 moyoWorldNormal = inverseTransformDirection(normal, viewMatrix);
+        float moyoSlope = 1.0 - smoothstep(0.60, 0.96, abs(moyoWorldNormal.y));
+        diffuseColor.rgb *= 1.0 - moyoSlope * (0.10 + strata * 0.09);
       `);
     }
   };
