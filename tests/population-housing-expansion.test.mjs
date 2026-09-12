@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { hexGridDistance } from "../dist-ts/src/hex-grid.js";
 import { simulate } from "../dist-ts/src/simulation.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
@@ -76,17 +77,28 @@ test("housing pressure makes one autonomous builder start a resource-paid camp e
     (agent) => agent.factionId === faction.id && agent.task?.type === "build" && agent.task.structureType === "camp",
   );
   assert.equal(campPlans.length, 1, "housing pressure should reserve only one new camp site per tick");
+  assert.ok(campPlans[0].task?.target);
+  assert.ok(
+    hexGridDistance(campPlans[0].task.target, campPosition) >= 2,
+    "housing expansion should leave at least one hex of breathing room around the existing camp",
+  );
   assert.equal(
     planned.structures.filter((structure) => structure.factionId === faction.id && structure.type === "camp").length,
     1,
     "the first tick should travel to the reserved site before paying construction cost",
   );
 
-  const started = simulate(planned).state;
-  const camps = started.structures.filter(
+  let started = planned;
+  let camps = started.structures.filter(
     (structure) => structure.factionId === faction.id && structure.type === "camp",
   );
-  assert.equal(camps.length, 2);
+  for (let tick = 0; tick < 6 && camps.length < 2; tick += 1) {
+    started = simulate(started).state;
+    camps = started.structures.filter(
+      (structure) => structure.factionId === faction.id && structure.type === "camp",
+    );
+  }
+  assert.equal(camps.length, 2, "the reserved spaced camp should still begin construction after travel");
   assert.equal(camps.filter((structure) => structure.status === "building").length, 1);
   const startedFaction = started.factions.find((entry) => entry.id === faction.id);
   assert.ok(startedFaction);

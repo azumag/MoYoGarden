@@ -50,6 +50,7 @@ const TERRAIN_EVOLUTION_INTERVAL = 120;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP = 6;
+const SETTLEMENT_CAMP_MIN_SPACING = 2;
 
 function tileElevation(tile: Tile | undefined): number | undefined {
   const elevation = tile?.elevation;
@@ -642,11 +643,22 @@ function findBuildSite(
   state: WorldState,
   origin: GridPosition,
   factionId: string,
+  minCampSpacing = 0,
 ): GridPosition | undefined {
   const occupied = new Set(state.structures.map((structure) => `${structure.position.x},${structure.position.y}`));
+  const activeCampPositions = minCampSpacing > 0
+    ? activeFactionStructures(state, factionId)
+      .filter((structure) => structure.type === "camp")
+      .map((structure) => structure.position)
+    : [];
   const candidates = state.tiles
     .filter((tile) => tile.terrain !== "water" && !occupied.has(`${tile.x},${tile.y}`))
     .filter((tile) => manhattanDistance(tile, origin) <= 5)
+    .filter((tile) =>
+      activeCampPositions.every((campPosition) =>
+        manhattanDistance(tile, campPosition) >= minCampSpacing
+      )
+    )
     .sort((a, b) => {
       const resourcePenaltyA = a.resource === undefined ? 0 : 1;
       const resourcePenaltyB = b.resource === undefined ? 0 : 1;
@@ -761,7 +773,18 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
       if (campBuildReserved) return undefined;
 
       if (factionCanAfford(state, agent.factionId, BUILD_RECIPES.camp.cost)) {
-        const target = findBuildSite(state, camp.position, agent.factionId);
+        // Housing-pressure camps should expand the settlement footprint instead
+        // of repeatedly filling the immediately adjacent ring. Keep the normal
+        // site ranking inside the eligible set, and fall back to the legacy
+        // selector on constrained terrain so growth cannot deadlock behind a
+        // spacing preference.
+        const target =
+          findBuildSite(
+            state,
+            camp.position,
+            agent.factionId,
+            SETTLEMENT_CAMP_MIN_SPACING,
+          ) ?? findBuildSite(state, camp.position, agent.factionId);
         if (target !== undefined) return { ...base, type: "build", structureType: "camp", target };
       }
       if (inventoryAmount > 0 && hasAvailableStorage) return { ...base, type: "deposit" };
