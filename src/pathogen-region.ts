@@ -23,7 +23,7 @@ import {
   type PathogenEdgeSnapshot,
   type PathogenEnvironmentFrame,
 } from "./pathogen.js";
-import { positionKey, type WorldState } from "./protocol.js";
+import { positionKey, type GridPosition, type WorldState } from "./protocol.js";
 import { regionGlobalCellOrigin } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 
@@ -43,6 +43,12 @@ interface RuntimeAccess {
   runtime: WorldRuntime;
   persist(): Promise<void>;
   broadcastSnapshot(): void;
+}
+
+export interface PathogenHaloEdgeRequest {
+  regionId: string;
+  direction: HexGridDirection;
+  positions: GridPosition[];
 }
 
 const INTERNAL_PATHOGEN_EDGE_PATH = "/api/internal/pathogen/edge";
@@ -72,6 +78,20 @@ function directionValue(value: string | null): HexGridDirection | undefined {
   return value !== null && HEX_GRID_DIRECTIONS.includes(value as HexGridDirection)
     ? value as HexGridDirection
     : undefined;
+}
+
+function requestedPathogenEdgeCells(values: readonly string[]): Set<string> | undefined | null {
+  if (values.length === 0) return undefined;
+  const result = new Set<string>();
+  for (const value of values) {
+    const match = /^(-?\d+),(-?\d+)$/.exec(value);
+    if (match === null) return null;
+    const x = Number.parseInt(match[1], 10);
+    const y = Number.parseInt(match[2], 10);
+    if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) return null;
+    result.add(positionKey({ x, y }));
+  }
+  return result;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,6 +163,44 @@ export function pathogenHaloLinksForAgents(
   return links.filter((link) => occupied.has(positionKey(link.sourcePosition)));
 }
 
+/**
+ * Group occupied halo links by remote edge while retaining only the exact ghost
+ * cells that can affect a local BOT. This keeps the existing DO fan-out contract
+ * but avoids returning an entire edge snapshot when one or two paired cells are
+ * sufficient for the current pathogen step.
+ */
+export function pathogenHaloEdgeRequests(
+  links: readonly HexHaloLink[],
+): PathogenHaloEdgeRequest[] {
+  const grouped = new Map<string, {
+    regionId: string;
+    direction: HexGridDirection;
+    positions: Map<string, GridPosition>;
+  }>();
+  for (const link of links) {
+    const key = `${link.neighborRegionId}:${link.neighborDirection}`;
+    let request = grouped.get(key);
+    if (request === undefined) {
+      request = {
+        regionId: link.neighborRegionId,
+        direction: link.neighborDirection,
+        positions: new Map(),
+      };
+      grouped.set(key, request);
+    }
+    request.positions.set(positionKey(link.neighborPosition), { ...link.neighborPosition });
+  }
+  return [...grouped.values()]
+    .map((request) => ({
+      regionId: request.regionId,
+      direction: request.direction,
+      positions: [...request.positions.values()].sort((a, b) => a.y - b.y || a.x - b.x),
+    }))
+    .sort((a, b) =>
+      a.regionId.localeCompare(b.regionId) || a.direction.localeCompare(b.direction)
+    );
+}
+
 export class RegionDurableObject extends AutonomyRegionDurableObject {
   constructor(
     private readonly pathogenState: DurableObjectState,
@@ -193,9 +251,13 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
   private async fetchNeighborPathogenEdge(
     regionId: string,
     direction: HexGridDirection,
+    positions: readonly GridPosition[],
   ): Promise<PathogenEdgeSnapshot | undefined> {
     const url = new URL(`https://moyo.internal${INTERNAL_PATHOGEN_EDGE_PATH}`);
     url.searchParams.set("direction", direction);
+    for (const position of positions) {
+      url.searchParams.append("cell", positionKey(position));
+    }
     try {
       const response = await this.pathogenStub(regionId).fetch(new Request(url, {
         method: "GET",
@@ -213,17 +275,11 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
   private async materializePathogenPressure(state: WorldState): Promise<Map<string, number>> {
     const links = pathogenHaloLinksForAgents(state, this.pathogenHaloLinks(state));
     if (links.length === 0) return new Map();
-    const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
-    for (const link of links) {
-      requested.set(`${link.neighborRegionId}:${link.neighborDirection}`, {
-        regionId: link.neighborRegionId,
-        direction: link.neighborDirection,
-      });
-    }
+    const requests = pathogenHaloEdgeRequests(links);
     const edges = (
       await Promise.all(
-        [...requested.values()].map(({ regionId, direction }) =>
-          this.fetchNeighborPathogenEdge(regionId, direction)
+        requests.map(({ regionId, direction, positions }) =>
+          this.fetchNeighborPathogenEdge(regionId, direction, positions)
         ),
       )
     ).filter((value): value is PathogenEdgeSnapshot => value !== undefined);
@@ -238,7 +294,16 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
       if (assignmentError !== undefined) return assignmentError;
       const direction = directionValue(url.searchParams.get("direction"));
       if (direction === undefined) return json({ error: "valid hex direction is required" }, 400);
-      return json(pathogenEdgeSnapshot(runtimeAccess(this).runtime.snapshot(), direction));
+      const requestedCells = requestedPathogenEdgeCells(url.searchParams.getAll("cell"));
+      if (requestedCells === null) return json({ error: "valid pathogen edge cells are required" }, 400);
+      const state = runtimeAccess(this).runtime.snapshot();
+      const snapshotState = requestedCells === undefined
+        ? state
+        : {
+          ...state,
+          agents: state.agents.filter((agent) => requestedCells.has(positionKey(agent.position))),
+        };
+      return json(pathogenEdgeSnapshot(snapshotState, direction));
     }
     return super.fetch(request);
   }
