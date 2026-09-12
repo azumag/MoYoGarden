@@ -303,3 +303,46 @@ test("autonomous builder prefers the less crowded build hex when distance is tie
   assert.deepEqual(moved.task?.target, { x: open.x, y: open.y });
   assert.deepEqual(moved.position, { x: open.x, y: open.y });
 });
+
+
+test("same-cell crowding reduces per-agent gathering throughput", () => {
+  const state = plainResourceFixture();
+  const worker = state.agents.find((agent) => agent.role === "woodcutter");
+  assert.ok(worker);
+
+  const target = state.tiles.find((tile) => tile.x === 7 && tile.y === 5);
+  assert.ok(target);
+  target.terrain = "forest";
+  target.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+
+  worker.position = { x: target.x, y: target.y };
+  worker.energy = 100;
+  worker.inventory = { wood: 0, stone: 0, food: 0 };
+  worker.autonomy = false;
+  worker.task = {
+    source: "autonomy",
+    issuedAtTick: state.tick,
+    type: "gather",
+    resource: "wood",
+    target: { x: target.x, y: target.y },
+  };
+
+  const blockers = state.agents
+    .filter((agent) => agent.id !== worker.id)
+    .slice(0, 2);
+  assert.equal(blockers.length, 2);
+  for (const blocker of blockers) {
+    blocker.position = { x: target.x, y: target.y };
+    blocker.autonomy = false;
+    delete blocker.task;
+  }
+  state.agents = [worker, ...blockers];
+
+  const next = simulate(state).state;
+  const gathered = next.agents.find((agent) => agent.id === worker.id);
+  const remaining = next.tiles.find((tile) => tile.x === target.x && tile.y === target.y);
+  assert.ok(gathered);
+  assert.ok(remaining?.resource);
+  assert.equal(gathered.inventory.wood, 1, "three BOTs on one hex should halve the normal gather rate");
+  assert.equal(remaining.resource.amount, 19, "resource conservation should match the reduced gather amount");
+});

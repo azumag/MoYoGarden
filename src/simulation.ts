@@ -51,6 +51,24 @@ const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP = 6;
 const SETTLEMENT_CAMP_MIN_SPACING = 2;
+const GATHER_BASE_AMOUNT = 2;
+const GATHER_CROWDING_THRESHOLD = 3;
+const GATHER_CROWDED_AMOUNT = 1;
+const WATER_MOISTURE_OFFSETS = (() => {
+  const offsets: { dx: number; dy: number; influence: number }[] = [];
+  for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
+    for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
+      const distance = hexGridDistance({ x: 0, y: 0 }, { x: dx, y: dy });
+      if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
+      offsets.push({
+        dx,
+        dy,
+        influence: (WATER_MOISTURE_RADIUS + 1 - distance) / WATER_MOISTURE_RADIUS,
+      });
+    }
+  }
+  return offsets;
+})();
 
 function tileElevation(tile: Tile | undefined): number | undefined {
   const elevation = tile?.elevation;
@@ -233,17 +251,13 @@ export function surfaceMoistureAt(
   if (tile.terrain === "water") return 1;
 
   let waterInfluence = 0;
-  for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
-    for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
-      const distance = hexGridDistance({ x: 0, y: 0 }, { x: dx, y: dy });
-      if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
-      const neighbor = getTile(state, { x: position.x + dx, y: position.y + dy });
-      if (neighbor?.terrain !== "water") continue;
-      waterInfluence = Math.max(
-        waterInfluence,
-        (WATER_MOISTURE_RADIUS + 1 - distance) / WATER_MOISTURE_RADIUS,
-      );
-    }
+  for (const offset of WATER_MOISTURE_OFFSETS) {
+    const neighbor = getTile(state, {
+      x: position.x + offset.dx,
+      y: position.y + offset.dy,
+    });
+    if (neighbor?.terrain !== "water") continue;
+    waterInfluence = Math.max(waterInfluence, offset.influence);
   }
 
   const vegetationCover =
@@ -809,6 +823,22 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
     : { ...base, type: "move", target: { x: fallback.x, y: fallback.y } };
 }
 
+function localAgentCrowding(
+  state: Pick<WorldState, "agents">,
+  position: GridPosition,
+): number {
+  return state.agents.reduce(
+    (count, candidate) => count + (samePosition(candidate.position, position) ? 1 : 0),
+    0,
+  );
+}
+
+function gatherAmountAtCrowding(crowding: number): number {
+  return crowding >= GATHER_CROWDING_THRESHOLD
+    ? GATHER_CROWDED_AMOUNT
+    : GATHER_BASE_AMOUNT;
+}
+
 function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "gather" }>): void {
   if (inventoryTotal(agent.inventory) >= agent.capacity) {
     delete agent.task;
@@ -843,7 +873,12 @@ function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask,
     return;
   }
   const capacityLeft = agent.capacity - inventoryTotal(agent.inventory);
-  const amount = Math.min(2, tile.resource.amount, capacityLeft);
+  const crowding = localAgentCrowding(state, agent.position);
+  const amount = Math.min(
+    gatherAmountAtCrowding(crowding),
+    tile.resource.amount,
+    capacityLeft,
+  );
   tile.resource.amount -= amount;
   agent.inventory[task.resource] += amount;
   agent.energy = Math.max(0, agent.energy - 1);
