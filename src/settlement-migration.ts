@@ -22,6 +22,7 @@ const RESIDENT_CAPACITY_PER_CAMP = 6;
 const CAMP_MIN_SPACING = 2;
 const CAMP_LOCAL_BUILD_RADIUS = 5;
 const LOW_ENERGY_THRESHOLD = 18;
+const SETTLEMENT_DRAINAGE_EPSILON = 1e-6;
 export const SETTLEMENT_MIGRATION_SCOUT_INTERVAL = 12;
 
 export interface AutonomousSettlementMigrationPlan {
@@ -125,6 +126,14 @@ function averageDrainage(support: SettlementNeighborSupport): number {
     : 0;
 }
 
+function compareAverageDrainage(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  const delta = averageDrainage(b) - averageDrainage(a);
+  return Math.abs(delta) > SETTLEMENT_DRAINAGE_EPSILON ? delta : 0;
+}
+
 function settlementContinuationRank(support: SettlementNeighborSupport): number {
   // Founding material is already carried in the camp kit. A transit pioneer
   // should only take another hop when the low-level support signal strictly
@@ -162,7 +171,7 @@ function compareSettlementSupport(
     || b.resources.food - a.resources.food
     || b.resources.wood - a.resources.wood
     || b.resources.stone - a.resources.stone
-    || averageDrainage(b) - averageDrainage(a)
+    || compareAverageDrainage(a, b)
     || b.waterCells - a.waterCells
     || b.passableCells - a.passableCells
   );
