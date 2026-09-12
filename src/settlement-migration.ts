@@ -298,14 +298,18 @@ export function planAutonomousSettlementMigration(
   const supportByRegion = settlementNeighborSupports(halo);
   let localSupportRank: number | undefined;
   const distancesByOrigin = new Map<string, Map<string, number>>();
+  const candidateAgents = state.agents
+    .flatMap((agent) => {
+      const transitPioneer = isTransitPioneer(state, agent);
+      return (
+        (pressuredFactions.has(agent.factionId) || transitPioneer)
+        && eligiblePioneer(agent)
+        && canPrepareSettlementMigrationKit(state, agent)
+      ) ? [{ agent, transitPioneer }] : [];
+    })
+    .sort((a, b) => a.agent.id.localeCompare(b.agent.id));
 
-  for (const agent of [...state.agents].sort((a, b) => a.id.localeCompare(b.id))) {
-    const transitPioneer = isTransitPioneer(state, agent);
-    if (
-      (!pressuredFactions.has(agent.factionId) && !transitPioneer)
-      || !eligiblePioneer(agent)
-      || !canPrepareSettlementMigrationKit(state, agent)
-    ) continue;
+  for (const { agent, transitPioneer } of candidateAgents) {
     const originKey = positionKey(agent.position);
     let distances = distancesByOrigin.get(originKey);
     if (distances === undefined) {
