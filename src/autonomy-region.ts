@@ -22,6 +22,12 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { regionAxialCoordinate, regionCellTransition } from "./region-topology.js";
+import {
+  planAutonomousSettlementMigration,
+  prepareSettlementMigrationKit,
+  shouldScoutSettlementMigration,
+  type AutonomousSettlementMigrationPlan,
+} from "./settlement-migration.js";
 import { WorldRuntime } from "./runtime.js";
 import { isPassable } from "./world.js";
 
@@ -45,10 +51,11 @@ interface PendingAutonomousHandoff {
   transferId: string;
   agentId: string;
   direction: HexGridDirection;
-  resource: ResourceKind;
+  resource: ResourceKind | undefined;
   claimId?: string;
   desiredPosition?: GridPosition;
   returnToSourceStorage?: boolean;
+  settlementMigration?: boolean;
 }
 
 interface PendingAutonomousTravel {
@@ -97,6 +104,7 @@ const AUTONOMOUS_TRAVEL_KEY = "handoff:autonomy:travel:v1";
 const AUTONOMOUS_TRAVELS_KEY = "handoff:autonomy:travel:v2";
 const AUTONOMOUS_SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
+const AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migration:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
 const INTERNAL_AUTONOMY_PREFIX = "/api/internal/autonomy/";
 const INTERNAL_CLAIM_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/register`;
@@ -107,6 +115,7 @@ const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
 const AUTONOMOUS_SUPPLY_CLAIM_TTL = AUTONOMOUS_TRAVEL_TTL + AUTONOMOUS_SCOUT_INTERVAL;
 const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;
+const SETTLEMENT_MIGRATION_TTL = 72;
 // Successful bounded catch-up batches can drain debt promptly without
 // putting dozens of full virtual ticks into one DO invocation. Failed
 // batches keep the normal tick retry to avoid a hot failure loop.
@@ -1115,11 +1124,16 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     await this.releaseAutonomousSupplyClaim(pending.claimId);
     const state = runtimeAccess(this).runtime.snapshot();
     const agent = state.agents.find((entry) => entry.id === pending.agentId);
-    if (
+    const failedResourceHandoff =
+      pending.resource !== undefined &&
       agent?.task?.source === "autonomy" &&
       agent.task.type === "gather" &&
-      agent.task.resource === pending.resource
-    ) {
+      agent.task.resource === pending.resource;
+    const failedSettlementMigration =
+      pending.settlementMigration === true &&
+      agent?.task?.source === "autonomy" &&
+      agent.task.type === "move";
+    if (failedResourceHandoff || failedSettlementMigration) {
       delete agent.task;
       agent.status = `handoff ${pending.direction} rejected; replanning`;
       this.replaceRuntimeState(state);
@@ -1270,6 +1284,101 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return added.length;
   }
 
+  private async resumeSettlementMigration(
+    state: WorldState,
+  ): Promise<"traveling" | "handoff" | undefined> {
+    const pending = await this.autonomyState.storage.get<AutonomousSettlementMigrationPlan | null>(
+      AUTONOMOUS_SETTLEMENT_MIGRATION_KEY,
+    );
+    if (pending === undefined || pending === null) return undefined;
+    const agent = state.agents.find((entry) => entry.id === pending.agentId);
+    const matchingMove =
+      agent?.task?.source === "autonomy"
+      && agent.task.type === "move"
+      && samePosition(agent.task.target, pending.boundaryTarget);
+    if (
+      agent === undefined
+      || !agent.autonomy
+      || agent.task?.source === "external"
+      || agent.energy <= LOW_ENERGY_THRESHOLD
+      || state.tick - pending.startedAtTick > SETTLEMENT_MIGRATION_TTL
+    ) {
+      if (agent !== undefined && matchingMove) {
+        delete agent.task;
+        agent.status = "settlement migration cancelled; replanning";
+        this.replaceRuntimeState(state);
+      }
+      await this.autonomyState.storage.put(AUTONOMOUS_SETTLEMENT_MIGRATION_KEY, null);
+      return undefined;
+    }
+
+    if (samePosition(agent.position, pending.boundaryTarget)) {
+      const step = HEX_GRID_DIRECTION_STEPS[pending.direction];
+      const desiredPosition = {
+        x: agent.position.x + step.x,
+        y: agent.position.y + step.y,
+      };
+      const transition = regionCellTransition(
+        state.regionId,
+        desiredPosition,
+        state.width,
+        state.height,
+      );
+      if (transition?.targetRegionId !== pending.neighborRegionId) {
+        if (matchingMove) delete agent.task;
+        agent.status = "settlement migration route changed; replanning";
+        this.replaceRuntimeState(state);
+        await this.autonomyState.storage.put(AUTONOMOUS_SETTLEMENT_MIGRATION_KEY, null);
+        return undefined;
+      }
+      const handoff: PendingAutonomousHandoff = {
+        transferId: `settlement:${state.regionId}:${agent.id}:${pending.issuedAtTick}:${pending.direction}`,
+        agentId: agent.id,
+        direction: pending.direction,
+        resource: undefined,
+        desiredPosition,
+        settlementMigration: true,
+      };
+      await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, handoff);
+      await this.autonomyState.storage.put(AUTONOMOUS_SETTLEMENT_MIGRATION_KEY, null);
+      await this.attemptPendingHandoff(handoff);
+      return "handoff";
+    }
+
+    if (!matchingMove) {
+      agent.task = {
+        source: "autonomy",
+        issuedAtTick: pending.issuedAtTick,
+        type: "move",
+        target: { ...pending.boundaryTarget },
+      };
+      agent.status = `pioneering toward ${pending.neighborRegionId}`;
+      this.replaceRuntimeState(state);
+    }
+    return "traveling";
+  }
+
+  private async startSettlementMigration(
+    state: WorldState,
+    halo: readonly HexHaloTile[],
+  ): Promise<boolean> {
+    if (!shouldScoutSettlementMigration(state)) return false;
+    const plan = planAutonomousSettlementMigration(state, halo);
+    if (plan === undefined || !prepareSettlementMigrationKit(state, plan.agentId)) return false;
+    const agent = state.agents.find((entry) => entry.id === plan.agentId);
+    if (agent === undefined) return false;
+    agent.task = {
+      source: "autonomy",
+      issuedAtTick: plan.issuedAtTick,
+      type: "move",
+      target: { ...plan.boundaryTarget },
+    };
+    agent.status = `carrying a camp kit toward ${plan.neighborRegionId}`;
+    await this.autonomyState.storage.put(AUTONOMOUS_SETTLEMENT_MIGRATION_KEY, plan);
+    this.replaceRuntimeState(state);
+    return true;
+  }
+
   private async resumeOrPlanAutonomousHandoff(state: WorldState): Promise<void> {
     const pending = await this.autonomyState.storage.get<PendingAutonomousHandoff | null>(AUTONOMOUS_HANDOFF_KEY);
     if (pending !== undefined && pending !== null) {
@@ -1277,10 +1386,13 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       return;
     }
     const activeTravels = await this.resumeAutonomousTravels(state);
+    const migrationState = await this.resumeSettlementMigration(state);
+    if (migrationState === "handoff") return;
 
     const directions = autonomyHaloPlanningDirections(state);
     const scoutDue = shouldScoutAutonomyHalo(state);
-    const loadedDirections = scoutDue && directions.length > 0
+    const migrationDue = migrationState === undefined && shouldScoutSettlementMigration(state);
+    const loadedDirections = (scoutDue && directions.length > 0) || migrationDue
       ? HEX_GRID_DIRECTIONS
       : directions;
     let halo: HexHaloTile[] = [];
@@ -1307,6 +1419,8 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         return;
       }
     }
+
+    if (migrationDue) await this.startSettlementMigration(state, halo);
 
     await this.startAutonomousTravels(
       state,
