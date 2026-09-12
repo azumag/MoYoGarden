@@ -86,8 +86,11 @@ function requestedPathogenEdgeCells(values: readonly string[]): Set<string> | un
   for (const value of values) {
     const match = /^(-?\d+),(-?\d+)$/.exec(value);
     if (match === null) return null;
-    const x = Number.parseInt(match[1], 10);
-    const y = Number.parseInt(match[2], 10);
+    const xText = match[1];
+    const yText = match[2];
+    if (xText === undefined || yText === undefined) return null;
+    const x = Number.parseInt(xText, 10);
+    const y = Number.parseInt(yText, 10);
     if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) return null;
     result.add(positionKey({ x, y }));
   }
