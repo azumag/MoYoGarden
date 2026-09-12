@@ -104,15 +104,20 @@ function resourceDiversity(support: SettlementNeighborSupport): number {
   );
 }
 
-function settlementResourceSupportRank(support: SettlementNeighborSupport): number {
-  // Founding material is already carried in the camp kit. For deciding whether
-  // a newly arrived pioneer should keep moving, rank renewable local support
-  // with food first, then wood, then stone. The bounded bit-mask-style score
-  // must strictly increase for another hop, which prevents equal-quality
-  // neighboring regions from making pioneers ping-pong indefinitely.
-  return (support.resourceCapacity.food > 0 ? 4 : 0)
-    + (support.resourceCapacity.wood > 0 ? 2 : 0)
-    + (support.resourceCapacity.stone > 0 ? 1 : 0);
+function settlementContinuationRank(support: SettlementNeighborSupport): number {
+  // Founding material is already carried in the camp kit. A transit pioneer
+  // should only take another hop when the low-level support signal strictly
+  // improves, otherwise equal-quality neighbors could ping-pong forever.
+  //
+  // Food remains the strongest carrying-capacity signal, followed by wood and
+  // stone. Visible surface water is the weakest bit: it can break a tie between
+  // equally resourced regions, but it can never outweigh losing a renewable
+  // resource class. Because the score must strictly increase, multi-hop travel
+  // is still bounded without adding visited-region state to WorldState.
+  return (support.resourceCapacity.food > 0 ? 8 : 0)
+    + (support.resourceCapacity.wood > 0 ? 4 : 0)
+    + (support.resourceCapacity.stone > 0 ? 2 : 0)
+    + (support.waterCells > 0 ? 1 : 0);
 }
 
 function compareSettlementSupport(
@@ -284,7 +289,7 @@ export function planAutonomousSettlementMigration(
   );
   const supportByRegion = settlementNeighborSupports(halo);
   const localSupport = localSettlementSupport(state);
-  const localSupportRank = settlementResourceSupportRank(localSupport);
+  const localSupportRank = settlementContinuationRank(localSupport);
 
   for (const agent of [...state.agents].sort((a, b) => a.id.localeCompare(b.id))) {
     const transitPioneer = isTransitPioneer(state, agent);
@@ -303,7 +308,7 @@ export function planAutonomousSettlementMigration(
         const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
         if (
           transitPioneer
-          && settlementResourceSupportRank(support) <= localSupportRank
+          && settlementContinuationRank(support) <= localSupportRank
         ) return [];
         return [{
           entry,
