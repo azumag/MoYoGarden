@@ -295,8 +295,7 @@ export function planAutonomousSettlementMigration(
       .map((faction) => faction.id),
   );
   const supportByRegion = settlementNeighborSupports(halo);
-  const localSupport = localSettlementSupport(state);
-  const localSupportRank = settlementContinuationRank(localSupport);
+  let localSupportRank: number | undefined;
 
   for (const agent of [...state.agents].sort((a, b) => a.id.localeCompare(b.id))) {
     const transitPioneer = isTransitPioneer(state, agent);
@@ -313,10 +312,10 @@ export function planAutonomousSettlementMigration(
         const distance = distances.get(positionKey(entry.sourcePosition));
         if (distance === undefined || distance > energyBudget) return [];
         const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
-        if (
-          transitPioneer
-          && settlementContinuationRank(support) <= localSupportRank
-        ) return [];
+        if (transitPioneer) {
+          localSupportRank ??= settlementContinuationRank(localSettlementSupport(state));
+          if (settlementContinuationRank(support) <= localSupportRank) return [];
+        }
         return [{
           entry,
           distance,
