@@ -8,9 +8,14 @@ export function patchWaterShader(shader, quality) {
     float moyoA = dot(moyoP, vec2(2.2, 0.9)) + moyoTime * 0.85;
     float moyoB = dot(moyoP, vec2(-1.3, 3.1)) - moyoTime * 0.62;
     float moyoC = dot(moyoP, vec2(8.1, 4.3)) + moyoTime * 1.35;
-    vec3 moyoRipple = vec3(cos(moyoA)*0.085 + cos(moyoB)*0.045,
-      0.0, sin(moyoA)*0.045 - sin(moyoB)*0.065);
-    moyoRipple.xz += vec2(cos(moyoC), sin(moyoC)) * 0.018 * moyoFade;
+    float moyoLong = dot(moyoP, vec2(0.42, 0.18)) - moyoTime * 0.32;
+    // Each slope is the derivative of its wave height; crossing wave trains
+    // produce coherent moving highlights rather than independently wobbling axes.
+    vec2 moyoSlope = vec2(2.2,0.9) * cos(moyoA) * 0.033
+      + vec2(-1.3,3.1) * cos(moyoB) * 0.018
+      + vec2(0.42,0.18) * cos(moyoLong) * 0.07;
+    moyoSlope += vec2(8.1,4.3) * cos(moyoC) * 0.0025 * moyoFade;
+    vec3 moyoRipple = vec3(moyoSlope.x, 0.0, moyoSlope.y);
     normal = normalize(normal + mat3(viewMatrix) * moyoRipple * moyoFade);
   `).replace('#include <color_fragment>', `
     #include <color_fragment>
@@ -19,7 +24,9 @@ export function patchWaterShader(shader, quality) {
   `).replace('#include <opaque_fragment>', `
     // A restrained horizon tint complements PBR specular without another pass.
     float moyoFresnel = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 5.0);
-    outgoingLight = mix(outgoingLight, vec3(0.38,0.48,0.48), moyoFresnel * 0.32);
+    vec3 moyoReflected = inverseTransformDirection(reflect(-normalize(vViewPosition), normal), viewMatrix);
+    vec3 moyoSkyReflection = mix(vec3(0.34,0.37,0.33), vec3(0.22,0.31,0.35), smoothstep(0.0,0.65,moyoReflected.y));
+    outgoingLight = mix(outgoingLight, moyoSkyReflection, moyoFresnel * 0.40);
     #include <opaque_fragment>
   `);
 }

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { hexGridDistance, isHexGridCell, hexTileWorldXZ } from './hex-grid.js';
 import { hash2 } from './shared.js';
-import { createSurfaceSampler } from './surface-detail.js';
+import { createSurfaceSampler, NOISE_GLSL } from './surface-detail.js';
 
 const CONTACT_SHADOW_BUDGET = 400;
 
@@ -35,23 +35,44 @@ function bladeGeometry() {
   return geometry;
 }
 
-function grassMaterial(clock) {
+function grassMaterial(clock, atmosphere = {}) {
   const material=new THREE.MeshStandardMaterial({
     color:0xc2b180, vertexColors:true, side:THREE.DoubleSide,
     roughness:0.94, metalness:0, envMapIntensity:0.24,
   });
   material.userData.moyoDecayStyled=true;
-  material.customProgramCacheKey=()=> 'moyo-grass-wind-v1';
+  material.customProgramCacheKey=()=> 'moyo-grass-wind-v2';
   material.onBeforeCompile=shader=>{
     shader.uniforms.moyoTime=clock;
-    shader.vertexShader='uniform float moyoTime;\n'+shader.vertexShader;
+    shader.uniforms.moyoWorldOrigin=atmosphere.worldOrigin??{value:new THREE.Vector2()};
+    shader.uniforms.moyoSunDirection=atmosphere.sunDirection??{value:new THREE.Vector3(-20,29,11).normalize()};
+    shader.vertexShader='uniform float moyoTime;\nuniform vec2 moyoWorldOrigin;\n'+NOISE_GLSL+shader.vertexShader;
     shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>', `
       #include <begin_vertex>
       #ifdef USE_INSTANCING
-        float phase = dot(instanceMatrix[3].xz, vec2(0.74,0.46));
-        float bend = sin(moyoTime*1.1+phase)*0.035 + sin(moyoTime*0.63+phase*1.8)*0.015;
-        transformed.x += bend * pow(clamp(position.y/0.3,0.0,1.0), 2.0);
+        // Wind lives in the same absolute frame as the ground and water, even
+        // after region recentering or under a translated parent group.
+        mat4 moyoGrassWorld = modelMatrix * instanceMatrix;
+        vec2 moyoGrassP = moyoGrassWorld[3].xz + moyoWorldOrigin;
+        float phase = dot(moyoGrassP, vec2(0.74,0.46));
+        float gust = moyoNoise(moyoGrassP*0.18-vec2(moyoTime*0.10,moyoTime*0.04));
+        float bend = sin(moyoTime*1.25+phase)*0.036
+          + sin(moyoTime*0.63+phase*0.46)*0.018 + gust*gust*0.058;
+        vec3 moyoWind = vec3(0.92,0.0,0.38) * bend;
+        // Project a common world-space wind into each rotated/scaled clump.
+        vec3 moyoLocalWind = vec3(
+          dot(moyoGrassWorld[0].xyz,moyoWind)/max(dot(moyoGrassWorld[0].xyz,moyoGrassWorld[0].xyz),0.0001),
+          dot(moyoGrassWorld[1].xyz,moyoWind)/max(dot(moyoGrassWorld[1].xyz,moyoGrassWorld[1].xyz),0.0001),
+          dot(moyoGrassWorld[2].xyz,moyoWind)/max(dot(moyoGrassWorld[2].xyz,moyoGrassWorld[2].xyz),0.0001));
+        transformed += moyoLocalWind * pow(clamp(position.y/0.3,0.0,1.0),2.0);
       #endif
+    `);
+    shader.fragmentShader='uniform vec3 moyoSunDirection;\n'+shader.fragmentShader;
+    shader.fragmentShader=shader.fragmentShader.replace('#include <opaque_fragment>', `
+      // Thin dry blades transmit a little warm light when viewed toward the sun.
+      float moyoBacklight = pow(max(dot(normalize(vViewPosition),mat3(viewMatrix)*moyoSunDirection),0.0),4.0);
+      outgoingLight += diffuseColor.rgb * vec3(1.0,0.88,0.59) * moyoBacklight * 0.26;
+      #include <opaque_fragment>
     `);
   };
   return material;
@@ -146,7 +167,7 @@ export function buildGroundCover(view, clock) {
   candidates.sort((a,b)=>a.rank-b.rank);
   const entries=candidates.slice(0,budget);
   if(entries.length) {
-    const mesh=new THREE.InstancedMesh(bladeGeometry(),grassMaterial(clock),entries.length);
+    const mesh=new THREE.InstancedMesh(bladeGeometry(),grassMaterial(clock,view.moyoAtmosphere),entries.length);
     mesh.name='MoyoDryGrass';
     const matrix=new THREE.Matrix4(), q=new THREE.Quaternion(), up=new THREE.Vector3(0,1,0);
     const position=new THREE.Vector3(), scale=new THREE.Vector3(), color=new THREE.Color();
@@ -156,7 +177,7 @@ export function buildGroundCover(view, clock) {
       color.setHSL(0.17+e.rank*0.04,0.16+e.rank*0.13,0.29+e.rank*0.16);mesh.setColorAt(i,color);
     });
     mesh.instanceMatrix.needsUpdate=true;mesh.instanceColor.needsUpdate=true;
-    mesh.computeBoundingSphere();mesh.boundingSphere.radius+=0.12;
+    mesh.computeBoundingSphere();mesh.boundingSphere.radius+=0.16;
     mesh.receiveShadow=true;mesh.castShadow=false;
     group.add(mesh);
   }
@@ -176,5 +197,5 @@ export function disposeGroundCover(group) {
 
 export function groundCoverSignature(view) {
   const state=view.state;
-  return `${view.terrainMesh?.uuid}:${view.terrainMesh?.geometry?.uuid}:${view.terrainMesh?.geometry?.getAttribute('position')?.version}:${state?.tiles?.map(t=>`${t.terrain}:${t.resource?.amount>0?t.resource.kind:''}`).join(',')}:${state?.structures?.map(s=>`${s.type}:${s.position.x}:${s.position.y}`).join(',')}`;
+  return `${groundCoverBudget(view.quality)}:${view.terrainMesh?.uuid}:${view.terrainMesh?.geometry?.uuid}:${view.terrainMesh?.geometry?.getAttribute('position')?.version}:${state?.tiles?.map(t=>`${t.terrain}:${t.resource?.amount>0?t.resource.kind:''}`).join(',')}:${state?.structures?.map(s=>`${s.type}:${s.position.x}:${s.position.y}`).join(',')}`;
 }

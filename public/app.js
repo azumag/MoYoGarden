@@ -3,6 +3,7 @@ import { createDemoState } from "./client/demo-state.js";
 import { isHexGridCell } from "./client/hex-grid.js";
 import { createLiveNeighborSimulation } from "./client/live-region-rendering.js";
 import { ModelLibrary } from "./client/model-library.js";
+import { createObservationPanel, updateAgentVitals } from "./client/observation-panel.js";
 import { resolveQualityProfile } from "./client/quality.js";
 import { regionMetaUrl } from "./client/region-navigation.js";
 import { mergeLiveTerrainWindow, terrainWindowTilesChanged } from "./client/terrain-window-cache.js";
@@ -58,6 +59,7 @@ const NEIGHBOR_TERRAIN_REFRESH_MS = 60_000;
 const FAR_TERRAIN_RADIUS = 2;
 
 const quality = resolveQualityProfile();
+const observationPanel = createObservationPanel(document.querySelector('#world-observation'));
 const models = new ModelLibrary();
 const renderState = {
   modelsLoaded: 0,
@@ -331,6 +333,7 @@ function updateUi() {
   ui.structureCount.textContent = String(state.structures.length);
   ui.pausedBadge.hidden = !app.paused;
   ui.pauseButton.textContent = app.paused ? "再開" : "一時停止";
+  observationPanel.update(state);
 
   ui.factionList.replaceChildren();
   for (const faction of state.factions) {
@@ -384,6 +387,7 @@ function updateAgentDetail() {
   ui.invStone.textContent = String(agent.inventory.stone);
   ui.invFood.textContent = String(agent.inventory.food);
   ui.agentGoal.textContent = agent.goal || "目標未設定";
+  updateAgentVitals(ui.agentDetail, agent);
 }
 
 async function loadSnapshot() {

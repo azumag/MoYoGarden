@@ -220,3 +220,95 @@ test('late seam welding resamples decorations when terrain vertices change in pl
     assert.ok(Math.abs(y-sample(x,z))<0.025);
   }
 });
+
+test('cloud sky restores a small antialiased sun aligned with the actual world-space light, including sky replacement',()=>{
+  const view=atmosphereFixture();
+  view.sun=new THREE.DirectionalLight();
+  const parent=new THREE.Group();parent.position.set(5,3,-2);
+  parent.add(view.sun);view.scene.add(parent,view.sun.target);
+  view.sun.position.set(-8,9,4);view.sun.target.position.set(2,0,1);
+  atmosphere.updateAtmosphere(view,0);
+  const expected=new THREE.Vector3(-3,12,2).sub(view.sun.target.position).normalize();
+  assert.ok(view.sky.material.uniforms.sunDirection.value.distanceTo(expected)<1e-12);
+  assert.match(view.sky.material.fragmentShader,/sunDisc = smoothstep\(0\.999992/);
+  assert.match(view.sky.material.fragmentShader,/fwidth\(sunDot\)/);
+  assert.match(view.sky.material.fragmentShader,/sunlight=1\.0-cover\*0\.94/);
+  assert.match(view.sky.material.fragmentShader,/silver/);
+  const clock=view.moyoAtmosphere.clock;
+  view.sky.material=view.sky.material.clone();view.sky.material.fragmentShader='replacement sky';
+  view.sun.position.set(6,8,10);
+  atmosphere.updateAtmosphere(view,1000);
+  assert.equal(view.sky.material.uniforms.moyoTime,clock);
+  assert.equal(view.sky.material.uniforms.sunDirection,view.moyoAtmosphere.sunDirection);
+  assert.match(view.sky.material.fragmentShader,/sunDisc/);
+  assert.ok(view.sky.material.uniforms.sunDirection.value.distanceTo(new THREE.Vector3(9,11,7).normalize())<1e-12);
+});
+
+test('ground, water and instanced wind retain the same absolute phase through a region handoff',()=>{
+  atmosphere.primeAtmosphereTopology({chunks:[
+    {regionId:'phase-west',hexOrigin:{x:20,y:30}},
+    {regionId:'phase-east',hexOrigin:{x:48,y:37}},
+  ]});
+  const view=atmosphereFixture();view.state.regionId='phase-west';
+  atmosphere.updateAtmosphere(view,0);atmosphere.updateAtmosphere(view,1000);
+  const compile=material=>{
+    const shader={uniforms:{},vertexShader:THREE.ShaderLib.standard.vertexShader,fragmentShader:THREE.ShaderLib.standard.fragmentShader};
+    material.onBeforeCompile(shader);return shader;
+  };
+  const land=compile(view.terrainMesh.material);
+  const grass=compile(view.moyoAtmosphere.cover.getObjectByName('MoyoDryGrass').material);
+  const water=new THREE.MeshPhysicalMaterial();
+  surface.styleSurface(water,'water',view.moyoAtmosphere.clock,{waterQuality:'ripples',worldOrigin:view.moyoAtmosphere.worldOrigin});
+  const waves=compile(water);
+  for(const shader of [land,grass,waves]) {
+    assert.equal(shader.uniforms.moyoWorldOrigin,view.moyoAtmosphere.worldOrigin);
+    assert.equal(shader.uniforms.moyoTime,view.moyoAtmosphere.clock);
+  }
+  assert.match(land.vertexShader,/vMoyoWorld.xz \+= moyoWorldOrigin/);
+  assert.match(grass.vertexShader,/modelMatrix \* instanceMatrix/);
+  assert.match(grass.vertexShader,/moyoGrassWorld\[3\].xz \+ moyoWorldOrigin/);
+  // The rendered point x=9,z=4 in west becomes x=-19,z=-3 after camera rebasing.
+  const absoluteBefore=new THREE.Vector2(9,4).add(land.uniforms.moyoWorldOrigin.value);
+  const originalClock=view.moyoAtmosphere.clock;
+  view.state={...view.state,regionId:'phase-east'};
+  atmosphere.updateAtmosphere(view,1500);
+  const absoluteAfter=new THREE.Vector2(-19,-3).add(land.uniforms.moyoWorldOrigin.value);
+  assert.ok(absoluteBefore.distanceTo(absoluteAfter)<1e-12);
+  assert.equal(view.moyoAtmosphere.clock,originalClock);
+  assert.equal(view.moyoAtmosphere.clock.value,1.5);
+  // New snapshot geometry binds to the same live uniform, as do late neighbor clones.
+  view.buildTerrain(view.state);atmosphere.updateAtmosphere(view,2000);
+  assert.equal(compile(view.terrainMesh.material).uniforms.moyoWorldOrigin,land.uniforms.moyoWorldOrigin);
+  const clone=view.terrainMesh.material.clone();surface.styleSurface(clone,'land',originalClock,view.moyoAtmosphere.surfaceOptions);
+  assert.equal(compile(clone).uniforms.moyoWorldOrigin,land.uniforms.moyoWorldOrigin);
+  cover.disposeGroundCover(view.moyoAtmosphere.cover);water.dispose();clone.dispose();
+});
+
+test('safe quality omits cloud noise, terrain relief, water waves and vegetation',()=>{
+  const view=atmosphereFixture({id:'balanced',label:'SAFE',requested:'low',waterQuality:'simple',detailDensity:0});
+  atmosphere.updateAtmosphere(view,0);atmosphere.updateAtmosphere(view,1000);
+  assert.doesNotMatch(view.sky.material.fragmentShader,/moyoNoise|moyoTime/);
+  assert.match(view.sky.material.fragmentShader,/sunDirection/);
+  const shader={uniforms:{},vertexShader:THREE.ShaderLib.standard.vertexShader,fragmentShader:THREE.ShaderLib.standard.fragmentShader};
+  view.terrainMesh.material.onBeforeCompile(shader);
+  assert.doesNotMatch(shader.fragmentShader,/moyoNoise|moyoRelief/);
+  assert.equal(view.moyoAtmosphere.cover.children.length,0);
+});
+
+test('changing vegetation density releases the old GPU cover and keeps the new budget in its signature',()=>{
+  const view=atmosphereFixture();
+  atmosphere.updateAtmosphere(view,0);atmosphere.updateAtmosphere(view,1000);
+  const old=view.moyoAtmosphere.cover, grass=old.getObjectByName('MoyoDryGrass');
+  let geometryDisposed=0, materialDisposed=0;
+  grass.geometry.addEventListener('dispose',()=>geometryDisposed++);
+  grass.material.addEventListener('dispose',()=>materialDisposed++);
+  const oldSignature=cover.groundCoverSignature(view);
+  view.quality={...view.quality,detailDensity:0};
+  assert.notEqual(cover.groundCoverSignature(view),oldSignature);
+  atmosphere.updateAtmosphere(view,1100);
+  assert.equal(old.parent,null);
+  assert.equal(geometryDisposed,1);assert.equal(materialDisposed,1);
+  assert.equal(view.moyoAtmosphere.cover.children.length,0);
+  atmosphere.updateAtmosphere(view,1200);
+  assert.equal(geometryDisposed,1);assert.equal(materialDisposed,1);
+});

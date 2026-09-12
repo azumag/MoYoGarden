@@ -304,6 +304,10 @@ export class RegionDurableObject {
   private lastSimulatedAt = Date.now();
   private readonly tickMs: number;
   private assigned = false;
+  // Internal boundary reads may hold a deterministic initial world in memory
+  // without claiming persistent storage or starting the region clock.
+  private activated = false;
+  private activationPromise: Promise<void> | undefined;
   private lastActivityAt = 0;
   private alarmRescheduleDeferred = false;
 
@@ -336,6 +340,7 @@ export class RegionDurableObject {
             ? stored.lastSimulatedAt ?? stored.updatedAt
             : stored.updatedAt;
           this.assigned = true;
+          this.activated = true;
         } catch (error) {
           console.error("Resetting invalid persisted MoYoGarden region", error);
           // Leave the object unassigned. The first routed request will create
@@ -412,7 +417,10 @@ export class RegionDurableObject {
     return new WorldRuntime({ state });
   }
 
-  private async ensureRegion(request: Request): Promise<void> {
+  protected async ensureRegion(
+    request: Request,
+    options: { activate?: boolean } = {},
+  ): Promise<void> {
     const headerRegion = request.headers.get("x-moyo-region-internal")?.trim();
     if (headerRegion === undefined || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(headerRegion)) {
       throw new Error("missing internal region routing header");
@@ -421,15 +429,24 @@ export class RegionDurableObject {
     if (!this.assigned) {
       this.runtime = this.createRuntime(headerRegion);
       this.assigned = true;
-      this.lastSimulatedAt = Date.now();
-      await this.persist();
-      if (!this.paused) await this.scheduleNextTick();
-      return;
+    } else {
+      const current = this.runtime.snapshot().regionId;
+      if (current !== headerRegion) {
+        throw new Error(`region routing mismatch: expected ${current}, received ${headerRegion}`);
+      }
     }
 
-    const current = this.runtime.snapshot().regionId;
-    if (current !== headerRegion) {
-      throw new Error(`region routing mismatch: expected ${current}, received ${headerRegion}`);
+    if (options.activate !== false) {
+      if (!this.activated && this.activationPromise === undefined) {
+        // First real interest/mutation starts virtual time, not an earlier
+        // passive edge probe. Concurrent callers share the same promotion.
+        this.activationPromise = (async () => {
+          this.lastSimulatedAt = Date.now();
+          await this.persist();
+          if (!this.paused) await this.scheduleNextTick();
+        })().finally(() => { this.activationPromise = undefined; });
+      }
+      await this.activationPromise;
     }
   }
 
@@ -445,6 +462,7 @@ export class RegionDurableObject {
       lastSimulatedAt: this.lastSimulatedAt,
     };
     await this.ctx.storage.put("region", stored);
+    this.activated = true;
   }
 
   private active(): boolean {
@@ -467,12 +485,12 @@ export class RegionDurableObject {
   }
 
   protected virtualTicksForAlarm(now = Date.now()): number {
-    if (!this.assigned || this.paused) return 0;
+    if (!this.activated || this.paused) return 0;
     return Math.max(1, this.virtualCatchUpPlan(now).runnableTicks);
   }
 
   protected async scheduleCatchUpIfBehind(now = Date.now()): Promise<void> {
-    if (!this.assigned || this.paused) return;
+    if (!this.activated || this.paused) return;
     if (this.virtualCatchUpPlan(now).dueTicks > 0) {
       await this.ctx.storage.setAlarm(now + this.tickMs);
     }
@@ -488,7 +506,7 @@ export class RegionDurableObject {
 
   private async markActivity(): Promise<void> {
     this.lastActivityAt = Date.now();
-    if (!this.assigned || this.paused) return;
+    if (!this.activated || this.paused) return;
     const scheduled = await this.ctx.storage.getAlarm();
     const desired = this.lastActivityAt + this.tickMs;
     if (scheduled === null || scheduled > desired) await this.ctx.storage.setAlarm(desired);
@@ -706,7 +724,7 @@ export class RegionDurableObject {
   }
 
   async alarm(): Promise<void> {
-    if (!this.assigned || this.paused) return;
+    if (!this.activated || this.paused) return;
     const now = Date.now();
     const nextSimulatedAt = this.lastSimulatedAt < now
       ? Math.min(now, this.lastSimulatedAt + this.tickMs)

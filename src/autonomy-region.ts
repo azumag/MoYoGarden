@@ -665,7 +665,15 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   }
 
   private autonomyStub(regionId: string): DurableObjectStub {
-    return this.autonomyEnv.REGIONS.get(this.autonomyEnv.REGIONS.idFromName(regionId));
+    const stub = this.autonomyEnv.REGIONS.get(this.autonomyEnv.REGIONS.idFromName(regionId));
+    return {
+      fetch: (input, init) => {
+        const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+        return ["GET", "HEAD", "OPTIONS"].includes(method)
+          ? stub.fetch(input, init)
+          : this.withHaloEdgeMutation(() => stub.fetch(input, init));
+      },
+    };
   }
 
   private async materializeAutonomyHalo(
@@ -1307,20 +1315,27 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith(INTERNAL_AUTONOMY_PREFIX)) {
-      const assignmentError = await this.ensureAutonomyAssigned(request);
-      if (assignmentError !== undefined) return assignmentError;
-      if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {
-        return this.registerArrivalClaim(request);
-      }
-      if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_SETTLE_PATH) {
-        return this.settleArrivalSourceClaim(request);
-      }
-      if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_RELEASE_PATH) {
-        return this.releaseArrivalSourceClaim(request);
-      }
-      return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+      return ["GET", "HEAD", "OPTIONS"].includes(request.method)
+        ? this.fetchAutonomyRequest(request)
+        : this.withHaloEdgeMutation(() => this.fetchAutonomyRequest(request));
     }
     return super.fetch(request);
+  }
+
+  private async fetchAutonomyRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const assignmentError = await this.ensureAutonomyAssigned(request);
+    if (assignmentError !== undefined) return assignmentError;
+    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {
+      return this.registerArrivalClaim(request);
+    }
+    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_SETTLE_PATH) {
+      return this.settleArrivalSourceClaim(request);
+    }
+    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_RELEASE_PATH) {
+      return this.releaseArrivalSourceClaim(request);
+    }
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
   }
 
   private async runSingleAlarmTick(): Promise<void> {
@@ -1342,6 +1357,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   override async alarm(): Promise<void> {
     const now = Date.now();
     const ticks = this.virtualTicksForAlarm(now);
+    const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
     let completed = false;
     try {
       for (let index = 0; index < ticks; index += 1) {
@@ -1351,6 +1367,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       completed = true;
     } finally {
       this.setAlarmRescheduleDeferred(false);
+      this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
       if (!completed) await this.scheduleCatchUpIfBehind(Date.now());
     }
     await this.scheduleCatchUpIfBehind(Date.now());

@@ -30,7 +30,7 @@ button.danger:hover { background: rgba(255, 118, 94, .14); border-color: rgba(25
 .brand-mark span { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); transform: translate(-50%,-50%); box-shadow: 0 0 15px var(--accent); }
 .brand-mark span:nth-child(2) { transform: translate(-50%,-50%) translateX(11px); opacity: .7; }
 .brand-mark span:nth-child(3) { transform: translate(-50%,-50%) translate(-8px,8px); opacity: .45; }
-.world-status { position: fixed; top: 22px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 11px 15px; border-radius: 14px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.world-status { position: fixed; top: 100px; left: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; width: fit-content; max-width: calc(100vw - 376px); padding: 11px 15px; border-radius: 14px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .world-status b, .world-status strong { color: var(--text); }
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #ffb95d; box-shadow: 0 0 12px currentColor; }
 .connection-dot.online { background: #76ef9f; }
@@ -38,9 +38,9 @@ button.danger:hover { background: rgba(255, 118, 94, .14); border-color: rgba(25
 .divider { width: 1px; height: 18px; background: var(--line); }
 .control-panel { position: fixed; left: 22px; bottom: 22px; display: flex; gap: 8px; padding: 9px; border-radius: 14px; }
 .icon-button { width: 38px; padding-inline: 0; }
-.sidebar { position: fixed; top: 22px; right: 22px; bottom: 22px; width: 310px; display: flex; flex-direction: column; gap: 18px; padding: 18px; border-radius: 18px; overflow: hidden; }
+.sidebar { position: fixed; top: 22px; right: 22px; bottom: 22px; width: 310px; display: flex; flex-direction: column; gap: 18px; padding: 18px; border-radius: 18px; overflow-y: auto; scrollbar-width: thin; }
 .sidebar-toggle { display: none; }
-.sidebar section { border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+.sidebar section { flex-shrink: 0; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
 .sidebar section:last-child { border-bottom: 0; padding-bottom: 0; min-height: 0; }
 .empty-state { color: var(--muted); font-size: 12px; line-height: 1.65; }
 .agent-heading { display: flex; gap: 10px; align-items: center; }
@@ -56,6 +56,25 @@ dd { margin: 2px 0 0; font-size: 12px; }
 .inventory span { flex: 1; color: var(--muted); font-size: 11px; padding: 7px; border: 1px solid var(--line); border-radius: 8px; text-align: center; }
 .inventory b { color: var(--text); }
 .agent-goal { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 10px 0 0; }
+.agent-vitals { margin-top: 12px; font-size: 10px; color: var(--muted); }
+.agent-vitals label { display: flex; justify-content: space-between; }
+.agent-vitals b { color: var(--text); font-weight: 500; }
+.agent-vitals meter { display: block; width: 100%; height: 10px; margin-top: 4px; accent-color: var(--accent); }
+.agent-vitals p { margin: 5px 0 0; }
+.observation-note { margin: 6px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.observation-metrics { margin-top: 8px; }
+.observation-metrics dd { font-variant-numeric: tabular-nums; }
+.observation-history summary { cursor: pointer; color: var(--text); font-size: 10px; padding: 6px 0; }
+.observation-history summary span { display: block; color: var(--muted); font-size: 9px; margin: 4px 0 0 12px; }
+.observation-history svg { display: block; width: 100%; height: 58px; margin-top: 6px; overflow: visible; }
+.observation-history path { fill: none; vector-effect: non-scaling-stroke; }
+.observation-grid { stroke: var(--line); stroke-width: 1; }
+.observation-energy-line { stroke: var(--accent); stroke-width: 2; }
+.observation-resource-line { stroke: #89c8eb; stroke-width: 2; stroke-dasharray: 4 2; }
+.observation-legend { display: flex; gap: 12px; font-size: 9px; margin: 5px 0; }
+.observation-legend span:first-child { color: var(--accent); }
+.observation-legend span:nth-child(2) { color: #89c8eb; }
+.observation-legend small { margin-left: auto; color: var(--muted); font-size: inherit; }
 .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .section-heading h2 { margin: 0; font-size: 17px; }
 .badge { color: #ffcb79; border: 1px solid rgba(255,203,121,.35); border-radius: 20px; padding: 3px 7px; font-size: 9px; font-weight: 800; }
@@ -65,7 +84,7 @@ dd { margin: 2px 0 0; font-size: 12px; }
 .faction-card strong { display: block; font-size: 11px; }
 .faction-card small { color: var(--muted); font-size: 9px; }
 .faction-card code { color: var(--muted); font: 9px/1.5 ui-monospace, monospace; }
-.events-section { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.events-section { flex: 1 0 120px; overflow: hidden; display: flex; flex-direction: column; }
 .event-list { margin: 2px 0 0; padding: 0; list-style: none; overflow: auto; scrollbar-width: thin; }
 .event-list li { padding: 8px 0; border-bottom: 1px solid rgba(196,255,145,.08); color: #cbd9ce; font-size: 10px; line-height: 1.4; }
 .event-list time { color: var(--accent); font: 9px ui-monospace, monospace; margin-right: 7px; }
@@ -90,11 +109,12 @@ kbd { color: var(--text); background: rgba(255,255,255,.07); border: 1px solid v
 [hidden] { display: none !important; }
 @media (max-width: 900px) {
   .sidebar { width: 270px; }
-  .world-status { top: auto; bottom: 82px; left: 16px; right: 16px; transform: none; overflow-x: auto; }
+  .world-status { top: auto; bottom: 82px; left: 16px; right: 16px; width: auto; max-width: none; flex-wrap: nowrap; overflow-x: auto; }
   .help-panel { display: none; }
 }
 @media (max-width: 680px) {
   .brand-panel { left: 12px; top: 12px; }
+  .brand-panel .eyebrow { display: none; }
   .sidebar {
     top: auto;
     left: 12px;
@@ -143,8 +163,9 @@ kbd { color: var(--text); background: rgba(255,255,255,.07); border: 1px solid v
   }
   .sidebar.is-collapsed .sidebar-toggle { top: 8px; }
   .sidebar.is-collapsed section { display: none; }
-  .sidebar section { min-width: 240px; border-bottom: 0; border-right: 1px solid var(--line); padding-right: 16px; }
+  .sidebar section { flex: 0 0 240px; min-width: 240px; min-height: 0; overflow-y: auto; border-bottom: 0; border-right: 1px solid var(--line); padding-right: 16px; }
   .control-panel { left: 12px; bottom: 12px; right: 12px; overflow-x: auto; }
+  .control-panel button { flex-shrink: 0; white-space: nowrap; font-size: 12px; padding: 9px 10px; }
   .world-status {
     display: flex;
     top: 12px;
