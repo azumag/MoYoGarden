@@ -19,6 +19,7 @@ import {
   PATHOGEN_LOCAL_INTERVAL,
   pathogenEdgeSnapshot,
   pathogenHaloPressureMap,
+  pathogenHaloReservoirMap,
   pathogenStepCount,
   type PathogenEdgeSnapshot,
   type PathogenEnvironmentFrame,
@@ -49,6 +50,11 @@ export interface PathogenHaloEdgeRequest {
   regionId: string;
   direction: HexGridDirection;
   positions: GridPosition[];
+}
+
+interface MaterializedPathogenHalo {
+  pressure: Map<string, number>;
+  reservoir: Map<string, number>;
 }
 
 const INTERNAL_PATHOGEN_EDGE_PATH = "/api/internal/pathogen/edge";
@@ -112,7 +118,7 @@ function isPathogenEdgeSnapshot(value: unknown): value is PathogenEdgeSnapshot {
   ) {
     return false;
   }
-  return value.agents.every((entry) =>
+  const validAgents = value.agents.every((entry) =>
     isRecord(entry) &&
     isRecord(entry.position) &&
     Number.isInteger(entry.position.x) &&
@@ -121,6 +127,18 @@ function isPathogenEdgeSnapshot(value: unknown): value is PathogenEdgeSnapshot {
     Number.isFinite(entry.pressure) &&
     entry.pressure >= 0 &&
     entry.pressure <= 1
+  );
+  if (!validAgents) return false;
+  if (value.reservoirs === undefined) return true;
+  return Array.isArray(value.reservoirs) && value.reservoirs.every((entry) =>
+    isRecord(entry) &&
+    isRecord(entry.position) &&
+    Number.isInteger(entry.position.x) &&
+    Number.isInteger(entry.position.y) &&
+    typeof entry.burden === "number" &&
+    Number.isFinite(entry.burden) &&
+    entry.burden >= 0 &&
+    entry.burden <= 1
   );
 }
 
@@ -275,9 +293,11 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
     }
   }
 
-  private async materializePathogenPressure(state: WorldState): Promise<Map<string, number>> {
+  private async materializePathogenHalo(state: WorldState): Promise<MaterializedPathogenHalo> {
     const links = pathogenHaloLinksForAgents(state, this.pathogenHaloLinks(state));
-    if (links.length === 0) return new Map();
+    if (links.length === 0) {
+      return { pressure: new Map(), reservoir: new Map() };
+    }
     const requests = pathogenHaloEdgeRequests(links);
     const edges = (
       await Promise.all(
@@ -286,7 +306,10 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
         ),
       )
     ).filter((value): value is PathogenEdgeSnapshot => value !== undefined);
-    return pathogenHaloPressureMap(links, edges);
+    return {
+      pressure: pathogenHaloPressureMap(links, edges),
+      reservoir: pathogenHaloReservoirMap(links, edges),
+    };
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -305,6 +328,7 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
         : {
           ...state,
           agents: state.agents.filter((agent) => requestedCells.has(positionKey(agent.position))),
+          tiles: state.tiles.filter((tile) => requestedCells.has(positionKey(tile))),
         };
       return json(pathogenEdgeSnapshot(snapshotState, direction));
     }
@@ -320,15 +344,16 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
     const localSteps = pathogenStepCount(beforeTick, state.tick, PATHOGEN_LOCAL_INTERVAL);
     if (localSteps <= 0) return;
     const haloSteps = pathogenStepCount(beforeTick, state.tick, PATHOGEN_HALO_INTERVAL);
-    const haloPressure = shouldMaterializePathogenHalo(state, beforeTick, state.tick)
-      ? await this.materializePathogenPressure(state)
-      : new Map<string, number>();
+    const halo = shouldMaterializePathogenHalo(state, beforeTick, state.tick)
+      ? await this.materializePathogenHalo(state)
+      : { pressure: new Map<string, number>(), reservoir: new Map<string, number>() };
     const changed = applyPathogenSteps(
       state,
       localSteps,
       this.pathogenEnvironmentFrame(state),
-      haloPressure,
+      halo.pressure,
       haloSteps,
+      halo.reservoir,
     );
     if (changed <= 0) return;
 

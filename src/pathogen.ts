@@ -14,12 +14,20 @@ export interface PathogenEdgePressure {
   pressure: number;
 }
 
+export interface PathogenEdgeReservoir {
+  position: GridPosition;
+  burden: number;
+}
+
 export interface PathogenEdgeSnapshot {
   regionId: string;
   direction: HexGridDirection;
   revision: number;
   tick: number;
   agents: PathogenEdgePressure[];
+  // Optional during rolling deploys so a newer region can still consume an
+  // older neighbor snapshot that predates environmental reservoir export.
+  reservoirs?: PathogenEdgeReservoir[];
 }
 
 type PathogenAgent = Agent & {
@@ -40,6 +48,9 @@ const PATHOGEN_SAME_CELL_CONTACT_GAIN = 0.11;
 const PATHOGEN_ADJACENT_CONTACT_GAIN = 0.06;
 const PATHOGEN_RESERVOIR_SHEDDING_GAIN = 0.04;
 const PATHOGEN_RESERVOIR_EXPOSURE_GAIN = 0.035;
+const PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN =
+  PATHOGEN_RESERVOIR_EXPOSURE_GAIN *
+  (PATHOGEN_ADJACENT_CONTACT_GAIN / PATHOGEN_SAME_CELL_CONTACT_GAIN);
 const PATHOGEN_RESERVOIR_BASE_CLEARANCE_RATE = 0.18;
 const PATHOGEN_RESERVOIR_CLIMATE_PERSISTENCE_GAIN = 0.55;
 export const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
@@ -171,6 +182,21 @@ function pathogenReservoirIndex(tiles: readonly Tile[]): Map<string, number> {
   return result;
 }
 
+function localReservoirExposure(
+  reservoir: ReadonlyMap<string, number>,
+  position: GridPosition,
+): number {
+  let exposure = (reservoir.get(positionKey(position)) ?? 0) * PATHOGEN_RESERVOIR_EXPOSURE_GAIN;
+  for (const neighbor of hexGridNeighbors(position)) {
+    const burden = reservoir.get(positionKey(neighbor)) ?? 0;
+    exposure = unionPressure(
+      exposure,
+      burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+    );
+  }
+  return exposure;
+}
+
 /**
  * Advance environmental contamination after agent exposure has been evaluated.
  *
@@ -266,12 +292,17 @@ function localContactExposure(index: PathogenContactIndex, target: Agent): numbe
 }
 
 /**
- * Aggregate infectious pressure on one macro-hex edge. Multiple BOTs may share
- * a cell, so combine them as a bounded union rather than adding pressure above
- * 1. Latent/subclinical burden is intentionally not exported across the seam.
+ * Aggregate infectious pressure and environmental burden on one macro-hex edge.
+ * Multiple BOTs may share a cell, so combine them as a bounded union rather than
+ * adding pressure above 1. Latent/subclinical BOT burden is intentionally not
+ * exported, while an already contaminated boundary tile remains observable even
+ * after its carrier leaves.
  */
 export function pathogenEdgeSnapshot(
-  state: Pick<WorldState, "regionId" | "revision" | "tick" | "width" | "height" | "agents">,
+  state: Pick<
+    WorldState,
+    "regionId" | "revision" | "tick" | "width" | "height" | "agents" | "tiles"
+  >,
   direction: HexGridDirection,
 ): PathogenEdgeSnapshot {
   const boundary = new Set(
@@ -289,6 +320,14 @@ export function pathogenEdgeSnapshot(
       pressure: unionPressure(current?.pressure ?? 0, infectiousPressure),
     });
   }
+  const reservoirs: PathogenEdgeReservoir[] = [];
+  for (const tile of state.tiles ?? []) {
+    if (!boundary.has(positionKey(tile))) continue;
+    const burden = tilePathogenReservoir(tile);
+    if (burden <= PATHOGEN_EPSILON) continue;
+    reservoirs.push({ position: { x: tile.x, y: tile.y }, burden });
+  }
+  reservoirs.sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
   return {
     regionId: state.regionId,
     direction,
@@ -297,6 +336,7 @@ export function pathogenEdgeSnapshot(
     agents: [...pressure.values()].sort((a, b) =>
       a.position.y - b.position.y || a.position.x - b.position.x
     ),
+    reservoirs,
   };
 }
 
@@ -331,6 +371,37 @@ export function pathogenHaloPressureMap(
   return result;
 }
 
+/**
+ * Materialize environmental burden from the exact ghost cells paired with local
+ * boundary cells. This is read-only: the neighbor keeps ownership of its tile
+ * reservoir, while the local region receives only a transient exposure input.
+ */
+export function pathogenHaloReservoirMap(
+  links: readonly HexHaloLink[],
+  edges: readonly PathogenEdgeSnapshot[],
+): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const edge of edges) {
+    for (const entry of edge.reservoirs ?? []) {
+      index.set(
+        `${edge.regionId}:${edge.direction}:${positionKey(entry.position)}`,
+        clamp01(entry.burden),
+      );
+    }
+  }
+
+  const result = new Map<string, number>();
+  for (const link of links) {
+    const burden = index.get(
+      `${link.neighborRegionId}:${link.neighborDirection}:${positionKey(link.neighborPosition)}`,
+    );
+    if (burden === undefined || burden <= 0) continue;
+    const key = positionKey(link.sourcePosition);
+    result.set(key, unionPressure(result.get(key) ?? 0, burden));
+  }
+  return result;
+}
+
 function singlePathogenStep(
   state: WorldState,
   environment: PathogenEnvironmentFrame | undefined,
@@ -359,8 +430,7 @@ function singlePathogenStep(
     const currentImmunity = previousImmunity.get(agent.id) ?? 0;
     const climatePersistence = pathogenClimatePersistence(agent.position, environment);
     const directContact = localContactExposure(contactIndex, agent);
-    const environmentalExposure =
-      (previousReservoir.get(positionKey(agent.position)) ?? 0) * PATHOGEN_RESERVOIR_EXPOSURE_GAIN;
+    const environmentalExposure = localReservoirExposure(previousReservoir, agent.position);
     const contact = unionPressure(directContact, environmentalExposure) *
       clamp01(1 - currentImmunity * PATHOGEN_IMMUNITY_MAX_EFFECT);
     // Climate controls survival/clearance of existing burden rather than acting
@@ -428,14 +498,14 @@ function singlePathogenStep(
  * Same-cell crowding is intentionally a stronger contact than sharing an edge.
  * An exact cross-region halo contact uses the same adjacent-cell gain as an
  * ordinary local six-neighbor contact, so a Durable Object seam does not change
- * transmission strength. Climate only changes persistence of existing burden;
- * it cannot create infection without a carrier. Recovery is also coupled
- * conservatively to the existing energy reserve. Prior infectious burden builds
- * bounded, slowly waning protection that reduces direct, environmental and halo
- * exposure. Infectious carriers also shed a small amount into their current hex;
- * that reservoir decays with climate-dependent persistence and can expose a later
- * occupant without manufacturing burden from climate alone. Reservoir halo export
- * is intentionally left for a later cross-region step.
+ * transmission strength. Environmental reservoir exposure follows the same hex
+ * geometry: same-cell burden is strongest, immediate six-neighbor burden is
+ * weaker, and a ghost-cell burden across a DO seam uses that exact adjacent
+ * strength without copying or mutating the remote tile. Climate only changes
+ * persistence of existing burden; it cannot create infection without a carrier.
+ * Recovery is also coupled conservatively to the existing energy reserve. Prior
+ * infectious burden builds bounded, slowly waning protection that reduces direct,
+ * environmental and halo exposure.
  */
 export function applyPathogenSteps(
   state: WorldState,
@@ -443,6 +513,7 @@ export function applyPathogenSteps(
   environment?: PathogenEnvironmentFrame,
   haloPressure: ReadonlyMap<string, number> = new Map(),
   haloSteps = 0,
+  haloReservoir: ReadonlyMap<string, number> = new Map(),
 ): number {
   const safeLocalSteps = Math.max(0, Math.min(64, Math.floor(localSteps)));
   const safeHaloSteps = Math.max(0, Math.min(16, Math.floor(haloSteps)));
@@ -451,15 +522,18 @@ export function applyPathogenSteps(
     changed += singlePathogenStep(state, environment);
   }
 
-  if (safeHaloSteps <= 0 || haloPressure.size === 0) return changed;
+  if (safeHaloSteps <= 0 || (haloPressure.size === 0 && haloReservoir.size === 0)) return changed;
   for (const agent of state.agents) {
     const pressure = haloPressure.get(positionKey(agent.position)) ?? 0;
-    if (pressure <= 0) continue;
-    const current = agentPathogenLoad(agent);
-    const perExposure = clamp01(
-      pressure * PATHOGEN_ADJACENT_CONTACT_GAIN * pathogenSusceptibility(agent),
+    const reservoirBurden = haloReservoir.get(positionKey(agent.position)) ?? 0;
+    if (pressure <= 0 && reservoirBurden <= 0) continue;
+    const rawExposure = unionPressure(
+      pressure * PATHOGEN_ADJACENT_CONTACT_GAIN,
+      reservoirBurden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
     );
+    const perExposure = clamp01(rawExposure * pathogenSusceptibility(agent));
     const combinedExposure = 1 - Math.pow(1 - perExposure, safeHaloSteps);
+    const current = agentPathogenLoad(agent);
     const next = clamp01(current + (1 - current) * combinedExposure);
     if (next - current <= PATHOGEN_EPSILON) continue;
     (agent as PathogenAgent).pathogenLoad = next;
