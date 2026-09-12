@@ -50,6 +50,16 @@ function targetHasActiveFactionCamp(agent: Agent, targetState: WorldState): bool
   );
 }
 
+function targetBuildingFactionCamp(agent: Agent, targetState: WorldState) {
+  return targetState.structures
+    .filter((structure) =>
+      structure.factionId === agent.factionId
+      && structure.type === "camp"
+      && structure.status === "building"
+    )
+    .sort((a, b) => a.id.localeCompare(b.id))[0];
+}
+
 function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["task"] | undefined {
   const targetTick = targetState.tick;
   const task = agent.task;
@@ -100,21 +110,38 @@ function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["
     task.type === "move"
     && agent.role === "builder"
     && carriesCampKit(agent)
-    && !targetHasActiveFactionCamp(agent, targetState)
   ) {
-    // Settlement migration reaches the seam as an autonomous move because the
-    // source-local boundary coordinate must not survive ownership handoff. A
-    // builder that physically carries a complete camp kit can safely recover
-    // the high-level founding intent from low-level conserved state on arrival.
+    const buildingCamp = targetBuildingFactionCamp(agent, targetState);
+    if (buildingCamp !== undefined) {
+      // A camp that is already being built belongs to the target Region DO, so
+      // it is safe to bind the arriving pioneer to that target-local ID here.
+      // This also closes a one-tick race: if another local builder completes
+      // the camp before the pioneer executes, resolveBuildTaskTarget() still
+      // sees the same now-active structure instead of founding a duplicate.
+      return {
+        source: "autonomy",
+        issuedAtTick: targetTick,
+        type: "build",
+        structureType: "camp",
+        target: { ...buildingCamp.position },
+        structureId: buildingCamp.id,
+      };
+    }
+    if (!targetHasActiveFactionCamp(agent, targetState)) {
+      // Settlement migration reaches the seam as an autonomous move because the
+      // source-local boundary coordinate must not survive ownership handoff. A
+      // builder that physically carries a complete camp kit can safely recover
+      // the high-level founding intent from low-level conserved state on arrival.
+      return {
+        source: "autonomy",
+        issuedAtTick: targetTick,
+        type: "build",
+        structureType: "camp",
+      };
+    }
     // If this faction already has an active camp here, dropping the move means
     // the pioneer joins that settlement instead of creating a duplicate camp;
     // normal target-side autonomy can then deposit or reuse the carried kit.
-    return {
-      source: "autonomy",
-      issuedAtTick: targetTick,
-      type: "build",
-      structureType: "camp",
-    };
   }
   return undefined;
 }
