@@ -1,4 +1,4 @@
-import { hexGridBoundaryCells, hexGridDistance, type HexGridDirection } from "./hex-grid.js";
+import { hexGridBoundaryCells, hexGridNeighbors, type HexGridDirection } from "./hex-grid.js";
 import type { HexHaloLink } from "./hex-halo.js";
 import { positionKey, type Agent, type GridPosition, type WorldState } from "./protocol.js";
 import { sampleWorldConditions } from "./world-scale.js";
@@ -140,16 +140,43 @@ export function pathogenClimatePersistence(
   return dampness * thermalSuitability;
 }
 
-function localContactExposure(state: Pick<WorldState, "agents">, target: Agent): number {
+type PathogenContactIndex = ReadonlyMap<string, readonly Agent[]>;
+
+/**
+ * Bucket the immutable pre-step population by logical hex. Pathogen contact is
+ * local by definition (same cell or one of six neighbors), so scanning every BOT
+ * for every target needlessly turns a contact step into O(N²) work as population
+ * grows. The index keeps the exact same contact geometry while making the common
+ * sparse case proportional to population plus the agents in seven nearby cells.
+ */
+function buildPathogenContactIndex(agents: readonly Agent[]): PathogenContactIndex {
+  const mutable = new Map<string, Agent[]>();
+  for (const agent of agents) {
+    const key = positionKey(agent.position);
+    const bucket = mutable.get(key);
+    if (bucket === undefined) {
+      mutable.set(key, [agent]);
+    } else {
+      bucket.push(agent);
+    }
+  }
+  return mutable;
+}
+
+function localContactExposure(index: PathogenContactIndex, target: Agent): number {
   let exposure = 0;
-  for (const source of state.agents) {
-    if (source.id === target.id) continue;
-    const distance = hexGridDistance(source.position, target.position);
-    if (distance > 1) continue;
-    const gain = distance === 0
-      ? PATHOGEN_SAME_CELL_CONTACT_GAIN
-      : PATHOGEN_ADJACENT_CONTACT_GAIN;
-    exposure = unionPressure(exposure, agentPathogenPressure(source) * gain);
+  const addBucket = (position: GridPosition, gain: number): void => {
+    const bucket = index.get(positionKey(position));
+    if (bucket === undefined) return;
+    for (const source of bucket) {
+      if (source.id === target.id) continue;
+      exposure = unionPressure(exposure, agentPathogenPressure(source) * gain);
+    }
+  };
+
+  addBucket(target.position, PATHOGEN_SAME_CELL_CONTACT_GAIN);
+  for (const neighbor of hexGridNeighbors(target.position)) {
+    addBucket(neighbor, PATHOGEN_ADJACENT_CONTACT_GAIN);
   }
   return exposure;
 }
@@ -238,13 +265,15 @@ function singlePathogenStep(
       pathogenImmunity: previousImmunity.get(agent.id) ?? 0,
     })) as Agent[],
   };
+  const previousAgentsById = new Map(previousState.agents.map((agent) => [agent.id, agent]));
+  const contactIndex = buildPathogenContactIndex(previousState.agents);
   let changed = 0;
 
   for (const agent of state.agents) {
     const current = previousLoads.get(agent.id) ?? 0;
     const currentImmunity = previousImmunity.get(agent.id) ?? 0;
     const climatePersistence = pathogenClimatePersistence(agent.position, environment);
-    const contact = localContactExposure(previousState, agent) *
+    const contact = localContactExposure(contactIndex, agent) *
       clamp01(1 - currentImmunity * PATHOGEN_IMMUNITY_MAX_EFFECT);
     // Climate controls survival/clearance of existing burden rather than acting
     // as a source term. That keeps pathogen mass causally attached to carriers
@@ -266,9 +295,7 @@ function singlePathogenStep(
     // Prior infectious burden leaves a gradually acquired, gradually waning
     // protection. This creates history-dependent epidemics from low-level agent
     // state without a permanent immune flag or a new WorldState schema version.
-    const infectiousStimulus = agentPathogenPressure(previousState.agents.find(
-      (candidate) => candidate.id === agent.id,
-    ) ?? agent);
+    const infectiousStimulus = agentPathogenPressure(previousAgentsById.get(agent.id) ?? agent);
     const nextImmunity = infectiousStimulus > 0
       ? clamp01(
         currentImmunity +
