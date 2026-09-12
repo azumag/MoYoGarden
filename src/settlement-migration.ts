@@ -318,7 +318,17 @@ function eligiblePioneer(agent: Agent): boolean {
 }
 
 function isTransitPioneer(state: WorldState, agent: Agent): boolean {
-  if (!eligiblePioneer(agent) || activeCamps(state, agent.factionId).length > 0) return false;
+  if (!eligiblePioneer(agent)) return false;
+  if (state.structures.some((structure) =>
+    structure.factionId === agent.factionId
+    && structure.type === "camp"
+    && (structure.status === "active" || structure.status === "building")
+  )) {
+    // An in-progress camp is already a real settlement commitment: the carried
+    // kit can be used by the existing local build resolver. Treating this region
+    // as transit-only would make the pioneer leave before it can assist the camp.
+    return false;
+  }
   const task = agent.task;
   if (
     task?.source !== "autonomy"
