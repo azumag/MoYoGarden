@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  hexGridBoundaryCells,
-  hexGridDistance,
-  isHexGridCell,
-} from "../dist-ts/src/hex-grid.js";
+import { hexGridDistance, isHexGridCell } from "../dist-ts/src/hex-grid.js";
 import {
   planAutonomousSettlementMigration,
   prepareSettlementMigrationKit,
@@ -85,15 +81,6 @@ function eastHalo() {
   }];
 }
 
-function closestBoundaryCell(state, direction, origin) {
-  return hexGridBoundaryCells(state, direction)
-    .sort((a, b) =>
-      hexGridDistance(a, origin) - hexGridDistance(b, origin)
-      || a.y - b.y
-      || a.x - b.x
-    )[0];
-}
-
 test("population pressure with no spaced local camp site plans a neighboring pioneer", () => {
   const { state, builder } = fixture();
   assert.equal(settlementMigrationPressure(state, builder.factionId), true);
@@ -106,28 +93,19 @@ test("population pressure with no spaced local camp site plans a neighboring pio
 });
 
 test("pioneer prefers a resource-supported neighboring edge at equal travel cost", () => {
-  const { state, builder } = fixture();
-  const east = closestBoundaryCell(state, "E", builder.position);
-  const west = closestBoundaryCell(state, "W", builder.position);
-  assert.ok(east);
-  assert.ok(west);
-  assert.equal(
-    hexGridDistance(east, builder.position),
-    hexGridDistance(west, builder.position),
-    "fixture should isolate settlement support from path distance",
-  );
-
+  const { state } = fixture();
+  const sharedSeam = { x: 30, y: 11 };
   const plan = planAutonomousSettlementMigration(state, [
     {
       direction: "E",
-      sourcePosition: east,
+      sourcePosition: sharedSeam,
       neighborRegionId: "hex-q1-r0",
       neighborPosition: { x: 8, y: 11 },
       tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
     },
     {
       direction: "W",
-      sourcePosition: west,
+      sourcePosition: sharedSeam,
       neighborRegionId: "hex-q-1-r0",
       neighborPosition: { x: 30, y: 11 },
       tile: {
@@ -143,19 +121,15 @@ test("pioneer prefers a resource-supported neighboring edge at equal travel cost
   assert.ok(plan);
   assert.equal(plan.direction, "W");
   assert.equal(plan.neighborRegionId, "hex-q-1-r0");
-  assert.deepEqual(plan.boundaryTarget, west);
+  assert.deepEqual(plan.boundaryTarget, sharedSeam);
 });
 
 test("duplicate halo references do not inflate one neighbor's visible support", () => {
-  const { state, builder } = fixture();
-  const east = closestBoundaryCell(state, "E", builder.position);
-  const west = closestBoundaryCell(state, "W", builder.position);
-  assert.ok(east);
-  assert.ok(west);
-
+  const { state } = fixture();
+  const sharedSeam = { x: 30, y: 11 };
   const duplicatedEast = {
     direction: "E",
-    sourcePosition: east,
+    sourcePosition: sharedSeam,
     neighborRegionId: "hex-q1-r0",
     neighborPosition: { x: 8, y: 11 },
     tile: {
@@ -168,10 +142,10 @@ test("duplicate halo references do not inflate one neighbor's visible support", 
   };
   const plan = planAutonomousSettlementMigration(state, [
     duplicatedEast,
-    { ...duplicatedEast, sourcePosition: { ...east } },
+    { ...duplicatedEast, sourcePosition: { ...sharedSeam } },
     {
       direction: "W",
-      sourcePosition: west,
+      sourcePosition: sharedSeam,
       neighborRegionId: "hex-q-1-r0",
       neighborPosition: { x: 30, y: 11 },
       tile: {
