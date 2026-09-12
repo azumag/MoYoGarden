@@ -164,7 +164,7 @@ test("virtual catch-up planning is bounded and ignores paused wall time", () => 
   );
   assert.deepEqual(
     regionVirtualCatchUpPlan(0, 3_600_000, 10_000),
-    { dueTicks: 360, runnableTicks: 60, capped: true },
+    { dueTicks: 360, runnableTicks: 12, capped: true },
   );
 });
 

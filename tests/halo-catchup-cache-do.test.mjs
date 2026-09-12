@@ -23,7 +23,7 @@ class MemoryState {
   getWebSockets() { return []; }
 }
 
-async function scenario({ tickScopedReference = false } = {}) {
+async function scenario({ tickScopedReference = false, startingTick = 0 } = {}) {
   const reads = [];
   const neighbors = new Map();
   const control = { failure: null, write: null, read: null };
@@ -81,6 +81,8 @@ async function scenario({ tickScopedReference = false } = {}) {
     headers: { "x-moyo-region-internal": "garden-1" },
   }));
   const state = object.runtime.snapshot();
+  state.tick = startingTick;
+  state.revision = Math.max(state.revision, startingTick);
   for (const agent of state.agents) { agent.autonomy = false; delete agent.task; }
   for (const tile of state.tiles) {
     if (tile.resource?.kind === "wood" || tile.resource?.kind === "food") tile.resource.amount = 0;
@@ -100,31 +102,36 @@ async function scenario({ tickScopedReference = false } = {}) {
   return { object, ctx, reads, neighbor, control };
 }
 
-for (const dueTicks of [60, 360]) {
-  test(`${dueTicks}-tick debt shares stable halo reads without changing state, clock, or remaining debt`, async (context) => {
+for (const dueTicks of [12, 60]) {
+  test(`${dueTicks}-tick debt shares stable halo reads inside a bounded batch`, async (context) => {
     let now = 1_800_004_000_000;
     context.mock.method(Date, "now", () => now);
-    const reference = await scenario({ tickScopedReference: true });
-    const cached = await scenario();
+    // Starting at T18 makes this 12-tick batch cross both autonomy T24 and
+    // halo/pathogen T30 boundaries, so the observation cache is still tested
+    // across independent expensive phases even with the smaller CPU budget.
+    const reference = await scenario({ tickScopedReference: true, startingTick: 18 });
+    const cached = await scenario({ startingTick: 18 });
     now += dueTicks * 10_000;
     await reference.object.alarm();
     await cached.object.alarm();
     assert.deepEqual(cached.object.runtime.snapshot(), reference.object.runtime.snapshot());
     assert.deepEqual(cached.ctx.storage.values.get("region"), reference.ctx.storage.values.get("region"));
-    assert.equal(cached.object.runtime.snapshot().tick, 60);
-    assert.equal(cached.ctx.storage.values.get("region").lastSimulatedAt, 1_800_004_600_000);
+    assert.equal(cached.object.runtime.snapshot().tick, 30);
+    assert.equal(cached.ctx.storage.values.get("region").lastSimulatedAt, 1_800_004_120_000);
     const count = (entry, suffix) => entry.reads.filter((read) => read.path.endsWith(suffix)).length;
-    assert.equal(count(reference, "/halo/edge"), 12);
+    assert.equal(count(reference, "/halo/edge"), 6);
     assert.equal(count(cached, "/halo/edge"), 6);
     assert.equal(count(cached, "/pathogen/edge"), count(reference, "/pathogen/edge"));
     assert.ok(count(cached, "/pathogen/edge") > 0, "the fixture must exercise the outer pathogen step too");
     const health = await (await cached.object.fetch(new Request("https://moyo.example/api/health", {
       headers: { "x-moyo-region-internal": "garden-1" },
     }))).json();
-    assert.equal(health.virtualTicksDue, dueTicks - 60);
-    assert.equal(health.virtualTicksRunnable, Math.min(60, dueTicks - 60));
+    assert.equal(health.virtualTicksDue, dueTicks - 12);
+    assert.equal(health.virtualTicksRunnable, Math.min(12, dueTicks - 12));
     assert.equal(cached.ctx.storage.alarm, reference.ctx.storage.alarm);
-    assert.equal(cached.ctx.storage.alarm, dueTicks === 60 ? null : now + 10_000);
+    if (dueTicks > 12) {
+      assert.equal(cached.ctx.storage.alarm, now + 1_000, "remaining debt should retry promptly");
+    }
     assert.equal(cached.ctx.storage.alarmSetCount, reference.ctx.storage.alarmSetCount);
     assert.equal(cached.object.haloEdgeReadCache, undefined, "no cached observation may survive the alarm");
   });
@@ -248,6 +255,7 @@ test("failed catch-up releases its cache and retains all unfinished virtual time
   assert.equal(ctx.storage.alarm, now + 10_000);
   tickMock.mock.restore();
   await object.alarm();
-  assert.equal(object.runtime.snapshot().tick, 60);
-  assert.equal(ctx.storage.values.get("region").lastSimulatedAt, now);
+  assert.equal(object.runtime.snapshot().tick, 12);
+  assert.equal(ctx.storage.values.get("region").lastSimulatedAt, 1_800_010_120_000);
+  assert.equal(ctx.storage.alarm, now + 1_000);
 });

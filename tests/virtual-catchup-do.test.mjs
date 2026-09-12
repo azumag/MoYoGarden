@@ -55,19 +55,21 @@ test("cold alarm catches up bounded virtual ticks without skipping simulation ca
     ctx.storage.alarmSetCount = 0;
     now += 600_000;
     await object.alarm();
-    const alarmSetsAfterCatchUp = ctx.storage.alarmSetCount;
 
-    const state = await (await object.fetch(request("/api/world/snapshot"))).json();
-    assert.equal(state.tick, 60, "ten cold minutes should execute sixty 10-second virtual ticks");
+    let state = object.runtime.snapshot();
+    assert.equal(state.tick, 12, "one alarm should execute at most one 12-tick catch-up batch");
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 120_000);
+    assert.equal(ctx.storage.alarm, now + 1_000, "successful debt batches should retry promptly");
+
+    for (let batch = 1; batch < 5; batch += 1) await object.alarm();
+    state = object.runtime.snapshot();
+    assert.equal(state.tick, 60, "successive bounded batches must preserve every virtual tick");
     assert.equal(ctx.storage.values.get("region").lastSimulatedAt, now);
+    assert.equal(ctx.storage.alarm, null, "caught-up cold regions should still enter deep-idle");
     const health = await (await object.fetch(request("/api/health"))).json();
     assert.equal(health.virtualTicksDue, 0);
     assert.equal(health.virtualTicksRunnable, 0);
-    assert.equal(
-      alarmSetsAfterCatchUp,
-      1,
-      "catch-up should only perform the final base reschedule before cold deep-idle removes it",
-    );
+    assert.equal(health.virtualTicksCapped, false);
   } finally {
     Date.now = originalNow;
   }
@@ -89,13 +91,13 @@ test("capped catch-up preserves remaining debt and schedules a prompt retry", as
     await object.alarm();
 
     const state = await (await object.fetch(request("/api/world/snapshot"))).json();
-    assert.equal(state.tick, 60);
-    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 600_000);
+    assert.equal(state.tick, 12);
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 120_000);
     const health = await (await object.fetch(request("/api/health"))).json();
-    assert.equal(health.virtualTicksDue, 300);
-    assert.equal(health.virtualTicksRunnable, 60);
+    assert.equal(health.virtualTicksDue, 348);
+    assert.equal(health.virtualTicksRunnable, 12);
     assert.equal(health.virtualTicksCapped, true);
-    assert.equal(ctx.storage.alarm, now + 10_000, "remaining debt should retry at base tick cadence");
+    assert.equal(ctx.storage.alarm, now + 1_000, "remaining debt should retry in a short bounded batch");
   } finally {
     Date.now = originalNow;
   }
@@ -112,7 +114,8 @@ test("caught-up cold regions deep-idle without an alarm and warm access wakes th
     await object.fetch(request("/api/world/snapshot"));
 
     now += 600_000;
-    await object.alarm();
+    for (let batch = 0; batch < 5; batch += 1) await object.alarm();
+    assert.equal(object.runtime.snapshot().tick, 60);
     assert.equal(ctx.storage.alarm, null, "caught-up cold regions should stop scheduling alarms");
 
     const coldHealth = await (await object.fetch(request("/api/health"))).json();

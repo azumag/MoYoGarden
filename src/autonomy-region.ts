@@ -107,6 +107,10 @@ const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
 const AUTONOMOUS_SUPPLY_CLAIM_TTL = AUTONOMOUS_TRAVEL_TTL + AUTONOMOUS_SCOUT_INTERVAL;
 const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;
+// Successful bounded catch-up batches can drain debt promptly without
+// putting dozens of full virtual ticks into one DO invocation. Failed
+// batches keep the normal tick retry to avoid a hot failure loop.
+const CATCH_UP_RETRY_MS = 1_000;
 
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
@@ -1370,6 +1374,6 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
       if (!completed) await this.scheduleCatchUpIfBehind(Date.now());
     }
-    await this.scheduleCatchUpIfBehind(Date.now());
+    await this.scheduleCatchUpIfBehind(Date.now(), CATCH_UP_RETRY_MS);
   }
 }

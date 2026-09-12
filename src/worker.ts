@@ -67,7 +67,10 @@ const JSON_HEADERS = {
 const IDLE_TICK_MULTIPLIER = 6;
 const ACTIVE_GRACE_MULTIPLIER = 6;
 const MAX_IDLE_TICK_MS = 3_600_000;
-const MAX_VIRTUAL_CATCH_UP_TICKS = 60;
+// Keep one Alarm batch within a single autonomy-scout interval. This bounds
+// full simulation/autonomy/halo work per Durable Object invocation while
+// preserving the exact per-tick simulation chain.
+const MAX_VIRTUAL_CATCH_UP_TICKS = 12;
 const TERRAIN_FRAME_VERSION = 1;
 
 export function regionTickDelayMs(tickMs: number, active: boolean): number {
@@ -489,10 +492,16 @@ export class RegionDurableObject {
     return Math.max(1, this.virtualCatchUpPlan(now).runnableTicks);
   }
 
-  protected async scheduleCatchUpIfBehind(now = Date.now()): Promise<void> {
+  protected async scheduleCatchUpIfBehind(
+    now = Date.now(),
+    delayMs = this.tickMs,
+  ): Promise<void> {
     if (!this.activated || this.paused) return;
     if (this.virtualCatchUpPlan(now).dueTicks > 0) {
-      await this.ctx.storage.setAlarm(now + this.tickMs);
+      const retryDelayMs = Number.isFinite(delayMs)
+        ? Math.max(1_000, Math.min(this.tickMs, Math.floor(delayMs)))
+        : this.tickMs;
+      await this.ctx.storage.setAlarm(now + retryDelayMs);
     }
   }
 
