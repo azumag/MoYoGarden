@@ -22,7 +22,10 @@ export interface PathogenEdgeSnapshot {
   agents: PathogenEdgePressure[];
 }
 
-type PathogenAgent = Agent & { pathogenLoad?: number };
+type PathogenAgent = Agent & {
+  pathogenLoad?: number;
+  pathogenImmunity?: number;
+};
 
 export const PATHOGEN_LOCAL_INTERVAL = 6;
 export const PATHOGEN_HALO_INTERVAL = 30;
@@ -34,6 +37,9 @@ const PATHOGEN_ADJACENT_CONTACT_GAIN = 0.06;
 export const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
 const PATHOGEN_SYMPTOM_THRESHOLD = 0.65;
 const PATHOGEN_SYMPTOM_ENERGY_COST = 1;
+const PATHOGEN_IMMUNITY_GAIN_RATE = 0.04;
+const PATHOGEN_IMMUNITY_DECAY_RATE = 0.003;
+const PATHOGEN_IMMUNITY_MAX_EFFECT = 0.65;
 const PATHOGEN_EPSILON = 1e-4;
 
 function clamp01(value: number): number {
@@ -43,6 +49,22 @@ function clamp01(value: number): number {
 export function agentPathogenLoad(agent: Agent): number {
   const value = (agent as PathogenAgent).pathogenLoad;
   return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : 0;
+}
+
+/**
+ * Return the slowly changing protection accumulated by prior pathogen burden.
+ *
+ * This is an additive optional Agent property rather than a schema migration:
+ * old saves and fresh BOTs read as zero, while ordinary state persistence and
+ * ownership handoff retain the value once an exposed BOT has acquired it.
+ */
+export function agentPathogenImmunity(agent: Agent): number {
+  const value = (agent as PathogenAgent).pathogenImmunity;
+  return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : 0;
+}
+
+function pathogenSusceptibility(agent: Agent): number {
+  return clamp01(1 - agentPathogenImmunity(agent) * PATHOGEN_IMMUNITY_MAX_EFFECT);
 }
 
 /**
@@ -204,20 +226,26 @@ function singlePathogenStep(
 ): number {
   if (state.agents.length === 0) return 0;
   const previousLoads = new Map(state.agents.map((agent) => [agent.id, agentPathogenLoad(agent)]));
-  // Contact must use the pre-step loads for every BOT. Otherwise array order can
-  // create an artificial within-tick infection chain.
+  const previousImmunity = new Map(
+    state.agents.map((agent) => [agent.id, agentPathogenImmunity(agent)]),
+  );
+  // Contact must use the pre-step loads and immunity for every BOT. Otherwise
+  // array order can create an artificial within-tick infection or immunity chain.
   const previousState = {
     agents: state.agents.map((agent) => ({
       ...agent,
       pathogenLoad: previousLoads.get(agent.id) ?? 0,
+      pathogenImmunity: previousImmunity.get(agent.id) ?? 0,
     })) as Agent[],
   };
   let changed = 0;
 
   for (const agent of state.agents) {
     const current = previousLoads.get(agent.id) ?? 0;
+    const currentImmunity = previousImmunity.get(agent.id) ?? 0;
     const climatePersistence = pathogenClimatePersistence(agent.position, environment);
-    const contact = localContactExposure(previousState, agent);
+    const contact = localContactExposure(previousState, agent) *
+      clamp01(1 - currentImmunity * PATHOGEN_IMMUNITY_MAX_EFFECT);
     // Climate controls survival/clearance of existing burden rather than acting
     // as a source term. That keeps pathogen mass causally attached to carriers
     // until a future explicit environmental reservoir is modeled.
@@ -234,6 +262,29 @@ function singlePathogenStep(
       target.pathogenLoad = next;
       changed += 1;
     }
+
+    // Prior infectious burden leaves a gradually acquired, gradually waning
+    // protection. This creates history-dependent epidemics from low-level agent
+    // state without a permanent immune flag or a new WorldState schema version.
+    const infectiousStimulus = agentPathogenPressure(previousState.agents.find(
+      (candidate) => candidate.id === agent.id,
+    ) ?? agent);
+    const nextImmunity = infectiousStimulus > 0
+      ? clamp01(
+        currentImmunity +
+          (1 - currentImmunity) * PATHOGEN_IMMUNITY_GAIN_RATE * infectiousStimulus,
+      )
+      : clamp01(currentImmunity * (1 - PATHOGEN_IMMUNITY_DECAY_RATE));
+    if (nextImmunity <= PATHOGEN_EPSILON) {
+      if (target.pathogenImmunity !== undefined) {
+        delete target.pathogenImmunity;
+        changed += 1;
+      }
+    } else if (Math.abs(nextImmunity - currentImmunity) > PATHOGEN_EPSILON) {
+      target.pathogenImmunity = nextImmunity;
+      changed += 1;
+    }
+
     if (next >= PATHOGEN_SYMPTOM_THRESHOLD && agent.energy > 0) {
       agent.energy = Math.max(0, agent.energy - PATHOGEN_SYMPTOM_ENERGY_COST);
       changed += 1;
@@ -244,18 +295,20 @@ function singlePathogenStep(
 
 /**
  * Advance the pathogen layer without adding another persisted world object.
- * `pathogenLoad` is an optional additive Agent property: old saves read it as 0,
- * ordinary structured-clone persistence and agent handoff retain it, and fresh
- * agents start susceptible. Local contact is six-neighbor hex contact; halo
- * exposure is applied only at exact boundary cells on its slower cadence.
+ * `pathogenLoad` and `pathogenImmunity` are optional additive Agent properties:
+ * old saves read them as 0, ordinary structured-clone persistence and agent
+ * handoff retain them, and fresh agents start susceptible. Local contact is
+ * six-neighbor hex contact; halo exposure is applied only at exact boundary
+ * cells on its slower cadence.
  *
  * Same-cell crowding is intentionally a stronger contact than sharing an edge.
  * An exact cross-region halo contact uses the same adjacent-cell gain as an
  * ordinary local six-neighbor contact, so a Durable Object seam does not change
  * transmission strength. Climate only changes persistence of existing burden;
  * it cannot create infection without a carrier. Recovery is also coupled
- * conservatively to the existing energy reserve, so nutrition and disease
- * interact without a new persisted health subsystem.
+ * conservatively to the existing energy reserve. Prior infectious burden builds
+ * bounded, slowly waning protection that reduces both local and halo exposure,
+ * giving repeated outbreaks population memory without a permanent immunity bit.
  */
 export function applyPathogenSteps(
   state: WorldState,
@@ -276,7 +329,9 @@ export function applyPathogenSteps(
     const pressure = haloPressure.get(positionKey(agent.position)) ?? 0;
     if (pressure <= 0) continue;
     const current = agentPathogenLoad(agent);
-    const perExposure = clamp01(pressure * PATHOGEN_ADJACENT_CONTACT_GAIN);
+    const perExposure = clamp01(
+      pressure * PATHOGEN_ADJACENT_CONTACT_GAIN * pathogenSusceptibility(agent),
+    );
     const combinedExposure = 1 - Math.pow(1 - perExposure, safeHaloSteps);
     const next = clamp01(current + (1 - current) * combinedExposure);
     if (next - current <= PATHOGEN_EPSILON) continue;
