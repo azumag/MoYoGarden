@@ -28,7 +28,7 @@ export const PATHOGEN_LOCAL_INTERVAL = 6;
 export const PATHOGEN_HALO_INTERVAL = 30;
 const PATHOGEN_BASE_RECOVERY_RATE = 0.06;
 const PATHOGEN_RECOVERY_ENERGY_BAND = 0.015;
-const PATHOGEN_AMBIENT_GAIN = 0.012;
+const PATHOGEN_CLIMATE_PERSISTENCE_GAIN = 0.35;
 const PATHOGEN_SAME_CELL_CONTACT_GAIN = 0.11;
 const PATHOGEN_ADJACENT_CONTACT_GAIN = 0.06;
 export const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
@@ -64,12 +64,12 @@ export function pathogenRecoveryRate(agent: Pick<Agent, "energy">): number {
 /**
  * Convert internal pathogen burden into transmissible pressure.
  *
- * Very small loads can arise from the continuous ambient climate field and are
- * useful as latent ecological state, but treating every non-zero value as fully
- * infectious makes damp regions seed immediate person-to-person and cross-DO
- * spread. Keep burden continuous while requiring a modest subclinical buildup
- * before shedding begins. Infectiousness then rises smoothly to 1, well before
- * the separate symptom threshold, so asymptomatic transmission still exists.
+ * Very small loads are useful as latent ecological state, but treating every
+ * non-zero value as fully infectious makes tiny residual burdens seed immediate
+ * person-to-person and cross-DO spread. Keep burden continuous while requiring a
+ * modest subclinical buildup before shedding begins. Infectiousness then rises
+ * smoothly to 1, well before the separate symptom threshold, so asymptomatic
+ * transmission still exists.
  */
 export function agentPathogenPressure(agent: Agent): number {
   const load = agentPathogenLoad(agent);
@@ -94,7 +94,16 @@ export function pathogenStepCount(fromTick: number, toTick: number, interval: nu
   return Math.max(0, Math.floor(toTick / interval) - Math.floor(fromTick / interval));
 }
 
-function ambientPathogenPressure(
+/**
+ * Derive how strongly the shared low-level climate preserves an existing
+ * pathogen burden. Damp, moderately warm cells slow clearance a little, while
+ * dry or thermally hostile cells leave recovery unchanged.
+ *
+ * This is deliberately persistence, not spontaneous exposure: climate alone
+ * must never create pathogen mass from zero. New burden still requires an
+ * existing carrier through local six-neighbor contact or the exact hex halo.
+ */
+export function pathogenClimatePersistence(
   position: GridPosition,
   environment: PathogenEnvironmentFrame | undefined,
 ): number {
@@ -104,10 +113,6 @@ function ambientPathogenPressure(
     environment.originX + position.x,
     environment.originY + position.y,
   );
-  // Pathogen persistence emerges from the same continuous low-level climate as
-  // vegetation: damp, moderately warm cells support more environmental load,
-  // while dry, very hot or very cold cells suppress it. This is a pressure, not
-  // a biome/event switch, and ambient exposure alone stays sub-symptomatic.
   const dampness = clamp01((conditions.wetness - 0.42) / 0.48);
   const thermalSuitability = clamp01(1 - Math.abs(conditions.temperature - 0.62) / 0.42);
   return dampness * thermalSuitability;
@@ -211,11 +216,14 @@ function singlePathogenStep(
 
   for (const agent of state.agents) {
     const current = previousLoads.get(agent.id) ?? 0;
-    const ambient = ambientPathogenPressure(agent.position, environment) * PATHOGEN_AMBIENT_GAIN;
+    const climatePersistence = pathogenClimatePersistence(agent.position, environment);
     const contact = localContactExposure(previousState, agent);
-    const exposure = unionPressure(ambient, contact);
-    const recoveryRate = pathogenRecoveryRate(agent);
-    const next = clamp01(current * (1 - recoveryRate) + (1 - current) * exposure);
+    // Climate controls survival/clearance of existing burden rather than acting
+    // as a source term. That keeps pathogen mass causally attached to carriers
+    // until a future explicit environmental reservoir is modeled.
+    const recoveryRate = pathogenRecoveryRate(agent) *
+      (1 - climatePersistence * PATHOGEN_CLIMATE_PERSISTENCE_GAIN);
+    const next = clamp01(current * (1 - recoveryRate) + (1 - current) * contact);
     const target = agent as PathogenAgent;
     if (next <= PATHOGEN_EPSILON) {
       if (target.pathogenLoad !== undefined) {
@@ -244,9 +252,10 @@ function singlePathogenStep(
  * Same-cell crowding is intentionally a stronger contact than sharing an edge.
  * An exact cross-region halo contact uses the same adjacent-cell gain as an
  * ordinary local six-neighbor contact, so a Durable Object seam does not change
- * transmission strength. Recovery is coupled conservatively to the existing
- * energy reserve, so nutrition and disease interact without a new persisted
- * health subsystem.
+ * transmission strength. Climate only changes persistence of existing burden;
+ * it cannot create infection without a carrier. Recovery is also coupled
+ * conservatively to the existing energy reserve, so nutrition and disease
+ * interact without a new persisted health subsystem.
  */
 export function applyPathogenSteps(
   state: WorldState,
