@@ -50,6 +50,22 @@ function emptySettlementNeighborSupport(): SettlementNeighborSupport {
   };
 }
 
+function addSettlementSupportTile(
+  support: SettlementNeighborSupport,
+  tile: Pick<HexHaloTile["tile"], "terrain" | "resource">,
+): void {
+  if (tile.terrain === "water") return;
+  support.passableCells += 1;
+  const resource = tile.resource;
+  if (resource === undefined) return;
+  if (resource.maxAmount > 0) {
+    support.resourceCapacity[resource.kind] += resource.maxAmount;
+  }
+  if (resource.amount > 0) {
+    support.resources[resource.kind] += resource.amount;
+  }
+}
+
 function settlementNeighborSupports(
   halo: readonly HexHaloTile[],
 ): Map<string, SettlementNeighborSupport> {
@@ -65,19 +81,15 @@ function settlementNeighborSupports(
       support = emptySettlementNeighborSupport();
       supportByRegion.set(entry.neighborRegionId, support);
     }
-    if (entry.tile.terrain === "water") continue;
-    support.passableCells += 1;
-    const resource = entry.tile.resource;
-    if (resource !== undefined) {
-      if (resource.maxAmount > 0) {
-        support.resourceCapacity[resource.kind] += resource.maxAmount;
-      }
-      if (resource.amount > 0) {
-        support.resources[resource.kind] += resource.amount;
-      }
-    }
+    addSettlementSupportTile(support, entry.tile);
   }
   return supportByRegion;
+}
+
+function localSettlementSupport(state: WorldState): SettlementNeighborSupport {
+  const support = emptySettlementNeighborSupport();
+  for (const tile of state.tiles) addSettlementSupportTile(support, tile);
+  return support;
 }
 
 function resourceDiversity(support: SettlementNeighborSupport): number {
@@ -85,6 +97,17 @@ function resourceDiversity(support: SettlementNeighborSupport): number {
     (count, kind) => count + (support.resourceCapacity[kind] > 0 ? 1 : 0),
     0,
   );
+}
+
+function settlementResourceSupportRank(support: SettlementNeighborSupport): number {
+  // Founding material is already carried in the camp kit. For deciding whether
+  // a newly arrived pioneer should keep moving, rank renewable local support
+  // with food first, then wood, then stone. The bounded bit-mask-style score
+  // must strictly increase for another hop, which prevents equal-quality
+  // neighboring regions from making pioneers ping-pong indefinitely.
+  return (support.resourceCapacity.food > 0 ? 4 : 0)
+    + (support.resourceCapacity.wood > 0 ? 2 : 0)
+    + (support.resourceCapacity.stone > 0 ? 1 : 0);
 }
 
 function compareSettlementSupport(
@@ -205,7 +228,26 @@ function eligiblePioneer(agent: Agent): boolean {
     && agent.task.structureId === undefined;
 }
 
+function isTransitPioneer(state: WorldState, agent: Agent): boolean {
+  if (!eligiblePioneer(agent) || activeCamps(state, agent.factionId).length > 0) return false;
+  const task = agent.task;
+  if (
+    task?.source !== "autonomy"
+    || task.type !== "build"
+    || task.structureType !== "camp"
+    || task.structureId !== undefined
+    || task.target !== undefined
+  ) return false;
+  const deficit = campKitDeficit(agent);
+  return RESOURCE_KINDS.every((kind) => deficit[kind] === 0);
+}
+
 export function shouldScoutSettlementMigration(state: WorldState): boolean {
+  // A pioneer that has already crossed a region must decide settle-vs-continue
+  // before the normal simulation resolves its target-less camp build locally.
+  // Do this on the first target-side Alarm rather than waiting for the ordinary
+  // 12-tick population-pressure cadence.
+  if (state.agents.some((agent) => isTransitPioneer(state, agent))) return true;
   if (state.tick % SETTLEMENT_MIGRATION_SCOUT_INTERVAL !== 0) return false;
   return state.factions.some((faction) =>
     settlementMigrationPressure(state, faction.id)
@@ -233,12 +275,14 @@ export function planAutonomousSettlementMigration(
       .filter((faction) => settlementMigrationPressure(state, faction.id))
       .map((faction) => faction.id),
   );
-  if (pressuredFactions.size === 0) return undefined;
   const supportByRegion = settlementNeighborSupports(halo);
+  const localSupport = localSettlementSupport(state);
+  const localSupportRank = settlementResourceSupportRank(localSupport);
 
   for (const agent of [...state.agents].sort((a, b) => a.id.localeCompare(b.id))) {
+    const transitPioneer = isTransitPioneer(state, agent);
     if (
-      !pressuredFactions.has(agent.factionId)
+      (!pressuredFactions.has(agent.factionId) && !transitPioneer)
       || !eligiblePioneer(agent)
       || !canPrepareSettlementMigrationKit(state, agent)
     ) continue;
@@ -249,10 +293,15 @@ export function planAutonomousSettlementMigration(
         if (entry.tile.terrain === "water") return [];
         const distance = distances.get(positionKey(entry.sourcePosition));
         if (distance === undefined || distance > energyBudget) return [];
+        const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
+        if (
+          transitPioneer
+          && settlementResourceSupportRank(support) <= localSupportRank
+        ) return [];
         return [{
           entry,
           distance,
-          support: supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport(),
+          support,
         }];
       })
       .sort((a, b) =>

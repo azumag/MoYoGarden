@@ -5,6 +5,7 @@ import {
   planAutonomousSettlementMigration,
   prepareSettlementMigrationKit,
   settlementMigrationPressure,
+  shouldScoutSettlementMigration,
 } from "../dist-ts/src/settlement-migration.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
@@ -79,6 +80,22 @@ function eastHalo() {
     neighborPosition: { x: 8, y: 11 },
     tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
   }];
+}
+
+function transitFixture() {
+  const { state, builder } = fixture();
+  state.structures = [];
+  state.agents = [builder];
+  state.tick = 25;
+  builder.position = { x: 19, y: 11 };
+  builder.inventory = { wood: 8, stone: 4, food: 0 };
+  builder.task = {
+    source: "autonomy",
+    issuedAtTick: state.tick,
+    type: "build",
+    structureType: "camp",
+  };
+  return { state, builder };
 }
 
 test("population pressure with no spaced local camp site plans a neighboring pioneer", () => {
@@ -256,4 +273,56 @@ test("migration does not start below settlement capacity", () => {
   state.agents = state.agents.slice(0, 5);
   assert.equal(settlementMigrationPressure(state, builder.factionId), false);
   assert.equal(planAutonomousSettlementMigration(state, eastHalo()), undefined);
+});
+
+test("arrived pioneer scouts immediately and continues toward richer renewable support", () => {
+  const { state, builder } = transitFixture();
+  const halo = [{
+    direction: "E",
+    sourcePosition: { x: 30, y: 11 },
+    neighborRegionId: "hex-q1-r0",
+    neighborPosition: { x: 8, y: 11 },
+    tile: {
+      x: 8,
+      y: 11,
+      terrain: "plain",
+      elevation: 0.5,
+      resource: { kind: "food", amount: 0, maxAmount: 12 },
+    },
+  }];
+
+  assert.notEqual(state.tick % 12, 0, "fixture should prove arrival scouting bypasses normal cadence");
+  assert.equal(shouldScoutSettlementMigration(state), true);
+  const plan = planAutonomousSettlementMigration(state, halo);
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q1-r0");
+});
+
+test("arrived pioneer settles when no neighbor has strictly richer renewable support", () => {
+  const { state } = transitFixture();
+  const localFood = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
+  assert.ok(localFood);
+  localFood.resource = { kind: "food", amount: 0, maxAmount: 20 };
+
+  const halo = [{
+    direction: "E",
+    sourcePosition: { x: 30, y: 11 },
+    neighborRegionId: "hex-q1-r0",
+    neighborPosition: { x: 8, y: 11 },
+    tile: {
+      x: 8,
+      y: 11,
+      terrain: "plain",
+      elevation: 0.5,
+      resource: { kind: "food", amount: 8, maxAmount: 40 },
+    },
+  }];
+
+  assert.equal(shouldScoutSettlementMigration(state), true);
+  assert.equal(
+    planAutonomousSettlementMigration(state, halo),
+    undefined,
+    "equal renewable-kind support should settle locally instead of risking region ping-pong",
+  );
 });
