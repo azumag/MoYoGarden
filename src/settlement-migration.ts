@@ -3,6 +3,7 @@ import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
   hexGridDistance,
+  isHexGridCell,
   type HexGridDirection,
 } from "./hex-grid.js";
 import {
@@ -93,7 +94,13 @@ function settlementNeighborSupports(
 
 function localSettlementSupport(state: WorldState): SettlementNeighborSupport {
   const support = emptySettlementNeighborSupport();
-  for (const tile of state.tiles) addSettlementSupportTile(support, tile);
+  // The 40x24 storage envelope retains inactive compatibility corners that are
+  // intentionally water. They are not part of the 397-cell simulation hex and
+  // must not make every local region look water-supported to migration logic.
+  for (const tile of state.tiles) {
+    if (!isHexGridCell(state, tile)) continue;
+    addSettlementSupportTile(support, tile);
+  }
   return support;
 }
 
