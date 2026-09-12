@@ -124,6 +124,74 @@ test("pioneer prefers a resource-supported neighboring edge at equal travel cost
   assert.deepEqual(plan.boundaryTarget, sharedSeam);
 });
 
+test("pioneer prefers durable carrying capacity over a temporarily fuller edge", () => {
+  const { state } = fixture();
+  const sharedSeam = { x: 30, y: 11 };
+  const plan = planAutonomousSettlementMigration(state, [
+    {
+      direction: "E",
+      sourcePosition: sharedSeam,
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 8, y: 11 },
+      tile: {
+        x: 8,
+        y: 11,
+        terrain: "plain",
+        elevation: 0.5,
+        resource: { kind: "food", amount: 8, maxAmount: 8 },
+      },
+    },
+    {
+      direction: "W",
+      sourcePosition: sharedSeam,
+      neighborRegionId: "hex-q-1-r0",
+      neighborPosition: { x: 30, y: 11 },
+      tile: {
+        x: 30,
+        y: 11,
+        terrain: "plain",
+        elevation: 0.5,
+        resource: { kind: "food", amount: 2, maxAmount: 20 },
+      },
+    },
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.direction, "W");
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+});
+
+test("temporarily depleted renewable capacity still informs pioneer settlement choice", () => {
+  const { state } = fixture();
+  const sharedSeam = { x: 30, y: 11 };
+  const plan = planAutonomousSettlementMigration(state, [
+    {
+      direction: "E",
+      sourcePosition: sharedSeam,
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 8, y: 11 },
+      tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
+    },
+    {
+      direction: "W",
+      sourcePosition: sharedSeam,
+      neighborRegionId: "hex-q-1-r0",
+      neighborPosition: { x: 30, y: 11 },
+      tile: {
+        x: 30,
+        y: 11,
+        terrain: "plain",
+        elevation: 0.5,
+        resource: { kind: "food", amount: 0, maxAmount: 20 },
+      },
+    },
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.direction, "W");
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+});
+
 test("duplicate halo references do not inflate one neighbor's visible support", () => {
   const { state } = fixture();
   const sharedSeam = { x: 30, y: 11 };

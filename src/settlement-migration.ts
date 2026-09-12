@@ -35,6 +35,7 @@ export interface AutonomousSettlementMigrationPlan {
 interface SettlementNeighborSupport {
   passableCells: number;
   resources: Record<ResourceKind, number>;
+  resourceCapacity: Record<ResourceKind, number>;
 }
 
 function directionRank(direction: HexGridDirection): number {
@@ -45,6 +46,7 @@ function emptySettlementNeighborSupport(): SettlementNeighborSupport {
   return {
     passableCells: 0,
     resources: { wood: 0, stone: 0, food: 0 },
+    resourceCapacity: { wood: 0, stone: 0, food: 0 },
   };
 }
 
@@ -66,8 +68,13 @@ function settlementNeighborSupports(
     if (entry.tile.terrain === "water") continue;
     support.passableCells += 1;
     const resource = entry.tile.resource;
-    if (resource !== undefined && resource.amount > 0) {
-      support.resources[resource.kind] += resource.amount;
+    if (resource !== undefined) {
+      if (resource.maxAmount > 0) {
+        support.resourceCapacity[resource.kind] += resource.maxAmount;
+      }
+      if (resource.amount > 0) {
+        support.resources[resource.kind] += resource.amount;
+      }
     }
   }
   return supportByRegion;
@@ -75,7 +82,7 @@ function settlementNeighborSupports(
 
 function resourceDiversity(support: SettlementNeighborSupport): number {
   return RESOURCE_KINDS.reduce(
-    (count, kind) => count + (support.resources[kind] > 0 ? 1 : 0),
+    (count, kind) => count + (support.resourceCapacity[kind] > 0 ? 1 : 0),
     0,
   );
 }
@@ -84,12 +91,16 @@ function compareSettlementSupport(
   a: SettlementNeighborSupport,
   b: SettlementNeighborSupport,
 ): number {
-  // Prefer destinations whose already-visible edge can support more kinds of
-  // basic needs before comparing raw quantities. Food then wood then stone
-  // reflects subsistence, renewable construction material, and mineral supply
-  // without inventing a top-down biome or issuing extra cross-DO reads.
+  // A pioneer should favor long-lived carrying capacity over a transiently full
+  // deposit. maxAmount is already the low-level regeneration/storage ceiling on
+  // a resource tile, so it gives settlement choice a sustainable signal without
+  // inventing a biome or issuing deeper cross-DO reads. Current stock remains a
+  // secondary tie-break, followed by the amount of passable edge observed.
   return (
     resourceDiversity(b) - resourceDiversity(a)
+    || b.resourceCapacity.food - a.resourceCapacity.food
+    || b.resourceCapacity.wood - a.resourceCapacity.wood
+    || b.resourceCapacity.stone - a.resourceCapacity.stone
     || b.resources.food - a.resources.food
     || b.resources.wood - a.resources.wood
     || b.resources.stone - a.resources.stone
