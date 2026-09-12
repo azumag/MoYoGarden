@@ -1,6 +1,6 @@
 import { hexGridBoundaryCells, hexGridNeighbors, type HexGridDirection } from "./hex-grid.js";
 import type { HexHaloLink } from "./hex-halo.js";
-import { positionKey, type Agent, type GridPosition, type WorldState } from "./protocol.js";
+import { positionKey, type Agent, type GridPosition, type Tile, type WorldState } from "./protocol.js";
 import { sampleWorldConditions } from "./world-scale.js";
 
 export interface PathogenEnvironmentFrame {
@@ -27,6 +27,10 @@ type PathogenAgent = Agent & {
   pathogenImmunity?: number;
 };
 
+type PathogenTile = Tile & {
+  pathogenReservoir?: number;
+};
+
 export const PATHOGEN_LOCAL_INTERVAL = 6;
 export const PATHOGEN_HALO_INTERVAL = 30;
 const PATHOGEN_BASE_RECOVERY_RATE = 0.06;
@@ -34,6 +38,10 @@ const PATHOGEN_RECOVERY_ENERGY_BAND = 0.015;
 const PATHOGEN_CLIMATE_PERSISTENCE_GAIN = 0.35;
 const PATHOGEN_SAME_CELL_CONTACT_GAIN = 0.11;
 const PATHOGEN_ADJACENT_CONTACT_GAIN = 0.06;
+const PATHOGEN_RESERVOIR_SHEDDING_GAIN = 0.04;
+const PATHOGEN_RESERVOIR_EXPOSURE_GAIN = 0.035;
+const PATHOGEN_RESERVOIR_BASE_CLEARANCE_RATE = 0.18;
+const PATHOGEN_RESERVOIR_CLIMATE_PERSISTENCE_GAIN = 0.55;
 export const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
 const PATHOGEN_SYMPTOM_THRESHOLD = 0.65;
 const PATHOGEN_SYMPTOM_ENERGY_COST = 1;
@@ -138,6 +146,82 @@ export function pathogenClimatePersistence(
   const dampness = clamp01((conditions.wetness - 0.42) / 0.48);
   const thermalSuitability = clamp01(1 - Math.abs(conditions.temperature - 0.62) / 0.42);
   return dampness * thermalSuitability;
+}
+
+/**
+ * Read the low-level environmental burden persisted on a hex tile.
+ *
+ * The field is optional so existing saves remain valid. A value is only created
+ * by shedding from an infectious carrier; climate may preserve that burden but
+ * cannot create it from an uncontaminated tile.
+ */
+export function tilePathogenReservoir(tile: Tile): number {
+  const value = (tile as PathogenTile).pathogenReservoir;
+  return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : 0;
+}
+
+function pathogenReservoirIndex(tiles: readonly Tile[]): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const tile of tiles) {
+    const load = tilePathogenReservoir(tile);
+    if (load > PATHOGEN_EPSILON) {
+      result.set(positionKey(tile), load);
+    }
+  }
+  return result;
+}
+
+/**
+ * Advance environmental contamination after agent exposure has been evaluated.
+ *
+ * Sources are the immutable pre-step carriers, so a BOT cannot contaminate a
+ * tile and infect another BOT through that reservoir in the same pathogen step.
+ * This gives the reservoir a real temporal path: carrier -> tile -> later BOT.
+ */
+function advancePathogenReservoirs(
+  tiles: readonly Tile[],
+  previousAgents: readonly Agent[],
+  environment: PathogenEnvironmentFrame | undefined,
+  previousReservoir: ReadonlyMap<string, number>,
+): number {
+  if (tiles.length === 0) return 0;
+
+  const tilesByPosition = new Map(tiles.map((tile) => [positionKey(tile), tile]));
+  const shedding = new Map<string, number>();
+  for (const source of previousAgents) {
+    const pressure = agentPathogenPressure(source);
+    if (pressure <= PATHOGEN_EPSILON) continue;
+    const key = positionKey(source.position);
+    shedding.set(
+      key,
+      unionPressure(shedding.get(key) ?? 0, pressure * PATHOGEN_RESERVOIR_SHEDDING_GAIN),
+    );
+  }
+
+  const keys = new Set([...previousReservoir.keys(), ...shedding.keys()]);
+  let changed = 0;
+  for (const key of keys) {
+    const tile = tilesByPosition.get(key);
+    if (tile === undefined) continue;
+    const current = previousReservoir.get(key) ?? 0;
+    const persistence = pathogenClimatePersistence(tile, environment);
+    const clearanceRate = PATHOGEN_RESERVOIR_BASE_CLEARANCE_RATE *
+      (1 - persistence * PATHOGEN_RESERVOIR_CLIMATE_PERSISTENCE_GAIN);
+    const residual = clamp01(current * (1 - clearanceRate));
+    const next = unionPressure(residual, shedding.get(key) ?? 0);
+
+    const target = tile as PathogenTile;
+    if (next <= PATHOGEN_EPSILON) {
+      if (target.pathogenReservoir !== undefined) {
+        delete target.pathogenReservoir;
+        changed += 1;
+      }
+    } else if (Math.abs(next - current) > PATHOGEN_EPSILON) {
+      target.pathogenReservoir = next;
+      changed += 1;
+    }
+  }
+  return changed;
 }
 
 type PathogenContactIndex = ReadonlyMap<string, readonly Agent[]>;
@@ -251,13 +335,14 @@ function singlePathogenStep(
   state: WorldState,
   environment: PathogenEnvironmentFrame | undefined,
 ): number {
-  if (state.agents.length === 0) return 0;
+  const tiles = state.tiles ?? [];
+  const previousReservoir = pathogenReservoirIndex(tiles);
   const previousLoads = new Map(state.agents.map((agent) => [agent.id, agentPathogenLoad(agent)]));
   const previousImmunity = new Map(
     state.agents.map((agent) => [agent.id, agentPathogenImmunity(agent)]),
   );
-  // Contact must use the pre-step loads and immunity for every BOT. Otherwise
-  // array order can create an artificial within-tick infection or immunity chain.
+  // Contact must use the pre-step loads, immunity and reservoir for every BOT.
+  // Otherwise array order can create an artificial within-tick infection chain.
   const previousState = {
     agents: state.agents.map((agent) => ({
       ...agent,
@@ -273,11 +358,14 @@ function singlePathogenStep(
     const current = previousLoads.get(agent.id) ?? 0;
     const currentImmunity = previousImmunity.get(agent.id) ?? 0;
     const climatePersistence = pathogenClimatePersistence(agent.position, environment);
-    const contact = localContactExposure(contactIndex, agent) *
+    const directContact = localContactExposure(contactIndex, agent);
+    const environmentalExposure =
+      (previousReservoir.get(positionKey(agent.position)) ?? 0) * PATHOGEN_RESERVOIR_EXPOSURE_GAIN;
+    const contact = unionPressure(directContact, environmentalExposure) *
       clamp01(1 - currentImmunity * PATHOGEN_IMMUNITY_MAX_EFFECT);
     // Climate controls survival/clearance of existing burden rather than acting
-    // as a source term. That keeps pathogen mass causally attached to carriers
-    // until a future explicit environmental reservoir is modeled.
+    // as a source term. New burden comes from another carrier directly or from a
+    // tile that an earlier infectious carrier contaminated.
     const recoveryRate = pathogenRecoveryRate(agent) *
       (1 - climatePersistence * PATHOGEN_CLIMATE_PERSISTENCE_GAIN);
     const next = clamp01(current * (1 - recoveryRate) + (1 - current) * contact);
@@ -317,14 +405,23 @@ function singlePathogenStep(
       changed += 1;
     }
   }
+
+  // Reservoir mutation intentionally happens after all BOT exposure calculations,
+  // so newly shed burden cannot shortcut the one-step environmental path.
+  changed += advancePathogenReservoirs(
+    tiles,
+    previousState.agents,
+    environment,
+    previousReservoir,
+  );
   return changed;
 }
 
 /**
- * Advance the pathogen layer without adding another persisted world object.
- * `pathogenLoad` and `pathogenImmunity` are optional additive Agent properties:
- * old saves read them as 0, ordinary structured-clone persistence and agent
- * handoff retain them, and fresh agents start susceptible. Local contact is
+ * Advance the pathogen layer using only additive optional state.
+ * `pathogenLoad` / `pathogenImmunity` live on Agent and `pathogenReservoir`
+ * lives on Tile. Old saves read all three as zero/absent, while ordinary
+ * structured-clone persistence retains them once they appear. Local contact is
  * six-neighbor hex contact; halo exposure is applied only at exact boundary
  * cells on its slower cadence.
  *
@@ -334,8 +431,11 @@ function singlePathogenStep(
  * transmission strength. Climate only changes persistence of existing burden;
  * it cannot create infection without a carrier. Recovery is also coupled
  * conservatively to the existing energy reserve. Prior infectious burden builds
- * bounded, slowly waning protection that reduces both local and halo exposure,
- * giving repeated outbreaks population memory without a permanent immunity bit.
+ * bounded, slowly waning protection that reduces direct, environmental and halo
+ * exposure. Infectious carriers also shed a small amount into their current hex;
+ * that reservoir decays with climate-dependent persistence and can expose a later
+ * occupant without manufacturing burden from climate alone. Reservoir halo export
+ * is intentionally left for a later cross-region step.
  */
 export function applyPathogenSteps(
   state: WorldState,
