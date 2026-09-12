@@ -43,6 +43,17 @@ interface SettlementNeighborSupport {
   resourceCapacity: Record<ResourceKind, number>;
 }
 
+interface SettlementSeamCandidate {
+  entry: HexHaloTile;
+  distance: number;
+  support: SettlementNeighborSupport;
+}
+
+interface SettlementPlanCandidate extends SettlementSeamCandidate {
+  agent: Agent;
+  issuedAtTick: number;
+}
+
 function directionRank(direction: HexGridDirection): number {
   return HEX_GRID_DIRECTIONS.indexOf(direction);
 }
@@ -181,6 +192,33 @@ function compareSettlementSupport(
   );
 }
 
+function compareSettlementSeamCandidate(
+  a: SettlementSeamCandidate,
+  b: SettlementSeamCandidate,
+): number {
+  return (
+    compareSettlementSupport(a.support, b.support)
+    || a.distance - b.distance
+    || directionRank(a.entry.direction) - directionRank(b.entry.direction)
+    || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
+    || a.entry.sourcePosition.y - b.entry.sourcePosition.y
+    || a.entry.sourcePosition.x - b.entry.sourcePosition.x
+  );
+}
+
+function compareSettlementPlanCandidate(
+  a: SettlementPlanCandidate,
+  b: SettlementPlanCandidate,
+): number {
+  return (
+    compareSettlementSupport(a.support, b.support)
+    || a.distance - b.distance
+    || a.agent.id.localeCompare(b.agent.id)
+    || directionRank(a.entry.direction) - directionRank(b.entry.direction)
+    || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
+  );
+}
+
 function localPathDistances(state: WorldState, start: GridPosition): Map<string, number> {
   const distances = new Map<string, number>([[positionKey(start), 0]]);
   const queue: GridPosition[] = [{ ...start }];
@@ -314,13 +352,6 @@ export function planAutonomousSettlementMigration(
   state: WorldState,
   halo: readonly HexHaloTile[],
 ): AutonomousSettlementMigrationPlan | undefined {
-  const plans: Array<{
-    agent: Agent;
-    entry: HexHaloTile;
-    distance: number;
-    issuedAtTick: number;
-    support: SettlementNeighborSupport;
-  }> = [];
   const pressuredFactions = new Set(
     state.factions
       .filter((faction) => settlementMigrationPressure(state, faction.id))
@@ -339,6 +370,7 @@ export function planAutonomousSettlementMigration(
       ) ? [{ agent, transitPioneer }] : [];
     })
     .sort((a, b) => a.agent.id.localeCompare(b.agent.id));
+  let selected: SettlementPlanCandidate | undefined;
 
   for (const { agent, transitPioneer } of candidateAgents) {
     const originKey = positionKey(agent.position);
@@ -348,50 +380,37 @@ export function planAutonomousSettlementMigration(
       distancesByOrigin.set(originKey, distances);
     }
     const energyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);
-    const candidate = halo
-      .flatMap((entry) => {
-        if (entry.tile.terrain === "water") return [];
-        const distance = distances.get(positionKey(entry.sourcePosition));
-        if (distance === undefined || distance > energyBudget) return [];
-        const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
-        if (transitPioneer) {
-          localSupportRank ??= settlementContinuationRank(localSettlementSupport(state));
-          if (settlementContinuationRank(support) <= localSupportRank) return [];
-        }
-        return [{
-          entry,
-          distance,
-          support,
-        }];
-      })
-      .sort((a, b) =>
-        compareSettlementSupport(a.support, b.support)
-        || a.distance - b.distance
-        || directionRank(a.entry.direction) - directionRank(b.entry.direction)
-        || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
-        || a.entry.sourcePosition.y - b.entry.sourcePosition.y
-        || a.entry.sourcePosition.x - b.entry.sourcePosition.x
-      )[0];
+    let candidate: SettlementSeamCandidate | undefined;
+    for (const entry of halo) {
+      if (entry.tile.terrain === "water") continue;
+      const distance = distances.get(positionKey(entry.sourcePosition));
+      if (distance === undefined || distance > energyBudget) continue;
+      const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
+      if (transitPioneer) {
+        localSupportRank ??= settlementContinuationRank(localSettlementSupport(state));
+        if (settlementContinuationRank(support) <= localSupportRank) continue;
+      }
+      const next = { entry, distance, support };
+      if (candidate === undefined || compareSettlementSeamCandidate(next, candidate) < 0) {
+        candidate = next;
+      }
+    }
     if (candidate === undefined) continue;
     const issuedAtTick = agent.task?.source === "autonomy" && agent.task.type === "build"
       ? agent.task.issuedAtTick
       : state.tick;
-    plans.push({
+    const planCandidate: SettlementPlanCandidate = {
       agent,
       entry: candidate.entry,
       distance: candidate.distance,
       issuedAtTick,
       support: candidate.support,
-    });
+    };
+    if (selected === undefined || compareSettlementPlanCandidate(planCandidate, selected) < 0) {
+      selected = planCandidate;
+    }
   }
 
-  const selected = plans.sort((a, b) =>
-    compareSettlementSupport(a.support, b.support)
-    || a.distance - b.distance
-    || a.agent.id.localeCompare(b.agent.id)
-    || directionRank(a.entry.direction) - directionRank(b.entry.direction)
-    || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
-  )[0];
   if (selected === undefined) return undefined;
   return {
     agentId: selected.agent.id,
