@@ -130,6 +130,10 @@ function compareAverageDrainage(
   a: SettlementNeighborSupport,
   b: SettlementNeighborSupport,
 ): number {
+  // Persisted legacy halo tiles may not have drainage backfilled yet. Treat
+  // unknown as neutral rather than dry so migration decisions do not shift just
+  // because one edge has newer environmental metadata than another.
+  if (a.drainageSamples === 0 || b.drainageSamples === 0) return 0;
   const delta = averageDrainage(b) - averageDrainage(a);
   return Math.abs(delta) > SETTLEMENT_DRAINAGE_EPSILON ? delta : 0;
 }
