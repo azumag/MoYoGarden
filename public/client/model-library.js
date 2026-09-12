@@ -12,6 +12,11 @@ const MODEL_MANIFEST = Object.freeze([
   ["buildings", `/models/buildings.glb?v=${MODEL_VERSION}`],
   ["tree", `/models/tree.glb?v=${MODEL_VERSION}`],
   ["rock", `/models/rock.glb?v=${MODEL_VERSION}`],
+  // Core fallbacks above guarantee an immediate renderer. Prioritize authored
+  // BOT overrides next because agents are the most numerous moving objects and
+  // otherwise wait behind every optional authored building before upgrading.
+  ["authored:agent-worker", `/assets/authored/kaykit-adventurers/worker.glb?v=${AUTHORED_CHARACTER_VERSION}`],
+  ["authored:agent-roamer", `/assets/authored/kaykit-adventurers/roamer.glb?v=${AUTHORED_CHARACTER_VERSION}`],
   ["authored:building-camp", `/assets/authored/kaykit/camp.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-storehouse", `/assets/authored/kaykit/storehouse.glb?v=${AUTHORED_BUILDING_VERSION}`],
   ["authored:building-market", `/assets/authored/kaykit/market.glb?v=${AUTHORED_BUILDING_VERSION}`],
@@ -20,8 +25,6 @@ const MODEL_MANIFEST = Object.freeze([
   ["authored:building-shell-storehouse", `/assets/authored/quaternius-buildings/storehouse.glb?v=${AUTHORED_BUILDING_SHELL_VERSION}`],
   ["authored:building-shell-market", `/assets/authored/quaternius-buildings/market.glb?v=${AUTHORED_BUILDING_SHELL_VERSION}`],
   ["authored:building-shell-workshop", `/assets/authored/quaternius-buildings/workshop.glb?v=${AUTHORED_BUILDING_SHELL_VERSION}`],
-  ["authored:agent-worker", `/assets/authored/kaykit-adventurers/worker.glb?v=${AUTHORED_CHARACTER_VERSION}`],
-  ["authored:agent-roamer", `/assets/authored/kaykit-adventurers/roamer.glb?v=${AUTHORED_CHARACTER_VERSION}`],
   ["authored:tree-oak", `/assets/authored/kenney/tree_oak.glb?v=${AUTHORED_VERSION}`],
   ["authored:tree-pine", `/assets/authored/kenney/tree_pine.glb?v=${AUTHORED_VERSION}`],
   ["authored:rock-large", `/assets/authored/kenney/rock_large.glb?v=${AUTHORED_VERSION}`],
