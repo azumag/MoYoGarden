@@ -104,6 +104,9 @@ test("missing drainage metadata preserves the existing deterministic tie-break",
 
   const plan = planAutonomousSettlementMigration(state, halo);
   assert.ok(plan);
-  assert.equal(plan.neighborRegionId, "hex-q1-r0");
-  assert.equal(plan.direction, "E");
+  // W is already the closer reachable seam from this fixture. With drainage
+  // absent, the new hydrology tie-break must remain neutral and preserve that
+  // existing distance-based result.
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.equal(plan.direction, "W");
 });
