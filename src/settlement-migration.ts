@@ -184,7 +184,8 @@ export function hasLocalSpacedCampSite(state: WorldState, factionId: string): bo
   if (anchor === undefined) return true;
   const occupied = new Set(state.structures.map((structure) => positionKey(structure.position)));
   return state.tiles.some((tile) =>
-    tile.terrain !== "water"
+    isHexGridCell(state, tile)
+    && tile.terrain !== "water"
     && !occupied.has(positionKey(tile))
     && hexGridDistance(tile, anchor.position) <= CAMP_LOCAL_BUILD_RADIUS
     && camps.every((camp) => hexGridDistance(tile, camp.position) >= CAMP_MIN_SPACING)
@@ -296,6 +297,7 @@ export function planAutonomousSettlementMigration(
   );
   const supportByRegion = settlementNeighborSupports(halo);
   let localSupportRank: number | undefined;
+  const distancesByOrigin = new Map<string, Map<string, number>>();
 
   for (const agent of [...state.agents].sort((a, b) => a.id.localeCompare(b.id))) {
     const transitPioneer = isTransitPioneer(state, agent);
@@ -304,7 +306,12 @@ export function planAutonomousSettlementMigration(
       || !eligiblePioneer(agent)
       || !canPrepareSettlementMigrationKit(state, agent)
     ) continue;
-    const distances = localPathDistances(state, agent.position);
+    const originKey = positionKey(agent.position);
+    let distances = distancesByOrigin.get(originKey);
+    if (distances === undefined) {
+      distances = localPathDistances(state, agent.position);
+      distancesByOrigin.set(originKey, distances);
+    }
     const energyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);
     const candidate = halo
       .flatMap((entry) => {
