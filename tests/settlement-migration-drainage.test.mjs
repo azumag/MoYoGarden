@@ -31,9 +31,8 @@ function transitPioneerFixture() {
   return { state, builder };
 }
 
-test("pioneer prefers stronger observed land drainage when resource support is equal", () => {
-  const { state, builder } = transitPioneerFixture();
-  const halo = [
+function equalResourceHalo() {
+  return [
     {
       direction: "E",
       sourcePosition: { x: 30, y: 11 },
@@ -44,7 +43,6 @@ test("pioneer prefers stronger observed land drainage when resource support is e
         y: 11,
         terrain: "plain",
         elevation: 0.5,
-        drainage: 0.15,
         resource: { kind: "food", amount: 5, maxAmount: 20 },
       },
     },
@@ -58,11 +56,17 @@ test("pioneer prefers stronger observed land drainage when resource support is e
         y: 11,
         terrain: "plain",
         elevation: 0.5,
-        drainage: 0.8,
         resource: { kind: "food", amount: 5, maxAmount: 20 },
       },
     },
   ];
+}
+
+test("pioneer prefers stronger observed land drainage when resource support is equal", () => {
+  const { state, builder } = transitPioneerFixture();
+  const halo = equalResourceHalo();
+  halo[0].tile.drainage = 0.15;
+  halo[1].tile.drainage = 0.8;
 
   const plan = planAutonomousSettlementMigration(state, halo);
   assert.ok(plan);
@@ -71,42 +75,19 @@ test("pioneer prefers stronger observed land drainage when resource support is e
   assert.equal(plan.direction, "W");
 });
 
-test("missing drainage metadata preserves the existing deterministic tie-break", () => {
+test("partial legacy drainage metadata stays neutral instead of biasing migration", () => {
   const { state } = transitPioneerFixture();
-  const halo = [
-    {
-      direction: "E",
-      sourcePosition: { x: 30, y: 11 },
-      neighborRegionId: "hex-q1-r0",
-      neighborPosition: { x: 8, y: 11 },
-      tile: {
-        x: 8,
-        y: 11,
-        terrain: "plain",
-        elevation: 0.5,
-        resource: { kind: "food", amount: 5, maxAmount: 20 },
-      },
-    },
-    {
-      direction: "W",
-      sourcePosition: { x: 8, y: 11 },
-      neighborRegionId: "hex-q-1-r0",
-      neighborPosition: { x: 30, y: 11 },
-      tile: {
-        x: 30,
-        y: 11,
-        terrain: "plain",
-        elevation: 0.5,
-        resource: { kind: "food", amount: 5, maxAmount: 20 },
-      },
-    },
-  ];
+  const baselineHalo = equalResourceHalo();
+  const baseline = planAutonomousSettlementMigration(state, baselineHalo);
+  assert.ok(baseline);
 
-  const plan = planAutonomousSettlementMigration(state, halo);
-  assert.ok(plan);
-  // W is already the closer reachable seam from this fixture. With drainage
-  // absent, the new hydrology tie-break must remain neutral and preserve that
-  // existing distance-based result.
-  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
-  assert.equal(plan.direction, "W");
+  const mixedHalo = equalResourceHalo();
+  // Only one neighbor has migrated hydrology metadata. Unknown must not be
+  // treated as dry, otherwise persisted legacy edges could change settlement
+  // choice merely because they have not been backfilled yet.
+  mixedHalo[0].tile.drainage = 1;
+  const mixed = planAutonomousSettlementMigration(state, mixedHalo);
+  assert.ok(mixed);
+  assert.equal(mixed.neighborRegionId, baseline.neighborRegionId);
+  assert.equal(mixed.direction, baseline.direction);
 });
