@@ -54,6 +54,8 @@ const SETTLEMENT_CAMP_MIN_SPACING = 2;
 const GATHER_BASE_AMOUNT = 2;
 const GATHER_CROWDING_THRESHOLD = 3;
 const GATHER_CROWDED_AMOUNT = 1;
+const DEPOSIT_CROWDING_THRESHOLD = 3;
+const DEPOSIT_CROWDED_THROUGHPUT = 3;
 const WATER_MOISTURE_OFFSETS = (() => {
   const offsets: { dx: number; dy: number; influence: number }[] = [];
   for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
@@ -572,42 +574,65 @@ function moveAgent(state: WorldState, agent: Agent, target: GridPosition): boole
   return samePosition(next, target);
 }
 
-function resourceCongestionAt(
+function incrementCongestion(index: Map<string, number>, key: string): void {
+  index.set(key, (index.get(key) ?? 0) + 1);
+}
+
+function resourceCongestionIndex(
   state: Pick<WorldState, "agents">,
-  position: GridPosition,
   resource: ResourceKind,
-): number {
-  return state.agents.reduce((count, agent) => {
-    const occupying = samePosition(agent.position, position);
-    const inbound =
+): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const agent of state.agents) {
+    const keys = new Set<string>([positionKey(agent.position)]);
+    if (
       agent.task?.type === "gather" &&
       agent.task.resource === resource &&
-      agent.task.target !== undefined &&
-      samePosition(agent.task.target, position);
-    return count + (occupying || inbound ? 1 : 0);
-  }, 0);
+      agent.task.target !== undefined
+    ) {
+      keys.add(positionKey(agent.task.target));
+    }
+    for (const key of keys) incrementCongestion(index, key);
+  }
+  return index;
 }
 
-function depositCongestionAt(state: Pick<WorldState, "agents">, structure: Structure): number {
-  return state.agents.reduce((count, agent) => {
-    const occupying = samePosition(agent.position, structure.position);
-    const inbound = agent.task?.type === "deposit" && agent.task.structureId === structure.id;
-    return count + (occupying || inbound ? 1 : 0);
-  }, 0);
-}
-
-function buildCongestionAt(
+function depositCongestionIndex(
   state: Pick<WorldState, "agents">,
-  position: GridPosition,
-): number {
-  return state.agents.reduce((count, agent) => {
-    const occupying = samePosition(agent.position, position);
-    const inbound =
-      agent.task?.type === "build" &&
-      agent.task.target !== undefined &&
-      samePosition(agent.task.target, position);
-    return count + (occupying || inbound ? 1 : 0);
-  }, 0);
+  structures: readonly Structure[],
+): Map<string, number> {
+  const index = new Map<string, number>(structures.map((structure) => [structure.id, 0]));
+  const idsByPosition = new Map<string, string[]>();
+  for (const structure of structures) {
+    const key = positionKey(structure.position);
+    const ids = idsByPosition.get(key);
+    if (ids === undefined) idsByPosition.set(key, [structure.id]);
+    else ids.push(structure.id);
+  }
+  for (const agent of state.agents) {
+    const affected = new Set(idsByPosition.get(positionKey(agent.position)) ?? []);
+    if (
+      agent.task?.type === "deposit" &&
+      agent.task.structureId !== undefined &&
+      index.has(agent.task.structureId)
+    ) {
+      affected.add(agent.task.structureId);
+    }
+    for (const structureId of affected) incrementCongestion(index, structureId);
+  }
+  return index;
+}
+
+function buildCongestionIndex(state: Pick<WorldState, "agents">): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const agent of state.agents) {
+    const keys = new Set<string>([positionKey(agent.position)]);
+    if (agent.task?.type === "build" && agent.task.target !== undefined) {
+      keys.add(positionKey(agent.task.target));
+    }
+    for (const key of keys) incrementCongestion(index, key);
+  }
+  return index;
 }
 
 function storageCapacityLeft(structure: Structure): number {
@@ -622,13 +647,15 @@ function nearestDepositStructure(
   factionId: string,
   position: GridPosition,
 ): Structure | undefined {
-  return activeFactionStructures(state, factionId)
-    .filter((structure) => storageCapacityLeft(structure) > 0)
+  const candidates = activeFactionStructures(state, factionId)
+    .filter((structure) => storageCapacityLeft(structure) > 0);
+  const congestion = depositCongestionIndex(state, candidates);
+  return candidates
     .sort((a, b) => {
       const distance = manhattanDistance(a.position, position) - manhattanDistance(b.position, position);
       if (distance !== 0) return distance;
-      const congestion = depositCongestionAt(state, a) - depositCongestionAt(state, b);
-      return congestion || a.id.localeCompare(b.id);
+      const congestionDifference = (congestion.get(a.id) ?? 0) - (congestion.get(b.id) ?? 0);
+      return congestionDifference || a.id.localeCompare(b.id);
     })[0];
 }
 
@@ -637,18 +664,19 @@ function nearestResource(
   origin: GridPosition,
   resource: ResourceKind,
 ): GridPosition | undefined {
-  const tile = state.tiles
-    .filter((candidate) =>
-      candidate.resource?.kind === resource &&
-      candidate.resource.amount > 0 &&
-      candidate.terrain !== "water"
-    )
+  const candidates = state.tiles.filter((candidate) =>
+    candidate.resource?.kind === resource &&
+    candidate.resource.amount > 0 &&
+    candidate.terrain !== "water"
+  );
+  const congestion = resourceCongestionIndex(state, resource);
+  const tile = candidates
     .sort((a, b) => {
       const distance = manhattanDistance(a, origin) - manhattanDistance(b, origin);
       if (distance !== 0) return distance;
-      const congestion =
-        resourceCongestionAt(state, a, resource) - resourceCongestionAt(state, b, resource);
-      return congestion || a.y - b.y || a.x - b.x;
+      const congestionDifference =
+        (congestion.get(positionKey(a)) ?? 0) - (congestion.get(positionKey(b)) ?? 0);
+      return congestionDifference || a.y - b.y || a.x - b.x;
     })[0];
   return tile === undefined ? undefined : { x: tile.x, y: tile.y };
 }
@@ -672,18 +700,19 @@ function findBuildSite(
       activeCampPositions.every((campPosition) =>
         manhattanDistance(tile, campPosition) >= minCampSpacing
       )
-    )
-    .sort((a, b) => {
-      const resourcePenaltyA = a.resource === undefined ? 0 : 1;
-      const resourcePenaltyB = b.resource === undefined ? 0 : 1;
-      return (
-        resourcePenaltyA - resourcePenaltyB ||
-        manhattanDistance(a, origin) - manhattanDistance(b, origin) ||
-        buildCongestionAt(state, a) - buildCongestionAt(state, b) ||
-        a.y - b.y ||
-        a.x - b.x
-      );
-    });
+    );
+  const congestion = buildCongestionIndex(state);
+  candidates.sort((a, b) => {
+    const resourcePenaltyA = a.resource === undefined ? 0 : 1;
+    const resourcePenaltyB = b.resource === undefined ? 0 : 1;
+    return (
+      resourcePenaltyA - resourcePenaltyB ||
+      manhattanDistance(a, origin) - manhattanDistance(b, origin) ||
+      (congestion.get(positionKey(a)) ?? 0) - (congestion.get(positionKey(b)) ?? 0) ||
+      a.y - b.y ||
+      a.x - b.x
+    );
+  });
 
   const ownPositions = new Set(
     state.agents.filter((agent) => agent.factionId === factionId).map((agent) => `${agent.position.x},${agent.position.y}`),
@@ -839,6 +868,12 @@ function gatherAmountAtCrowding(crowding: number): number {
     : GATHER_BASE_AMOUNT;
 }
 
+function depositThroughputAtCrowding(crowding: number, availableCapacity: number): number {
+  return crowding >= DEPOSIT_CROWDING_THRESHOLD
+    ? Math.min(availableCapacity, DEPOSIT_CROWDED_THROUGHPUT)
+    : availableCapacity;
+}
+
 function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "gather" }>): void {
   if (inventoryTotal(agent.inventory) >= agent.capacity) {
     delete agent.task;
@@ -942,7 +977,11 @@ function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask
     return;
   }
   const deposited = emptyInventory();
-  let remainingCapacity = storageCapacityLeft(structure);
+  const crowding = localAgentCrowding(state, structure.position);
+  let remainingCapacity = depositThroughputAtCrowding(
+    crowding,
+    storageCapacityLeft(structure),
+  );
   for (const kind of RESOURCE_KINDS) {
     const amount = Math.min(agent.inventory[kind], remainingCapacity);
     if (amount <= 0) continue;

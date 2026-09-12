@@ -346,3 +346,95 @@ test("same-cell crowding reduces per-agent gathering throughput", () => {
   assert.equal(gathered.inventory.wood, 1, "three BOTs on one hex should halve the normal gather rate");
   assert.equal(remaining.resource.amount, 19, "resource conservation should match the reduced gather amount");
 });
+
+
+test("same-cell crowding throttles deposit throughput without losing cargo", () => {
+  const state = plainResourceFixture();
+  const worker = state.agents.find((agent) => agent.role === "woodcutter");
+  assert.ok(worker);
+  const faction = state.factions.find((entry) => entry.id === worker.factionId);
+  assert.ok(faction);
+
+  const store = {
+    id: "crowded-store",
+    factionId: worker.factionId,
+    type: "camp",
+    position: { x: 7, y: 5 },
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 0 },
+  };
+  state.structures = [store];
+  worker.position = { ...store.position };
+  worker.energy = 100;
+  worker.inventory = { wood: 6, stone: 0, food: 0 };
+  worker.autonomy = false;
+  worker.task = {
+    source: "autonomy",
+    issuedAtTick: state.tick,
+    type: "deposit",
+    structureId: store.id,
+  };
+
+  const blockers = state.agents
+    .filter((agent) => agent.id !== worker.id)
+    .slice(0, 2);
+  assert.equal(blockers.length, 2);
+  for (const blocker of blockers) {
+    blocker.position = { ...store.position };
+    blocker.autonomy = false;
+    delete blocker.task;
+  }
+  state.agents = [worker, ...blockers];
+  const factionWoodBefore = faction.resources.wood;
+
+  const next = simulate(state).state;
+  const depositor = next.agents.find((agent) => agent.id === worker.id);
+  const nextStore = next.structures.find((structure) => structure.id === store.id);
+  const nextFaction = next.factions.find((entry) => entry.id === worker.factionId);
+  assert.ok(depositor);
+  assert.ok(nextStore);
+  assert.ok(nextFaction);
+  assert.equal(depositor.inventory.wood, 3, "three BOTs on one service hex should leave half the cargo queued");
+  assert.equal(nextStore.storage.wood, 3, "storage must receive exactly the throttled cargo amount");
+  assert.equal(nextFaction.resources.wood, factionWoodBefore + 3, "faction accounting must match stored cargo");
+  assert.equal(depositor.task?.type, "deposit", "remaining cargo should keep the deposit intent alive");
+});
+
+test("uncrowded deposit retains legacy full-throughput behavior", () => {
+  const state = plainResourceFixture();
+  const worker = state.agents.find((agent) => agent.role === "woodcutter");
+  assert.ok(worker);
+
+  const store = {
+    id: "open-store",
+    factionId: worker.factionId,
+    type: "camp",
+    position: { x: 7, y: 5 },
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 0 },
+  };
+  state.structures = [store];
+  worker.position = { ...store.position };
+  worker.inventory = { wood: 6, stone: 0, food: 0 };
+  worker.autonomy = false;
+  worker.task = {
+    source: "autonomy",
+    issuedAtTick: state.tick,
+    type: "deposit",
+    structureId: store.id,
+  };
+  state.agents = [worker];
+
+  const next = simulate(state).state;
+  const depositor = next.agents.find((agent) => agent.id === worker.id);
+  const nextStore = next.structures.find((structure) => structure.id === store.id);
+  assert.ok(depositor);
+  assert.ok(nextStore);
+  assert.equal(depositor.inventory.wood, 0);
+  assert.equal(nextStore.storage.wood, 6);
+  assert.equal(depositor.task, undefined);
+});
