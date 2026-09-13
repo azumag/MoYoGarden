@@ -23,6 +23,7 @@ const CAMP_MIN_SPACING = 2;
 const CAMP_LOCAL_BUILD_RADIUS = 5;
 const LOW_ENERGY_THRESHOLD = 18;
 const SETTLEMENT_DRAINAGE_EPSILON = 1e-6;
+const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;
 export const SETTLEMENT_MIGRATION_SCOUT_INTERVAL = 12;
 
 export interface AutonomousSettlementMigrationPlan {
@@ -39,6 +40,8 @@ interface SettlementNeighborSupport {
   waterCells: number;
   drainageTotal: number;
   drainageSamples: number;
+  pathogenReservoirTotal: number;
+  pathogenReservoirSamples: number;
   resources: Record<ResourceKind, number>;
   resourceCapacity: Record<ResourceKind, number>;
 }
@@ -71,14 +74,22 @@ function emptySettlementNeighborSupport(): SettlementNeighborSupport {
     waterCells: 0,
     drainageTotal: 0,
     drainageSamples: 0,
+    pathogenReservoirTotal: 0,
+    pathogenReservoirSamples: 0,
     resources: { wood: 0, stone: 0, food: 0 },
     resourceCapacity: { wood: 0, stone: 0, food: 0 },
   };
 }
 
+function pathogenReservoirSample(tile: HexHaloTile["tile"]): number | undefined {
+  const value = (tile as HexHaloTile["tile"] & { pathogenReservoir?: unknown }).pathogenReservoir;
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.min(1, value));
+}
+
 function addSettlementSupportTile(
   support: SettlementNeighborSupport,
-  tile: Pick<HexHaloTile["tile"], "terrain" | "resource" | "drainage">,
+  tile: HexHaloTile["tile"],
 ): void {
   if (tile.terrain === "water") {
     support.waterCells += 1;
@@ -88,6 +99,11 @@ function addSettlementSupportTile(
   if (Number.isFinite(tile.drainage ?? Number.NaN)) {
     support.drainageTotal += Math.max(0, Math.min(1, tile.drainage ?? 0));
     support.drainageSamples += 1;
+  }
+  const pathogenReservoir = pathogenReservoirSample(tile);
+  if (pathogenReservoir !== undefined) {
+    support.pathogenReservoirTotal += pathogenReservoir;
+    support.pathogenReservoirSamples += 1;
   }
   const resource = tile.resource;
   if (resource === undefined) return;
@@ -156,6 +172,24 @@ function compareAverageDrainage(
   return Math.abs(delta) > SETTLEMENT_DRAINAGE_EPSILON ? delta : 0;
 }
 
+function averagePathogenReservoir(support: SettlementNeighborSupport): number {
+  return support.pathogenReservoirSamples > 0
+    ? support.pathogenReservoirTotal / support.pathogenReservoirSamples
+    : 0;
+}
+
+function compareAveragePathogenReservoir(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  // Rolling deploys and old persisted tiles can lack pathogenReservoir entirely.
+  // Do not mistake missing metadata for a clean frontier; only compare disease
+  // pressure when both candidate regions actually expose reservoir samples.
+  if (a.pathogenReservoirSamples === 0 || b.pathogenReservoirSamples === 0) return 0;
+  const delta = averagePathogenReservoir(a) - averagePathogenReservoir(b);
+  return Math.abs(delta) > SETTLEMENT_PATHOGEN_EPSILON ? delta : 0;
+}
+
 function settlementContinuationRank(support: SettlementNeighborSupport): number {
   // Founding material is already carried in the camp kit. A transit pioneer
   // should only take another hop when the low-level support signal strictly
@@ -179,17 +213,18 @@ function compareSettlementSupport(
   // A pioneer should favor long-lived carrying capacity over a transiently full
   // deposit. maxAmount is already the low-level regeneration/storage ceiling on
   // a resource tile, so it gives settlement choice a sustainable signal without
-  // inventing a biome or issuing deeper cross-DO reads. Current stock remains a
-  // secondary tie-break. When those are equal, prefer land whose existing
-  // hydrology reports stronger normalized drainage: this reuses the actual
-  // catchment state already present in the depth-1 halo instead of inventing a
-  // settlement-water category. Open surface water remains the next tie-break,
-  // followed by the amount of passable edge observed.
+  // inventing a biome or issuing deeper cross-DO reads. Once durable capacity is
+  // equal, prefer lower observed environmental pathogen burden before transient
+  // stock levels. This reuses the same persisted low-level reservoir that drives
+  // infection simulation, so settlement pressure and disease ecology share one
+  // causal state instead of adding a scripted hazard category. When those are
+  // equal, hydrology, open surface water, and passable edge area break ties.
   return (
     resourceDiversity(b) - resourceDiversity(a)
     || b.resourceCapacity.food - a.resourceCapacity.food
     || b.resourceCapacity.wood - a.resourceCapacity.wood
     || b.resourceCapacity.stone - a.resourceCapacity.stone
+    || compareAveragePathogenReservoir(a, b)
     || b.resources.food - a.resources.food
     || b.resources.wood - a.resources.wood
     || b.resources.stone - a.resources.stone
