@@ -59,6 +59,37 @@ interface MaterializedPathogenHalo {
 
 const INTERNAL_PATHOGEN_EDGE_PATH = "/api/internal/pathogen/edge";
 const DEFAULT_WORLD_SEED = 424_242;
+export const PATHOGEN_EDGE_READ_TIMEOUT_MS = 5_000;
+
+/**
+ * Keep one unavailable neighbor from pinning a pathogen Alarm indefinitely.
+ *
+ * The caller supplies the operation so tests can exercise the deadline without
+ * constructing a Durable Object stub. Aborting the signal also gives a real
+ * stub.fetch() a chance to cancel its HTTP-style request, while Promise.race
+ * guarantees the local region can fail-soft even if a test double ignores it.
+ */
+export async function withPathogenEdgeDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = PATHOGEN_EDGE_READ_TIMEOUT_MS,
+): Promise<T> {
+  const boundedTimeout = Math.max(1, Math.min(60_000, Math.floor(timeoutMs)));
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`pathogen edge read exceeded ${boundedTimeout}ms`);
+      error.name = "TimeoutError";
+      controller.abort(error);
+      reject(error);
+    }, boundedTimeout);
+  });
+  try {
+    return await Promise.race([operation(controller.signal), deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
@@ -148,6 +179,7 @@ function json(value: unknown, status = 200): Response {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      "access-control-allow-origin": "*",
     },
   });
 }
@@ -278,10 +310,13 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
       url.searchParams.append("cell", positionKey(position));
     }
     try {
-      const response = await this.pathogenStub(regionId).fetch(new Request(url, {
-        method: "GET",
-        headers: { "x-moyo-region-internal": regionId },
-      }));
+      const response = await withPathogenEdgeDeadline((signal) =>
+        this.pathogenStub(regionId).fetch(new Request(url, {
+          method: "GET",
+          headers: { "x-moyo-region-internal": regionId },
+          signal,
+        }))
+      );
       if (!response.ok) return undefined;
       const value = await response.json() as unknown;
       return isPathogenEdgeSnapshot(value) ? value : undefined;
