@@ -91,6 +91,24 @@ export async function withPathogenEdgeDeadline<T>(
   }
 }
 
+/**
+ * Bound both the neighbor fetch and consumption of its response body.
+ *
+ * A Durable Object fetch can resolve after headers while the JSON body remains
+ * stalled. Keeping response.json() inside the same deadline prevents that second
+ * phase from pinning the local Alarm after the transport itself has completed.
+ */
+export async function readPathogenEdgeJsonWithDeadline(
+  operation: (signal: AbortSignal) => Promise<Response>,
+  timeoutMs = PATHOGEN_EDGE_READ_TIMEOUT_MS,
+): Promise<unknown | undefined> {
+  return withPathogenEdgeDeadline(async (signal) => {
+    const response = await operation(signal);
+    if (!response.ok) return undefined;
+    return await response.json() as unknown;
+  }, timeoutMs);
+}
+
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
 }
@@ -309,15 +327,13 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
       url.searchParams.append("cell", positionKey(position));
     }
     try {
-      const response = await withPathogenEdgeDeadline((signal) =>
+      const value = await readPathogenEdgeJsonWithDeadline((signal) =>
         this.pathogenStub(regionId).fetch(new Request(url, {
           method: "GET",
           headers: { "x-moyo-region-internal": regionId },
           signal,
         }))
       );
-      if (!response.ok) return undefined;
-      const value = await response.json() as unknown;
       return isPathogenEdgeSnapshot(value) ? value : undefined;
     } catch (error) {
       console.debug("MoYoGarden pathogen edge unavailable", regionId, direction, error);
