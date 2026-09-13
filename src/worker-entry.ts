@@ -313,6 +313,30 @@ function unavailableCenterRegionWindow(): Response {
 
 class CenterRegionSnapshotUnavailable extends Error {}
 
+export const REGION_WINDOW_SNAPSHOT_TIMEOUT_MS = 8_000;
+
+export async function withRegionWindowSnapshotDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = REGION_WINDOW_SNAPSHOT_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+      const error = new Error("region window snapshot timed out");
+      error.name = "TimeoutError";
+      reject(error);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation(controller.signal), timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 function regionWindowCenter(request: Request, env: WorkerEnv): string {
   const url = new URL(request.url);
   const requested =
@@ -330,10 +354,15 @@ function failSoftRegionWindowEnv(env: WorkerEnv, centerRegionId: string): Worker
       const stub = env.REGIONS.get(...args);
       return {
         fetch: async (...fetchArgs: Parameters<typeof stub.fetch>) => {
+          const snapshotRequest = fetchArgs[0];
           try {
-            return await stub.fetch(...fetchArgs);
+            return await withRegionWindowSnapshotDeadline((signal) => {
+              if (snapshotRequest instanceof Request) {
+                return stub.fetch(new Request(snapshotRequest, { signal }));
+              }
+              return stub.fetch(...fetchArgs);
+            });
           } catch {
-            const snapshotRequest = fetchArgs[0];
             const routedRegionId = snapshotRequest instanceof Request
               ? snapshotRequest.headers.get("x-moyo-region-internal")?.trim()
               : undefined;

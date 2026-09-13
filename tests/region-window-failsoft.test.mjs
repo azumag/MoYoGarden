@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker from "../dist-ts/src/worker-entry.js";
+import worker, { withRegionWindowSnapshotDeadline } from "../dist-ts/src/worker-entry.js";
 
 function snapshot(regionId) {
   return {
@@ -63,4 +63,16 @@ test("center transport failure rejects a centerless live window", async () => {
   );
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: "center region snapshot unavailable" });
+});
+
+test("region window snapshot deadline aborts a stalled read and releases the caller", async () => {
+  let observedSignal;
+  await assert.rejects(
+    withRegionWindowSnapshotDeadline((signal) => {
+      observedSignal = signal;
+      return new Promise(() => {});
+    }, 5),
+    (error) => error instanceof Error && error.name === "TimeoutError",
+  );
+  assert.equal(observedSignal?.aborted, true);
 });
