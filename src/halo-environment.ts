@@ -3,6 +3,7 @@ import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
   hexGridDistance,
+  isHexGridCell,
   oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
@@ -60,6 +61,20 @@ function clamp01(value: number): number {
 function tileElevation(tile: Tile | undefined): number | undefined {
   const elevation = tile?.elevation;
   return Number.isFinite(elevation ?? Number.NaN) ? elevation : undefined;
+}
+
+function localHexNeighborTile(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  direction: HexGridDirection,
+): Tile | undefined {
+  const step = HEX_GRID_DIRECTION_STEPS[direction];
+  const neighbor = { x: position.x + step.x, y: position.y + step.y };
+  // The 40x24 storage envelope intentionally retains compatibility cells outside
+  // the active 397-cell hex. If a halo edge is temporarily unavailable, treating
+  // one of those cells as a real local neighbor fabricates water/vegetation at
+  // the seam. Only fall back to storage when the neighbor is truly local.
+  return isHexGridCell(state, neighbor) ? getTile(state, neighbor) : undefined;
 }
 
 interface HaloFlowReceiverCandidate {
@@ -225,9 +240,8 @@ function upwindWaterVaporMoisture(
   );
   const upwindDirection = oppositeHexGridDirection(wind.direction);
   const ghost = lookup.get(hexHaloKey(position, upwindDirection));
-  const step = HEX_GRID_DIRECTION_STEPS[upwindDirection];
   const local = ghost === undefined
-    ? getTile(state, { x: position.x + step.x, y: position.y + step.y })
+    ? localHexNeighborTile(state, position, upwindDirection)
     : undefined;
   const source = ghost?.tile ?? local;
   if (source?.terrain === "water") {
@@ -276,9 +290,8 @@ function neighboringPropaguleInfluence(
     // propagule pressure continuous across a region seam instead of giving the
     // same biomass different behavior merely because it lives in another DO.
     const ghost = lookup.get(hexHaloKey(position, direction));
-    const step = HEX_GRID_DIRECTION_STEPS[direction];
     const local = ghost === undefined
-      ? getTile(state, { x: position.x + step.x, y: position.y + step.y })
+      ? localHexNeighborTile(state, position, direction)
       : undefined;
     const resource = (ghost?.tile ?? local)?.resource;
     if (resource?.kind !== resourceKind || resource.maxAmount <= 0) continue;
