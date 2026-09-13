@@ -192,33 +192,67 @@ function pathogenReservoirIndex(tiles: readonly Tile[]): Map<string, number> {
  * without inventing a river/pathogen category. Only targets owned by this local
  * state are eligible: cross-DO flow ownership is still a separate Issue #3 step,
  * and an unresolved boundary outlet must not teleport contamination or mutate a
- * neighbor. Transfer is capacity-bounded and subtracts exactly what is accepted
- * downstream, so advection alone neither creates nor destroys reservoir burden.
+ * neighbor.
+ *
+ * All transfer requests are planned from the immutable pre-step reservoir. When
+ * several upstream cells converge on a nearly full downstream cell, they share
+ * the remaining capacity proportionally rather than letting tile iteration order
+ * decide who arrives first. Applying the accumulated in/out deltas together also
+ * guarantees newly arrived burden cannot travel a second hydrology edge in the
+ * same pathogen step. The accepted transfer is subtracted exactly from its
+ * sources, so advection alone neither creates nor destroys reservoir burden.
  */
 function advectPathogenReservoirs(
   tilesByPosition: ReadonlyMap<string, Tile>,
   previousReservoir: ReadonlyMap<string, number>,
 ): Map<string, number> {
-  const advected = new Map(previousReservoir);
-  for (const [key, current] of previousReservoir) {
+  const requests: Array<{ sourceKey: string; targetKey: string; amount: number }> = [];
+  const requestedByTarget = new Map<string, number>();
+
+  for (const [sourceKey, current] of previousReservoir) {
     if (current <= PATHOGEN_EPSILON) continue;
-    const tile = tilesByPosition.get(key);
+    const tile = tilesByPosition.get(sourceKey);
     const targetPosition = tile?.flowTo;
     if (tile === undefined || targetPosition === undefined) continue;
     const targetKey = positionKey(targetPosition);
-    if (targetKey === key || !tilesByPosition.has(targetKey)) continue;
+    if (targetKey === sourceKey || !tilesByPosition.has(targetKey)) continue;
     const drainage = Number.isFinite(tile.drainage ?? Number.NaN)
       ? clamp01(tile.drainage ?? 0)
       : 0;
     if (drainage <= 0) continue;
 
-    const requested = current * drainage * PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN;
-    const targetCurrent = advected.get(targetKey) ?? 0;
-    const transferred = Math.min(requested, Math.max(0, 1 - targetCurrent));
-    if (transferred <= PATHOGEN_EPSILON) continue;
+    const amount = current * drainage * PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN;
+    if (amount <= PATHOGEN_EPSILON) continue;
+    requests.push({ sourceKey, targetKey, amount });
+    requestedByTarget.set(targetKey, (requestedByTarget.get(targetKey) ?? 0) + amount);
+  }
 
-    advected.set(key, Math.max(0, (advected.get(key) ?? 0) - transferred));
-    advected.set(targetKey, targetCurrent + transferred);
+  const acceptedScaleByTarget = new Map<string, number>();
+  for (const [targetKey, requested] of requestedByTarget) {
+    const targetCurrent = previousReservoir.get(targetKey) ?? 0;
+    const capacity = Math.max(0, 1 - targetCurrent);
+    acceptedScaleByTarget.set(
+      targetKey,
+      requested > 0 ? Math.min(1, capacity / requested) : 0,
+    );
+  }
+
+  const outbound = new Map<string, number>();
+  const inbound = new Map<string, number>();
+  for (const request of requests) {
+    const transferred = request.amount * (acceptedScaleByTarget.get(request.targetKey) ?? 0);
+    if (transferred <= PATHOGEN_EPSILON) continue;
+    outbound.set(request.sourceKey, (outbound.get(request.sourceKey) ?? 0) + transferred);
+    inbound.set(request.targetKey, (inbound.get(request.targetKey) ?? 0) + transferred);
+  }
+
+  const advected = new Map(previousReservoir);
+  const changedKeys = new Set([...outbound.keys(), ...inbound.keys()]);
+  for (const key of changedKeys) {
+    advected.set(
+      key,
+      (previousReservoir.get(key) ?? 0) - (outbound.get(key) ?? 0) + (inbound.get(key) ?? 0),
+    );
   }
   return advected;
 }

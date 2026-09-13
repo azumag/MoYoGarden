@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { hexGridNeighbors } from "../dist-ts/src/hex-grid.js";
 import { applyPathogenSteps, tilePathogenReservoir } from "../dist-ts/src/pathogen.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
@@ -49,4 +50,66 @@ test("unresolved cross-region runoff outlets stay local and fail soft", () => {
   assert.ok(Math.abs(tilePathogenReservoir(source) - 0.82) < 1e-9);
   const total = state.tiles.reduce((sum, tile) => sum + tilePathogenReservoir(tile), 0);
   assert.ok(Math.abs(total - 0.82) < 1e-9);
+});
+
+function convergingRunoffState(reverseTiles = false) {
+  const state = cleanReservoirState();
+  const target = state.tiles.find((tile) => tile.x === 19 && tile.y === 11);
+  assert.ok(target);
+  const neighborPositions = hexGridNeighbors(target);
+  assert.ok(neighborPositions.length >= 2);
+  const sourceA = state.tiles.find(
+    (tile) => tile.x === neighborPositions[0].x && tile.y === neighborPositions[0].y,
+  );
+  const sourceB = state.tiles.find(
+    (tile) => tile.x === neighborPositions[1].x && tile.y === neighborPositions[1].y,
+  );
+  assert.ok(sourceA);
+  assert.ok(sourceB);
+
+  target.pathogenReservoir = 0.95;
+  for (const source of [sourceA, sourceB]) {
+    source.pathogenReservoir = 1;
+    source.flowTo = { x: target.x, y: target.y };
+    source.drainage = 1;
+  }
+  if (reverseTiles) state.tiles.reverse();
+  return {
+    state,
+    targetPosition: { x: target.x, y: target.y },
+    sourceAPosition: { x: sourceA.x, y: sourceA.y },
+    sourceBPosition: { x: sourceB.x, y: sourceB.y },
+  };
+}
+
+test("converging runoff shares downstream pathogen capacity independent of tile order", () => {
+  const forward = convergingRunoffState(false);
+  const reversed = convergingRunoffState(true);
+  applyPathogenSteps(forward.state, 1);
+  applyPathogenSteps(reversed.state, 1);
+
+  const reservoirAt = (state, position) => {
+    const tile = state.tiles.find((entry) => entry.x === position.x && entry.y === position.y);
+    assert.ok(tile);
+    return tilePathogenReservoir(tile);
+  };
+
+  const forwardA = reservoirAt(forward.state, forward.sourceAPosition);
+  const forwardB = reservoirAt(forward.state, forward.sourceBPosition);
+  const reversedA = reservoirAt(reversed.state, reversed.sourceAPosition);
+  const reversedB = reservoirAt(reversed.state, reversed.sourceBPosition);
+  const forwardTarget = reservoirAt(forward.state, forward.targetPosition);
+  const reversedTarget = reservoirAt(reversed.state, reversed.targetPosition);
+
+  assert.ok(Math.abs(forwardA - forwardB) < 1e-9, "equal tributaries should share capacity equally");
+  assert.ok(Math.abs(forwardA - reversedA) < 1e-9, "source A must not depend on tile ordering");
+  assert.ok(Math.abs(forwardB - reversedB) < 1e-9, "source B must not depend on tile ordering");
+  assert.ok(Math.abs(forwardA - 0.7995) < 1e-9);
+  assert.ok(Math.abs(forwardTarget - 0.82) < 1e-9);
+  assert.ok(Math.abs(reversedTarget - forwardTarget) < 1e-9);
+
+  for (const state of [forward.state, reversed.state]) {
+    const total = state.tiles.reduce((sum, tile) => sum + tilePathogenReservoir(tile), 0);
+    assert.ok(Math.abs(total - 2.419) < 1e-9, "converging runoff must conserve total burden");
+  }
 });
