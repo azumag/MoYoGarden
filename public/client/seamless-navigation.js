@@ -12,6 +12,7 @@ import { WorldView } from "./world-view.js";
 
 const REBASE_TIMEOUT_MS = 15_000;
 const REGION_LAYOUT_TIMEOUT_MS = 8_000;
+const PREFETCH_TIMEOUT_MS = 8_000;
 const PREFETCH_MARGIN_TILES = 6;
 const PREFETCH_REFRESH_MS = 60_000;
 let regionLayout = [];
@@ -214,12 +215,17 @@ function warmRegion(regionId) {
   if (Date.now() - lastWarm < PREFETCH_REFRESH_MS) return;
 
   regionWarmAt.set(regionId, Date.now());
-  // Mark this snapshot as a passive prefetch so the Worker promotes the neighbor only
-  // to the warm tier instead of active cadence. Cancel the body after headers to keep
-  // this warm-up cheap while the existing window prefetch remains responsible for preview state.
+  // Keep passive warm-up bounded just like scoped topology reads. A stalled
+  // snapshot request must not pin this region in regionWarmRequests forever and
+  // prevent later prewarm retries when the camera approaches the same seam.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PREFETCH_TIMEOUT_MS);
   const request = fetch(
     `/api/world/snapshot?region=${encodeURIComponent(regionId)}`,
-    regionWarmSnapshotRequestInit(),
+    {
+      ...regionWarmSnapshotRequestInit(),
+      signal: controller.signal,
+    },
   )
     .then(async (response) => {
       if (!response.ok) throw new Error(`warm snapshot HTTP ${response.status}`);
@@ -227,9 +233,12 @@ function warmRegion(regionId) {
     })
     .catch((error) => {
       regionWarmAt.delete(regionId);
-      console.debug(`MoYoGarden region prewarm failed for ${regionId}`, error);
+      if (error?.name !== "AbortError") {
+        console.debug(`MoYoGarden region prewarm failed for ${regionId}`, error);
+      }
     })
     .finally(() => {
+      clearTimeout(timeout);
       regionWarmRequests.delete(regionId);
     });
   regionWarmRequests.set(regionId, request);
