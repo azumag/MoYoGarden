@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  buildConfiguredHexHaloLinks,
   buildDynamicHexHaloLinks,
   buildHexHaloLinks,
   hexHaloKey,
@@ -50,6 +51,27 @@ test("dynamic halo topology cache stays bounded and mutation-safe", () => {
   assert.notEqual(second[0], first[0]);
   assert.notEqual(second[0].sourcePosition, first[0].sourcePosition);
   assert.match(hexHaloSource, /DYNAMIC_HEX_HALO_CACHE_LIMIT\s*=\s*64/);
+});
+
+test("configured halo topology cache is bounded, mutation-safe, and configuration-sensitive", () => {
+  const configured = ["garden-1", "garden-2", "garden-3"];
+  const first = buildConfiguredHexHaloLinks(extent, configured, "garden-1");
+  assert.equal(first.length, 2 * 23);
+  const expectedFirst = structuredClone(first[0]);
+  assert.ok(expectedFirst);
+
+  first[0].sourcePosition.x = -999;
+  first[0].neighborPosition.y = -999;
+
+  const second = buildConfiguredHexHaloLinks(extent, configured, "garden-1");
+  assert.equal(second.length, first.length);
+  assert.deepEqual(second[0], expectedFirst, "configured cache must not be poisoned by a caller mutation");
+  assert.notEqual(second[0], first[0]);
+  assert.notEqual(second[0].sourcePosition, first[0].sourcePosition);
+
+  const reduced = buildConfiguredHexHaloLinks(extent, ["garden-1", "garden-2"], "garden-1");
+  assert.equal(reduced.length, 23, "cache key must include the ordered configured region set");
+  assert.match(hexHaloSource, /CONFIGURED_HEX_HALO_CACHE_LIMIT\s*=\s*32/);
 });
 
 test("halo materialization indexes edge tiles without cloning them twice", () => {

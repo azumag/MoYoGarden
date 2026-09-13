@@ -53,12 +53,22 @@ function cloneHaloTile(tile: Tile): Tile {
 
 const DYNAMIC_HEX_HALO_CACHE_LIMIT = 64;
 const dynamicHexHaloLinkCache = new Map<string, readonly HexHaloLink[]>();
+const CONFIGURED_HEX_HALO_CACHE_LIMIT = 32;
+const configuredHexHaloLinkCache = new Map<string, readonly HexHaloLink[]>();
 
 function dynamicHexHaloCacheKey(
   extent: HexGridExtent,
   sourceRegionId: string,
 ): string {
   return `${extent.width}x${extent.height}:${sourceRegionId}`;
+}
+
+function configuredHexHaloCacheKey(
+  extent: HexGridExtent,
+  regionIds: readonly string[],
+  sourceRegionId: string,
+): string {
+  return `${extent.width}x${extent.height}:${sourceRegionId}:${regionIds.join("\u001f")}`;
 }
 
 function rememberDynamicHexHaloLinks(
@@ -74,6 +84,21 @@ function rememberDynamicHexHaloLinks(
     if (oldest !== undefined) dynamicHexHaloLinkCache.delete(oldest);
   }
   dynamicHexHaloLinkCache.set(key, links.map(cloneHaloLink));
+}
+
+function rememberConfiguredHexHaloLinks(
+  key: string,
+  links: readonly HexHaloLink[],
+): void {
+  // Legacy configured regions still materialize halos on the warm/cold path.
+  // Their topology is pure for extent + ordered configuration + source, so keep
+  // a small detached LRU without caching any neighbor state or snapshots.
+  configuredHexHaloLinkCache.delete(key);
+  if (configuredHexHaloLinkCache.size >= CONFIGURED_HEX_HALO_CACHE_LIMIT) {
+    const oldest = configuredHexHaloLinkCache.keys().next().value;
+    if (oldest !== undefined) configuredHexHaloLinkCache.delete(oldest);
+  }
+  configuredHexHaloLinkCache.set(key, links.map(cloneHaloLink));
 }
 
 export function hexHaloKey(position: HexGridPosition, direction: HexGridDirection): string {
@@ -131,6 +156,14 @@ export function buildConfiguredHexHaloLinks(
     return buildHexHaloLinks(extent, regionIds, sourceRegionId);
   }
 
+  const cacheKey = configuredHexHaloCacheKey(extent, regionIds, sourceRegionId);
+  const cached = configuredHexHaloLinkCache.get(cacheKey);
+  if (cached !== undefined) {
+    configuredHexHaloLinkCache.delete(cacheKey);
+    configuredHexHaloLinkCache.set(cacheKey, cached);
+    return cached.map(cloneHaloLink);
+  }
+
   // Resolve the configured axial neighborhood once per halo materialization.
   // The old path rebuilt the same REGION_IDS index inside
   // configuredRegionCellTransition for every directed boundary cell (up to 138
@@ -178,6 +211,7 @@ export function buildConfiguredHexHaloLinks(
   }
 
   if (!regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)) {
+    rememberConfiguredHexHaloLinks(cacheKey, links);
     return links;
   }
 
@@ -189,7 +223,9 @@ export function buildConfiguredHexHaloLinks(
       regionAxialCoordinate(link.neighborRegionId) === undefined &&
       !exactKeys.has(hexHaloKey(link.sourcePosition, link.direction)),
   );
-  return [...links, ...historicalFallback];
+  const combined = [...links, ...historicalFallback];
+  rememberConfiguredHexHaloLinks(cacheKey, combined);
+  return combined;
 }
 
 /**
