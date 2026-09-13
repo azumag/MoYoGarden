@@ -214,17 +214,24 @@ function shouldContinueSettlementMigration(
   const localRank = settlementContinuationRank(local);
   if (candidateRank !== localRank) return candidateRank > localRank;
 
-  // Keep the old anti-ping-pong rule for equal carrying-capacity classes, but
-  // allow a transit pioneer to keep moving along an observed disease gradient.
-  // This is monotonic for a static snapshot: equal-rank hops are permitted only
-  // when both regions expose reservoir samples and the next region is strictly
-  // cleaner. Missing rollout metadata remains neutral, so an unknown region is
-  // never treated as safer than the current one.
-  if (candidate.pathogenReservoirSamples === 0 || local.pathogenReservoirSamples === 0) {
-    return false;
+  // Equal carrying-capacity classes may still form an environmental gradient.
+  // Keep continuation lexicographically monotonic: observed pathogen burden is
+  // authoritative first, then drainage may break a disease-neutral tie. A
+  // strictly dirtier frontier never wins merely because it drains better. If a
+  // rolling/legacy snapshot lacks pathogen metadata, that dimension is neutral
+  // rather than implicitly clean; drainage still requires observations on both
+  // sides. Because every accepted equal-rank hop strictly improves one observed
+  // component without worsening an earlier component, static snapshots cannot
+  // ping-pong without adding visited-region state to WorldState.
+  if (candidate.pathogenReservoirSamples > 0 && local.pathogenReservoirSamples > 0) {
+    const candidatePathogen = averagePathogenReservoir(candidate);
+    const localPathogen = averagePathogenReservoir(local);
+    if (candidatePathogen < localPathogen - SETTLEMENT_PATHOGEN_EPSILON) return true;
+    if (candidatePathogen > localPathogen + SETTLEMENT_PATHOGEN_EPSILON) return false;
   }
-  return averagePathogenReservoir(candidate)
-    < averagePathogenReservoir(local) - SETTLEMENT_PATHOGEN_EPSILON;
+
+  if (candidate.drainageSamples === 0 || local.drainageSamples === 0) return false;
+  return averageDrainage(candidate) > averageDrainage(local) + SETTLEMENT_DRAINAGE_EPSILON;
 }
 
 function compareSettlementSupport(
