@@ -249,14 +249,13 @@ function activeCamps(state: WorldState, factionId: string) {
 
 export function hasLocalSpacedCampSite(state: WorldState, factionId: string): boolean {
   const camps = activeCamps(state, factionId);
-  const anchor = camps[0];
-  if (anchor === undefined) return true;
+  if (camps.length === 0) return true;
   const occupied = new Set(state.structures.map((structure) => positionKey(structure.position)));
   return state.tiles.some((tile) =>
     isHexGridCell(state, tile)
     && tile.terrain !== "water"
     && !occupied.has(positionKey(tile))
-    && hexGridDistance(tile, anchor.position) <= CAMP_LOCAL_BUILD_RADIUS
+    && camps.some((camp) => hexGridDistance(tile, camp.position) <= CAMP_LOCAL_BUILD_RADIUS)
     && camps.every((camp) => hexGridDistance(tile, camp.position) >= CAMP_MIN_SPACING)
   );
 }
