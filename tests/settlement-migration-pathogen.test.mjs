@@ -113,3 +113,55 @@ test("missing pathogen metadata stays neutral during rolling compatibility", () 
   );
   assert.equal(plan.neighborRegionId, "hex-q-1-r0");
 });
+
+test("transit pioneer continues along a strictly cleaner equal-support pathogen gradient", () => {
+  const { state } = transitPioneerFixture();
+  const localFood = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
+  assert.ok(localFood);
+  localFood.resource = { kind: "food", amount: 0, maxAmount: 12 };
+  localFood.pathogenReservoir = 0.9;
+
+  const plan = planAutonomousSettlementMigration(state, [{
+    direction: "E",
+    sourcePosition: { x: 30, y: 11 },
+    neighborRegionId: "hex-q1-r0",
+    neighborPosition: { x: 8, y: 11 },
+    tile: {
+      x: 8,
+      y: 11,
+      terrain: "plain",
+      elevation: 0.5,
+      resource: { kind: "food", amount: 0, maxAmount: 12 },
+      pathogenReservoir: 0.1,
+    },
+  }]);
+
+  assert.ok(plan);
+  assert.equal(plan.direction, "E");
+  assert.equal(plan.neighborRegionId, "hex-q1-r0");
+});
+
+test("transit pioneer settles instead of moving toward a dirtier equal-support frontier", () => {
+  const { state } = transitPioneerFixture();
+  const localFood = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
+  assert.ok(localFood);
+  localFood.resource = { kind: "food", amount: 0, maxAmount: 12 };
+  localFood.pathogenReservoir = 0.1;
+
+  const plan = planAutonomousSettlementMigration(state, [{
+    direction: "E",
+    sourcePosition: { x: 30, y: 11 },
+    neighborRegionId: "hex-q1-r0",
+    neighborPosition: { x: 8, y: 11 },
+    tile: {
+      x: 8,
+      y: 11,
+      terrain: "plain",
+      elevation: 0.5,
+      resource: { kind: "food", amount: 0, maxAmount: 12 },
+      pathogenReservoir: 0.9,
+    },
+  }]);
+
+  assert.equal(plan, undefined);
+});

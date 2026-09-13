@@ -206,6 +206,27 @@ function settlementContinuationRank(support: SettlementNeighborSupport): number 
     + (support.waterCells > 0 ? 1 : 0);
 }
 
+function shouldContinueSettlementMigration(
+  candidate: SettlementNeighborSupport,
+  local: SettlementNeighborSupport,
+): boolean {
+  const candidateRank = settlementContinuationRank(candidate);
+  const localRank = settlementContinuationRank(local);
+  if (candidateRank !== localRank) return candidateRank > localRank;
+
+  // Keep the old anti-ping-pong rule for equal carrying-capacity classes, but
+  // allow a transit pioneer to keep moving along an observed disease gradient.
+  // This is monotonic for a static snapshot: equal-rank hops are permitted only
+  // when both regions expose reservoir samples and the next region is strictly
+  // cleaner. Missing rollout metadata remains neutral, so an unknown region is
+  // never treated as safer than the current one.
+  if (candidate.pathogenReservoirSamples === 0 || local.pathogenReservoirSamples === 0) {
+    return false;
+  }
+  return averagePathogenReservoir(candidate)
+    < averagePathogenReservoir(local) - SETTLEMENT_PATHOGEN_EPSILON;
+}
+
 function compareSettlementSupport(
   a: SettlementNeighborSupport,
   b: SettlementNeighborSupport,
@@ -438,7 +459,7 @@ export function planAutonomousSettlementMigration(
       .map((faction) => faction.id),
   );
   const supportByRegion = settlementNeighborSupports(halo);
-  let localSupportRank: number | undefined;
+  let localSupport: SettlementNeighborSupport | undefined;
   const pathsByOrigin = new Map<string, Map<string, LocalPathScore>>();
   const crowdingByPosition = new Map<string, number>();
   for (const occupant of state.agents) {
@@ -473,8 +494,8 @@ export function planAutonomousSettlementMigration(
       if (path === undefined || path.distance > energyBudget) continue;
       const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
       if (transitPioneer) {
-        localSupportRank ??= settlementContinuationRank(localSettlementSupport(state));
-        if (settlementContinuationRank(support) <= localSupportRank) continue;
+        localSupport ??= localSettlementSupport(state);
+        if (!shouldContinueSettlementMigration(support, localSupport)) continue;
       }
       const crowding = Math.max(
         0,
