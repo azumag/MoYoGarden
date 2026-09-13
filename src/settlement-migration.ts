@@ -46,6 +46,7 @@ interface SettlementNeighborSupport {
 interface SettlementSeamCandidate {
   entry: HexHaloTile;
   distance: number;
+  pathCrowding: number;
   crowding: number;
   support: SettlementNeighborSupport;
 }
@@ -53,6 +54,11 @@ interface SettlementSeamCandidate {
 interface SettlementPlanCandidate extends SettlementSeamCandidate {
   agent: Agent;
   issuedAtTick: number;
+}
+
+interface LocalPathScore {
+  distance: number;
+  crowding: number;
 }
 
 function directionRank(direction: HexGridDirection): number {
@@ -200,6 +206,7 @@ function compareSettlementSeamCandidate(
   return (
     compareSettlementSupport(a.support, b.support)
     || a.distance - b.distance
+    || a.pathCrowding - b.pathCrowding
     || a.crowding - b.crowding
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
     || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
@@ -215,6 +222,7 @@ function compareSettlementPlanCandidate(
   return (
     compareSettlementSupport(a.support, b.support)
     || a.distance - b.distance
+    || a.pathCrowding - b.pathCrowding
     || a.crowding - b.crowding
     || a.agent.id.localeCompare(b.agent.id)
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
@@ -222,22 +230,44 @@ function compareSettlementPlanCandidate(
   );
 }
 
-function localPathDistances(state: WorldState, start: GridPosition): Map<string, number> {
-  const distances = new Map<string, number>([[positionKey(start), 0]]);
+function localPathScores(
+  state: WorldState,
+  start: GridPosition,
+  crowdingByPosition: ReadonlyMap<string, number>,
+): Map<string, LocalPathScore> {
+  const scores = new Map<string, LocalPathScore>([
+    [positionKey(start), { distance: 0, crowding: 0 }],
+  ]);
   const queue: GridPosition[] = [{ ...start }];
   for (let cursor = 0; cursor < queue.length; cursor += 1) {
     const current = queue[cursor];
     if (current === undefined) break;
-    const currentDistance = distances.get(positionKey(current)) ?? 0;
+    const currentScore = scores.get(positionKey(current));
+    if (currentScore === undefined) continue;
     for (const step of Object.values(HEX_GRID_DIRECTION_STEPS)) {
       const next = { x: current.x + step.x, y: current.y + step.y };
+      if (!isPassable(state, next)) continue;
       const key = positionKey(next);
-      if (distances.has(key) || !isPassable(state, next)) continue;
-      distances.set(key, currentDistance + 1);
+      const candidate: LocalPathScore = {
+        distance: currentScore.distance + 1,
+        crowding: currentScore.crowding + (crowdingByPosition.get(key) ?? 0),
+      };
+      const existing = scores.get(key);
+      if (
+        existing !== undefined &&
+        (existing.distance < candidate.distance ||
+          (existing.distance === candidate.distance && existing.crowding <= candidate.crowding))
+      ) {
+        continue;
+      }
+      scores.set(key, candidate);
+      // Equal-distance crowding improvements are re-queued so descendants also
+      // inherit the least crowded among their shortest paths. Distance remains
+      // the primary cost, so crowding never makes a pioneer take a longer route.
       queue.push(next);
     }
   }
-  return distances;
+  return scores;
 }
 
 function activeCamps(state: WorldState, factionId: string) {
@@ -374,7 +404,7 @@ export function planAutonomousSettlementMigration(
   );
   const supportByRegion = settlementNeighborSupports(halo);
   let localSupportRank: number | undefined;
-  const distancesByOrigin = new Map<string, Map<string, number>>();
+  const pathsByOrigin = new Map<string, Map<string, LocalPathScore>>();
   const crowdingByPosition = new Map<string, number>();
   for (const occupant of state.agents) {
     const key = positionKey(occupant.position);
@@ -394,18 +424,18 @@ export function planAutonomousSettlementMigration(
 
   for (const { agent, transitPioneer } of candidateAgents) {
     const originKey = positionKey(agent.position);
-    let distances = distancesByOrigin.get(originKey);
-    if (distances === undefined) {
-      distances = localPathDistances(state, agent.position);
-      distancesByOrigin.set(originKey, distances);
+    let paths = pathsByOrigin.get(originKey);
+    if (paths === undefined) {
+      paths = localPathScores(state, agent.position, crowdingByPosition);
+      pathsByOrigin.set(originKey, paths);
     }
     const energyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);
     let candidate: SettlementSeamCandidate | undefined;
     for (const entry of halo) {
       if (entry.tile.terrain === "water") continue;
       const targetKey = positionKey(entry.sourcePosition);
-      const distance = distances.get(targetKey);
-      if (distance === undefined || distance > energyBudget) continue;
+      const path = paths.get(targetKey);
+      if (path === undefined || path.distance > energyBudget) continue;
       const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
       if (transitPioneer) {
         localSupportRank ??= settlementContinuationRank(localSettlementSupport(state));
@@ -415,7 +445,13 @@ export function planAutonomousSettlementMigration(
         0,
         (crowdingByPosition.get(targetKey) ?? 0) - (targetKey === originKey ? 1 : 0),
       );
-      const next = { entry, distance, crowding, support };
+      const next = {
+        entry,
+        distance: path.distance,
+        pathCrowding: path.crowding,
+        crowding,
+        support,
+      };
       if (candidate === undefined || compareSettlementSeamCandidate(next, candidate) < 0) {
         candidate = next;
       }
@@ -428,6 +464,7 @@ export function planAutonomousSettlementMigration(
       agent,
       entry: candidate.entry,
       distance: candidate.distance,
+      pathCrowding: candidate.pathCrowding,
       crowding: candidate.crowding,
       issuedAtTick,
       support: candidate.support,
