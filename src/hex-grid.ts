@@ -70,7 +70,7 @@ export function hexGridRadius(extent: HexGridExtent): number {
 
 interface HexGridCellCacheEntry {
   cells: readonly HexGridPosition[];
-  cellKeys: ReadonlySet<string>;
+  mask: Uint8Array;
 }
 
 const HEX_GRID_CELL_CACHE_LIMIT = 24;
@@ -80,8 +80,8 @@ function hexGridCellCacheKey(extent: HexGridExtent): string {
   return `${extent.width}x${extent.height}`;
 }
 
-function cellKey(position: HexGridPosition): string {
-  return `${position.x},${position.y}`;
+function cellIndex(extent: HexGridExtent, position: HexGridPosition): number {
+  return position.y * extent.width + position.x;
 }
 
 function cachedHexGridCells(extent: HexGridExtent): HexGridCellCacheEntry {
@@ -92,16 +92,16 @@ function cachedHexGridCells(extent: HexGridExtent): HexGridCellCacheEntry {
   const center = hexGridCenter(extent);
   const radius = hexGridRadius(extent);
   const cells: HexGridPosition[] = [];
-  const cellKeys = new Set<string>();
+  const mask = new Uint8Array(Math.max(0, extent.width * extent.height));
   for (let y = 0; y < extent.height; y += 1) {
     for (let x = 0; x < extent.width; x += 1) {
       const position = { x, y };
       if (hexGridDistance(position, center) > radius) continue;
       cells.push(position);
-      cellKeys.add(cellKey(position));
+      mask[cellIndex(extent, position)] = 1;
     }
   }
-  const entry: HexGridCellCacheEntry = { cells, cellKeys };
+  const entry: HexGridCellCacheEntry = { cells, mask };
 
   if (hexGridCellCache.size >= HEX_GRID_CELL_CACHE_LIMIT) {
     const oldest = hexGridCellCache.keys().next().value;
@@ -135,7 +135,7 @@ export function isHexGridCell(extent: HexGridExtent, position: HexGridPosition):
   ) {
     return false;
   }
-  return cachedHexGridCells(extent).cellKeys.has(cellKey(position));
+  return hexGridDistance(position, hexGridCenter(extent)) <= hexGridRadius(extent);
 }
 
 export function hexGridNeighbors(position: HexGridPosition): HexGridPosition[] {
@@ -205,7 +205,13 @@ function cachedHexGridBoundary(
   const cells: HexGridPosition[] = [];
   for (const position of active.cells) {
     const next = { x: position.x + step.x, y: position.y + step.y };
-    if (active.cellKeys.has(cellKey(next))) continue;
+    if (
+      next.x >= 0 &&
+      next.y >= 0 &&
+      next.x < extent.width &&
+      next.y < extent.height &&
+      active.mask[cellIndex(extent, next)] === 1
+    ) continue;
     cells.push({ ...position });
   }
   cells.sort((a, b) =>
@@ -215,7 +221,7 @@ function cachedHexGridBoundary(
   );
   const entry: HexGridBoundaryCacheEntry = {
     cells,
-    indexByPosition: new Map(cells.map((position, index) => [cellKey(position), index])),
+    indexByPosition: new Map(cells.map((position, index) => [`${position.x},${position.y}`, index])),
   };
 
   if (hexGridBoundaryCache.size >= HEX_GRID_BOUNDARY_CACHE_LIMIT) {
@@ -255,7 +261,7 @@ export function hexGridHandoffTarget(
 ): HexGridPosition | undefined {
   if (!isHexGridCell(extent, source)) return undefined;
   const sourceSide = cachedHexGridBoundary(extent, direction);
-  const sourceIndex = sourceSide.indexByPosition.get(cellKey(source));
+  const sourceIndex = sourceSide.indexByPosition.get(`${source.x},${source.y}`);
   if (sourceIndex === undefined) return undefined;
 
   const targetSide = cachedHexGridBoundary(extent, oppositeHexGridDirection(direction)).cells;
