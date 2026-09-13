@@ -5,7 +5,7 @@ import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
 import { planAutonomousSettlementMigration } from "../dist-ts/src/settlement-migration.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
-function drainageTransitFixture({ drainage = 0.2, pathogen = 0.2 } = {}) {
+function drainageTransitFixture({ drainage = 0.2, pathogen = 0.2, foodCapacity = 12 } = {}) {
   const state = createInitialWorld({ seed: 260914, width: 40, height: 24 });
   let localFood;
   for (const tile of state.tiles) {
@@ -17,7 +17,7 @@ function drainageTransitFixture({ drainage = 0.2, pathogen = 0.2 } = {}) {
     localFood ??= tile;
   }
   assert.ok(localFood);
-  localFood.resource = { kind: "food", amount: 0, maxAmount: 12 };
+  localFood.resource = { kind: "food", amount: 0, maxAmount: foodCapacity };
 
   const builder = state.agents.find((agent) => agent.role === "builder");
   assert.ok(builder);
@@ -38,7 +38,7 @@ function drainageTransitFixture({ drainage = 0.2, pathogen = 0.2 } = {}) {
   return state;
 }
 
-function frontier({ drainage, pathogen }) {
+function frontier({ drainage, pathogen, foodCapacity = 12 }) {
   return [{
     direction: "E",
     sourcePosition: { x: 30, y: 11 },
@@ -50,11 +50,33 @@ function frontier({ drainage, pathogen }) {
       terrain: "plain",
       elevation: 0.5,
       drainage,
-      resource: { kind: "food", amount: 0, maxAmount: 12 },
+      resource: { kind: "food", amount: 0, maxAmount: foodCapacity },
       ...(pathogen === undefined ? {} : { pathogenReservoir: pathogen }),
     },
   }];
 }
+
+test("transit pioneer continues along stronger durable food capacity with equal resource classes", () => {
+  const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2, foodCapacity: 12 });
+  const plan = planAutonomousSettlementMigration(
+    state,
+    frontier({ drainage: 0.2, pathogen: 0.2, foodCapacity: 24 }),
+  );
+
+  assert.ok(plan);
+  assert.equal(plan.direction, "E");
+  assert.equal(plan.neighborRegionId, "hex-q1-r0");
+});
+
+test("weaker durable food capacity cannot be overridden by cleaner or better-drained frontier", () => {
+  const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2, foodCapacity: 12 });
+  const plan = planAutonomousSettlementMigration(
+    state,
+    frontier({ drainage: 1, pathogen: 0, foodCapacity: 6 }),
+  );
+
+  assert.equal(plan, undefined);
+});
 
 test("transit pioneer continues along better drainage when carrying capacity and pathogen burden tie", () => {
   const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2 });
