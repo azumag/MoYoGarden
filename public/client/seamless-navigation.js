@@ -11,12 +11,14 @@ import {
 import { WorldView } from "./world-view.js";
 
 const REBASE_TIMEOUT_MS = 15_000;
+const REGION_LAYOUT_TIMEOUT_MS = 8_000;
 const PREFETCH_MARGIN_TILES = 6;
 const PREFETCH_REFRESH_MS = 60_000;
 let regionLayout = [];
 let regionLayoutCenter;
 let regionLayoutRequest;
 let regionLayoutRequestCenter;
+let regionLayoutRequestController;
 let pendingRebase;
 let pendingRebaseTimer;
 let rebaseInFlight = false;
@@ -143,9 +145,20 @@ function ensureRegionLayout(centerRegionId) {
   if (regionLayoutCenter === centerRegionId && regionLayout.length > 0) return;
   if (regionLayoutRequest && regionLayoutRequestCenter === centerRegionId) return;
 
+  // A previous region can still be resolving while the camera has already
+  // handed off again. Stop that stale request instead of letting multiple
+  // metadata reads compete on mobile/slow links. A bounded timeout also keeps
+  // one hung request from blocking all future layout retries for this view.
+  regionLayoutRequestController?.abort();
   regionLayoutRequestCenter = centerRegionId;
   const requestedCenter = centerRegionId;
-  regionLayoutRequest = fetch(regionMetaUrl(requestedCenter, 1), { cache: "no-store" })
+  const controller = new AbortController();
+  regionLayoutRequestController = controller;
+  const timeout = setTimeout(() => controller.abort(), REGION_LAYOUT_TIMEOUT_MS);
+  regionLayoutRequest = fetch(regionMetaUrl(requestedCenter, 1), {
+    cache: "no-store",
+    signal: controller.signal,
+  })
     .then(async (response) => {
       if (!response.ok) throw new Error(`meta HTTP ${response.status}`);
       const meta = await response.json();
@@ -181,12 +194,16 @@ function ensureRegionLayout(centerRegionId) {
       }
     })
     .catch((error) => {
-      console.debug("MoYoGarden seamless region metadata unavailable", error);
+      if (error?.name !== "AbortError") {
+        console.debug("MoYoGarden seamless region metadata unavailable", error);
+      }
     })
     .finally(() => {
-      if (regionLayoutRequestCenter === requestedCenter) {
+      clearTimeout(timeout);
+      if (regionLayoutRequestController === controller) {
         regionLayoutRequest = undefined;
         regionLayoutRequestCenter = undefined;
+        regionLayoutRequestController = undefined;
       }
     });
 }

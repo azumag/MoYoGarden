@@ -13,3 +13,12 @@ test("browser topology consumers scope metadata to their loaded hex windows", ()
   assert.doesNotMatch(navigationSource, /fetch\(["'`]\/api\/meta["'`]/);
   assert.doesNotMatch(previewSource, /fetch\(["'`]\/api\/meta["'`]/);
 });
+
+test("seamless navigation bounds stale or hung region metadata reads", () => {
+  assert.match(navigationSource, /REGION_LAYOUT_TIMEOUT_MS\s*=\s*8_000/);
+  assert.match(navigationSource, /regionLayoutRequestController\?\.abort\(\)/);
+  assert.match(navigationSource, /signal:\s*controller\.signal/);
+  assert.match(navigationSource, /setTimeout\(\(\) => controller\.abort\(\), REGION_LAYOUT_TIMEOUT_MS\)/);
+  assert.match(navigationSource, /regionLayoutRequestController === controller/);
+  assert.match(navigationSource, /error\?\.name !== "AbortError"/);
+});
