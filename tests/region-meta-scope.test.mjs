@@ -22,3 +22,15 @@ test("seamless navigation bounds stale or hung region metadata reads", () => {
   assert.match(navigationSource, /regionLayoutRequestController === controller/);
   assert.match(navigationSource, /error\?\.name !== "AbortError"/);
 });
+
+test("seamless navigation bounds stalled passive region prewarms", () => {
+  assert.match(navigationSource, /PREFETCH_TIMEOUT_MS\s*=\s*8_000/);
+  assert.match(navigationSource, /setTimeout\(\(\) => controller\.abort\(\), PREFETCH_TIMEOUT_MS\)/);
+  assert.match(
+    navigationSource,
+    /\.\.\.regionWarmSnapshotRequestInit\(\),\s*signal:\s*controller\.signal/s,
+  );
+  assert.match(navigationSource, /regionWarmAt\.delete\(regionId\)/);
+  assert.match(navigationSource, /clearTimeout\(timeout\)/);
+  assert.match(navigationSource, /regionWarmRequests\.delete\(regionId\)/);
+});
