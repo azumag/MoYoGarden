@@ -226,18 +226,17 @@ function shouldContinueSettlementMigration(
   const localRank = settlementContinuationRank(local);
   if (candidateRank !== localRank) return candidateRank > localRank;
 
-  // Presence classes are deliberately coarse so old halo snapshots remain safe,
-  // but once they tie a pioneer should keep following the same durable maxAmount
-  // signal that selected the first frontier. This makes multi-hop migration react
-  // to stronger carrying capacity rather than stopping merely because both
-  // regions contain the same resource kinds. Compare food, wood and stone
-  // lexicographically and require a strict improvement, preserving monotonicity
-  // and preventing static-snapshot ping-pong without persisted route history.
+  // Presence classes are deliberately coarse so old halo snapshots remain safe.
+  // Once they tie, reuse the first-frontier maxAmount ordering (food -> wood ->
+  // stone) so a pioneer can follow stronger durable carrying capacity across
+  // several regions rather than stopping at "the same resource kinds exist".
+  // Requiring a strict lexicographic improvement keeps this route acyclic for a
+  // static snapshot without persisting visited-region history in WorldState.
   const resourceCapacityDelta = compareContinuationResourceCapacity(candidate, local);
   if (resourceCapacityDelta !== 0) return resourceCapacityDelta > 0;
 
-  // Equal carrying capacity may still form an environmental gradient. Keep
-  // continuation lexicographically monotonic: observed pathogen burden is
+  // Only after durable carrying capacity ties may the environment break the tie.
+  // Keep continuation lexicographically monotonic: observed pathogen burden is
   // authoritative first, then drainage may break a disease-neutral tie. A
   // strictly dirtier frontier never wins merely because it drains better. If a
   // rolling/legacy snapshot lacks pathogen metadata, that dimension is neutral
