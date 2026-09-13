@@ -51,6 +51,31 @@ function cloneHaloTile(tile: Tile): Tile {
   return clone;
 }
 
+const DYNAMIC_HEX_HALO_CACHE_LIMIT = 64;
+const dynamicHexHaloLinkCache = new Map<string, readonly HexHaloLink[]>();
+
+function dynamicHexHaloCacheKey(
+  extent: HexGridExtent,
+  sourceRegionId: string,
+): string {
+  return `${extent.width}x${extent.height}:${sourceRegionId}`;
+}
+
+function rememberDynamicHexHaloLinks(
+  key: string,
+  links: readonly HexHaloLink[],
+): void {
+  // The topology is pure for a given extent + axial source. Cache only detached
+  // link records so callers can freely mutate their returned request-local copy
+  // without poisoning later halo/autonomy materialization.
+  dynamicHexHaloLinkCache.delete(key);
+  if (dynamicHexHaloLinkCache.size >= DYNAMIC_HEX_HALO_CACHE_LIMIT) {
+    const oldest = dynamicHexHaloLinkCache.keys().next().value;
+    if (oldest !== undefined) dynamicHexHaloLinkCache.delete(oldest);
+  }
+  dynamicHexHaloLinkCache.set(key, links.map(cloneHaloLink));
+}
+
 export function hexHaloKey(position: HexGridPosition, direction: HexGridDirection): string {
   return `${position.x},${position.y}:${direction}`;
 }
@@ -178,6 +203,17 @@ export function buildDynamicHexHaloLinks(
   sourceRegionId: string,
 ): HexHaloLink[] {
   if (regionAxialCoordinate(sourceRegionId) === undefined) return [];
+
+  const cacheKey = dynamicHexHaloCacheKey(extent, sourceRegionId);
+  const cached = dynamicHexHaloLinkCache.get(cacheKey);
+  if (cached !== undefined) {
+    // Touch the entry so the small bounded map behaves as an LRU for worlds that
+    // roam across more than the cache limit while keeping hot active neighbors.
+    dynamicHexHaloLinkCache.delete(cacheKey);
+    dynamicHexHaloLinkCache.set(cacheKey, cached);
+    return cached.map(cloneHaloLink);
+  }
+
   const links: HexHaloLink[] = [];
   for (const direction of HEX_GRID_DIRECTIONS) {
     const step = HEX_GRID_DIRECTION_STEPS[direction];
@@ -203,6 +239,7 @@ export function buildDynamicHexHaloLinks(
       });
     }
   }
+  rememberDynamicHexHaloLinks(cacheKey, links);
   return links;
 }
 

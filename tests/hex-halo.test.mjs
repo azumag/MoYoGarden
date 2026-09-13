@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  buildDynamicHexHaloLinks,
   buildHexHaloLinks,
   hexHaloKey,
   hexHaloLookup,
@@ -32,6 +33,23 @@ test("halo hot paths resolve only a bounded axial window", () => {
   );
   assert.match(haloRegionSource, /regionHexWindow/);
   assert.doesNotMatch(haloRegionSource, /regionHexTopology/);
+});
+
+test("dynamic halo topology cache stays bounded and mutation-safe", () => {
+  const first = buildDynamicHexHaloLinks(extent, "hex-q4-r-2");
+  assert.equal(first.length, 6 * 23);
+  const expectedFirst = structuredClone(first[0]);
+  assert.ok(expectedFirst);
+
+  first[0].sourcePosition.x = -999;
+  first[0].neighborPosition.y = -999;
+
+  const second = buildDynamicHexHaloLinks(extent, "hex-q4-r-2");
+  assert.equal(second.length, first.length);
+  assert.deepEqual(second[0], expectedFirst, "cached topology must not be poisoned by a caller mutation");
+  assert.notEqual(second[0], first[0]);
+  assert.notEqual(second[0].sourcePosition, first[0].sourcePosition);
+  assert.match(hexHaloSource, /DYNAMIC_HEX_HALO_CACHE_LIMIT\s*=\s*64/);
 });
 
 test("halo materialization indexes edge tiles without cloning them twice", () => {
