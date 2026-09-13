@@ -328,7 +328,7 @@ test("arrived pioneer scouts immediately and continues toward richer renewable s
   assert.equal(plan.neighborRegionId, "hex-q1-r0");
 });
 
-test("arrived pioneer settles when no neighbor has strictly richer renewable support", () => {
+test("arrived pioneer settles when durable renewable capacity is not richer", () => {
   const { state } = transitFixture();
   const localFood = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
   assert.ok(localFood);
@@ -344,7 +344,7 @@ test("arrived pioneer settles when no neighbor has strictly richer renewable sup
       y: 11,
       terrain: "plain",
       elevation: 0.5,
-      resource: { kind: "food", amount: 8, maxAmount: 40 },
+      resource: { kind: "food", amount: 8, maxAmount: 20 },
     },
   }];
 
@@ -352,6 +352,6 @@ test("arrived pioneer settles when no neighbor has strictly richer renewable sup
   assert.equal(
     planAutonomousSettlementMigration(state, halo),
     undefined,
-    "equal renewable-kind support should settle locally instead of risking region ping-pong",
+    "equal durable renewable capacity should settle locally instead of risking region ping-pong",
   );
 });
