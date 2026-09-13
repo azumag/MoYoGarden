@@ -214,7 +214,6 @@ function warmRegion(regionId) {
   const lastWarm = regionWarmAt.get(regionId) ?? 0;
   if (Date.now() - lastWarm < PREFETCH_REFRESH_MS) return;
 
-  regionWarmAt.set(regionId, Date.now());
   // Keep passive warm-up bounded just like scoped topology reads. A stalled
   // snapshot request must not pin this region in regionWarmRequests forever and
   // prevent later prewarm retries when the camera approaches the same seam.
@@ -229,6 +228,9 @@ function warmRegion(regionId) {
   )
     .then(async (response) => {
       if (!response.ok) throw new Error(`warm snapshot HTTP ${response.status}`);
+      // Start the refresh cooldown only after the target actually responded.
+      // An in-flight request is already deduplicated by regionWarmRequests.
+      regionWarmAt.set(regionId, Date.now());
       await response.body?.cancel();
     })
     .catch((error) => {
