@@ -53,6 +53,7 @@ const PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN =
   (PATHOGEN_ADJACENT_CONTACT_GAIN / PATHOGEN_SAME_CELL_CONTACT_GAIN);
 const PATHOGEN_RESERVOIR_BASE_CLEARANCE_RATE = 0.18;
 const PATHOGEN_RESERVOIR_CLIMATE_PERSISTENCE_GAIN = 0.55;
+const PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN = 0.08;
 export const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
 const PATHOGEN_SYMPTOM_THRESHOLD = 0.65;
 const PATHOGEN_SYMPTOM_ENERGY_COST = 1;
@@ -182,6 +183,46 @@ function pathogenReservoirIndex(tiles: readonly Tile[]): Map<string, number> {
   return result;
 }
 
+/**
+ * Move a small, bounded share of existing environmental burden along the local
+ * hydrology graph before clearance/shedding are applied.
+ *
+ * `flowTo` and `drainage` are already derived from the six-neighbor elevation
+ * field, so this couples infection ecology to the same low-level water routing
+ * without inventing a river/pathogen category. Only targets owned by this local
+ * state are eligible: cross-DO flow ownership is still a separate Issue #3 step,
+ * and an unresolved boundary outlet must not teleport contamination or mutate a
+ * neighbor. Transfer is capacity-bounded and subtracts exactly what is accepted
+ * downstream, so advection alone neither creates nor destroys reservoir burden.
+ */
+function advectPathogenReservoirs(
+  tilesByPosition: ReadonlyMap<string, Tile>,
+  previousReservoir: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const advected = new Map(previousReservoir);
+  for (const [key, current] of previousReservoir) {
+    if (current <= PATHOGEN_EPSILON) continue;
+    const tile = tilesByPosition.get(key);
+    const targetPosition = tile?.flowTo;
+    if (tile === undefined || targetPosition === undefined) continue;
+    const targetKey = positionKey(targetPosition);
+    if (targetKey === key || !tilesByPosition.has(targetKey)) continue;
+    const drainage = Number.isFinite(tile.drainage ?? Number.NaN)
+      ? clamp01(tile.drainage ?? 0)
+      : 0;
+    if (drainage <= 0) continue;
+
+    const requested = current * drainage * PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN;
+    const targetCurrent = advected.get(targetKey) ?? 0;
+    const transferred = Math.min(requested, Math.max(0, 1 - targetCurrent));
+    if (transferred <= PATHOGEN_EPSILON) continue;
+
+    advected.set(key, Math.max(0, (advected.get(key) ?? 0) - transferred));
+    advected.set(targetKey, targetCurrent + transferred);
+  }
+  return advected;
+}
+
 function localReservoirExposure(
   reservoir: ReadonlyMap<string, number>,
   position: GridPosition,
@@ -213,6 +254,7 @@ function advancePathogenReservoirs(
   if (tiles.length === 0) return 0;
 
   const tilesByPosition = new Map(tiles.map((tile) => [positionKey(tile), tile]));
+  const advectedReservoir = advectPathogenReservoirs(tilesByPosition, previousReservoir);
   const shedding = new Map<string, number>();
   for (const source of previousAgents) {
     const pressure = agentPathogenPressure(source);
@@ -224,12 +266,12 @@ function advancePathogenReservoirs(
     );
   }
 
-  const keys = new Set([...previousReservoir.keys(), ...shedding.keys()]);
+  const keys = new Set([...advectedReservoir.keys(), ...shedding.keys()]);
   let changed = 0;
   for (const key of keys) {
     const tile = tilesByPosition.get(key);
     if (tile === undefined) continue;
-    const current = previousReservoir.get(key) ?? 0;
+    const current = advectedReservoir.get(key) ?? 0;
     const persistence = pathogenClimatePersistence(tile, environment);
     const clearanceRate = PATHOGEN_RESERVOIR_BASE_CLEARANCE_RATE *
       (1 - persistence * PATHOGEN_RESERVOIR_CLIMATE_PERSISTENCE_GAIN);
@@ -242,7 +284,7 @@ function advancePathogenReservoirs(
         delete target.pathogenReservoir;
         changed += 1;
       }
-    } else if (Math.abs(next - current) > PATHOGEN_EPSILON) {
+    } else if (Math.abs(next - tilePathogenReservoir(tile)) > PATHOGEN_EPSILON) {
       target.pathogenReservoir = next;
       changed += 1;
     }
@@ -477,7 +519,8 @@ function singlePathogenStep(
   }
 
   // Reservoir mutation intentionally happens after all BOT exposure calculations,
-  // so newly shed burden cannot shortcut the one-step environmental path.
+  // so newly shed or advected burden cannot shortcut the one-step environmental
+  // path. Hydrology therefore moves contamination for the next pathogen step.
   changed += advancePathogenReservoirs(
     tiles,
     previousState.agents,
@@ -501,7 +544,10 @@ function singlePathogenStep(
  * transmission strength. Environmental reservoir exposure follows the same hex
  * geometry: same-cell burden is strongest, immediate six-neighbor burden is
  * weaker, and a ghost-cell burden across a DO seam uses that exact adjacent
- * strength without copying or mutating the remote tile. Climate only changes
+ * strength without copying or mutating the remote tile. Existing local `flowTo`
+ * and drainage also advect a small conserved share of environmental burden one
+ * hydrology edge per pathogen step; unresolved cross-DO outlets remain inert
+ * until catchment ownership itself becomes continuous. Climate only changes
  * persistence of existing burden; it cannot create infection without a carrier.
  * Recovery is also coupled conservatively to the existing energy reserve. Prior
  * infectious burden builds bounded, slowly waning protection that reduces direct,
