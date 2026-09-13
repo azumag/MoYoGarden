@@ -46,6 +46,7 @@ interface SettlementNeighborSupport {
 interface SettlementSeamCandidate {
   entry: HexHaloTile;
   distance: number;
+  crowding: number;
   support: SettlementNeighborSupport;
 }
 
@@ -199,6 +200,7 @@ function compareSettlementSeamCandidate(
   return (
     compareSettlementSupport(a.support, b.support)
     || a.distance - b.distance
+    || a.crowding - b.crowding
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
     || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
     || a.entry.sourcePosition.y - b.entry.sourcePosition.y
@@ -213,6 +215,7 @@ function compareSettlementPlanCandidate(
   return (
     compareSettlementSupport(a.support, b.support)
     || a.distance - b.distance
+    || a.crowding - b.crowding
     || a.agent.id.localeCompare(b.agent.id)
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
     || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
@@ -372,6 +375,11 @@ export function planAutonomousSettlementMigration(
   const supportByRegion = settlementNeighborSupports(halo);
   let localSupportRank: number | undefined;
   const distancesByOrigin = new Map<string, Map<string, number>>();
+  const crowdingByPosition = new Map<string, number>();
+  for (const occupant of state.agents) {
+    const key = positionKey(occupant.position);
+    crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
+  }
   const candidateAgents = state.agents
     .flatMap((agent) => {
       const transitPioneer = isTransitPioneer(state, agent);
@@ -395,14 +403,19 @@ export function planAutonomousSettlementMigration(
     let candidate: SettlementSeamCandidate | undefined;
     for (const entry of halo) {
       if (entry.tile.terrain === "water") continue;
-      const distance = distances.get(positionKey(entry.sourcePosition));
+      const targetKey = positionKey(entry.sourcePosition);
+      const distance = distances.get(targetKey);
       if (distance === undefined || distance > energyBudget) continue;
       const support = supportByRegion.get(entry.neighborRegionId) ?? emptySettlementNeighborSupport();
       if (transitPioneer) {
         localSupportRank ??= settlementContinuationRank(localSettlementSupport(state));
         if (settlementContinuationRank(support) <= localSupportRank) continue;
       }
-      const next = { entry, distance, support };
+      const crowding = Math.max(
+        0,
+        (crowdingByPosition.get(targetKey) ?? 0) - (targetKey === originKey ? 1 : 0),
+      );
+      const next = { entry, distance, crowding, support };
       if (candidate === undefined || compareSettlementSeamCandidate(next, candidate) < 0) {
         candidate = next;
       }
@@ -415,6 +428,7 @@ export function planAutonomousSettlementMigration(
       agent,
       entry: candidate.entry,
       distance: candidate.distance,
+      crowding: candidate.crowding,
       issuedAtTick,
       support: candidate.support,
     };

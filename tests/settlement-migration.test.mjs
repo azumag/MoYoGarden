@@ -109,6 +109,35 @@ test("population pressure with no spaced local camp site plans a neighboring pio
   assert.deepEqual(plan.boundaryTarget, { x: 30, y: 11 });
 });
 
+test("pioneer avoids a crowded seam when support and travel cost are equal", () => {
+  const { state } = fixture();
+  const crowded = { x: 30, y: 10 };
+  const quiet = { x: 30, y: 11 };
+  const blocker = state.agents.find((agent) => !agent.autonomy);
+  assert.ok(blocker);
+  blocker.position = { ...crowded };
+
+  const plan = planAutonomousSettlementMigration(state, [
+    {
+      direction: "E",
+      sourcePosition: crowded,
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 8, y: 10 },
+      tile: { x: 8, y: 10, terrain: "plain", elevation: 0.5 },
+    },
+    {
+      direction: "E",
+      sourcePosition: quiet,
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 8, y: 11 },
+      tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
+    },
+  ]);
+
+  assert.ok(plan);
+  assert.deepEqual(plan.boundaryTarget, quiet);
+});
+
 test("pioneer prefers a resource-supported neighboring edge at equal travel cost", () => {
   const { state } = fixture();
   const sharedSeam = { x: 30, y: 11 };
