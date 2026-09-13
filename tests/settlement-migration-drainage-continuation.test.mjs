@@ -55,6 +55,25 @@ function frontier({ drainage, pathogen, foodCapacity = 12 }) {
   }];
 }
 
+function frontierWithWater(options) {
+  return [
+    ...frontier(options),
+    {
+      direction: "E",
+      sourcePosition: { x: 30, y: 11 },
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 8, y: 12 },
+      tile: {
+        x: 8,
+        y: 12,
+        terrain: "water",
+        elevation: 0.3,
+        drainage: 0,
+      },
+    },
+  ];
+}
+
 test("transit pioneer compares durable food capacity density across unequal sample footprints", () => {
   const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2, foodCapacity: 12 });
   const plan = planAutonomousSettlementMigration(
@@ -72,6 +91,26 @@ test("weaker durable food capacity density cannot be overridden by cleaner or be
   const plan = planAutonomousSettlementMigration(
     state,
     frontier({ drainage: 1, pathogen: 0, foodCapacity: 6 }),
+  );
+
+  assert.equal(plan, undefined);
+});
+
+test("surface water cannot override weaker durable food capacity density", () => {
+  const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2, foodCapacity: 12 });
+  const plan = planAutonomousSettlementMigration(
+    state,
+    frontierWithWater({ drainage: 1, pathogen: 0.2, foodCapacity: 6 }),
+  );
+
+  assert.equal(plan, undefined);
+});
+
+test("surface water cannot override a strictly dirtier equal-capacity frontier", () => {
+  const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2, foodCapacity: 12 });
+  const plan = planAutonomousSettlementMigration(
+    state,
+    frontierWithWater({ drainage: 1, pathogen: 0.8, foodCapacity: 12 }),
   );
 
   assert.equal(plan, undefined);

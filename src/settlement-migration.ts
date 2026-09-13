@@ -147,7 +147,6 @@ function localSettlementSupport(state: WorldState): SettlementNeighborSupport {
   }
   return support;
 }
-
 function resourceDiversity(support: SettlementNeighborSupport): number {
   return RESOURCE_KINDS.reduce(
     (count, kind) => count + (support.resourceCapacity[kind] > 0 ? 1 : 0),
@@ -196,15 +195,15 @@ function settlementContinuationRank(support: SettlementNeighborSupport): number 
   // should only take another hop when the low-level support signal strictly
   // improves, otherwise equal-quality neighbors could ping-pong forever.
   //
-  // Food remains the strongest carrying-capacity signal, followed by wood and
-  // stone. Visible surface water is the weakest bit: it can break a tie between
-  // equally resourced regions, but it can never outweigh losing a renewable
-  // resource class. Because the score must strictly increase, multi-hop travel
-  // is still bounded without adding visited-region state to WorldState.
-  return (support.resourceCapacity.food > 0 ? 8 : 0)
-    + (support.resourceCapacity.wood > 0 ? 4 : 0)
-    + (support.resourceCapacity.stone > 0 ? 2 : 0)
-    + (support.waterCells > 0 ? 1 : 0);
+  // Rank only renewable resource classes here. Surface water is a real support
+  // signal, but evaluating it before capacity density let a single wet boundary
+  // cell override a large loss of durable food capacity or a dirtier frontier.
+  // Water is therefore evaluated later, after capacity and pathogen burden tie.
+  // Because each hop still requires a lexicographic improvement, multi-hop travel
+  // remains bounded without adding visited-region state to WorldState.
+  return (support.resourceCapacity.food > 0 ? 4 : 0)
+    + (support.resourceCapacity.wood > 0 ? 2 : 0)
+    + (support.resourceCapacity.stone > 0 ? 1 : 0);
 }
 
 function resourceCapacityDensity(
@@ -253,17 +252,21 @@ function shouldContinueSettlementMigration(
 
   // Only after durable carrying capacity ties may the environment break the tie.
   // Keep continuation lexicographically monotonic: observed pathogen burden is
-  // authoritative first, then drainage may break a disease-neutral tie. A
-  // strictly dirtier frontier never wins merely because it drains better. If a
-  // rolling/legacy snapshot lacks pathogen metadata, that dimension is neutral
-  // rather than implicitly clean; drainage still requires observations on both
-  // sides.
+  // authoritative first, then visible surface water, then drainage may break a
+  // disease-neutral tie. A strictly dirtier frontier never wins merely because
+  // it has one wet boundary cell or drains better. If a rolling/legacy snapshot
+  // lacks pathogen metadata, that dimension is neutral rather than implicitly
+  // clean.
   if (candidate.pathogenReservoirSamples > 0 && local.pathogenReservoirSamples > 0) {
     const candidatePathogen = averagePathogenReservoir(candidate);
     const localPathogen = averagePathogenReservoir(local);
     if (candidatePathogen < localPathogen - SETTLEMENT_PATHOGEN_EPSILON) return true;
     if (candidatePathogen > localPathogen + SETTLEMENT_PATHOGEN_EPSILON) return false;
   }
+
+  const candidateHasWater = candidate.waterCells > 0;
+  const localHasWater = local.waterCells > 0;
+  if (candidateHasWater !== localHasWater) return candidateHasWater;
 
   if (candidate.drainageSamples === 0 || local.drainageSamples === 0) return false;
   return averageDrainage(candidate) > averageDrainage(local) + SETTLEMENT_DRAINAGE_EPSILON;
