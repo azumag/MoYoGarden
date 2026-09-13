@@ -337,6 +337,22 @@ export async function withRegionWindowSnapshotDeadline<T>(
   }
 }
 
+export async function readRegionWindowSnapshotResponseWithDeadline(
+  operation: (signal: AbortSignal) => Promise<Response>,
+  timeoutMs = REGION_WINDOW_SNAPSHOT_TIMEOUT_MS,
+): Promise<Response> {
+  return withRegionWindowSnapshotDeadline(async (signal) => {
+    const response = await operation(signal);
+    const body = await response.arrayBuffer();
+    const nullBodyStatus = response.status === 204 || response.status === 205 || response.status === 304;
+    return new Response(nullBodyStatus ? null : body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }, timeoutMs);
+}
+
 function regionWindowCenter(request: Request, env: WorkerEnv): string {
   const url = new URL(request.url);
   const requested =
@@ -356,7 +372,7 @@ function failSoftRegionWindowEnv(env: WorkerEnv, centerRegionId: string): Worker
         fetch: async (...fetchArgs: Parameters<typeof stub.fetch>) => {
           const snapshotRequest = fetchArgs[0];
           try {
-            return await withRegionWindowSnapshotDeadline((signal) => {
+            return await readRegionWindowSnapshotResponseWithDeadline((signal) => {
               if (snapshotRequest instanceof Request) {
                 return stub.fetch(new Request(snapshotRequest, { signal }));
               }

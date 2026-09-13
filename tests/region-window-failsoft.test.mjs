@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker, { withRegionWindowSnapshotDeadline } from "../dist-ts/src/worker-entry.js";
+import worker, {
+  readRegionWindowSnapshotResponseWithDeadline,
+  withRegionWindowSnapshotDeadline,
+} from "../dist-ts/src/worker-entry.js";
 
 function snapshot(regionId) {
   return {
@@ -74,5 +77,27 @@ test("region window snapshot deadline aborts a stalled read and releases the cal
     }, 5),
     (error) => error instanceof Error && error.name === "TimeoutError",
   );
+  assert.equal(observedSignal?.aborted, true);
+});
+
+test("region window response body consumption shares the same deadline", async () => {
+  let observedSignal;
+  let bodyReadStarted = false;
+  await assert.rejects(
+    readRegionWindowSnapshotResponseWithDeadline(async (signal) => {
+      observedSignal = signal;
+      const response = new Response(JSON.stringify(snapshot("garden-2")), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+      response.arrayBuffer = () => {
+        bodyReadStarted = true;
+        return new Promise(() => {});
+      };
+      return response;
+    }, 5),
+    (error) => error instanceof Error && error.name === "TimeoutError",
+  );
+  assert.equal(bodyReadStarted, true);
   assert.equal(observedSignal?.aborted, true);
 });
