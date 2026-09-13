@@ -255,6 +255,9 @@ export function hasLocalSpacedCampSite(state: WorldState, factionId: string): bo
     isHexGridCell(state, tile)
     && tile.terrain !== "water"
     && !occupied.has(positionKey(tile))
+    // Local growth may extend from any existing camp. Restricting this radius to
+    // the lexicographically first camp makes later settlement nodes invisible and
+    // can falsely convert ordinary local expansion into cross-region migration.
     && camps.some((camp) => hexGridDistance(tile, camp.position) <= CAMP_LOCAL_BUILD_RADIUS)
     && camps.every((camp) => hexGridDistance(tile, camp.position) >= CAMP_MIN_SPACING)
   );
