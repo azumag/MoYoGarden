@@ -68,6 +68,62 @@ export function hexGridRadius(extent: HexGridExtent): number {
   );
 }
 
+interface HexGridCellCacheEntry {
+  cells: readonly HexGridPosition[];
+  cellKeys: ReadonlySet<string>;
+}
+
+const HEX_GRID_CELL_CACHE_LIMIT = 24;
+const hexGridCellCache = new Map<string, HexGridCellCacheEntry>();
+
+function hexGridCellCacheKey(extent: HexGridExtent): string {
+  return `${extent.width}x${extent.height}`;
+}
+
+function cellKey(position: HexGridPosition): string {
+  return `${position.x},${position.y}`;
+}
+
+function cachedHexGridCells(extent: HexGridExtent): HexGridCellCacheEntry {
+  const key = hexGridCellCacheKey(extent);
+  const cached = hexGridCellCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const center = hexGridCenter(extent);
+  const radius = hexGridRadius(extent);
+  const cells: HexGridPosition[] = [];
+  const cellKeys = new Set<string>();
+  for (let y = 0; y < extent.height; y += 1) {
+    for (let x = 0; x < extent.width; x += 1) {
+      const position = { x, y };
+      if (hexGridDistance(position, center) > radius) continue;
+      cells.push(position);
+      cellKeys.add(cellKey(position));
+    }
+  }
+  const entry: HexGridCellCacheEntry = { cells, cellKeys };
+
+  if (hexGridCellCache.size >= HEX_GRID_CELL_CACHE_LIMIT) {
+    const oldest = hexGridCellCache.keys().next().value;
+    if (oldest !== undefined) hexGridCellCache.delete(oldest);
+  }
+  hexGridCellCache.set(key, entry);
+  return entry;
+}
+
+/**
+ * Return the active axial cells inside the rectangular compatibility envelope.
+ *
+ * The 40x24 storage shape is queried from movement, pathfinding, handoff, halo,
+ * migration and rendering helpers many times per simulation step. Cache the pure
+ * extent-derived footprint once and return detached positions so callers cannot
+ * mutate shared geometry. The cache is bounded because tests/tools may construct
+ * alternate extents even though production normally uses a single 40x24 shape.
+ */
+export function hexGridCells(extent: HexGridExtent): HexGridPosition[] {
+  return cachedHexGridCells(extent).cells.map((position) => ({ ...position }));
+}
+
 export function isHexGridCell(extent: HexGridExtent, position: HexGridPosition): boolean {
   if (
     !Number.isInteger(position.x) ||
@@ -79,7 +135,7 @@ export function isHexGridCell(extent: HexGridExtent, position: HexGridPosition):
   ) {
     return false;
   }
-  return hexGridDistance(position, hexGridCenter(extent)) <= hexGridRadius(extent);
+  return cachedHexGridCells(extent).cellKeys.has(cellKey(position));
 }
 
 export function hexGridNeighbors(position: HexGridPosition): HexGridPosition[] {
@@ -145,14 +201,12 @@ function cachedHexGridBoundary(
   if (cached !== undefined) return cached;
 
   const step = HEX_GRID_DIRECTION_STEPS[direction];
+  const active = cachedHexGridCells(extent);
   const cells: HexGridPosition[] = [];
-  for (let y = 0; y < extent.height; y += 1) {
-    for (let x = 0; x < extent.width; x += 1) {
-      const position = { x, y };
-      if (!isHexGridCell(extent, position)) continue;
-      if (isHexGridCell(extent, { x: x + step.x, y: y + step.y })) continue;
-      cells.push(position);
-    }
+  for (const position of active.cells) {
+    const next = { x: position.x + step.x, y: position.y + step.y };
+    if (active.cellKeys.has(cellKey(next))) continue;
+    cells.push({ ...position });
   }
   cells.sort((a, b) =>
     boundaryTangentScore(extent, a, direction) - boundaryTangentScore(extent, b, direction) ||
@@ -161,7 +215,7 @@ function cachedHexGridBoundary(
   );
   const entry: HexGridBoundaryCacheEntry = {
     cells,
-    indexByPosition: new Map(cells.map((position, index) => [`${position.x},${position.y}`, index])),
+    indexByPosition: new Map(cells.map((position, index) => [cellKey(position), index])),
   };
 
   if (hexGridBoundaryCache.size >= HEX_GRID_BOUNDARY_CACHE_LIMIT) {
@@ -201,7 +255,7 @@ export function hexGridHandoffTarget(
 ): HexGridPosition | undefined {
   if (!isHexGridCell(extent, source)) return undefined;
   const sourceSide = cachedHexGridBoundary(extent, direction);
-  const sourceIndex = sourceSide.indexByPosition.get(`${source.x},${source.y}`);
+  const sourceIndex = sourceSide.indexByPosition.get(cellKey(source));
   if (sourceIndex === undefined) return undefined;
 
   const targetSide = cachedHexGridBoundary(extent, oppositeHexGridDirection(direction)).cells;
@@ -229,24 +283,24 @@ export function nearestHexGridCell(
 ): HexGridPosition | undefined {
   let best: HexGridPosition | undefined;
   let bestDistance = Number.POSITIVE_INFINITY;
-  for (let y = 0; y < extent.height; y += 1) {
-    for (let x = 0; x < extent.width; x += 1) {
-      const candidate = { x, y };
-      if (!isHexGridCell(extent, candidate)) continue;
-      const distance = hexGridDistance(candidate, desired);
-      // Once a valid candidate is known, farther cells cannot change either
-      // the nearest-distance result or its deterministic y/x tie-break. Avoid
-      // invoking potentially expensive passability/resource predicates for
-      // those cells; handoff entry fallback and persisted-state migration both
-      // use this helper on the 397-cell active hex.
-      if (distance > bestDistance || !predicate(candidate)) continue;
-      if (
-        distance < bestDistance ||
-        (distance === bestDistance && best !== undefined && (y < best.y || y === best.y && x < best.x))
-      ) {
-        best = candidate;
-        bestDistance = distance;
-      }
+  for (const candidate of cachedHexGridCells(extent).cells) {
+    const distance = hexGridDistance(candidate, desired);
+    // Once a valid candidate is known, farther cells cannot change either
+    // the nearest-distance result or its deterministic y/x tie-break. Avoid
+    // invoking potentially expensive passability/resource predicates for
+    // those cells; handoff entry fallback and persisted-state migration both
+    // use this helper on the 397-cell active hex.
+    if (distance > bestDistance || !predicate(candidate)) continue;
+    if (
+      distance < bestDistance ||
+      (
+        distance === bestDistance &&
+        best !== undefined &&
+        (candidate.y < best.y || candidate.y === best.y && candidate.x < best.x)
+      )
+    ) {
+      best = { ...candidate };
+      bestDistance = distance;
     }
   }
   return best;

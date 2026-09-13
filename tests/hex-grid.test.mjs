@@ -5,6 +5,7 @@ import {
   HEX_GRID_DIRECTION_STEPS,
   HEX_GRID_STEPS,
   hexGridBoundaryCells,
+  hexGridCells,
   hexGridCenter,
   hexGridCrossingDirection,
   hexGridDistance,
@@ -33,17 +34,26 @@ test("40x24 storage exposes a centered hex simulation footprint", () => {
   const extent = { width: 40, height: 24 };
   assert.deepEqual(hexGridCenter(extent), { x: 19, y: 11 });
   assert.equal(hexGridRadius(extent), 11);
-  const active = [];
-  for (let y = 0; y < extent.height; y += 1) {
-    for (let x = 0; x < extent.width; x += 1) {
-      if (isHexGridCell(extent, { x, y })) active.push({ x, y });
-    }
-  }
+  const active = hexGridCells(extent);
   assert.equal(active.length, 397);
   assert.ok(active.every((position) => hexGridDistance(position, { x: 19, y: 11 }) <= 11));
+  assert.ok(active.every((position) => isHexGridCell(extent, position)));
   assert.equal(isHexGridCell(extent, { x: 0, y: 0 }), false);
   assert.equal(isHexGridCell(extent, { x: 19, y: 0 }), true);
   assert.equal(isHexGridCell(extent, { x: 30, y: 11 }), true);
+});
+
+test("cached active hex geometry stays isolated from caller mutation", () => {
+  const extent = { width: 40, height: 24 };
+  const active = hexGridCells(extent);
+  const first = { ...active[0] };
+  active.reverse();
+  active[0].x = -999;
+
+  const fresh = hexGridCells(extent);
+  assert.deepEqual(fresh[0], first);
+  assert.equal(fresh.length, 397);
+  assert.ok(fresh.every((position) => isHexGridCell(extent, position)));
 });
 
 test("each logical exit has a deterministic opposite-side handoff bijection", () => {
