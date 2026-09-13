@@ -106,5 +106,10 @@ test("missing pathogen metadata stays neutral during rolling compatibility", () 
   ]);
 
   assert.ok(plan);
-  assert.equal(plan.direction, "E", "missing metadata must not be treated as cleaner than an explicit sample");
+  assert.equal(
+    plan.direction,
+    "W",
+    "missing metadata must stay neutral so the normal deterministic tie-break remains authoritative",
+  );
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
 });
