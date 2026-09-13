@@ -179,7 +179,6 @@ function json(value: unknown, status = 200): Response {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
-      "access-control-allow-origin": "*",
     },
   });
 }
