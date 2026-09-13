@@ -7,17 +7,16 @@ import { createInitialWorld } from "../dist-ts/src/world.js";
 
 function drainageTransitFixture({ drainage = 0.2, pathogen = 0.2, foodCapacity = 12 } = {}) {
   const state = createInitialWorld({ seed: 260914, width: 40, height: 24 });
-  let localFood;
   for (const tile of state.tiles) {
     if (!isHexGridCell(state, tile)) continue;
     tile.terrain = "plain";
     tile.drainage = drainage;
     tile.pathogenReservoir = pathogen;
-    delete tile.resource;
-    localFood ??= tile;
+    // Give every passable local cell the same carrying-capacity density. The
+    // neighboring depth-1 halo only exposes a narrow edge sample, so continuation
+    // must compare capacity per sampled land cell rather than raw regional sums.
+    tile.resource = { kind: "food", amount: 0, maxAmount: foodCapacity };
   }
-  assert.ok(localFood);
-  localFood.resource = { kind: "food", amount: 0, maxAmount: foodCapacity };
 
   const builder = state.agents.find((agent) => agent.role === "builder");
   assert.ok(builder);
@@ -56,7 +55,7 @@ function frontier({ drainage, pathogen, foodCapacity = 12 }) {
   }];
 }
 
-test("transit pioneer continues along stronger durable food capacity with equal resource classes", () => {
+test("transit pioneer compares durable food capacity density across unequal sample footprints", () => {
   const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2, foodCapacity: 12 });
   const plan = planAutonomousSettlementMigration(
     state,
@@ -68,7 +67,7 @@ test("transit pioneer continues along stronger durable food capacity with equal 
   assert.equal(plan.neighborRegionId, "hex-q1-r0");
 });
 
-test("weaker durable food capacity cannot be overridden by cleaner or better-drained frontier", () => {
+test("weaker durable food capacity density cannot be overridden by cleaner or better-drained frontier", () => {
   const state = drainageTransitFixture({ drainage: 0.2, pathogen: 0.2, foodCapacity: 12 });
   const plan = planAutonomousSettlementMigration(
     state,

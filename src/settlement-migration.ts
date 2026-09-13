@@ -207,12 +207,27 @@ function settlementContinuationRank(support: SettlementNeighborSupport): number 
     + (support.waterCells > 0 ? 1 : 0);
 }
 
+function resourceCapacityDensity(
+  support: SettlementNeighborSupport,
+  kind: ResourceKind,
+): number {
+  // A depth-1 halo only samples the neighboring boundary (normally ~23 cells),
+  // while local support covers the full 397-cell simulation hex. Comparing raw
+  // maxAmount sums therefore made the local region look larger merely because it
+  // had more sampled cells and could stop otherwise valid multi-hop migration.
+  // Capacity per passable sampled cell is scale-comparable without issuing any
+  // deeper cross-DO reads or pretending that unsampled interior cells are known.
+  return support.passableCells > 0
+    ? support.resourceCapacity[kind] / support.passableCells
+    : 0;
+}
+
 function compareContinuationResourceCapacity(
   candidate: SettlementNeighborSupport,
   local: SettlementNeighborSupport,
 ): number {
   for (const kind of ["food", "wood", "stone"] as const) {
-    const delta = candidate.resourceCapacity[kind] - local.resourceCapacity[kind];
+    const delta = resourceCapacityDensity(candidate, kind) - resourceCapacityDensity(local, kind);
     if (Math.abs(delta) > SETTLEMENT_RESOURCE_CAPACITY_EPSILON) return delta;
   }
   return 0;
@@ -227,11 +242,12 @@ function shouldContinueSettlementMigration(
   if (candidateRank !== localRank) return candidateRank > localRank;
 
   // Presence classes are deliberately coarse so old halo snapshots remain safe.
-  // Once they tie, reuse the first-frontier maxAmount ordering (food -> wood ->
-  // stone) so a pioneer can follow stronger durable carrying capacity across
-  // several regions rather than stopping at "the same resource kinds exist".
-  // Requiring a strict lexicographic improvement keeps this route acyclic for a
-  // static snapshot without persisting visited-region history in WorldState.
+  // Once they tie, compare durable maxAmount density (food -> wood -> stone)
+  // rather than raw totals: the candidate is a depth-1 edge sample while local
+  // support spans the whole active region. This keeps the signal independent of
+  // observation footprint and lets a pioneer follow genuinely stronger carrying
+  // capacity without adding deeper neighbor reads. A strict improvement is still
+  // required before environmental tie-breaks are considered.
   const resourceCapacityDelta = compareContinuationResourceCapacity(candidate, local);
   if (resourceCapacityDelta !== 0) return resourceCapacityDelta > 0;
 
@@ -241,9 +257,7 @@ function shouldContinueSettlementMigration(
   // strictly dirtier frontier never wins merely because it drains better. If a
   // rolling/legacy snapshot lacks pathogen metadata, that dimension is neutral
   // rather than implicitly clean; drainage still requires observations on both
-  // sides. Because every accepted equal-rank hop strictly improves one observed
-  // component without worsening an earlier component, static snapshots cannot
-  // ping-pong without adding visited-region state to WorldState.
+  // sides.
   if (candidate.pathogenReservoirSamples > 0 && local.pathogenReservoirSamples > 0) {
     const candidatePathogen = averagePathogenReservoir(candidate);
     const localPathogen = averagePathogenReservoir(local);
