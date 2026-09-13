@@ -69,6 +69,7 @@ const HALO_REGROWTH_INTERVAL = 30;
 // remote observation for at most one wall-clock second, never across alarms.
 // This is bounded snapshot freshness, not synchronization between independent DOs.
 const HALO_EDGE_OBSERVATION_MS = 1_000;
+export const HALO_EDGE_READ_TIMEOUT_MS = 5_000;
 // The strongest current halo-to-regrowth signal is ghost water with a four-cell
 // moisture radius. Because a ghost is one step beyond the macro-hex boundary,
 // only depleted organic resources in boundary depth 0..3 can observe any halo
@@ -151,6 +152,45 @@ function activityDelayMs(tickMs: number, tier: RegionActivityTier): number {
   if (tier === "active") return tickMs;
   const multiplier = tier === "warm" ? WARM_TICK_MULTIPLIER : COLD_TICK_MULTIPLIER;
   return Math.min(MAX_ACTIVITY_TICK_MS, tickMs * multiplier);
+}
+
+/**
+ * Keep one unavailable environmental/autonomy halo neighbor from pinning an
+ * Alarm or catch-up batch indefinitely. The same inherited edge reader serves
+ * both consumers, so one bounded transport contract protects both paths.
+ */
+export async function withHaloEdgeDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = HALO_EDGE_READ_TIMEOUT_MS,
+): Promise<T> {
+  const boundedTimeout = Math.max(1, Math.min(60_000, Math.floor(timeoutMs)));
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`halo edge read exceeded ${boundedTimeout}ms`);
+      error.name = "TimeoutError";
+      controller.abort(error);
+      reject(error);
+    }, boundedTimeout);
+  });
+  try {
+    return await Promise.race([operation(controller.signal), deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Bound both stub.fetch() and response body consumption with one deadline. */
+export async function readHaloEdgeJsonWithDeadline(
+  operation: (signal: AbortSignal) => Promise<Response>,
+  timeoutMs = HALO_EDGE_READ_TIMEOUT_MS,
+): Promise<unknown | undefined> {
+  return withHaloEdgeDeadline(async (signal) => {
+    const response = await operation(signal);
+    if (!response.ok) return undefined;
+    return await response.json() as unknown;
+  }, timeoutMs);
 }
 
 export function shouldUseDynamicEnvironmentalHalo(
@@ -395,12 +435,13 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     const url = new URL("https://moyo.internal/api/internal/halo/edge");
     url.searchParams.set("direction", direction);
     try {
-      const response = await this.haloStub(neighborRegionId).fetch(new Request(url, {
-        method: "GET",
-        headers: { "x-moyo-region-internal": neighborRegionId },
-      }));
-      if (!response.ok) return undefined;
-      const value = await response.json() as unknown;
+      const value = await readHaloEdgeJsonWithDeadline((signal) =>
+        this.haloStub(neighborRegionId).fetch(new Request(url, {
+          method: "GET",
+          headers: { "x-moyo-region-internal": neighborRegionId },
+          signal,
+        }))
+      );
       return isEdgeSnapshot(value) ? value : undefined;
     } catch (error) {
       console.debug("MoYoGarden halo edge unavailable", neighborRegionId, direction, error);
