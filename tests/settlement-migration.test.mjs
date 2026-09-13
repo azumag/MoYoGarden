@@ -328,11 +328,12 @@ test("arrived pioneer scouts immediately and continues toward richer renewable s
   assert.equal(plan.neighborRegionId, "hex-q1-r0");
 });
 
-test("arrived pioneer settles when durable renewable capacity is not richer", () => {
+test("arrived pioneer settles when durable renewable capacity density is not richer", () => {
   const { state } = transitFixture();
-  const localFood = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
-  assert.ok(localFood);
-  localFood.resource = { kind: "food", amount: 0, maxAmount: 20 };
+  for (const tile of state.tiles) {
+    if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
+    tile.resource = { kind: "food", amount: 0, maxAmount: 20 };
+  }
 
   const halo = [{
     direction: "E",
@@ -352,6 +353,6 @@ test("arrived pioneer settles when durable renewable capacity is not richer", ()
   assert.equal(
     planAutonomousSettlementMigration(state, halo),
     undefined,
-    "equal durable renewable capacity should settle locally instead of risking region ping-pong",
+    "equal durable renewable capacity density should settle locally instead of risking region ping-pong",
   );
 });

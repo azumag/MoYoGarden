@@ -31,6 +31,13 @@ function transitPioneerFixture() {
   return { state, builder };
 }
 
+function setLocalFoodCapacityDensity(state, maxAmount) {
+  for (const tile of state.tiles) {
+    if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
+    tile.resource = { kind: "food", amount: 0, maxAmount };
+  }
+}
+
 test("pioneer prefers the cleaner frontier when carrying capacity is equal", () => {
   const { state } = transitPioneerFixture();
   const sharedSeam = { x: 30, y: 11 };
@@ -114,11 +121,11 @@ test("missing pathogen metadata stays neutral during rolling compatibility", () 
   assert.equal(plan.neighborRegionId, "hex-q-1-r0");
 });
 
-test("transit pioneer continues along a strictly cleaner equal-support pathogen gradient", () => {
+test("transit pioneer continues along a strictly cleaner equal-density pathogen gradient", () => {
   const { state } = transitPioneerFixture();
+  setLocalFoodCapacityDensity(state, 12);
   const localFood = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
   assert.ok(localFood);
-  localFood.resource = { kind: "food", amount: 0, maxAmount: 12 };
   localFood.pathogenReservoir = 0.9;
 
   const plan = planAutonomousSettlementMigration(state, [{
@@ -141,11 +148,11 @@ test("transit pioneer continues along a strictly cleaner equal-support pathogen 
   assert.equal(plan.neighborRegionId, "hex-q1-r0");
 });
 
-test("transit pioneer settles instead of moving toward a dirtier equal-support frontier", () => {
+test("transit pioneer settles instead of moving toward a dirtier equal-density frontier", () => {
   const { state } = transitPioneerFixture();
+  setLocalFoodCapacityDensity(state, 12);
   const localFood = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
   assert.ok(localFood);
-  localFood.resource = { kind: "food", amount: 0, maxAmount: 12 };
   localFood.pathogenReservoir = 0.1;
 
   const plan = planAutonomousSettlementMigration(state, [{
