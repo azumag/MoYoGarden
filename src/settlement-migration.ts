@@ -274,19 +274,19 @@ function compareSettlementSupport(
   b: SettlementNeighborSupport,
 ): number {
   // A pioneer should favor long-lived carrying capacity over a transiently full
-  // deposit. maxAmount is already the low-level regeneration/storage ceiling on
-  // a resource tile, so it gives settlement choice a sustainable signal without
-  // inventing a biome or issuing deeper cross-DO reads. Once durable capacity is
-  // equal, prefer lower observed environmental pathogen burden before transient
-  // stock levels. This reuses the same persisted low-level reservoir that drives
-  // infection simulation, so settlement pressure and disease ecology share one
-  // causal state instead of adding a scripted hazard category. When those are
-  // equal, hydrology, open surface water, and passable edge area break ties.
+  // deposit. Neighbor support is a depth-1 edge sample, and the amount of
+  // passable land represented by that sample can differ between directions.
+  // Compare maxAmount per observed passable cell so a wider sampled land edge
+  // cannot beat a denser carrying-capacity frontier merely by contributing more
+  // cells. This uses the same scale-independent signal as transit continuation.
+  // Once durable capacity is equal, prefer lower observed environmental pathogen
+  // burden before transient stock levels. Hydrology, open surface water, and the
+  // passable edge area remain later tie-breaks.
   return (
     resourceDiversity(b) - resourceDiversity(a)
-    || b.resourceCapacity.food - a.resourceCapacity.food
-    || b.resourceCapacity.wood - a.resourceCapacity.wood
-    || b.resourceCapacity.stone - a.resourceCapacity.stone
+    || resourceCapacityDensity(b, "food") - resourceCapacityDensity(a, "food")
+    || resourceCapacityDensity(b, "wood") - resourceCapacityDensity(a, "wood")
+    || resourceCapacityDensity(b, "stone") - resourceCapacityDensity(a, "stone")
     || compareAveragePathogenReservoir(a, b)
     || b.resources.food - a.resources.food
     || b.resources.wood - a.resources.wood
