@@ -34,3 +34,12 @@ test("seamless navigation bounds stalled passive region prewarms", () => {
   assert.match(navigationSource, /clearTimeout\(timeout\)/);
   assert.match(navigationSource, /regionWarmRequests\.delete\(regionId\)/);
 });
+
+test("seamless navigation bounds sparse-world prewarm cooldown memory", () => {
+  assert.match(navigationSource, /PREFETCH_COOLDOWN_CACHE_LIMIT\s*=\s*128/);
+  assert.match(navigationSource, /now - warmedAt >= PREFETCH_REFRESH_MS/);
+  assert.match(navigationSource, /regionWarmAt\.size > PREFETCH_COOLDOWN_CACHE_LIMIT/);
+  assert.match(navigationSource, /regionWarmAt\.keys\(\)\.next\(\)\.value/);
+  assert.match(navigationSource, /pruneRegionWarmCooldowns\(now\)/);
+  assert.match(navigationSource, /rememberRegionWarm\(regionId\)/);
+});

@@ -15,6 +15,7 @@ const REGION_LAYOUT_TIMEOUT_MS = 8_000;
 const PREFETCH_TIMEOUT_MS = 8_000;
 const PREFETCH_MARGIN_TILES = 6;
 const PREFETCH_REFRESH_MS = 60_000;
+const PREFETCH_COOLDOWN_CACHE_LIMIT = 128;
 let regionLayout = [];
 let regionLayoutCenter;
 let regionLayoutRequest;
@@ -209,10 +210,29 @@ function ensureRegionLayout(centerRegionId) {
     });
 }
 
+function pruneRegionWarmCooldowns(now = Date.now()) {
+  for (const [regionId, warmedAt] of regionWarmAt) {
+    if (now - warmedAt >= PREFETCH_REFRESH_MS) regionWarmAt.delete(regionId);
+  }
+  while (regionWarmAt.size > PREFETCH_COOLDOWN_CACHE_LIMIT) {
+    const oldestRegionId = regionWarmAt.keys().next().value;
+    if (oldestRegionId === undefined) break;
+    regionWarmAt.delete(oldestRegionId);
+  }
+}
+
+function rememberRegionWarm(regionId, warmedAt = Date.now()) {
+  regionWarmAt.delete(regionId);
+  regionWarmAt.set(regionId, warmedAt);
+  pruneRegionWarmCooldowns(warmedAt);
+}
+
 function warmRegion(regionId) {
   if (!regionId || location.protocol === "file:" || regionWarmRequests.has(regionId)) return;
+  const now = Date.now();
+  pruneRegionWarmCooldowns(now);
   const lastWarm = regionWarmAt.get(regionId) ?? 0;
-  if (Date.now() - lastWarm < PREFETCH_REFRESH_MS) return;
+  if (now - lastWarm < PREFETCH_REFRESH_MS) return;
 
   // Keep passive warm-up bounded just like scoped topology reads. A stalled
   // snapshot request must not pin this region in regionWarmRequests forever and
@@ -230,7 +250,7 @@ function warmRegion(regionId) {
       if (!response.ok) throw new Error(`warm snapshot HTTP ${response.status}`);
       // Start the refresh cooldown only after the target actually responded.
       // An in-flight request is already deduplicated by regionWarmRequests.
-      regionWarmAt.set(regionId, Date.now());
+      rememberRegionWarm(regionId);
       await response.body?.cancel();
     })
     .catch((error) => {
