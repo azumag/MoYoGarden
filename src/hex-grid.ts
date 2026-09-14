@@ -287,6 +287,12 @@ export function nearestHexGridCell(
   desired: HexGridPosition,
   predicate: (position: HexGridPosition) => boolean = () => true,
 ): HexGridPosition | undefined {
+  // The most common clamp/fallback case already points at a valid active cell.
+  // Distance zero is unbeatable, so avoid scanning the 397-cell production hex
+  // (and avoid hundreds of passability/resource predicate calls) when the
+  // desired cell itself is acceptable.
+  if (isHexGridCell(extent, desired) && predicate(desired)) return { ...desired };
+
   let best: HexGridPosition | undefined;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const candidate of cachedHexGridCells(extent).cells) {
