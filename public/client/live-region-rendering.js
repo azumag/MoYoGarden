@@ -4,6 +4,12 @@ import { WorldView } from "./world-view.js";
 
 const controllers = new WeakMap();
 const FRAME_PATCH_KEY = "__moyoLiveRegionFramePatched";
+// Radius-one neighbors are contextual scenery rather than the focused simulation.
+// Cap their cheap interpolation/bob pass at 30 Hz so a 60/120/144 Hz display does
+// not multiply CPU work across every BOT in up to six surrounding regions. Root
+// interpolation still samples the current timestamp, so throttling never changes
+// arrival timing or simulation state.
+const LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 30;
 
 function finiteHexOrigin(value) {
   return value
@@ -333,6 +339,7 @@ class LiveNeighborSimulation {
     this.root.name = "live-neighbor-simulation";
     this.entries = new Map();
     this.centerRegionId = null;
+    this.lastAnimationAt = Number.NEGATIVE_INFINITY;
     view.worldRoot.add(this.root);
   }
 
@@ -407,6 +414,11 @@ class LiveNeighborSimulation {
   }
 
   animate(time) {
+    // Soft handoff hides the neighbor root while the next center is prepared; do
+    // no per-BOT work while those objects cannot contribute to the frame.
+    if (!this.root.visible) return;
+    if (time - this.lastAnimationAt < LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS) return;
+    this.lastAnimationAt = time;
     for (const entry of this.entries.values()) {
       for (const agent of entry.proxy.agentObjects.values()) {
         entry.proxy.animateAgent(agent, time);

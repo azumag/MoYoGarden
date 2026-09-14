@@ -176,3 +176,21 @@ test("versioned live neighbors fail closed on missing metadata and stale same-ti
     /return incomingRevision === undefined \|\| incomingRevision < currentRevision/,
   );
 });
+
+test("contextual live-neighbor BOT animation is capped below the display frame rate", () => {
+  assert.match(liveRegionSource, /LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS\s*=\s*1000 \/ 30/);
+  assert.match(liveRegionSource, /this\.lastAnimationAt = Number\.NEGATIVE_INFINITY/);
+  const animateStart = liveRegionSource.indexOf("  animate(time) {");
+  const clearStart = liveRegionSource.indexOf("  clear() {", animateStart);
+  assert.ok(animateStart >= 0 && clearStart > animateStart);
+  const animateSource = liveRegionSource.slice(animateStart, clearStart);
+  assert.match(animateSource, /if \(!this\.root\.visible\) return/);
+  assert.match(
+    animateSource,
+    /time - this\.lastAnimationAt < LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS/,
+  );
+  assert.match(animateSource, /this\.lastAnimationAt = time/);
+  const throttleGuard = animateSource.indexOf("time - this.lastAnimationAt");
+  const agentLoop = animateSource.indexOf("for (const entry of this.entries.values())");
+  assert.ok(throttleGuard >= 0 && agentLoop > throttleGuard);
+});
