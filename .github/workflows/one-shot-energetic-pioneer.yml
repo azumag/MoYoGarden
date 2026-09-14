@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - main
+    paths:
+      - .github/workflows/one-shot-energetic-pioneer.yml
 
 permissions:
   contents: write
 
 jobs:
   improve:
-    if: ${{ github.event.head_commit.message == 'ops: one-shot energetic pioneer improvement v2' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -50,7 +51,6 @@ jobs:
               tile.terrain = "plain";
               delete tile.resource;
             }
-
             const template = state.agents.find((agent) => agent.role === "builder");
             assert.ok(template);
             const low = structuredClone(template);
@@ -70,12 +70,7 @@ jobs:
             };
             low.inventory = { ...kit };
             high.inventory = { ...kit };
-            low.task = {
-              source: "autonomy",
-              issuedAtTick: state.tick,
-              type: "build",
-              structureType: "camp",
-            };
+            low.task = { source: "autonomy", issuedAtTick: state.tick, type: "build", structureType: "camp" };
             high.task = structuredClone(low.task);
             state.agents = [low, high];
             state.structures = [];
@@ -94,7 +89,6 @@ jobs:
                 resource: { kind: "food", amount: 8, maxAmount: 20 },
               },
             }]);
-
             assert.ok(plan);
             assert.equal(plan.agentId, high.id);
           });
