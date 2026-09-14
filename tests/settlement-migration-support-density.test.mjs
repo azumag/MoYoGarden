@@ -276,3 +276,40 @@ test("inconsistent rolling population summaries stay neutral for migration", () 
     "a mixed-tick east summary must not be trusted as a low-density whole-region observation",
   );
 });
+
+
+test("pioneer prefers less already-settled land when ecology and population tie", () => {
+  const { state, builder } = transitPioneerFixture();
+  for (let index = 0; index < 9; index += 1) {
+    const resident = structuredClone(builder);
+    resident.id = `resident-camp-${index}`;
+    resident.autonomy = false;
+    delete resident.task;
+    state.agents.push(resident);
+  }
+
+  const sharedSeam = { x: 30, y: 11 };
+  const east = haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 0, 0);
+  east.neighborRegionSummary = {
+    resources: { wood: 0, stone: 0, food: 0 },
+    resourceCapacity: { wood: 0, stone: 0, food: 0 },
+    activeStructures: { camp: 3, storehouse: 0, market: 0, workshop: 0 },
+    passableCells: 100,
+    occupants: 2,
+  };
+  const west = haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 0, 0);
+  west.neighborRegionSummary = {
+    resources: { wood: 0, stone: 0, food: 0 },
+    resourceCapacity: { wood: 0, stone: 0, food: 0 },
+    activeStructures: { camp: 0, storehouse: 0, market: 0, workshop: 0 },
+    passableCells: 100,
+    occupants: 2,
+  };
+
+  const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.equal(plan.direction, "W");
+});

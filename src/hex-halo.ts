@@ -8,7 +8,7 @@ import {
   type HexGridExtent,
   type HexGridPosition,
 } from "./hex-grid.js";
-import type { ResourceKind, Tile } from "./protocol.js";
+import type { ResourceKind, StructureType, Tile } from "./protocol.js";
 import {
   regionAxialCoordinate,
   regionCellTransition,
@@ -31,6 +31,10 @@ export interface HexHaloRegionSummary {
   // deeper synchronous read; old summaries remain valid and fall back to the
   // exact boundary sample.
   resourceCapacity?: Record<ResourceKind, number>;
+  // Optional during rolling deploys. Keep a constant-size count of established
+  // service footprint so neighboring planners can reason about settlement
+  // saturation without fetching remote structure snapshots.
+  activeStructures?: Record<StructureType, number>;
   passableCells: number;
   occupants: number;
 }
@@ -376,6 +380,9 @@ export function materializeHexHalo(
           resources: { ...observed.regionSummary.resources },
           ...(observed.regionSummary.resourceCapacity === undefined ? {} : {
             resourceCapacity: { ...observed.regionSummary.resourceCapacity },
+          }),
+          ...(observed.regionSummary.activeStructures === undefined ? {} : {
+            activeStructures: { ...observed.regionSummary.activeStructures },
           }),
           passableCells: observed.regionSummary.passableCells,
           occupants: observed.regionSummary.occupants,

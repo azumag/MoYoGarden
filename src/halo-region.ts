@@ -362,6 +362,10 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     // logistics planner discover interior supply while keeping depth-1 fan-out.
     const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     const resourceCapacity: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
+    const activeStructures = { camp: 0, storehouse: 0, market: 0, workshop: 0 };
+    for (const structure of state.structures) {
+      if (structure.status === "active") activeStructures[structure.type] += 1;
+    }
     let passableCells = 0;
     for (const tile of state.tiles) {
       if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
@@ -374,6 +378,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     const regionSummary = {
       resources,
       resourceCapacity,
+      activeStructures,
       passableCells,
       occupants: state.agents.length,
     };

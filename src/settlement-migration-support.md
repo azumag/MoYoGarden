@@ -8,11 +8,15 @@ Current support ordering is intentionally lexicographic:
 2. food / wood / stone carrying-capacity density (`maxAmount / passableCells`), with a small epsilon so floating-point normalization noise does not dominate later signals;
 3. average pathogen reservoir when both sides have samples;
 4. average erosion pressure when both sides have samples, preferring land that is currently less exposed to drainage/slope-driven soil loss;
-5. live food / wood / stone density (`amount / passableCells`), using the same small-noise rule so negligible live-supply differences do not mask meaningful environmental differences;
-6. average drainage when both sides have samples;
-7. surface-water fraction (`waterCells / observedCells`).
+5. whole-region population density (`occupants / passableCells`) when coherent bounded summaries exist;
+6. active camp density (`activeStructures.camp / passableCells`) when coherent bounded summaries exist, preferring less already-settled land after ecological support and population pressure tie;
+7. live food / wood / stone density (`amount / passableCells`), using the same small-noise rule so negligible live-supply differences do not mask meaningful environmental differences;
+8. average drainage when both sides have samples;
+9. surface-water fraction (`waterCells / observedCells`).
 
 Only after support quality ties should route cost, crowding, canonical hex-direction order, and stable IDs resolve the choice. Observation footprint itself is not destination quality.
+
+The existing depth-1 edge read carries a constant-size rolling-compatible region summary: current resources, renewable resource capacity, passable-cell count, population count, and optional active structure counts. Structure counts include only completed active `camp` / `storehouse` / `market` / `workshop` records; remote structure IDs, coordinates, inventories, and tasks are never copied. If independent edge reads disagree on a whole-region summary during a rolling tick, that signal is neutral for the planning pass rather than synthesizing mixed-time state.
 
 ## Bounded route hysteresis
 

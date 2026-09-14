@@ -86,6 +86,7 @@ test("materialized halo carries a bounded whole-region support summary with lega
     regionSummary: {
       resources: { wood: 12, stone: 3, food: 5 },
       resourceCapacity: { wood: 30, stone: 9, food: 14 },
+      activeStructures: { camp: 1, storehouse: 2, market: 1, workshop: 0 },
       passableCells: 390,
       occupants: 9,
     },
@@ -97,6 +98,7 @@ test("materialized halo carries a bounded whole-region support summary with lega
   assert.deepEqual(halo[0].neighborRegionSummary, {
     resources: { wood: 12, stone: 3, food: 5 },
     resourceCapacity: { wood: 30, stone: 9, food: 14 },
+    activeStructures: { camp: 1, storehouse: 2, market: 1, workshop: 0 },
     passableCells: 390,
     occupants: 9,
   });
