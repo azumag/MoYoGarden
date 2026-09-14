@@ -1,0 +1,47 @@
+name: One-shot settlement structure summary v2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-settlement-structure-summary-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: Apply prepared patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+          source = Path('.github/workflows/one-shot-settlement-structure-summary.yml').read_text()
+          start = source.index("          python3 <<'PY'\n") + len("          python3 <<'PY'\n")
+          end = source.index("\n          PY", start)
+          script = textwrap.dedent(source[start:end])
+          exec(compile(script, '<prepared-settlement-patch>', 'exec'))
+          PY
+      - name: Validate
+        run: npm run build
+      - name: Commit implementation
+        shell: bash
+        run: |
+          git config user.name 'Tsubasa Azumagakito'
+          git config user.email 'azumag@users.noreply.github.com'
+          git rm .github/workflows/one-shot-settlement-structure-summary.yml .github/workflows/one-shot-settlement-structure-summary-v2.yml
+          git add src/hex-halo.ts src/halo-region.ts src/settlement-migration.ts src/settlement-migration-support.md tests/halo-region-support-summary.test.mjs tests/settlement-migration-support-density.test.mjs
+          git commit -m 'sim: expose settlement structure footprint in region summaries'
+          git push origin HEAD:main
