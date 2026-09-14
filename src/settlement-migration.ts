@@ -433,6 +433,17 @@ export function prepareSettlementMigrationKit(state: WorldState, agentId: string
   if (agent === undefined || !canPrepareSettlementMigrationKit(state, agent)) return false;
   const faction = getFaction(state, agent.factionId);
   if (faction === undefined) return false;
+  const hasLocalCamp = state.structures.some((structure) =>
+    structure.factionId === agent.factionId
+    && structure.type === "camp"
+    && (structure.status === "active" || structure.status === "building")
+  );
+  // Starting from an established settlement defines a fresh route origin. A
+  // camp-less transit region keeps the existing origin so the pioneer can make
+  // bounded monotonic progress across several handoffs without a visited log.
+  if (hasLocalCamp || agent.settlementMigrationOriginRegionId === undefined) {
+    agent.settlementMigrationOriginRegionId = state.regionId;
+  }
   const deficit = campKitDeficit(agent);
   for (const kind of RESOURCE_KINDS) {
     faction.resources[kind] -= deficit[kind];
@@ -493,6 +504,21 @@ function settlementRouteHysteresisBlocks(
     && hexDistance(previousAxial, candidateAxial) === 1;
 }
 
+function settlementOriginProgressBlocks(
+  originRegionId: string | undefined,
+  currentRegionId: string,
+  candidateRegionId: string,
+): boolean {
+  if (originRegionId === undefined) return false;
+  const originAxial = regionAxialCoordinate(originRegionId);
+  const currentAxial = regionAxialCoordinate(currentRegionId);
+  const candidateAxial = regionAxialCoordinate(candidateRegionId);
+  if (originAxial === undefined || currentAxial === undefined || candidateAxial === undefined) {
+    return false;
+  }
+  return hexDistance(originAxial, candidateAxial) <= hexDistance(originAxial, currentAxial);
+}
+
 export function shouldScoutSettlementMigration(state: WorldState): boolean {
   if (state.agents.some((agent) => isTransitPioneer(state, agent))) return true;
   if (state.tick % SETTLEMENT_MIGRATION_SCOUT_INTERVAL !== 0) return false;
@@ -550,16 +576,23 @@ export function planAutonomousSettlementMigration(
         transitPioneer
         && agent.task?.source === "autonomy"
         && agent.task.type === "build"
-        && settlementRouteHysteresisBlocks(
-          agent.task.settlementPreviousRegionId,
-          entry.neighborRegionId,
+        && (
+          settlementRouteHysteresisBlocks(
+            agent.task.settlementPreviousRegionId,
+            entry.neighborRegionId,
+          )
+          || settlementOriginProgressBlocks(
+            agent.settlementMigrationOriginRegionId,
+            state.regionId,
+            entry.neighborRegionId,
+          )
         )
       ) {
-        // A single previous-region hint now blocks both the exact reversal and
-        // the two axial side steps that would immediately close a 3-region hex
-        // triangle. This stays bounded to one stored region while preventing the
-        // shortest A→B→C→A loop; if every improving frontier falls in that recent
-        // wedge, the pioneer settles instead of oscillating.
+        // The immediate previous-region wedge prevents reversals and the shortest
+        // triangular loop. Once a persisted migration origin is available, every
+        // further hop must also increase axial distance from that origin. This
+        // bounded O(1) memory prevents longer same-ring circulation without deep
+        // neighbor reads or an unbounded visited-region history.
         continue;
       }
       const targetKey = positionKey(entry.sourcePosition);

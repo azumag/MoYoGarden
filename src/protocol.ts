@@ -103,6 +103,7 @@ export interface Agent {
   autonomy: boolean;
   goal: string;
   status: string;
+  settlementMigrationOriginRegionId?: string;
   task?: AgentTask;
 }
 
