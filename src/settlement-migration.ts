@@ -26,6 +26,7 @@ const LOW_ENERGY_THRESHOLD = 18;
 const SETTLEMENT_DRAINAGE_EPSILON = 1e-6;
 const SETTLEMENT_EROSION_EPSILON = 1e-6;
 const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;
+const SETTLEMENT_POPULATION_DENSITY_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_AMOUNT_EPSILON = 1e-6;
 const SETTLEMENT_WATER_FRACTION_EPSILON = 1e-6;
@@ -43,6 +44,8 @@ export interface AutonomousSettlementMigrationPlan {
 interface SettlementNeighborSupport {
   passableCells: number;
   resourceSampleCells: number;
+  populationSampleCells: number;
+  occupants: number;
   waterCells: number;
   drainageTotal: number;
   drainageSamples: number;
@@ -80,6 +83,8 @@ function emptySettlementNeighborSupport(): SettlementNeighborSupport {
   return {
     passableCells: 0,
     resourceSampleCells: 0,
+    populationSampleCells: 0,
+    occupants: 0,
     waterCells: 0,
     drainageTotal: 0,
     drainageSamples: 0,
@@ -164,6 +169,31 @@ function applyRegionResourceSummary(
   }
 }
 
+function validRegionPopulationSummary(
+  summary: HexHaloRegionSummary | undefined,
+): summary is HexHaloRegionSummary {
+  return summary !== undefined
+    && Number.isInteger(summary.passableCells)
+    && summary.passableCells > 0
+    && Number.isInteger(summary.occupants)
+    && summary.occupants >= 0;
+}
+
+function sameRegionPopulationSummary(
+  a: HexHaloRegionSummary,
+  b: HexHaloRegionSummary,
+): boolean {
+  return a.passableCells === b.passableCells && a.occupants === b.occupants;
+}
+
+function applyRegionPopulationSummary(
+  support: SettlementNeighborSupport,
+  summary: HexHaloRegionSummary,
+): void {
+  support.populationSampleCells = summary.passableCells;
+  support.occupants = summary.occupants;
+}
+
 function settlementNeighborSupports(
   halo: readonly HexHaloTile[],
 ): Map<string, SettlementNeighborSupport> {
@@ -173,6 +203,8 @@ function settlementNeighborSupports(
     HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> }
   >();
   const inconsistentResourceSummaryRegions = new Set<string>();
+  const populationSummaryByRegion = new Map<string, HexHaloRegionSummary>();
+  const inconsistentPopulationSummaryRegions = new Set<string>();
   const seenNeighborCells = new Set<string>();
   for (const entry of halo) {
     const regionSummary = entry.neighborRegionSummary;
@@ -185,6 +217,16 @@ function settlementNeighborSupports(
         // whole-region observations into a synthetic state; fall back to the
         // exact boundary sample for this planning pass.
         inconsistentResourceSummaryRegions.add(entry.neighborRegionId);
+      }
+    }
+    if (validRegionPopulationSummary(regionSummary)) {
+      const current = populationSummaryByRegion.get(entry.neighborRegionId);
+      if (current === undefined) {
+        populationSummaryByRegion.set(entry.neighborRegionId, regionSummary);
+      } else if (!sameRegionPopulationSummary(current, regionSummary)) {
+        // Population can change independently of resource totals across adjacent
+        // edge reads. Avoid manufacturing a regional density from mixed ticks.
+        inconsistentPopulationSummaryRegions.add(entry.neighborRegionId);
       }
     }
     const cellKey = `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;
@@ -202,6 +244,11 @@ function settlementNeighborSupports(
     const support = supportByRegion.get(regionId);
     if (support !== undefined) applyRegionResourceSummary(support, summary);
   }
+  for (const [regionId, summary] of populationSummaryByRegion) {
+    if (inconsistentPopulationSummaryRegions.has(regionId)) continue;
+    const support = supportByRegion.get(regionId);
+    if (support !== undefined) applyRegionPopulationSummary(support, summary);
+  }
   return supportByRegion;
 }
 
@@ -211,6 +258,8 @@ function localSettlementSupport(state: WorldState): SettlementNeighborSupport {
     if (!isHexGridCell(state, tile)) continue;
     addSettlementSupportTile(support, tile);
   }
+  support.populationSampleCells = support.passableCells;
+  support.occupants = state.agents.length;
   return support;
 }
 
@@ -264,6 +313,21 @@ function compareAveragePathogenReservoir(
   if (a.pathogenReservoirSamples === 0 || b.pathogenReservoirSamples === 0) return 0;
   const delta = averagePathogenReservoir(a) - averagePathogenReservoir(b);
   return Math.abs(delta) > SETTLEMENT_PATHOGEN_EPSILON ? delta : 0;
+}
+
+function populationDensity(support: SettlementNeighborSupport): number {
+  return support.populationSampleCells > 0
+    ? support.occupants / support.populationSampleCells
+    : 0;
+}
+
+function comparePopulationDensity(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  if (a.populationSampleCells === 0 || b.populationSampleCells === 0) return 0;
+  const delta = populationDensity(a) - populationDensity(b);
+  return Math.abs(delta) > SETTLEMENT_POPULATION_DENSITY_EPSILON ? delta : 0;
 }
 
 function settlementContinuationRank(support: SettlementNeighborSupport): number {
@@ -357,6 +421,13 @@ function shouldContinueSettlementMigration(
     if (candidateErosion > localErosion + SETTLEMENT_EROSION_EPSILON) return false;
   }
 
+  if (candidate.populationSampleCells > 0 && local.populationSampleCells > 0) {
+    const candidatePopulation = populationDensity(candidate);
+    const localPopulation = populationDensity(local);
+    if (candidatePopulation < localPopulation - SETTLEMENT_POPULATION_DENSITY_EPSILON) return true;
+    if (candidatePopulation > localPopulation + SETTLEMENT_POPULATION_DENSITY_EPSILON) return false;
+  }
+
   const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);
   if (Math.abs(waterFractionDelta) > SETTLEMENT_WATER_FRACTION_EPSILON) {
     return waterFractionDelta > 0;
@@ -377,6 +448,10 @@ function compareSettlementSupport(
     || compareResourceCapacityDensity(a, b, "stone")
     || compareAveragePathogenReservoir(a, b)
     || compareAverageErosionPressure(a, b)
+    // Settlement pressure should spill toward underused land when durable
+    // ecological support and hazards are otherwise comparable. Use the bounded
+    // whole-region summary rather than a single boundary-cell occupancy sample.
+    || comparePopulationDensity(a, b)
     || compareResourceAmountDensity(a, b, "food")
     || compareResourceAmountDensity(a, b, "wood")
     || compareResourceAmountDensity(a, b, "stone")
