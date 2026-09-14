@@ -26,6 +26,7 @@ const LOW_ENERGY_THRESHOLD = 18;
 const SETTLEMENT_DRAINAGE_EPSILON = 1e-6;
 const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;
+const SETTLEMENT_RESOURCE_AMOUNT_EPSILON = 1e-6;
 const SETTLEMENT_WATER_FRACTION_EPSILON = 1e-6;
 export const SETTLEMENT_MIGRATION_SCOUT_INTERVAL = 12;
 
@@ -212,6 +213,15 @@ function resourceAmountDensity(
     : 0;
 }
 
+function compareResourceAmountDensity(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+  kind: ResourceKind,
+): number {
+  const delta = resourceAmountDensity(b, kind) - resourceAmountDensity(a, kind);
+  return Math.abs(delta) > SETTLEMENT_RESOURCE_AMOUNT_EPSILON ? delta : 0;
+}
+
 function surfaceWaterFraction(support: SettlementNeighborSupport): number {
   const observedCells = support.passableCells + support.waterCells;
   return observedCells > 0 ? support.waterCells / observedCells : 0;
@@ -273,9 +283,9 @@ function compareSettlementSupport(
     || compareResourceCapacityDensity(a, b, "wood")
     || compareResourceCapacityDensity(a, b, "stone")
     || compareAveragePathogenReservoir(a, b)
-    || resourceAmountDensity(b, "food") - resourceAmountDensity(a, "food")
-    || resourceAmountDensity(b, "wood") - resourceAmountDensity(a, "wood")
-    || resourceAmountDensity(b, "stone") - resourceAmountDensity(a, "stone")
+    || compareResourceAmountDensity(a, b, "food")
+    || compareResourceAmountDensity(a, b, "wood")
+    || compareResourceAmountDensity(a, b, "stone")
     || compareAverageDrainage(a, b)
     || compareSurfaceWaterFraction(a, b)
   );

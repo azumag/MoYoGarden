@@ -122,3 +122,23 @@ test("negligible carrying-capacity noise does not override pathogen risk", () =>
   assert.equal(plan.neighborRegionId, "hex-q-1-r0");
   assert.equal(plan.direction, "W");
 });
+
+test("negligible live-supply noise does not override drainage quality", () => {
+  const { state, builder } = transitPioneerFixture();
+  const sharedSeam = { x: 30, y: 11 };
+  const east = haloTile("east", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 10, 5.0000005, 0.2);
+  const west = haloTile("west", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 10, 5, 0.2);
+  east.tile.drainage = 0.1;
+  west.tile.drainage = 0.9;
+
+  const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(
+    plan.neighborRegionId,
+    "hex-q-1-r0",
+    "sub-epsilon live supply differences should not mask a materially better drainage sample",
+  );
+  assert.equal(plan.direction, "west");
+});

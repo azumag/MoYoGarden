@@ -5,9 +5,9 @@ Settlement migration compares neighboring halo observations as **samples of dest
 Current support ordering is intentionally lexicographic:
 
 1. sustainable resource diversity;
-2. food / wood / stone carrying-capacity density (`maxAmount / passableCells`), with the same small epsilon used by continuation checks;
+2. food / wood / stone carrying-capacity density (`maxAmount / passableCells`), with a small epsilon so floating-point normalization noise does not dominate later signals;
 3. average pathogen reservoir when both sides have samples;
-4. live food / wood / stone density (`amount / passableCells`);
+4. live food / wood / stone density (`amount / passableCells`), using the same small-noise rule so negligible live-supply differences do not mask meaningful environmental differences;
 5. average drainage when both sides have samples;
 6. surface-water fraction (`waterCells / observedCells`).
 
