@@ -96,8 +96,13 @@ test("camp-kit preparation resets the route origin at settlements and preserves 
   const settled = createInitialWorld({ seed: 26091421, width: 40, height: 24, regionId: "garden-2" });
   const settledBuilder = settled.agents.find((agent) => agent.role === "builder");
   assert.ok(settledBuilder);
+  settledBuilder.capacity = 30;
   settledBuilder.settlementMigrationOriginRegionId = "garden-1";
   settledBuilder.inventory = { wood: 0, stone: 0, food: 0 };
+  const settledFaction = settled.factions.find((faction) => faction.id === settledBuilder.factionId);
+  assert.ok(settledFaction);
+  settledFaction.resources.wood = 100;
+  settledFaction.resources.stone = 100;
   settled.structures = [{
     id: "settled-camp",
     factionId: settledBuilder.factionId,
@@ -114,6 +119,7 @@ test("camp-kit preparation resets the route origin at settlements and preserves 
   const transit = createInitialWorld({ seed: 26091422, width: 40, height: 24, regionId: "hex-q2-r0" });
   const transitBuilder = transit.agents.find((agent) => agent.role === "builder");
   assert.ok(transitBuilder);
+  transitBuilder.capacity = 30;
   transitBuilder.settlementMigrationOriginRegionId = "garden-1";
   transitBuilder.inventory = { ...BUILD_RECIPES.camp.cost };
   transit.structures = [];
