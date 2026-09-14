@@ -94,7 +94,6 @@ function arrivalTaskAfterHandoff(
       issuedAtTick: targetTick,
       type: "build",
       structureType: task.structureType,
-      ...(task.structureType === "camp" ? { settlementPreviousRegionId: originRegionId } : {}),
     };
   }
   if (
