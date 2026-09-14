@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { isHexGridCell } from "./hex-grid.js";
 import { disposeObject, hash2 } from "./shared.js";
 import { WorldView } from "./world-view.js";
 
@@ -29,8 +30,16 @@ function previewSurfaceHeight(tile) {
 
 function surfaceHeightMap(state) {
   const result = new Map();
+  const width = Number.isInteger(state?.width) ? state.width : null;
+  const height = Number.isInteger(state?.height) ? state.height : null;
   for (const tile of state?.tiles ?? []) {
     if (!Number.isFinite(tile?.x) || !Number.isFinite(tile?.y)) continue;
+    // Persisted WorldState still uses the rectangular 40x24 envelope,
+    // but only the axial hex footprint is renderable. Neighbor proxies
+    // never query height outside that footprint, so do not allocate map
+    // entries for compatibility-envelope cells on every live refresh.
+    // Missing dimensions retain the legacy permissive behavior.
+    if (width !== null && height !== null && !isHexGridCell(tile, width, height)) continue;
     result.set(`${tile.x}:${tile.y}`, previewSurfaceHeight(tile));
   }
   return result;

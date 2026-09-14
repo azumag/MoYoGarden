@@ -194,3 +194,16 @@ test("contextual live-neighbor BOT animation is capped below the display frame r
   const agentLoop = animateSource.indexOf("for (const entry of this.entries.values())");
   assert.ok(throttleGuard >= 0 && agentLoop > throttleGuard);
 });
+
+
+test("live-neighbor height cache excludes rectangular compatibility-envelope cells", () => {
+  assert.match(liveRegionSource, /import \{ isHexGridCell \} from "\.\/hex-grid\.js"/);
+  const heightStart = liveRegionSource.indexOf("function surfaceHeightMap(state)");
+  const heightEnd = liveRegionSource.indexOf("function createNeighborResourceGlyph", heightStart);
+  assert.ok(heightStart >= 0 && heightEnd > heightStart);
+  const heightSource = liveRegionSource.slice(heightStart, heightEnd);
+  assert.match(heightSource, /Number\.isInteger\(state\?\.width\)/);
+  assert.match(heightSource, /Number\.isInteger\(state\?\.height\)/);
+  assert.match(heightSource, /!isHexGridCell\(tile, width, height\)/);
+  assert.match(heightSource, /width !== null && height !== null/);
+});
