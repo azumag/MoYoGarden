@@ -375,13 +375,17 @@ class LiveNeighborSimulation {
     }
     this.centerRegionId = centerRegionId;
     this.root.visible = true;
-    this.view.markShadowsDirty();
+    // Radius-one live proxies are receive-only for shadows: every resource,
+    // structure, and BOT mesh above has castShadow=false. Their ten-second
+    // snapshot refreshes therefore cannot change the shadow map and must not
+    // force the focused scene to render a new one.
   }
   refreshModelType(key) {
     for (const entry of this.entries.values()) {
       entry.proxy.refreshModelType(key);
     }
-    this.view.markShadowsDirty();
+    // Model refreshes keep using the same non-shadow-casting proxy vocabulary,
+    // so there is no focused-scene shadow map to invalidate here either.
   }
 
   animate(time) {
