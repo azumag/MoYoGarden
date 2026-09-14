@@ -102,7 +102,7 @@ test("neighbor BOT glyphs keep cheap locomotion cues without full focused-agent 
 
 test("live neighbor refreshes do not invalidate the focused shadow map", () => {
   const syncStart = liveRegionSource.indexOf("  syncWindow(payload, centerRegionId, tickMs) {");
-  const refreshStart = liveRegionSource.indexOf("  refreshModelType(key) {", syncStart);
+  const refreshStart = liveRegionSource.indexOf("  refreshModelType(", syncStart);
   const animateStart = liveRegionSource.indexOf("  animate(time) {", refreshStart);
   assert.ok(syncStart >= 0 && refreshStart > syncStart && animateStart > refreshStart);
 
