@@ -125,17 +125,41 @@ export function hexGridCells(extent: HexGridExtent): HexGridPosition[] {
 }
 
 export function isHexGridCell(extent: HexGridExtent, position: HexGridPosition): boolean {
+  const x = position.x;
+  const y = position.y;
+  const width = extent.width;
+  const height = extent.height;
   if (
-    !Number.isInteger(position.x) ||
-    !Number.isInteger(position.y) ||
-    position.x < 0 ||
-    position.y < 0 ||
-    position.x >= extent.width ||
-    position.y >= extent.height
+    !Number.isInteger(x) ||
+    !Number.isInteger(y) ||
+    x < 0 ||
+    y < 0 ||
+    x >= width ||
+    y >= height
   ) {
     return false;
   }
-  return hexGridDistance(position, hexGridCenter(extent)) <= hexGridRadius(extent);
+
+  // Membership is one of the hottest geometry predicates in movement,
+  // migration, halo and rendering. Compute the pure axial test inline instead
+  // of allocating two center objects through hexGridCenter()/hexGridRadius()
+  // on every call. Keep the exact same center/radius formula so odd/even and
+  // non-production extents retain the existing deterministic footprint.
+  const centerX = Math.floor((width - 1) / 2);
+  const centerY = Math.floor((height - 1) / 2);
+  const radius = Math.max(
+    1,
+    Math.min(
+      centerX,
+      width - 1 - centerX,
+      centerY,
+      height - 1 - centerY,
+    ),
+  );
+  const dq = x - centerX;
+  const dr = y - centerY;
+  const ds = -dq - dr;
+  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds)) <= radius;
 }
 
 export function hexGridNeighbors(position: HexGridPosition): HexGridPosition[] {
