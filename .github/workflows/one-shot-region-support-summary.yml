@@ -1,0 +1,265 @@
+name: One-shot bounded region support summary
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-region-support-summary.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Add bounded region support summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'expected block not found in {path}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'src/hex-halo.ts',
+              'import type { Tile } from "./protocol.js";',
+              'import type { ResourceKind, Tile } from "./protocol.js";',
+          )
+          replace_once(
+              'src/hex-halo.ts',
+              '''export interface HexHaloTile extends HexHaloLink {\n  tile: Tile;\n  // Optional rolling-compat signal: how many BOTs occupy the exact neighbor\n  // boundary cell. Older edge snapshots omit it and remain neutral.\n  neighborOccupants?: number;\n}\n\nexport interface HexHaloEdgeSnapshot {\n''',
+              '''export interface HexHaloRegionSummary {\n  resources: Record<ResourceKind, number>;\n  passableCells: number;\n  occupants: number;\n}\n\nexport interface HexHaloTile extends HexHaloLink {\n  tile: Tile;\n  // Optional rolling-compat signal: how many BOTs occupy the exact neighbor\n  // boundary cell. Older edge snapshots omit it and remain neutral.\n  neighborOccupants?: number;\n  // Small whole-region support summary carried by the existing edge read. It\n  // lets logistics discover interior supply without a deeper synchronous read.\n  neighborRegionSummary?: HexHaloRegionSummary;\n}\n\nexport interface HexHaloEdgeSnapshot {\n''',
+          )
+          replace_once(
+              'src/hex-halo.ts',
+              '''  tick: number;\n  tiles: Array<{ position: HexGridPosition; tile: Tile; occupants?: number }>;\n}\n''',
+              '''  tick: number;\n  // Optional during rolling deploys; old edge snapshots remain valid and\n  // consumers fall back to exact boundary-cell observations.\n  regionSummary?: HexHaloRegionSummary;\n  tiles: Array<{ position: HexGridPosition; tile: Tile; occupants?: number }>;\n}\n''',
+          )
+          replace_once(
+              'src/hex-halo.ts',
+              '  const edgeIndex = new Map<string, { tile: Tile; occupants?: number }>();',
+              '  const edgeIndex = new Map<string, { tile: Tile; occupants?: number; regionSummary?: HexHaloRegionSummary }>();',
+          )
+          replace_once(
+              'src/hex-halo.ts',
+              '''          ...(Number.isInteger(entry.occupants) && (entry.occupants ?? 0) > 0\n            ? { occupants: entry.occupants }\n            : {}),\n        },\n''',
+              '''          ...(Number.isInteger(entry.occupants) && (entry.occupants ?? 0) > 0\n            ? { occupants: entry.occupants }\n            : {}),\n          ...(edge.regionSummary === undefined ? {} : { regionSummary: edge.regionSummary }),\n        },\n''',
+          )
+          replace_once(
+              'src/hex-halo.ts',
+              '''      tile: cloneHaloTile(observed.tile),\n      ...(observed.occupants === undefined ? {} : { neighborOccupants: observed.occupants }),\n    }];\n''',
+              '''      tile: cloneHaloTile(observed.tile),\n      ...(observed.occupants === undefined ? {} : { neighborOccupants: observed.occupants }),\n      ...(observed.regionSummary === undefined ? {} : {\n        neighborRegionSummary: {\n          resources: { ...observed.regionSummary.resources },\n          passableCells: observed.regionSummary.passableCells,\n          occupants: observed.regionSummary.occupants,\n        },\n      }),\n    }];\n''',
+          )
+
+          replace_once(
+              'src/halo-region.ts',
+              'import type { WorldState } from "./protocol.js";',
+              'import type { ResourceKind, WorldState } from "./protocol.js";',
+          )
+          replace_once(
+              'src/halo-region.ts',
+              '''  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {\n    const state = runtimeAccess(this).runtime.snapshot();\n    // Export only a bounded per-boundary-cell occupancy count, never remote BOT\n''',
+              '''  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {\n    const state = runtimeAccess(this).runtime.snapshot();\n    // Export one tiny whole-region support summary on the existing edge read.\n    // This is bounded metadata, not another region fetch: it lets a neighboring\n    // logistics planner discover interior supply while keeping depth-1 fan-out.\n    const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };\n    let passableCells = 0;\n    for (const tile of state.tiles) {\n      if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;\n      passableCells += 1;\n      if (tile.resource !== undefined && tile.resource.amount > 0) {\n        resources[tile.resource.kind] += tile.resource.amount;\n      }\n    }\n    const regionSummary = {\n      resources,\n      passableCells,\n      occupants: state.agents.length,\n    };\n    // Export only a bounded per-boundary-cell occupancy count, never remote BOT\n''',
+          )
+          replace_once(
+              'src/halo-region.ts',
+              '''      revision: state.revision,\n      tick: state.tick,\n      tiles,\n''',
+              '''      revision: state.revision,\n      tick: state.tick,\n      regionSummary,\n      tiles,\n''',
+          )
+
+          replace_once(
+              'src/autonomy-region.ts',
+              '''function haloSupplyCellKey(entry: Pick<HexHaloTile, "neighborRegionId" | "neighborPosition">): string {\n  return `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;\n}\n\nfunction availableHaloSupplyForAgent(\n''',
+              '''function haloSupplyCellKey(entry: Pick<HexHaloTile, "neighborRegionId" | "neighborPosition">): string {\n  return `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;\n}\n\nfunction haloRegionResourceSupply(\n  halo: readonly HexHaloTile[],\n  resource: ResourceKind,\n  neighborRegionId: string,\n): number {\n  let summarizedSupply: number | undefined;\n  let boundarySupply = 0;\n  const seenCells = new Set<string>();\n  for (const entry of halo) {\n    if (entry.neighborRegionId !== neighborRegionId) continue;\n    const summarySupply = entry.neighborRegionSummary?.resources[resource];\n    if (typeof summarySupply === "number" && Number.isFinite(summarySupply) && summarySupply >= 0) {\n      summarizedSupply = Math.max(summarizedSupply ?? 0, summarySupply);\n    }\n    if (\n      entry.tile.terrain === "water" ||\n      entry.tile.resource?.kind !== resource ||\n      entry.tile.resource.amount <= 0\n    ) continue;\n    const cellKey = haloSupplyCellKey(entry);\n    if (seenCells.has(cellKey)) continue;\n    seenCells.add(cellKey);\n    boundarySupply += entry.tile.resource.amount;\n  }\n  // A new snapshot's whole-region summary is authoritative for physical supply.\n  // Legacy snapshots fall back to the previous exact-boundary observation.\n  return summarizedSupply ?? boundarySupply;\n}\n\nfunction availableHaloSupplyForAgent(\n''',
+          )
+          replace_once(
+              'src/autonomy-region.ts',
+              '''  let visibleSupply = 0;\n  const seenCells = new Set<string>();\n  for (const entry of halo) {\n    if (\n      entry.neighborRegionId !== neighborRegionId ||\n      entry.tile.terrain === "water" ||\n      entry.tile.resource?.kind !== resource ||\n      entry.tile.resource.amount <= 0\n    ) {\n      continue;\n    }\n    const cellKey = haloSupplyCellKey(entry);\n    if (seenCells.has(cellKey)) continue;\n    seenCells.add(cellKey);\n    visibleSupply += entry.tile.resource.amount;\n  }\n\n  let claimedSupply = 0;\n''',
+              '''  const visibleSupply = haloRegionResourceSupply(halo, resource, neighborRegionId);\n\n  let claimedSupply = 0;\n''',
+          )
+          replace_once(
+              'src/autonomy-region.ts',
+              '''    const pathScores = localTravelPathScores(state, agent.position);\n    const candidates = halo.flatMap((entry) => {\n      const pathScore = pathScores.get(positionKey(entry.sourcePosition));\n      if (\n        pathScore === undefined ||\n        pathScore.distance > travelEnergyBudget ||\n        entry.tile.terrain === "water" ||\n        entry.tile.resource?.kind !== resource ||\n        entry.tile.resource.amount <= 0\n      ) {\n        return [];\n      }\n      return [{\n        entry,\n        travelDistance: pathScore.distance,\n        pathCrowding: pathScore.crowding,\n        destinationCrowding: entry.neighborOccupants ?? 0,\n      }];\n    });\n    // Exact hex ownership can expose the same neighboring cell through two\n    // outward source directions along a slanted seam. Count physical supply\n    // once per target cell and reserve it once per owning region so a second\n    // route cannot double-book the same deposit.\n    const visibleSupply = new Map<string, number>();\n    const visibleCells = new Set<string>();\n    for (const { entry } of candidates) {\n      const cellKey = haloSupplyCellKey(entry);\n      if (visibleCells.has(cellKey)) continue;\n      visibleCells.add(cellKey);\n      const key = haloSupplyKey(entry.neighborRegionId);\n      visibleSupply.set(key, (visibleSupply.get(key) ?? 0) + (entry.tile.resource?.amount ?? 0));\n    }\n''',
+              '''    const pathScores = localTravelPathScores(state, agent.position);\n    // The existing edge read can now report bounded whole-region supply. This\n    // allows a worker to cross a passable seam toward interior resources instead\n    // of requiring the deposit itself to sit on the border. Legacy snapshots\n    // still behave exactly as before because the helper falls back to edge cells.\n    const visibleSupply = new Map<string, number>();\n    for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {\n      visibleSupply.set(\n        haloSupplyKey(neighborRegionId),\n        haloRegionResourceSupply(halo, resource, neighborRegionId),\n      );\n    }\n    const candidates = halo.flatMap((entry) => {\n      const pathScore = pathScores.get(positionKey(entry.sourcePosition));\n      if (\n        pathScore === undefined ||\n        pathScore.distance > travelEnergyBudget ||\n        entry.tile.terrain === "water" ||\n        (visibleSupply.get(haloSupplyKey(entry.neighborRegionId)) ?? 0) <= 0\n      ) {\n        return [];\n      }\n      return [{\n        entry,\n        travelDistance: pathScore.distance,\n        pathCrowding: pathScore.crowding,\n        destinationCrowding: entry.neighborOccupants ?? 0,\n      }];\n    });\n''',
+          )
+          replace_once(
+              'src/autonomy-region.ts',
+              '''    const candidate = halo\n      .filter((entry) =>\n        samePosition(entry.sourcePosition, agent.position) &&\n        entry.tile.terrain !== "water" &&\n        entry.tile.resource?.kind === resource &&\n        entry.tile.resource.amount > 0 &&\n        availableHaloSupplyForAgent(\n          state,\n          halo,\n          claims,\n          agent.id,\n          resource,\n          entry.neighborRegionId,\n        ) > 0\n      )\n      .map((entry) => ({\n        entry,\n        claim: claims\n          .filter((claim) =>\n            claim.agentId === agent.id &&\n            claim.resource === resource &&\n            claim.direction === entry.direction &&\n            claim.neighborRegionId === entry.neighborRegionId &&\n            claim.expiresAtTick > state.tick\n          )\n          .sort((a, b) =>\n            b.expiresAtTick - a.expiresAtTick || b.claimId.localeCompare(a.claimId)\n          )[0],\n      }))\n''',
+              '''    const candidate = halo\n      .filter((entry) =>\n        samePosition(entry.sourcePosition, agent.position) &&\n        entry.tile.terrain !== "water"\n      )\n      .map((entry) => ({\n        entry,\n        claim: claims\n          .filter((claim) =>\n            claim.agentId === agent.id &&\n            claim.resource === resource &&\n            claim.direction === entry.direction &&\n            claim.neighborRegionId === entry.neighborRegionId &&\n            claim.expiresAtTick > state.tick\n          )\n          .sort((a, b) =>\n            b.expiresAtTick - a.expiresAtTick || b.claimId.localeCompare(a.claimId)\n          )[0],\n      }))\n      .filter(({ entry, claim }) => {\n        const concreteBoundarySupply =\n          entry.tile.resource?.kind === resource && entry.tile.resource.amount > 0;\n        // An interior traveler may cross an empty boundary only when it already\n        // owns the source-side region reservation. Unreserved boundary handoffs\n        // retain the old concrete-deposit requirement, preventing double-booking.\n        if (!concreteBoundarySupply && claim === undefined) return false;\n        return availableHaloSupplyForAgent(\n          state,\n          halo,\n          claims,\n          agent.id,\n          resource,\n          entry.neighborRegionId,\n        ) > 0;\n      })\n''',
+          )
+          PY
+
+          cat > tests/halo-region-support-summary.test.mjs <<'TEST'
+          import assert from "node:assert/strict";
+          import test from "node:test";
+          import {
+            planAutonomousHaloHandoff,
+            planAutonomousHaloTravel,
+          } from "../dist-ts/src/autonomy-region.js";
+          import {
+            hexGridBoundaryCells,
+            hexGridCenter,
+            hexGridHandoffTarget,
+            isHexGridCell,
+          } from "../dist-ts/src/hex-grid.js";
+          import { materializeHexHalo } from "../dist-ts/src/hex-halo.js";
+          import { createInitialWorld } from "../dist-ts/src/world.js";
+
+          function woodcutterFixture() {
+            const state = createInitialWorld({
+              seed: 260915,
+              width: 40,
+              height: 24,
+              regionId: "garden-1",
+            });
+            const agent = state.agents[0];
+            assert.ok(agent);
+            for (const tile of state.tiles) {
+              if (tile.resource?.kind === "wood") tile.resource.amount = 0;
+              if (isHexGridCell(state, tile)) tile.terrain = "plain";
+            }
+            state.agents = [agent];
+            state.tick = 24;
+            agent.autonomy = true;
+            agent.role = "woodcutter";
+            agent.energy = 100;
+            agent.position = hexGridCenter(state);
+            agent.inventory = { wood: 0, stone: 0, food: 0 };
+            agent.task = {
+              source: "autonomy",
+              issuedAtTick: 20,
+              type: "gather",
+              resource: "wood",
+            };
+            return { state, agent };
+          }
+
+          function interiorSupplyHalo(state, direction = "east") {
+            const cells = hexGridBoundaryCells(state, direction);
+            const sourcePosition = cells[Math.floor(cells.length / 2)];
+            assert.ok(sourcePosition);
+            const neighborPosition = hexGridHandoffTarget(state, sourcePosition, direction);
+            assert.ok(neighborPosition);
+            return {
+              sourceRegionId: state.regionId,
+              sourcePosition: { ...sourcePosition },
+              direction,
+              neighborRegionId: "garden-2",
+              neighborPosition: { ...neighborPosition },
+              neighborDirection: "west",
+              tile: {
+                x: neighborPosition.x,
+                y: neighborPosition.y,
+                terrain: "plain",
+                elevation: 0.5,
+              },
+              neighborRegionSummary: {
+                resources: { wood: 12, stone: 0, food: 0 },
+                passableCells: 397,
+                occupants: 2,
+              },
+            };
+          }
+
+          test("materialized halo carries a bounded whole-region support summary with legacy fallback", () => {
+            const link = {
+              sourceRegionId: "garden-1",
+              sourcePosition: { x: 30, y: 11 },
+              direction: "east",
+              neighborRegionId: "garden-2",
+              neighborPosition: { x: 8, y: 11 },
+              neighborDirection: "west",
+            };
+            const halo = materializeHexHalo([link], [{
+              regionId: "garden-2",
+              direction: "west",
+              revision: 4,
+              tick: 12,
+              regionSummary: {
+                resources: { wood: 12, stone: 3, food: 5 },
+                passableCells: 390,
+                occupants: 9,
+              },
+              tiles: [{
+                position: { x: 8, y: 11 },
+                tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
+              }],
+            }]);
+            assert.deepEqual(halo[0].neighborRegionSummary, {
+              resources: { wood: 12, stone: 3, food: 5 },
+              passableCells: 390,
+              occupants: 9,
+            });
+
+            const legacy = materializeHexHalo([link], [{
+              regionId: "garden-2",
+              direction: "west",
+              revision: 3,
+              tick: 11,
+              tiles: [{
+                position: { x: 8, y: 11 },
+                tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
+              }],
+            }]);
+            assert.equal(legacy[0].neighborRegionSummary, undefined);
+          });
+
+          test("resource expedition can target interior neighbor supply through a passable empty seam", () => {
+            const { state } = woodcutterFixture();
+            const halo = interiorSupplyHalo(state);
+            const plan = planAutonomousHaloTravel(state, [halo]);
+            assert.ok(plan);
+            assert.equal(plan.neighborRegionId, "garden-2");
+            assert.equal(plan.direction, "east");
+            assert.ok((plan.claimedSupply ?? 0) > 0);
+          });
+
+          test("reserved interior supply authorizes the matching empty-boundary handoff", () => {
+            const { state, agent } = woodcutterFixture();
+            const halo = interiorSupplyHalo(state);
+            agent.position = { ...halo.sourcePosition };
+            const claim = {
+              claimId: "region-summary-wood",
+              agentId: agent.id,
+              resource: "wood",
+              direction: "east",
+              neighborRegionId: "garden-2",
+              amount: 6,
+              expiresAtTick: state.tick + 12,
+            };
+            const plan = planAutonomousHaloHandoff(state, [halo], [claim]);
+            assert.ok(plan);
+            assert.equal(plan.claimId, claim.claimId);
+            assert.equal(plan.neighborRegionId, "garden-2");
+          });
+          TEST
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Full build and tests
+        run: npm run build
+      - name: Commit directly to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/hex-halo.ts src/halo-region.ts src/autonomy-region.ts tests/halo-region-support-summary.test.mjs
+          git commit -m "sim: discover interior supply through region summaries"
+          git push origin HEAD:main
