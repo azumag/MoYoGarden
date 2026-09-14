@@ -459,6 +459,35 @@ function haloSupplyCellKey(entry: Pick<HexHaloTile, "neighborRegionId" | "neighb
   return `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;
 }
 
+function haloRegionResourceSupply(
+  halo: readonly HexHaloTile[],
+  resource: ResourceKind,
+  neighborRegionId: string,
+): number {
+  let summarizedSupply: number | undefined;
+  let boundarySupply = 0;
+  const seenCells = new Set<string>();
+  for (const entry of halo) {
+    if (entry.neighborRegionId !== neighborRegionId) continue;
+    const summarySupply = entry.neighborRegionSummary?.resources[resource];
+    if (typeof summarySupply === "number" && Number.isFinite(summarySupply) && summarySupply >= 0) {
+      summarizedSupply = Math.max(summarizedSupply ?? 0, summarySupply);
+    }
+    if (
+      entry.tile.terrain === "water" ||
+      entry.tile.resource?.kind !== resource ||
+      entry.tile.resource.amount <= 0
+    ) continue;
+    const cellKey = haloSupplyCellKey(entry);
+    if (seenCells.has(cellKey)) continue;
+    seenCells.add(cellKey);
+    boundarySupply += entry.tile.resource.amount;
+  }
+  // A new snapshot's whole-region summary is authoritative for physical supply.
+  // Legacy snapshots fall back to the previous exact-boundary observation.
+  return summarizedSupply ?? boundarySupply;
+}
+
 function availableHaloSupplyForAgent(
   state: Pick<WorldState, "tick">,
   halo: readonly HexHaloTile[],
@@ -467,22 +496,7 @@ function availableHaloSupplyForAgent(
   resource: ResourceKind,
   neighborRegionId: string,
 ): number {
-  let visibleSupply = 0;
-  const seenCells = new Set<string>();
-  for (const entry of halo) {
-    if (
-      entry.neighborRegionId !== neighborRegionId ||
-      entry.tile.terrain === "water" ||
-      entry.tile.resource?.kind !== resource ||
-      entry.tile.resource.amount <= 0
-    ) {
-      continue;
-    }
-    const cellKey = haloSupplyCellKey(entry);
-    if (seenCells.has(cellKey)) continue;
-    seenCells.add(cellKey);
-    visibleSupply += entry.tile.resource.amount;
-  }
+  const visibleSupply = haloRegionResourceSupply(halo, resource, neighborRegionId);
 
   let claimedSupply = 0;
   for (const claim of claims) {
@@ -550,14 +564,24 @@ export function planAutonomousHaloTravel(
     if (capacityLeft <= 0) continue;
     const travelEnergyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);
     const pathScores = localTravelPathScores(state, agent.position);
+    // The existing edge read can now report bounded whole-region supply. This
+    // allows a worker to cross a passable seam toward interior resources instead
+    // of requiring the deposit itself to sit on the border. Legacy snapshots
+    // still behave exactly as before because the helper falls back to edge cells.
+    const visibleSupply = new Map<string, number>();
+    for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {
+      visibleSupply.set(
+        haloSupplyKey(neighborRegionId),
+        haloRegionResourceSupply(halo, resource, neighborRegionId),
+      );
+    }
     const candidates = halo.flatMap((entry) => {
       const pathScore = pathScores.get(positionKey(entry.sourcePosition));
       if (
         pathScore === undefined ||
         pathScore.distance > travelEnergyBudget ||
         entry.tile.terrain === "water" ||
-        entry.tile.resource?.kind !== resource ||
-        entry.tile.resource.amount <= 0
+        (visibleSupply.get(haloSupplyKey(entry.neighborRegionId)) ?? 0) <= 0
       ) {
         return [];
       }
@@ -568,19 +592,6 @@ export function planAutonomousHaloTravel(
         destinationCrowding: entry.neighborOccupants ?? 0,
       }];
     });
-    // Exact hex ownership can expose the same neighboring cell through two
-    // outward source directions along a slanted seam. Count physical supply
-    // once per target cell and reserve it once per owning region so a second
-    // route cannot double-book the same deposit.
-    const visibleSupply = new Map<string, number>();
-    const visibleCells = new Set<string>();
-    for (const { entry } of candidates) {
-      const cellKey = haloSupplyCellKey(entry);
-      if (visibleCells.has(cellKey)) continue;
-      visibleCells.add(cellKey);
-      const key = haloSupplyKey(entry.neighborRegionId);
-      visibleSupply.set(key, (visibleSupply.get(key) ?? 0) + (entry.tile.resource?.amount ?? 0));
-    }
     const claimedSupply = new Map<string, number>();
     for (const claim of claims) {
       if (claim.resource !== resource || claim.expiresAtTick <= state.tick) continue;
@@ -683,17 +694,7 @@ export function planAutonomousHaloHandoff(
     const candidate = halo
       .filter((entry) =>
         samePosition(entry.sourcePosition, agent.position) &&
-        entry.tile.terrain !== "water" &&
-        entry.tile.resource?.kind === resource &&
-        entry.tile.resource.amount > 0 &&
-        availableHaloSupplyForAgent(
-          state,
-          halo,
-          claims,
-          agent.id,
-          resource,
-          entry.neighborRegionId,
-        ) > 0
+        entry.tile.terrain !== "water"
       )
       .map((entry) => ({
         entry,
@@ -709,6 +710,22 @@ export function planAutonomousHaloHandoff(
             b.expiresAtTick - a.expiresAtTick || b.claimId.localeCompare(a.claimId)
           )[0],
       }))
+      .filter(({ entry, claim }) => {
+        const concreteBoundarySupply =
+          entry.tile.resource?.kind === resource && entry.tile.resource.amount > 0;
+        // An interior traveler may cross an empty boundary only when it already
+        // owns the source-side region reservation. Unreserved boundary handoffs
+        // retain the old concrete-deposit requirement, preventing double-booking.
+        if (!concreteBoundarySupply && claim === undefined) return false;
+        return availableHaloSupplyForAgent(
+          state,
+          halo,
+          claims,
+          agent.id,
+          resource,
+          entry.neighborRegionId,
+        ) > 0;
+      })
       .sort((a, b) =>
         Number(b.claim !== undefined) - Number(a.claim !== undefined) ||
         (b.claim?.expiresAtTick ?? -1) - (a.claim?.expiresAtTick ?? -1) ||

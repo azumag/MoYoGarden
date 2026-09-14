@@ -8,7 +8,7 @@ import {
   type HexGridExtent,
   type HexGridPosition,
 } from "./hex-grid.js";
-import type { Tile } from "./protocol.js";
+import type { ResourceKind, Tile } from "./protocol.js";
 import {
   regionAxialCoordinate,
   regionCellTransition,
@@ -24,11 +24,20 @@ export interface HexHaloLink {
   neighborDirection: HexGridDirection;
 }
 
+export interface HexHaloRegionSummary {
+  resources: Record<ResourceKind, number>;
+  passableCells: number;
+  occupants: number;
+}
+
 export interface HexHaloTile extends HexHaloLink {
   tile: Tile;
   // Optional rolling-compat signal: how many BOTs occupy the exact neighbor
   // boundary cell. Older edge snapshots omit it and remain neutral.
   neighborOccupants?: number;
+  // Small whole-region support summary carried by the existing edge read. It
+  // lets logistics discover interior supply without a deeper synchronous read.
+  neighborRegionSummary?: HexHaloRegionSummary;
 }
 
 export interface HexHaloEdgeSnapshot {
@@ -36,6 +45,9 @@ export interface HexHaloEdgeSnapshot {
   direction: HexGridDirection;
   revision: number;
   tick: number;
+  // Optional during rolling deploys; old edge snapshots remain valid and
+  // consumers fall back to exact boundary-cell observations.
+  regionSummary?: HexHaloRegionSummary;
   tiles: Array<{ position: HexGridPosition; tile: Tile; occupants?: number }>;
 }
 
@@ -322,7 +334,7 @@ export function materializeHexHalo(
     }
   }
 
-  const edgeIndex = new Map<string, { tile: Tile; occupants?: number }>();
+  const edgeIndex = new Map<string, { tile: Tile; occupants?: number; regionSummary?: HexHaloRegionSummary }>();
   for (const edge of latestEdges.values()) {
     for (const entry of edge.tiles) {
       // Edge snapshots are request-local, read-only inputs. Keep their tile
@@ -335,6 +347,7 @@ export function materializeHexHalo(
           ...(Number.isInteger(entry.occupants) && (entry.occupants ?? 0) > 0
             ? { occupants: entry.occupants }
             : {}),
+          ...(edge.regionSummary === undefined ? {} : { regionSummary: edge.regionSummary }),
         },
       );
     }
@@ -353,6 +366,13 @@ export function materializeHexHalo(
       ...cloneHaloLink(link),
       tile: cloneHaloTile(observed.tile),
       ...(observed.occupants === undefined ? {} : { neighborOccupants: observed.occupants }),
+      ...(observed.regionSummary === undefined ? {} : {
+        neighborRegionSummary: {
+          resources: { ...observed.regionSummary.resources },
+          passableCells: observed.regionSummary.passableCells,
+          occupants: observed.regionSummary.occupants,
+        },
+      }),
     }];
   });
 }

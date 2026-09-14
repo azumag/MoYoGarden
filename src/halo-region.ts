@@ -19,7 +19,7 @@ import {
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
-import type { WorldState } from "./protocol.js";
+import type { ResourceKind, WorldState } from "./protocol.js";
 import { parseAxialRegionId, regionGlobalCellOrigin, regionHexWindow } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { getTile } from "./world.js";
@@ -357,6 +357,23 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {
     const state = runtimeAccess(this).runtime.snapshot();
+    // Export one tiny whole-region support summary on the existing edge read.
+    // This is bounded metadata, not another region fetch: it lets a neighboring
+    // logistics planner discover interior supply while keeping depth-1 fan-out.
+    const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
+    let passableCells = 0;
+    for (const tile of state.tiles) {
+      if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
+      passableCells += 1;
+      if (tile.resource !== undefined && tile.resource.amount > 0) {
+        resources[tile.resource.kind] += tile.resource.amount;
+      }
+    }
+    const regionSummary = {
+      resources,
+      passableCells,
+      occupants: state.agents.length,
+    };
     // Export only a bounded per-boundary-cell occupancy count, never remote BOT
     // snapshots. This lets logistics price destination congestion through the
     // existing depth-1 halo read without adding another cross-DO request.
@@ -380,6 +397,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       direction,
       revision: state.revision,
       tick: state.tick,
+      regionSummary,
       tiles,
     };
   }
