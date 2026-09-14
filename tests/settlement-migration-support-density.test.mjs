@@ -96,16 +96,16 @@ test("pioneer does not treat a larger halo sample as better settlement support",
   const plan = planAutonomousSettlementMigration(state, [
     // Equal support quality and equal route cost isolate the support comparator.
     // East has fewer observed cells, so a raw sample-count tie-break would make
-    // West win; without that bias the deterministic direction order chooses East.
-    haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 10),
-    haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 10),
-    haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 10 }, 10),
+    // West win; without that bias the canonical direction order chooses east.
+    haloTile("east", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 10),
+    haloTile("west", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 10),
+    haloTile("west", sharedSeam, "hex-q-1-r0", { x: 30, y: 10 }, 10),
   ]);
 
   assert.ok(plan);
   assert.equal(plan.agentId, builder.id);
   assert.equal(plan.neighborRegionId, "hex-q1-r0");
-  assert.equal(plan.direction, "E");
+  assert.equal(plan.direction, "east");
 });
 
 test("negligible carrying-capacity noise does not override pathogen risk", () => {
