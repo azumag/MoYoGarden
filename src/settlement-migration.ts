@@ -212,17 +212,6 @@ function compareContinuationResourceCapacity(
   return 0;
 }
 
-function compareContinuationResourceAmount(
-  candidate: SettlementNeighborSupport,
-  local: SettlementNeighborSupport,
-): number {
-  for (const kind of ["food", "wood", "stone"] as const) {
-    const delta = resourceAmountDensity(candidate, kind) - resourceAmountDensity(local, kind);
-    if (Math.abs(delta) > SETTLEMENT_RESOURCE_CAPACITY_EPSILON) return delta;
-  }
-  return 0;
-}
-
 function shouldContinueSettlementMigration(
   candidate: SettlementNeighborSupport,
   local: SettlementNeighborSupport,
@@ -240,9 +229,6 @@ function shouldContinueSettlementMigration(
     if (candidatePathogen < localPathogen - SETTLEMENT_PATHOGEN_EPSILON) return true;
     if (candidatePathogen > localPathogen + SETTLEMENT_PATHOGEN_EPSILON) return false;
   }
-
-  const resourceAmountDelta = compareContinuationResourceAmount(candidate, local);
-  if (resourceAmountDelta !== 0) return resourceAmountDelta > 0;
 
   const candidateHasWater = candidate.waterCells > 0;
   const localHasWater = local.waterCells > 0;
