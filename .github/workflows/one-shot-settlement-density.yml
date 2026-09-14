@@ -1,0 +1,198 @@
+name: One-shot settlement population density
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-settlement-density.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Patch settlement migration density scoring
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/settlement-migration.ts')
+          text = path.read_text()
+
+          text = text.replace(
+            'const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;\nconst SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;',
+            'const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;\nconst SETTLEMENT_POPULATION_DENSITY_EPSILON = 1e-6;\nconst SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;',
+            1,
+          )
+          text = text.replace(
+            '  passableCells: number;\n  resourceSampleCells: number;\n  waterCells: number;',
+            '  passableCells: number;\n  resourceSampleCells: number;\n  populationSampleCells: number;\n  occupants: number;\n  waterCells: number;',
+            1,
+          )
+          text = text.replace(
+            '    passableCells: 0,\n    resourceSampleCells: 0,\n    waterCells: 0,',
+            '    passableCells: 0,\n    resourceSampleCells: 0,\n    populationSampleCells: 0,\n    occupants: 0,\n    waterCells: 0,',
+            1,
+          )
+
+          marker = '''function applyRegionResourceSummary(\n  support: SettlementNeighborSupport,\n  summary: HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> },\n): void {\n  support.resourceSampleCells = summary.passableCells;\n  for (const kind of RESOURCE_KINDS) {\n    support.resources[kind] = summary.resources[kind];\n    support.resourceCapacity[kind] = summary.resourceCapacity[kind];\n  }\n}\n'''
+          addition = marker + '''\nfunction validRegionPopulationSummary(\n  summary: HexHaloRegionSummary | undefined,\n): summary is HexHaloRegionSummary {\n  return summary !== undefined\n    && Number.isInteger(summary.passableCells)\n    && summary.passableCells > 0\n    && Number.isInteger(summary.occupants)\n    && summary.occupants >= 0;\n}\n\nfunction sameRegionPopulationSummary(\n  a: HexHaloRegionSummary,\n  b: HexHaloRegionSummary,\n): boolean {\n  return a.passableCells === b.passableCells && a.occupants === b.occupants;\n}\n\nfunction applyRegionPopulationSummary(\n  support: SettlementNeighborSupport,\n  summary: HexHaloRegionSummary,\n): void {\n  support.populationSampleCells = summary.passableCells;\n  support.occupants = summary.occupants;\n}\n'''
+          if marker not in text:
+            raise SystemExit('resource summary marker not found')
+          text = text.replace(marker, addition, 1)
+
+          old_maps = '''  const inconsistentResourceSummaryRegions = new Set<string>();\n  const seenNeighborCells = new Set<string>();\n'''
+          new_maps = '''  const inconsistentResourceSummaryRegions = new Set<string>();\n  const populationSummaryByRegion = new Map<string, HexHaloRegionSummary>();\n  const inconsistentPopulationSummaryRegions = new Set<string>();\n  const seenNeighborCells = new Set<string>();\n'''
+          if old_maps not in text:
+            raise SystemExit('summary map marker not found')
+          text = text.replace(old_maps, new_maps, 1)
+
+          old_loop = '''    if (validRegionResourceSummary(regionSummary)) {\n      const current = resourceSummaryByRegion.get(entry.neighborRegionId);\n      if (current === undefined) {\n        resourceSummaryByRegion.set(entry.neighborRegionId, regionSummary);\n      } else if (!sameRegionResourceSummary(current, regionSummary)) {\n        // Different edge reads may straddle a neighbor tick. Do not combine two\n        // whole-region observations into a synthetic state; fall back to the\n        // exact boundary sample for this planning pass.\n        inconsistentResourceSummaryRegions.add(entry.neighborRegionId);\n      }\n    }\n'''
+          new_loop = old_loop + '''    if (validRegionPopulationSummary(regionSummary)) {\n      const current = populationSummaryByRegion.get(entry.neighborRegionId);\n      if (current === undefined) {\n        populationSummaryByRegion.set(entry.neighborRegionId, regionSummary);\n      } else if (!sameRegionPopulationSummary(current, regionSummary)) {\n        // Population can change independently of resource totals across adjacent\n        // edge reads. Avoid manufacturing a regional density from mixed ticks.\n        inconsistentPopulationSummaryRegions.add(entry.neighborRegionId);\n      }\n    }\n'''
+          if old_loop not in text:
+            raise SystemExit('summary loop marker not found')
+          text = text.replace(old_loop, new_loop, 1)
+
+          old_apply = '''  for (const [regionId, summary] of resourceSummaryByRegion) {\n    if (inconsistentResourceSummaryRegions.has(regionId)) continue;\n    const support = supportByRegion.get(regionId);\n    if (support !== undefined) applyRegionResourceSummary(support, summary);\n  }\n  return supportByRegion;\n}\n'''
+          new_apply = '''  for (const [regionId, summary] of resourceSummaryByRegion) {\n    if (inconsistentResourceSummaryRegions.has(regionId)) continue;\n    const support = supportByRegion.get(regionId);\n    if (support !== undefined) applyRegionResourceSummary(support, summary);\n  }\n  for (const [regionId, summary] of populationSummaryByRegion) {\n    if (inconsistentPopulationSummaryRegions.has(regionId)) continue;\n    const support = supportByRegion.get(regionId);\n    if (support !== undefined) applyRegionPopulationSummary(support, summary);\n  }\n  return supportByRegion;\n}\n'''
+          if old_apply not in text:
+            raise SystemExit('summary apply marker not found')
+          text = text.replace(old_apply, new_apply, 1)
+
+          old_local = '''  for (const tile of state.tiles) {\n    if (!isHexGridCell(state, tile)) continue;\n    addSettlementSupportTile(support, tile);\n  }\n  return support;\n}\n'''
+          new_local = '''  for (const tile of state.tiles) {\n    if (!isHexGridCell(state, tile)) continue;\n    addSettlementSupportTile(support, tile);\n  }\n  support.populationSampleCells = support.passableCells;\n  support.occupants = state.agents.length;\n  return support;\n}\n'''
+          if old_local not in text:
+            raise SystemExit('local support marker not found')
+          text = text.replace(old_local, new_local, 1)
+
+          marker2 = '''function compareAveragePathogenReservoir(\n  a: SettlementNeighborSupport,\n  b: SettlementNeighborSupport,\n): number {\n  if (a.pathogenReservoirSamples === 0 || b.pathogenReservoirSamples === 0) return 0;\n  const delta = averagePathogenReservoir(a) - averagePathogenReservoir(b);\n  return Math.abs(delta) > SETTLEMENT_PATHOGEN_EPSILON ? delta : 0;\n}\n'''
+          addition2 = marker2 + '''\nfunction populationDensity(support: SettlementNeighborSupport): number {\n  return support.populationSampleCells > 0\n    ? support.occupants / support.populationSampleCells\n    : 0;\n}\n\nfunction comparePopulationDensity(\n  a: SettlementNeighborSupport,\n  b: SettlementNeighborSupport,\n): number {\n  if (a.populationSampleCells === 0 || b.populationSampleCells === 0) return 0;\n  const delta = populationDensity(a) - populationDensity(b);\n  return Math.abs(delta) > SETTLEMENT_POPULATION_DENSITY_EPSILON ? delta : 0;\n}\n'''
+          if marker2 not in text:
+            raise SystemExit('pathogen comparator marker not found')
+          text = text.replace(marker2, addition2, 1)
+
+          old_continue = '''  if (candidate.erosionPressureSamples > 0 && local.erosionPressureSamples > 0) {\n    const candidateErosion = averageErosionPressure(candidate);\n    const localErosion = averageErosionPressure(local);\n    if (candidateErosion < localErosion - SETTLEMENT_EROSION_EPSILON) return true;\n    if (candidateErosion > localErosion + SETTLEMENT_EROSION_EPSILON) return false;\n  }\n\n  const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);\n'''
+          new_continue = '''  if (candidate.erosionPressureSamples > 0 && local.erosionPressureSamples > 0) {\n    const candidateErosion = averageErosionPressure(candidate);\n    const localErosion = averageErosionPressure(local);\n    if (candidateErosion < localErosion - SETTLEMENT_EROSION_EPSILON) return true;\n    if (candidateErosion > localErosion + SETTLEMENT_EROSION_EPSILON) return false;\n  }\n\n  if (candidate.populationSampleCells > 0 && local.populationSampleCells > 0) {\n    const candidatePopulation = populationDensity(candidate);\n    const localPopulation = populationDensity(local);\n    if (candidatePopulation < localPopulation - SETTLEMENT_POPULATION_DENSITY_EPSILON) return true;\n    if (candidatePopulation > localPopulation + SETTLEMENT_POPULATION_DENSITY_EPSILON) return false;\n  }\n\n  const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);\n'''
+          if old_continue not in text:
+            raise SystemExit('continuation marker not found')
+          text = text.replace(old_continue, new_continue, 1)
+
+          old_compare = '''    || compareAveragePathogenReservoir(a, b)\n    || compareAverageErosionPressure(a, b)\n    || compareResourceAmountDensity(a, b, "food")\n'''
+          new_compare = '''    || compareAveragePathogenReservoir(a, b)\n    || compareAverageErosionPressure(a, b)\n    // Settlement pressure should spill toward underused land when durable\n    // ecological support and hazards are otherwise comparable. Use the bounded\n    // whole-region summary rather than a single boundary-cell occupancy sample.\n    || comparePopulationDensity(a, b)\n    || compareResourceAmountDensity(a, b, "food")\n'''
+          if old_compare not in text:
+            raise SystemExit('support comparator marker not found')
+          text = text.replace(old_compare, new_compare, 1)
+
+          path.write_text(text)
+          PY
+
+          cat >> tests/settlement-migration-support-density.test.mjs <<'TEST'
+
+          test("pioneer prefers the less populated region when ecological support ties", () => {
+            const { state, builder } = transitPioneerFixture();
+            // Make the transit region crowded enough that both neighboring
+            // frontiers remain valid continuation choices. Extra residents are
+            // non-autonomous and share the origin cell, so both routes see the
+            // same local path cost and only regional density breaks the tie.
+            for (let index = 0; index < 9; index += 1) {
+              const resident = structuredClone(builder);
+              resident.id = `resident-${index}`;
+              resident.autonomy = false;
+              delete resident.task;
+              state.agents.push(resident);
+            }
+
+            const sharedSeam = { x: 30, y: 11 };
+            const east = haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 0, 0);
+            east.neighborRegionSummary = {
+              resources: { wood: 0, stone: 0, food: 0 },
+              resourceCapacity: { wood: 0, stone: 0, food: 0 },
+              passableCells: 100,
+              occupants: 2,
+            };
+            const west = haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 0, 0);
+            west.neighborRegionSummary = {
+              resources: { wood: 0, stone: 0, food: 0 },
+              resourceCapacity: { wood: 0, stone: 0, food: 0 },
+              passableCells: 100,
+              occupants: 1,
+            };
+
+            const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+            assert.ok(plan);
+            assert.equal(plan.agentId, builder.id);
+            assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+            assert.equal(plan.direction, "W");
+          });
+
+          test("inconsistent rolling population summaries stay neutral for migration", () => {
+            const { state, builder } = transitPioneerFixture();
+            for (let index = 0; index < 9; index += 1) {
+              const resident = structuredClone(builder);
+              resident.id = `resident-${index}`;
+              resident.autonomy = false;
+              delete resident.task;
+              state.agents.push(resident);
+            }
+
+            const sharedSeam = { x: 30, y: 11 };
+            const eastA = haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 0, 0);
+            eastA.neighborRegionSummary = {
+              resources: { wood: 0, stone: 0, food: 0 },
+              resourceCapacity: { wood: 0, stone: 0, food: 0 },
+              passableCells: 100,
+              occupants: 1,
+            };
+            const eastB = haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 10 }, 0, 0);
+            eastB.neighborRegionSummary = {
+              resources: { wood: 0, stone: 0, food: 0 },
+              resourceCapacity: { wood: 0, stone: 0, food: 0 },
+              passableCells: 100,
+              occupants: 99,
+            };
+            const west = haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 0, 0);
+            west.neighborRegionSummary = {
+              resources: { wood: 0, stone: 0, food: 0 },
+              resourceCapacity: { wood: 0, stone: 0, food: 0 },
+              passableCells: 100,
+              occupants: 2,
+            };
+
+            const plan = planAutonomousSettlementMigration(state, [eastA, eastB, west]);
+
+            assert.ok(plan);
+            assert.equal(plan.agentId, builder.id);
+            assert.equal(
+              plan.neighborRegionId,
+              "hex-q-1-r0",
+              "a mixed-tick east summary must not be trusted as a low-density whole-region observation",
+            );
+          });
+          TEST
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Full build and tests
+        run: npm run build
+      - name: Commit directly to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/settlement-migration.ts tests/settlement-migration-support-density.test.mjs
+          git commit -m "sim: steer pioneers toward less crowded regions"
+          git push origin HEAD:main
