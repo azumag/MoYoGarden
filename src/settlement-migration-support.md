@@ -7,9 +7,10 @@ Current support ordering is intentionally lexicographic:
 1. sustainable resource diversity;
 2. food / wood / stone carrying-capacity density (`maxAmount / passableCells`), with a small epsilon so floating-point normalization noise does not dominate later signals;
 3. average pathogen reservoir when both sides have samples;
-4. live food / wood / stone density (`amount / passableCells`), using the same small-noise rule so negligible live-supply differences do not mask meaningful environmental differences;
-5. average drainage when both sides have samples;
-6. surface-water fraction (`waterCells / observedCells`).
+4. average erosion pressure when both sides have samples, preferring land that is currently less exposed to drainage/slope-driven soil loss;
+5. live food / wood / stone density (`amount / passableCells`), using the same small-noise rule so negligible live-supply differences do not mask meaningful environmental differences;
+6. average drainage when both sides have samples;
+7. surface-water fraction (`waterCells / observedCells`).
 
 Only after support quality ties should route cost, crowding, canonical hex-direction order, and stable IDs resolve the choice. Observation footprint itself is not destination quality.
 

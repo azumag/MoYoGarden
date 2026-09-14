@@ -24,6 +24,7 @@ const CAMP_MIN_SPACING = 2;
 const CAMP_LOCAL_BUILD_RADIUS = 5;
 const LOW_ENERGY_THRESHOLD = 18;
 const SETTLEMENT_DRAINAGE_EPSILON = 1e-6;
+const SETTLEMENT_EROSION_EPSILON = 1e-6;
 const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_AMOUNT_EPSILON = 1e-6;
@@ -44,6 +45,8 @@ interface SettlementNeighborSupport {
   waterCells: number;
   drainageTotal: number;
   drainageSamples: number;
+  erosionPressureTotal: number;
+  erosionPressureSamples: number;
   pathogenReservoirTotal: number;
   pathogenReservoirSamples: number;
   resources: Record<ResourceKind, number>;
@@ -78,6 +81,8 @@ function emptySettlementNeighborSupport(): SettlementNeighborSupport {
     waterCells: 0,
     drainageTotal: 0,
     drainageSamples: 0,
+    erosionPressureTotal: 0,
+    erosionPressureSamples: 0,
     pathogenReservoirTotal: 0,
     pathogenReservoirSamples: 0,
     resources: { wood: 0, stone: 0, food: 0 },
@@ -103,6 +108,10 @@ function addSettlementSupportTile(
   if (Number.isFinite(tile.drainage ?? Number.NaN)) {
     support.drainageTotal += Math.max(0, Math.min(1, tile.drainage ?? 0));
     support.drainageSamples += 1;
+  }
+  if (Number.isFinite(tile.erosionPressure ?? Number.NaN)) {
+    support.erosionPressureTotal += Math.max(0, Math.min(1, tile.erosionPressure ?? 0));
+    support.erosionPressureSamples += 1;
   }
   const pathogenReservoir = pathogenReservoirSample(tile);
   if (pathogenReservoir !== undefined) {
@@ -163,6 +172,21 @@ function compareAverageDrainage(
   if (a.drainageSamples === 0 || b.drainageSamples === 0) return 0;
   const delta = averageDrainage(b) - averageDrainage(a);
   return Math.abs(delta) > SETTLEMENT_DRAINAGE_EPSILON ? delta : 0;
+}
+
+function averageErosionPressure(support: SettlementNeighborSupport): number {
+  return support.erosionPressureSamples > 0
+    ? support.erosionPressureTotal / support.erosionPressureSamples
+    : 0;
+}
+
+function compareAverageErosionPressure(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  if (a.erosionPressureSamples === 0 || b.erosionPressureSamples === 0) return 0;
+  const delta = averageErosionPressure(a) - averageErosionPressure(b);
+  return Math.abs(delta) > SETTLEMENT_EROSION_EPSILON ? delta : 0;
 }
 
 function averagePathogenReservoir(support: SettlementNeighborSupport): number {
@@ -264,6 +288,13 @@ function shouldContinueSettlementMigration(
     if (candidatePathogen > localPathogen + SETTLEMENT_PATHOGEN_EPSILON) return false;
   }
 
+  if (candidate.erosionPressureSamples > 0 && local.erosionPressureSamples > 0) {
+    const candidateErosion = averageErosionPressure(candidate);
+    const localErosion = averageErosionPressure(local);
+    if (candidateErosion < localErosion - SETTLEMENT_EROSION_EPSILON) return true;
+    if (candidateErosion > localErosion + SETTLEMENT_EROSION_EPSILON) return false;
+  }
+
   const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);
   if (Math.abs(waterFractionDelta) > SETTLEMENT_WATER_FRACTION_EPSILON) {
     return waterFractionDelta > 0;
@@ -283,6 +314,7 @@ function compareSettlementSupport(
     || compareResourceCapacityDensity(a, b, "wood")
     || compareResourceCapacityDensity(a, b, "stone")
     || compareAveragePathogenReservoir(a, b)
+    || compareAverageErosionPressure(a, b)
     || compareResourceAmountDensity(a, b, "food")
     || compareResourceAmountDensity(a, b, "wood")
     || compareResourceAmountDensity(a, b, "stone")
