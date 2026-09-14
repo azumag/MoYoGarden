@@ -108,12 +108,8 @@ function addSettlementSupportTile(
   }
   const resource = tile.resource;
   if (resource === undefined) return;
-  if (resource.maxAmount > 0) {
-    support.resourceCapacity[resource.kind] += resource.maxAmount;
-  }
-  if (resource.amount > 0) {
-    support.resources[resource.kind] += resource.amount;
-  }
+  if (resource.maxAmount > 0) support.resourceCapacity[resource.kind] += resource.maxAmount;
+  if (resource.amount > 0) support.resources[resource.kind] += resource.amount;
 }
 
 function settlementNeighborSupports(
@@ -125,7 +121,6 @@ function settlementNeighborSupports(
     const cellKey = `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;
     if (seenNeighborCells.has(cellKey)) continue;
     seenNeighborCells.add(cellKey);
-
     let support = supportByRegion.get(entry.neighborRegionId);
     if (support === undefined) {
       support = emptySettlementNeighborSupport();
@@ -138,15 +133,13 @@ function settlementNeighborSupports(
 
 function localSettlementSupport(state: WorldState): SettlementNeighborSupport {
   const support = emptySettlementNeighborSupport();
-  // The 40x24 storage envelope retains inactive compatibility corners that are
-  // intentionally water. They are not part of the 397-cell simulation hex and
-  // must not make every local region look water-supported to migration logic.
   for (const tile of state.tiles) {
     if (!isHexGridCell(state, tile)) continue;
     addSettlementSupportTile(support, tile);
   }
   return support;
 }
+
 function resourceDiversity(support: SettlementNeighborSupport): number {
   return RESOURCE_KINDS.reduce(
     (count, kind) => count + (support.resourceCapacity[kind] > 0 ? 1 : 0),
@@ -164,9 +157,6 @@ function compareAverageDrainage(
   a: SettlementNeighborSupport,
   b: SettlementNeighborSupport,
 ): number {
-  // Persisted legacy halo tiles may not have drainage backfilled yet. Treat
-  // unknown as neutral rather than dry so migration decisions do not shift just
-  // because one edge has newer environmental metadata than another.
   if (a.drainageSamples === 0 || b.drainageSamples === 0) return 0;
   const delta = averageDrainage(b) - averageDrainage(a);
   return Math.abs(delta) > SETTLEMENT_DRAINAGE_EPSILON ? delta : 0;
@@ -182,25 +172,12 @@ function compareAveragePathogenReservoir(
   a: SettlementNeighborSupport,
   b: SettlementNeighborSupport,
 ): number {
-  // Rolling deploys and old persisted tiles can lack pathogenReservoir entirely.
-  // Do not mistake missing metadata for a clean frontier; only compare disease
-  // pressure when both candidate regions actually expose reservoir samples.
   if (a.pathogenReservoirSamples === 0 || b.pathogenReservoirSamples === 0) return 0;
   const delta = averagePathogenReservoir(a) - averagePathogenReservoir(b);
   return Math.abs(delta) > SETTLEMENT_PATHOGEN_EPSILON ? delta : 0;
 }
 
 function settlementContinuationRank(support: SettlementNeighborSupport): number {
-  // Founding material is already carried in the camp kit. A transit pioneer
-  // should only take another hop when the low-level support signal strictly
-  // improves, otherwise equal-quality neighbors could ping-pong forever.
-  //
-  // Rank only renewable resource classes here. Surface water is a real support
-  // signal, but evaluating it before capacity density let a single wet boundary
-  // cell override a large loss of durable food capacity or a dirtier frontier.
-  // Water is therefore evaluated later, after capacity and pathogen burden tie.
-  // Because each hop still requires a lexicographic improvement, multi-hop travel
-  // remains bounded without adding visited-region state to WorldState.
   return (support.resourceCapacity.food > 0 ? 4 : 0)
     + (support.resourceCapacity.wood > 0 ? 2 : 0)
     + (support.resourceCapacity.stone > 0 ? 1 : 0);
@@ -210,12 +187,6 @@ function resourceCapacityDensity(
   support: SettlementNeighborSupport,
   kind: ResourceKind,
 ): number {
-  // A depth-1 halo only samples the neighboring boundary (normally ~23 cells),
-  // while local support covers the full 397-cell simulation hex. Comparing raw
-  // maxAmount sums therefore made the local region look larger merely because it
-  // had more sampled cells and could stop otherwise valid multi-hop migration.
-  // Capacity per passable sampled cell is scale-comparable without issuing any
-  // deeper cross-DO reads or pretending that unsampled interior cells are known.
   return support.passableCells > 0
     ? support.resourceCapacity[kind] / support.passableCells
     : 0;
@@ -240,23 +211,9 @@ function shouldContinueSettlementMigration(
   const localRank = settlementContinuationRank(local);
   if (candidateRank !== localRank) return candidateRank > localRank;
 
-  // Presence classes are deliberately coarse so old halo snapshots remain safe.
-  // Once they tie, compare durable maxAmount density (food -> wood -> stone)
-  // rather than raw totals: the candidate is a depth-1 edge sample while local
-  // support spans the whole active region. This keeps the signal independent of
-  // observation footprint and lets a pioneer follow genuinely stronger carrying
-  // capacity without adding deeper neighbor reads. A strict improvement is still
-  // required before environmental tie-breaks are considered.
   const resourceCapacityDelta = compareContinuationResourceCapacity(candidate, local);
   if (resourceCapacityDelta !== 0) return resourceCapacityDelta > 0;
 
-  // Only after durable carrying capacity ties may the environment break the tie.
-  // Keep continuation lexicographically monotonic: observed pathogen burden is
-  // authoritative first, then visible surface water, then drainage may break a
-  // disease-neutral tie. A strictly dirtier frontier never wins merely because
-  // it has one wet boundary cell or drains better. If a rolling/legacy snapshot
-  // lacks pathogen metadata, that dimension is neutral rather than implicitly
-  // clean.
   if (candidate.pathogenReservoirSamples > 0 && local.pathogenReservoirSamples > 0) {
     const candidatePathogen = averagePathogenReservoir(candidate);
     const localPathogen = averagePathogenReservoir(local);
@@ -276,15 +233,6 @@ function compareSettlementSupport(
   a: SettlementNeighborSupport,
   b: SettlementNeighborSupport,
 ): number {
-  // A pioneer should favor long-lived carrying capacity over a transiently full
-  // deposit. Neighbor support is a depth-1 edge sample, and the amount of
-  // passable land represented by that sample can differ between directions.
-  // Compare maxAmount per observed passable cell so a wider sampled land edge
-  // cannot beat a denser carrying-capacity frontier merely by contributing more
-  // cells. This uses the same scale-independent signal as transit continuation.
-  // Once durable capacity is equal, prefer lower observed environmental pathogen
-  // burden before transient stock levels. Hydrology, open surface water, and the
-  // passable edge area remain later tie-breaks.
   return (
     resourceDiversity(b) - resourceDiversity(a)
     || resourceCapacityDensity(b, "food") - resourceCapacityDensity(a, "food")
@@ -300,12 +248,23 @@ function compareSettlementSupport(
   );
 }
 
+function settlementRouteCost(candidate: SettlementSeamCandidate): number {
+  // General movement already minimizes cumulative crowding among equally short
+  // paths. Settlement migration additionally chooses between different seam
+  // targets, so price each occupied hex encountered on that target's shortest
+  // path as one extra step of travel effort. This lets population pressure spill
+  // through a nearby quiet seam instead of always choosing a geometrically closer
+  // but jammed exit, while destination support remains the primary criterion.
+  return candidate.distance + candidate.pathCrowding;
+}
+
 function compareSettlementSeamCandidate(
   a: SettlementSeamCandidate,
   b: SettlementSeamCandidate,
 ): number {
   return (
     compareSettlementSupport(a.support, b.support)
+    || settlementRouteCost(a) - settlementRouteCost(b)
     || a.distance - b.distance
     || a.pathCrowding - b.pathCrowding
     || a.crowding - b.crowding
@@ -322,6 +281,7 @@ function compareSettlementPlanCandidate(
 ): number {
   return (
     compareSettlementSupport(a.support, b.support)
+    || settlementRouteCost(a) - settlementRouteCost(b)
     || a.distance - b.distance
     || a.pathCrowding - b.pathCrowding
     || a.crowding - b.crowding
@@ -362,9 +322,9 @@ function localPathScores(
         continue;
       }
       scores.set(key, candidate);
-      // Equal-distance crowding improvements are re-queued so descendants also
-      // inherit the least crowded among their shortest paths. Distance remains
-      // the primary cost, so crowding never makes a pioneer take a longer route.
+      // Keep each endpoint on a shortest route, selecting the least crowded one
+      // among equal-length paths. The seam comparator may then choose a slightly
+      // farther endpoint when its total travel effort is lower.
       queue.push(next);
     }
   }
@@ -389,9 +349,6 @@ export function hasLocalSpacedCampSite(state: WorldState, factionId: string): bo
     isHexGridCell(state, tile)
     && tile.terrain !== "water"
     && !occupied.has(positionKey(tile))
-    // Local growth may extend from any existing camp. Restricting this radius to
-    // the lexicographically first camp makes later settlement nodes invisible and
-    // can falsely convert ordinary local expansion into cross-region migration.
     && camps.some((camp) => hexGridDistance(tile, camp.position) <= CAMP_LOCAL_BUILD_RADIUS)
     && camps.every((camp) => hexGridDistance(tile, camp.position) >= CAMP_MIN_SPACING)
   );
@@ -434,9 +391,6 @@ export function prepareSettlementMigrationKit(state: WorldState, agentId: string
   const faction = getFaction(state, agent.factionId);
   if (faction === undefined) return false;
   const deficit = campKitDeficit(agent);
-  // faction.resources is the same authoritative spendable pool used by local
-  // construction. Move the missing kit into carried inventory so material
-  // survives ownership handoff instead of appearing in the target region.
   for (const kind of RESOURCE_KINDS) {
     faction.resources[kind] -= deficit[kind];
     agent.inventory[kind] += deficit[kind];
@@ -459,12 +413,7 @@ function isTransitPioneer(state: WorldState, agent: Agent): boolean {
     structure.factionId === agent.factionId
     && structure.type === "camp"
     && (structure.status === "active" || structure.status === "building")
-  )) {
-    // An in-progress camp is already a real settlement commitment: the carried
-    // kit can be used by the existing local build resolver. Treating this region
-    // as transit-only would make the pioneer leave before it can assist the camp.
-    return false;
-  }
+  )) return false;
   const task = agent.task;
   if (
     task?.source !== "autonomy"
@@ -478,10 +427,6 @@ function isTransitPioneer(state: WorldState, agent: Agent): boolean {
 }
 
 export function shouldScoutSettlementMigration(state: WorldState): boolean {
-  // A pioneer that has already crossed a region must decide settle-vs-continue
-  // before the normal simulation resolves its target-less camp build locally.
-  // Do this on the first target-side Alarm rather than waiting for the ordinary
-  // 12-tick population-pressure cadence.
   if (state.agents.some((agent) => isTransitPioneer(state, agent))) return true;
   if (state.tick % SETTLEMENT_MIGRATION_SCOUT_INTERVAL !== 0) return false;
   return state.factions.some((faction) =>
