@@ -1,0 +1,234 @@
+name: One-shot halo destination crowding improvement
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-halo-destination-crowding.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Patch bounded halo occupancy signal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          halo = Path('src/hex-halo.ts')
+          text = halo.read_text()
+          replacements = [
+            (
+              '''export interface HexHaloTile extends HexHaloLink {\n  tile: Tile;\n}\n''',
+              '''export interface HexHaloTile extends HexHaloLink {\n  tile: Tile;\n  // Optional rolling-compat signal: how many BOTs occupy the exact neighbor\n  // boundary cell. Older edge snapshots omit it and remain neutral.\n  neighborOccupants?: number;\n}\n''',
+            ),
+            (
+              '''  tiles: Array<{ position: HexGridPosition; tile: Tile }>;\n''',
+              '''  tiles: Array<{ position: HexGridPosition; tile: Tile; occupants?: number }>;\n''',
+            ),
+            (
+              '''  const edgeIndex = new Map<string, Tile>();\n''',
+              '''  const edgeIndex = new Map<string, { tile: Tile; occupants?: number }>();\n''',
+            ),
+            (
+              '''      edgeIndex.set(\n        `${edge.regionId}:${edge.direction}:${entry.position.x},${entry.position.y}`,\n        entry.tile,\n      );\n''',
+              '''      edgeIndex.set(\n        `${edge.regionId}:${edge.direction}:${entry.position.x},${entry.position.y}`,\n        {\n          tile: entry.tile,\n          ...(Number.isInteger(entry.occupants) && (entry.occupants ?? 0) > 0\n            ? { occupants: entry.occupants }\n            : {}),\n        },\n      );\n''',
+            ),
+            (
+              '''    const tile = edgeIndex.get(\n      `${link.neighborRegionId}:${link.neighborDirection}:${link.neighborPosition.x},${link.neighborPosition.y}`,\n    );\n    if (tile === undefined) return [];\n''',
+              '''    const observed = edgeIndex.get(\n      `${link.neighborRegionId}:${link.neighborDirection}:${link.neighborPosition.x},${link.neighborPosition.y}`,\n    );\n    if (observed === undefined) return [];\n''',
+            ),
+            (
+              '''    return [{ ...cloneHaloLink(link), tile: cloneHaloTile(tile) }];\n''',
+              '''    return [{\n      ...cloneHaloLink(link),\n      tile: cloneHaloTile(observed.tile),\n      ...(observed.occupants === undefined ? {} : { neighborOccupants: observed.occupants }),\n    }];\n''',
+            ),
+          ]
+          for old, new in replacements:
+            if old not in text:
+              raise SystemExit(f'hex-halo expected block not found: {old[:80]!r}')
+            text = text.replace(old, new, 1)
+          halo.write_text(text)
+
+          region = Path('src/halo-region.ts')
+          text = region.read_text()
+          old = '''  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {\n    const state = runtimeAccess(this).runtime.snapshot();\n    const tiles = hexGridBoundaryCells(state, direction).flatMap((position) => {\n      const tile = getTile(state, position);\n      return tile === undefined ? [] : [{ position: { ...position }, tile: structuredClone(tile) }];\n    });\n'''
+          new = '''  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {\n    const state = runtimeAccess(this).runtime.snapshot();\n    // Export only a bounded per-boundary-cell occupancy count, never remote BOT\n    // snapshots. This lets logistics price destination congestion through the\n    // existing depth-1 halo read without adding another cross-DO request.\n    const occupantsByPosition = new Map<string, number>();\n    for (const agent of state.agents) {\n      const key = `${agent.position.x},${agent.position.y}`;\n      occupantsByPosition.set(key, (occupantsByPosition.get(key) ?? 0) + 1);\n    }\n    const tiles = hexGridBoundaryCells(state, direction).flatMap((position) => {\n      const tile = getTile(state, position);\n      if (tile === undefined) return [];\n      const occupants = occupantsByPosition.get(`${position.x},${position.y}`) ?? 0;\n      return [{\n        position: { ...position },\n        tile: structuredClone(tile),\n        ...(occupants > 0 ? { occupants } : {}),\n      }];\n    });\n'''
+          if old not in text:
+            raise SystemExit('halo-region edgeSnapshot block not found')
+          region.write_text(text.replace(old, new, 1))
+
+          autonomy = Path('src/autonomy-region.ts')
+          text = autonomy.read_text()
+          replacements = [
+            (
+              '''    pathCrowding: number;\n    costPerUnit: number;\n''',
+              '''    pathCrowding: number;\n    destinationCrowding: number;\n    costPerUnit: number;\n''',
+            ),
+            (
+              '''      return [{\n        entry,\n        travelDistance: pathScore.distance,\n        pathCrowding: pathScore.crowding,\n      }];\n''',
+              '''      return [{\n        entry,\n        travelDistance: pathScore.distance,\n        pathCrowding: pathScore.crowding,\n        destinationCrowding: entry.neighborOccupants ?? 0,\n      }];\n''',
+            ),
+            (
+              '''      .flatMap(({ entry, travelDistance, pathCrowding }) => {\n''',
+              '''      .flatMap(({ entry, travelDistance, pathCrowding, destinationCrowding }) => {\n''',
+            ),
+            (
+              '''          pathCrowding,\n          visibleSupply: supply,\n          // Crowding is a planning friction, not literal energy consumption.\n          // Keep the existing distance-only energy reserve while preferring a\n          // quiet corridor when two neighboring supplies are otherwise alike.\n          costPerUnit: (travelDistance + pathCrowding) / supply,\n''',
+              '''          pathCrowding,\n          destinationCrowding,\n          visibleSupply: supply,\n          // Crowding is a planning friction, not literal energy consumption.\n          // Keep the existing distance-only energy reserve while preferring a\n          // quiet source corridor and an unjammed arrival cell when neighboring\n          // supplies are otherwise alike. The remote signal rides the same\n          // bounded halo edge read, so it does not deepen or widen fan-out.\n          costPerUnit: (travelDistance + pathCrowding + destinationCrowding) / supply,\n''',
+            ),
+            (
+              '''        || a.pathCrowding - b.pathCrowding\n        || directionRank(a.entry.direction) - directionRank(b.entry.direction)\n''',
+              '''        || a.pathCrowding - b.pathCrowding\n        || a.destinationCrowding - b.destinationCrowding\n        || directionRank(a.entry.direction) - directionRank(b.entry.direction)\n''',
+            ),
+            (
+              '''      pathCrowding: candidate.pathCrowding,\n      costPerUnit: candidate.costPerUnit,\n''',
+              '''      pathCrowding: candidate.pathCrowding,\n      destinationCrowding: candidate.destinationCrowding,\n      costPerUnit: candidate.costPerUnit,\n''',
+            ),
+            (
+              '''    || a.pathCrowding - b.pathCrowding\n    // Equivalent expeditions should use the BOT with more remaining energy;\n''',
+              '''    || a.pathCrowding - b.pathCrowding\n    || a.destinationCrowding - b.destinationCrowding\n    // Equivalent expeditions should use the BOT with more remaining energy;\n''',
+            ),
+          ]
+          for old, new in replacements:
+            if old not in text:
+              raise SystemExit(f'autonomy expected block not found: {old[:80]!r}')
+            text = text.replace(old, new, 1)
+          autonomy.write_text(text)
+          PY
+
+          cat > tests/halo-destination-crowding.test.mjs <<'TEST'
+          import assert from "node:assert/strict";
+          import test from "node:test";
+          import { planAutonomousHaloTravel } from "../dist-ts/src/autonomy-region.js";
+          import {
+            hexGridBoundaryCells,
+            hexGridCenter,
+            hexGridHandoffTarget,
+            isHexGridCell,
+          } from "../dist-ts/src/hex-grid.js";
+          import { materializeHexHalo } from "../dist-ts/src/hex-halo.js";
+          import { createInitialWorld } from "../dist-ts/src/world.js";
+
+          test("hex halo carries a bounded neighbor-cell occupancy signal", () => {
+            const link = {
+              sourceRegionId: "garden-1",
+              sourcePosition: { x: 30, y: 11 },
+              direction: "east",
+              neighborRegionId: "garden-2",
+              neighborPosition: { x: 8, y: 11 },
+              neighborDirection: "west",
+            };
+            const halo = materializeHexHalo([link], [{
+              regionId: "garden-2",
+              direction: "west",
+              revision: 4,
+              tick: 12,
+              tiles: [{
+                position: { x: 8, y: 11 },
+                tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
+                occupants: 3,
+              }],
+            }]);
+            assert.equal(halo.length, 1);
+            assert.equal(halo[0].neighborOccupants, 3);
+
+            const legacy = materializeHexHalo([link], [{
+              regionId: "garden-2",
+              direction: "west",
+              revision: 3,
+              tick: 11,
+              tiles: [{
+                position: { x: 8, y: 11 },
+                tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 },
+              }],
+            }]);
+            assert.equal(legacy.length, 1);
+            assert.equal(legacy[0].neighborOccupants, undefined);
+          });
+
+          test("cross-region resource travel avoids an equally supplied crowded arrival cell", () => {
+            const state = createInitialWorld({
+              seed: 260915,
+              width: 40,
+              height: 24,
+              regionId: "garden-1",
+            });
+            const agent = state.agents[0];
+            assert.ok(agent);
+            for (const tile of state.tiles) {
+              if (tile.resource?.kind === "wood") tile.resource.amount = 0;
+              if (isHexGridCell(state, tile)) tile.terrain = "plain";
+            }
+            state.agents = [agent];
+            state.tick = 24;
+            agent.autonomy = true;
+            agent.role = "woodcutter";
+            agent.energy = 100;
+            agent.position = hexGridCenter(state);
+            agent.inventory = { wood: 0, stone: 0, food: 0 };
+            agent.task = {
+              source: "autonomy",
+              issuedAtTick: 20,
+              type: "gather",
+              resource: "wood",
+            };
+
+            const makeHalo = (direction, regionId, occupants) => {
+              const cells = hexGridBoundaryCells(state, direction);
+              const sourcePosition = cells[Math.floor(cells.length / 2)];
+              assert.ok(sourcePosition);
+              const neighborPosition = hexGridHandoffTarget(state, sourcePosition, direction);
+              assert.ok(neighborPosition);
+              return {
+                sourceRegionId: state.regionId,
+                sourcePosition: { ...sourcePosition },
+                direction,
+                neighborRegionId: regionId,
+                neighborPosition: { ...neighborPosition },
+                neighborOccupants: occupants,
+                tile: {
+                  x: neighborPosition.x,
+                  y: neighborPosition.y,
+                  terrain: "forest",
+                  elevation: 0.5,
+                  resource: { kind: "wood", amount: 8, maxAmount: 8 },
+                },
+              };
+            };
+
+            const east = makeHalo("east", "garden-2", 4);
+            const west = makeHalo("west", "hex-q-1-r0", 0);
+            const plan = planAutonomousHaloTravel(state, [east, west]);
+            assert.ok(plan);
+            assert.equal(plan.direction, "west");
+            assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+          });
+          TEST
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Full build and tests
+        run: npm run build
+      - name: Commit directly to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/hex-halo.ts src/halo-region.ts src/autonomy-region.ts tests/halo-destination-crowding.test.mjs
+          git commit -m "sim: price destination crowding across halo"
+          git push origin HEAD:main
