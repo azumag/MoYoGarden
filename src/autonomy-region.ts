@@ -398,6 +398,55 @@ function localPathDistances(state: WorldState, start: GridPosition): Map<string,
   return distances;
 }
 
+interface LocalTravelPathScore {
+  distance: number;
+  crowding: number;
+}
+
+function localTravelPathScores(
+  state: WorldState,
+  start: GridPosition,
+): Map<string, LocalTravelPathScore> {
+  const scores = new Map<string, LocalTravelPathScore>([
+    [positionKey(start), { distance: 0, crowding: 0 }],
+  ]);
+  const crowdingByPosition = new Map<string, number>();
+  for (const occupant of state.agents) {
+    const key = positionKey(occupant.position);
+    crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
+  }
+  const queue: GridPosition[] = [{ ...start }];
+
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor];
+    if (current === undefined) break;
+    const currentScore = scores.get(positionKey(current));
+    if (currentScore === undefined) continue;
+    for (const direction of HEX_GRID_DIRECTIONS) {
+      const step = HEX_GRID_DIRECTION_STEPS[direction];
+      const next = { x: current.x + step.x, y: current.y + step.y };
+      if (!isPassable(state, next)) continue;
+      const key = positionKey(next);
+      const candidate: LocalTravelPathScore = {
+        distance: currentScore.distance + 1,
+        crowding: currentScore.crowding + (crowdingByPosition.get(key) ?? 0),
+      };
+      const existing = scores.get(key);
+      if (
+        existing !== undefined &&
+        (existing.distance < candidate.distance ||
+          (existing.distance === candidate.distance && existing.crowding <= candidate.crowding))
+      ) {
+        continue;
+      }
+      scores.set(key, candidate);
+      queue.push(next);
+    }
+  }
+
+  return scores;
+}
+
 function remainingInventoryCapacity(agent: Agent): number {
   return Math.max(0, agent.capacity - inventoryAmount(agent));
 }
@@ -487,6 +536,7 @@ export function planAutonomousHaloTravel(
     candidate: HexHaloTile;
     visibleSupply: number;
     travelDistance: number;
+    pathCrowding: number;
     costPerUnit: number;
   }> = [];
 
@@ -498,19 +548,23 @@ export function planAutonomousHaloTravel(
     const capacityLeft = remainingInventoryCapacity(agent);
     if (capacityLeft <= 0) continue;
     const travelEnergyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);
-    const pathDistances = localPathDistances(state, agent.position);
+    const pathScores = localTravelPathScores(state, agent.position);
     const candidates = halo.flatMap((entry) => {
-      const travelDistance = pathDistances.get(positionKey(entry.sourcePosition));
+      const pathScore = pathScores.get(positionKey(entry.sourcePosition));
       if (
-        travelDistance === undefined ||
-        travelDistance > travelEnergyBudget ||
+        pathScore === undefined ||
+        pathScore.distance > travelEnergyBudget ||
         entry.tile.terrain === "water" ||
         entry.tile.resource?.kind !== resource ||
         entry.tile.resource.amount <= 0
       ) {
         return [];
       }
-      return [{ entry, travelDistance }];
+      return [{
+        entry,
+        travelDistance: pathScore.distance,
+        pathCrowding: pathScore.crowding,
+      }];
     });
     // Exact hex ownership can expose the same neighboring cell through two
     // outward source directions along a slanted seam. Count physical supply
@@ -533,7 +587,7 @@ export function planAutonomousHaloTravel(
     }
 
     const candidate = candidates
-      .flatMap(({ entry, travelDistance }) => {
+      .flatMap(({ entry, travelDistance, pathCrowding }) => {
         const key = haloSupplyKey(entry.neighborRegionId);
         const availableSupply = Math.max(
           0,
@@ -544,14 +598,19 @@ export function planAutonomousHaloTravel(
         return [{
           entry,
           travelDistance,
+          pathCrowding,
           visibleSupply: supply,
-          costPerUnit: travelDistance / supply,
+          // Crowding is a planning friction, not literal energy consumption.
+          // Keep the existing distance-only energy reserve while preferring a
+          // quiet corridor when two neighboring supplies are otherwise alike.
+          costPerUnit: (travelDistance + pathCrowding) / supply,
         }];
       })
       .sort((a, b) =>
         a.costPerUnit - b.costPerUnit
         || b.visibleSupply - a.visibleSupply
         || a.travelDistance - b.travelDistance
+        || a.pathCrowding - b.pathCrowding
         || directionRank(a.entry.direction) - directionRank(b.entry.direction)
         || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
         || a.entry.sourcePosition.y - b.entry.sourcePosition.y
@@ -565,6 +624,7 @@ export function planAutonomousHaloTravel(
       candidate: candidate.entry,
       visibleSupply: candidate.visibleSupply,
       travelDistance: candidate.travelDistance,
+      pathCrowding: candidate.pathCrowding,
       costPerUnit: candidate.costPerUnit,
     });
   }
@@ -573,6 +633,10 @@ export function planAutonomousHaloTravel(
     a.costPerUnit - b.costPerUnit
     || b.visibleSupply - a.visibleSupply
     || a.travelDistance - b.travelDistance
+    || a.pathCrowding - b.pathCrowding
+    // Equivalent expeditions should use the BOT with more remaining energy;
+    // low-energy workers are more useful staying near the current settlement.
+    || b.agent.energy - a.agent.energy
     || a.agent.id.localeCompare(b.agent.id)
     || directionRank(a.candidate.direction) - directionRank(b.candidate.direction)
     || a.candidate.neighborRegionId.localeCompare(b.candidate.neighborRegionId)

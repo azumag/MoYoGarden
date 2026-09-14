@@ -244,3 +244,45 @@ for (const reason of ["low energy", "full inventory"]) {
     assert.equal(shouldScoutAutonomyHalo(state), false);
   });
 }
+
+
+test("interior autonomy prices crowding into cross-region expedition routes", () => {
+  const { state, agent } = depletedInteriorWoodcutter();
+  const eastCells = hexGridBoundaryCells(state, "east");
+  const westCells = hexGridBoundaryCells(state, "west");
+  const east = haloResource(state, "east", Math.floor(eastCells.length / 2), "garden-2", "wood", 8);
+  const west = haloResource(state, "west", Math.floor(westCells.length / 2), "garden-4", "wood", 8);
+  const blocker = state.agents.find((candidate) => candidate.id !== agent.id);
+  assert.ok(blocker);
+  blocker.position = { ...east.sourcePosition };
+
+  const plan = planAutonomousHaloTravel(state, [east, west]);
+  assert.ok(plan);
+  assert.equal(plan.direction, "west");
+  assert.deepEqual(plan.boundaryTarget, west.sourcePosition);
+});
+
+test("equivalent cross-region expeditions prefer the higher-energy autonomous BOT", () => {
+  const { state, agent: template } = depletedInteriorWoodcutter();
+  const low = structuredClone(template);
+  const high = structuredClone(template);
+  low.id = "agent-a-low-energy-expedition";
+  high.id = "agent-z-high-energy-expedition";
+  low.energy = 50;
+  high.energy = 90;
+  low.capacity = 10;
+  high.capacity = 10;
+  low.inventory = { wood: 0, stone: 0, food: 0 };
+  high.inventory = { wood: 0, stone: 0, food: 0 };
+  low.autonomy = true;
+  high.autonomy = true;
+  low.task = { source: "autonomy", issuedAtTick: 20, type: "gather", resource: "wood" };
+  high.task = { source: "autonomy", issuedAtTick: 21, type: "gather", resource: "wood" };
+  state.agents = [low, high];
+
+  const eastCells = hexGridBoundaryCells(state, "east");
+  const east = haloResource(state, "east", Math.floor(eastCells.length / 2), "garden-2", "wood", 8);
+  const plan = planAutonomousHaloTravel(state, [east]);
+  assert.ok(plan);
+  assert.equal(plan.agentId, high.id);
+});
