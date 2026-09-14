@@ -26,6 +26,9 @@ export interface HexHaloLink {
 
 export interface HexHaloTile extends HexHaloLink {
   tile: Tile;
+  // Optional rolling-compat signal: how many BOTs occupy the exact neighbor
+  // boundary cell. Older edge snapshots omit it and remain neutral.
+  neighborOccupants?: number;
 }
 
 export interface HexHaloEdgeSnapshot {
@@ -33,7 +36,7 @@ export interface HexHaloEdgeSnapshot {
   direction: HexGridDirection;
   revision: number;
   tick: number;
-  tiles: Array<{ position: HexGridPosition; tile: Tile }>;
+  tiles: Array<{ position: HexGridPosition; tile: Tile; occupants?: number }>;
 }
 
 function cloneHaloLink(link: HexHaloLink): HexHaloLink {
@@ -319,7 +322,7 @@ export function materializeHexHalo(
     }
   }
 
-  const edgeIndex = new Map<string, Tile>();
+  const edgeIndex = new Map<string, { tile: Tile; occupants?: number }>();
   for (const edge of latestEdges.values()) {
     for (const entry of edge.tiles) {
       // Edge snapshots are request-local, read-only inputs. Keep their tile
@@ -327,21 +330,30 @@ export function materializeHexHalo(
       // cell, avoiding two structured clones per halo tile on the hot path.
       edgeIndex.set(
         `${edge.regionId}:${edge.direction}:${entry.position.x},${entry.position.y}`,
-        entry.tile,
+        {
+          tile: entry.tile,
+          ...(Number.isInteger(entry.occupants) && (entry.occupants ?? 0) > 0
+            ? { occupants: entry.occupants }
+            : {}),
+        },
       );
     }
   }
   return links.flatMap((link) => {
-    const tile = edgeIndex.get(
+    const observed = edgeIndex.get(
       `${link.neighborRegionId}:${link.neighborDirection}:${link.neighborPosition.x},${link.neighborPosition.y}`,
     );
-    if (tile === undefined) return [];
+    if (observed === undefined) return [];
     // HexHaloLink and Tile are shallow records with only two nested coordinate /
     // resource records. Copy those fields explicitly instead of invoking the
     // general structured-clone algorithm twice for every depth-1 ghost cell.
     // This keeps the materialized halo fully detached from request snapshots
     // while reducing work on the bounded (up to 138-cell) environment hot path.
-    return [{ ...cloneHaloLink(link), tile: cloneHaloTile(tile) }];
+    return [{
+      ...cloneHaloLink(link),
+      tile: cloneHaloTile(observed.tile),
+      ...(observed.occupants === undefined ? {} : { neighborOccupants: observed.occupants }),
+    }];
   });
 }
 

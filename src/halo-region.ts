@@ -357,9 +357,23 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {
     const state = runtimeAccess(this).runtime.snapshot();
+    // Export only a bounded per-boundary-cell occupancy count, never remote BOT
+    // snapshots. This lets logistics price destination congestion through the
+    // existing depth-1 halo read without adding another cross-DO request.
+    const occupantsByPosition = new Map<string, number>();
+    for (const agent of state.agents) {
+      const key = `${agent.position.x},${agent.position.y}`;
+      occupantsByPosition.set(key, (occupantsByPosition.get(key) ?? 0) + 1);
+    }
     const tiles = hexGridBoundaryCells(state, direction).flatMap((position) => {
       const tile = getTile(state, position);
-      return tile === undefined ? [] : [{ position: { ...position }, tile: structuredClone(tile) }];
+      if (tile === undefined) return [];
+      const occupants = occupantsByPosition.get(`${position.x},${position.y}`) ?? 0;
+      return [{
+        position: { ...position },
+        tile: structuredClone(tile),
+        ...(occupants > 0 ? { occupants } : {}),
+      }];
     });
     return {
       regionId: state.regionId,

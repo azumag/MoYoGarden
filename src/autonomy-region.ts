@@ -537,6 +537,7 @@ export function planAutonomousHaloTravel(
     visibleSupply: number;
     travelDistance: number;
     pathCrowding: number;
+    destinationCrowding: number;
     costPerUnit: number;
   }> = [];
 
@@ -564,6 +565,7 @@ export function planAutonomousHaloTravel(
         entry,
         travelDistance: pathScore.distance,
         pathCrowding: pathScore.crowding,
+        destinationCrowding: entry.neighborOccupants ?? 0,
       }];
     });
     // Exact hex ownership can expose the same neighboring cell through two
@@ -587,7 +589,7 @@ export function planAutonomousHaloTravel(
     }
 
     const candidate = candidates
-      .flatMap(({ entry, travelDistance, pathCrowding }) => {
+      .flatMap(({ entry, travelDistance, pathCrowding, destinationCrowding }) => {
         const key = haloSupplyKey(entry.neighborRegionId);
         const availableSupply = Math.max(
           0,
@@ -599,11 +601,14 @@ export function planAutonomousHaloTravel(
           entry,
           travelDistance,
           pathCrowding,
+          destinationCrowding,
           visibleSupply: supply,
           // Crowding is a planning friction, not literal energy consumption.
           // Keep the existing distance-only energy reserve while preferring a
-          // quiet corridor when two neighboring supplies are otherwise alike.
-          costPerUnit: (travelDistance + pathCrowding) / supply,
+          // quiet source corridor and an unjammed arrival cell when neighboring
+          // supplies are otherwise alike. The remote signal rides the same
+          // bounded halo edge read, so it does not deepen or widen fan-out.
+          costPerUnit: (travelDistance + pathCrowding + destinationCrowding) / supply,
         }];
       })
       .sort((a, b) =>
@@ -611,6 +616,7 @@ export function planAutonomousHaloTravel(
         || b.visibleSupply - a.visibleSupply
         || a.travelDistance - b.travelDistance
         || a.pathCrowding - b.pathCrowding
+        || a.destinationCrowding - b.destinationCrowding
         || directionRank(a.entry.direction) - directionRank(b.entry.direction)
         || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
         || a.entry.sourcePosition.y - b.entry.sourcePosition.y
@@ -625,6 +631,7 @@ export function planAutonomousHaloTravel(
       visibleSupply: candidate.visibleSupply,
       travelDistance: candidate.travelDistance,
       pathCrowding: candidate.pathCrowding,
+      destinationCrowding: candidate.destinationCrowding,
       costPerUnit: candidate.costPerUnit,
     });
   }
@@ -634,6 +641,7 @@ export function planAutonomousHaloTravel(
     || b.visibleSupply - a.visibleSupply
     || a.travelDistance - b.travelDistance
     || a.pathCrowding - b.pathCrowding
+    || a.destinationCrowding - b.destinationCrowding
     // Equivalent expeditions should use the BOT with more remaining energy;
     // low-energy workers are more useful staying near the current settlement.
     || b.agent.energy - a.agent.energy
