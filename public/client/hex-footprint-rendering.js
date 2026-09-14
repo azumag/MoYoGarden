@@ -28,6 +28,11 @@ export function createHexClippingPlanes(width, height, centerX = 0, centerZ = 0)
 
 function clearClipMaterial(material) {
   if (!material) return;
+  const hasClipKey = Boolean(
+    material.userData
+      && Object.prototype.hasOwnProperty.call(material.userData, "moyoHexClipKey"),
+  );
+  if (material.clippingPlanes == null && material.clipShadows !== true && !hasClipKey) return;
   material.clippingPlanes = null;
   material.clipShadows = false;
   if (material.userData) delete material.userData.moyoHexClipKey;
