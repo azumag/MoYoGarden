@@ -51,3 +51,18 @@ test("nearest hex lookup still evaluates equal-distance candidates for determini
 
   assert.deepEqual(nearestHexGridCell(extent, desired, accepted), expected);
 });
+
+test("nearest hex lookup returns an already-valid desired cell without scanning the footprint", () => {
+  const extent = { width: 40, height: 24 };
+  const desired = { x: 19, y: 11 };
+  let predicateCalls = 0;
+
+  const actual = nearestHexGridCell(extent, desired, (position) => {
+    predicateCalls += 1;
+    return position.x === desired.x && position.y === desired.y;
+  });
+
+  assert.deepEqual(actual, desired);
+  assert.notEqual(actual, desired, "callers must still receive a detached position");
+  assert.equal(predicateCalls, 1, "distance-zero target should not scan the cached 397-cell footprint");
+});
