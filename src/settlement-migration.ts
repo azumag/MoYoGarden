@@ -194,6 +194,15 @@ function resourceCapacityDensity(
     : 0;
 }
 
+function compareResourceCapacityDensity(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+  kind: ResourceKind,
+): number {
+  const delta = resourceCapacityDensity(b, kind) - resourceCapacityDensity(a, kind);
+  return Math.abs(delta) > SETTLEMENT_RESOURCE_CAPACITY_EPSILON ? delta : 0;
+}
+
 function resourceAmountDensity(
   support: SettlementNeighborSupport,
   kind: ResourceKind,
@@ -260,16 +269,15 @@ function compareSettlementSupport(
 ): number {
   return (
     resourceDiversity(b) - resourceDiversity(a)
-    || resourceCapacityDensity(b, "food") - resourceCapacityDensity(a, "food")
-    || resourceCapacityDensity(b, "wood") - resourceCapacityDensity(a, "wood")
-    || resourceCapacityDensity(b, "stone") - resourceCapacityDensity(a, "stone")
+    || compareResourceCapacityDensity(a, b, "food")
+    || compareResourceCapacityDensity(a, b, "wood")
+    || compareResourceCapacityDensity(a, b, "stone")
     || compareAveragePathogenReservoir(a, b)
     || resourceAmountDensity(b, "food") - resourceAmountDensity(a, "food")
     || resourceAmountDensity(b, "wood") - resourceAmountDensity(a, "wood")
     || resourceAmountDensity(b, "stone") - resourceAmountDensity(a, "stone")
     || compareAverageDrainage(a, b)
     || compareSurfaceWaterFraction(a, b)
-    || b.passableCells - a.passableCells
   );
 }
 

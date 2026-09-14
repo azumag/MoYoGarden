@@ -30,7 +30,15 @@ function transitPioneerFixture() {
   return { state, builder };
 }
 
-function haloTile(direction, sourcePosition, neighborRegionId, neighborPosition, maxAmount, amount = 1) {
+function haloTile(
+  direction,
+  sourcePosition,
+  neighborRegionId,
+  neighborPosition,
+  maxAmount,
+  amount = 1,
+  pathogenReservoir,
+) {
   return {
     direction,
     sourcePosition,
@@ -40,6 +48,7 @@ function haloTile(direction, sourcePosition, neighborRegionId, neighborPosition,
       ...neighborPosition,
       terrain: "plain",
       elevation: 0.5,
+      ...(pathogenReservoir === undefined ? {} : { pathogenReservoir }),
       resource: { kind: "food", amount, maxAmount },
     },
   };
@@ -73,6 +82,37 @@ test("pioneer compares live resource supply per sampled land cell", () => {
     // West has the same carrying-capacity density and only one sampled cell,
     // but stronger immediately available food density (8/cell).
     haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 10, 8),
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.equal(plan.direction, "W");
+});
+
+test("pioneer does not treat a larger halo sample as better settlement support", () => {
+  const { state, builder } = transitPioneerFixture();
+  const plan = planAutonomousSettlementMigration(state, [
+    // Equal support quality. East has fewer observed cells but is otherwise
+    // identical, so sample footprint must not become a hidden preference.
+    haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 10),
+    haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 10),
+    haloTile("W", { x: 8, y: 10 }, "hex-q-1-r0", { x: 30, y: 10 }, 10),
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q1-r0");
+  assert.equal(plan.direction, "E");
+});
+
+test("negligible carrying-capacity noise does not override pathogen risk", () => {
+  const { state, builder } = transitPioneerFixture();
+  const plan = planAutonomousSettlementMigration(state, [
+    // A sub-epsilon capacity difference can arise from normalized samples and
+    // must not dominate a materially worse pathogen reservoir.
+    haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 10.0000005, 1, 0.9),
+    haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 10, 1, 0.1),
   ]);
 
   assert.ok(plan);
