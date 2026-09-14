@@ -60,7 +60,11 @@ function targetBuildingFactionCamp(agent: Agent, targetState: WorldState) {
     .sort((a, b) => a.id.localeCompare(b.id))[0];
 }
 
-function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["task"] | undefined {
+function arrivalTaskAfterHandoff(
+  agent: Agent,
+  targetState: WorldState,
+  originRegionId: string,
+): Agent["task"] | undefined {
   const targetTick = targetState.tick;
   const task = agent.task;
   if (task?.source !== "autonomy") return undefined;
@@ -90,6 +94,7 @@ function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["
       issuedAtTick: targetTick,
       type: "build",
       structureType: task.structureType,
+      ...(task.structureType === "camp" ? { settlementPreviousRegionId: originRegionId } : {}),
     };
   }
   if (
@@ -132,11 +137,14 @@ function arrivalTaskAfterHandoff(agent: Agent, targetState: WorldState): Agent["
       // source-local boundary coordinate must not survive ownership handoff. A
       // builder that physically carries a complete camp kit can safely recover
       // the high-level founding intent from low-level conserved state on arrival.
+      // Remember exactly one previous region so the next scout cannot immediately
+      // reverse the handoff when transient support samples change between ticks.
       return {
         source: "autonomy",
         issuedAtTick: targetTick,
         type: "build",
         structureType: "camp",
+        settlementPreviousRegionId: originRegionId,
       };
     }
     // If this faction already has an active camp here, dropping the move means
@@ -204,7 +212,7 @@ export function attachAgentOwnership(
   // Coordinate-bound tasks still belong to the source region and must be
   // cleared. Region-independent autonomous intent can survive only after its
   // source-local target has been stripped and will be re-resolved on arrival.
-  const arrivalTask = arrivalTaskAfterHandoff(arrived, snapshot.state);
+  const arrivalTask = arrivalTaskAfterHandoff(arrived, snapshot.state, originRegionId);
   if (arrivalTask === undefined) delete arrived.task;
   else arrived.task = arrivalTask;
   arrived.status = arrivalTask?.type === "gather"

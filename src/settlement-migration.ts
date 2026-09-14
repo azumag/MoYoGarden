@@ -16,6 +16,7 @@ import {
   type ResourceKind,
   type WorldState,
 } from "./protocol.js";
+import { regionAxialCoordinate } from "./region-topology.js";
 import { getAgent, getFaction, isPassable } from "./world.js";
 
 const RESIDENT_CAPACITY_PER_CAMP = 6;
@@ -435,6 +436,17 @@ function isTransitPioneer(state: WorldState, agent: Agent): boolean {
   return RESOURCE_KINDS.every((kind) => deficit[kind] === 0);
 }
 
+function sameSettlementRegion(a: string | undefined, b: string): boolean {
+  if (a === undefined) return false;
+  if (a === b) return true;
+  const aAxial = regionAxialCoordinate(a);
+  const bAxial = regionAxialCoordinate(b);
+  return aAxial !== undefined
+    && bAxial !== undefined
+    && aAxial.q === bAxial.q
+    && aAxial.r === bAxial.r;
+}
+
 export function shouldScoutSettlementMigration(state: WorldState): boolean {
   if (state.agents.some((agent) => isTransitPioneer(state, agent))) return true;
   if (state.tick % SETTLEMENT_MIGRATION_SCOUT_INTERVAL !== 0) return false;
@@ -488,6 +500,18 @@ export function planAutonomousSettlementMigration(
     let candidate: SettlementSeamCandidate | undefined;
     for (const entry of halo) {
       if (entry.tile.terrain === "water") continue;
+      if (
+        transitPioneer
+        && agent.task?.source === "autonomy"
+        && agent.task.type === "build"
+        && sameSettlementRegion(agent.task.settlementPreviousRegionId, entry.neighborRegionId)
+      ) {
+        // One-hop route memory is intentionally bounded: it prevents immediate
+        // A→B→A reversal when support samples change, without turning the task
+        // into an unbounded visited-region log. The next successful handoff
+        // replaces this hint with the region that was just left.
+        continue;
+      }
       const targetKey = positionKey(entry.sourcePosition);
       const path = paths.get(targetKey);
       if (path === undefined || path.distance > energyBudget) continue;

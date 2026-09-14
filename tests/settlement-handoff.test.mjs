@@ -63,6 +63,7 @@ test("pioneer arrival turns a carried camp kit into a target-local founding inte
     issuedAtTick: target.tick,
     type: "build",
     structureType: "camp",
+    settlementPreviousRegionId: source.regionId,
   });
   assert.equal(arrived.status, "arrived from neighboring region; replanning camp build");
 

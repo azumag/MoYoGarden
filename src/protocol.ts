@@ -73,6 +73,7 @@ export interface BuildTask extends AgentTaskBase {
   structureType: StructureType;
   target?: GridPosition;
   structureId?: string;
+  settlementPreviousRegionId?: string;
 }
 
 export interface DepositTask extends AgentTaskBase {
