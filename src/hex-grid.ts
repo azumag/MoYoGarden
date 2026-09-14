@@ -288,9 +288,9 @@ export function nearestHexGridCell(
   predicate: (position: HexGridPosition) => boolean = () => true,
 ): HexGridPosition | undefined {
   // The most common clamp/fallback case already points at a valid active cell.
-  // Distance zero is unbeatable, so avoid scanning the 397-cell production hex
-  // (and avoid hundreds of passability/resource predicate calls) when the
-  // desired cell itself is acceptable.
+  // Distance zero is unbeatable, so test that candidate exactly once before
+  // scanning the 397-cell production footprint. Predicates used here are
+  // selection constraints; callers must not depend on scan-side effects.
   if (isHexGridCell(extent, desired) && predicate(desired)) return { ...desired };
 
   let best: HexGridPosition | undefined;
