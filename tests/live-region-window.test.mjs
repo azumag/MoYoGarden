@@ -137,11 +137,32 @@ test("out-of-order live windows cannot roll neighbor simulation graphics backwar
   assert.match(liveRegionSource, /incomingTick < currentTick/);
   assert.match(
     liveRegionSource,
-    /else if \(!isStaleSnapshot\(entry\.proxy, next\.state\)\) \{[\s\S]*syncProxy\(entry\.proxy, next\.state, tickMs\);/,
+    /!isStaleSnapshot\(entry\.proxy, next\.state\)[\s\S]*!isSameSnapshotVersion\(entry\.proxy, next\.state\)[\s\S]*syncProxy\(entry\.proxy, next\.state, tickMs\);/,
   );
-  const staleGuard = liveRegionSource.indexOf("else if (!isStaleSnapshot(entry.proxy, next.state))");
+  const staleGuard = liveRegionSource.indexOf("!isStaleSnapshot(entry.proxy, next.state)");
   const placementUpdate = liveRegionSource.indexOf("entry.group.position.set(next.offsetX, 0, next.offsetZ)", staleGuard);
   assert.ok(staleGuard >= 0 && placementUpdate > staleGuard);
+});
+
+test("live window reuses one placement map for extraction and rebasing", () => {
+  assert.match(
+    liveRegionSource,
+    /function windowEntries\([\s\S]*placements = windowPlacements\(payload, centerRegionId\)/,
+  );
+  assert.match(
+    liveRegionSource,
+    /const placements = windowPlacements\(payload, centerRegionId\);[\s\S]*const nextEntries = windowEntries\(payload, centerRegionId, placements\);/,
+  );
+});
+
+test("unchanged versioned live neighbors skip expensive object resync", () => {
+  assert.match(liveRegionSource, /function isSameSnapshotVersion\(proxy, state\)/);
+  assert.match(liveRegionSource, /incomingTick !== currentTick\) return false/);
+  assert.match(liveRegionSource, /incomingRevision === currentRevision/);
+  assert.match(
+    liveRegionSource,
+    /!isSameSnapshotVersion\(entry\.proxy, next\.state\)[\s\S]*syncProxy\(entry\.proxy, next\.state, tickMs\);/,
+  );
 });
 
 test("versioned live neighbors fail closed on missing metadata and stale same-tick revisions", () => {

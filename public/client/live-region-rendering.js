@@ -242,6 +242,18 @@ function isStaleSnapshot(proxy, state) {
   return incomingRevision === undefined || incomingRevision < currentRevision;
 }
 
+function isSameSnapshotVersion(proxy, state) {
+  const currentTick = snapshotTick(proxy?.state);
+  const incomingTick = snapshotTick(state);
+  if (currentTick === undefined || incomingTick !== currentTick) return false;
+
+  const currentRevision = snapshotRevision(proxy?.state);
+  const incomingRevision = snapshotRevision(state);
+  return currentRevision !== undefined
+    && incomingRevision !== undefined
+    && incomingRevision === currentRevision;
+}
+
 function disposeProxy(entry) {
   for (const agent of entry.proxy.agentObjects.values()) {
     entry.proxy.disposeAgentEntry(agent);
@@ -287,9 +299,12 @@ function windowPlacements(payload, centerRegionId) {
   return placements;
 }
 
-function windowEntries(payload, centerRegionId) {
+function windowEntries(
+  payload,
+  centerRegionId,
+  placements = windowPlacements(payload, centerRegionId),
+) {
   const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
-  const placements = windowPlacements(payload, centerRegionId);
   const entries = [];
   const seen = new Set();
   for (const chunk of chunks) {
@@ -334,7 +349,7 @@ class LiveNeighborSimulation {
   syncWindow(payload, centerRegionId, tickMs) {
     const requestedIds = windowRegionIds(payload, centerRegionId);
     const placements = windowPlacements(payload, centerRegionId);
-    const nextEntries = windowEntries(payload, centerRegionId);
+    const nextEntries = windowEntries(payload, centerRegionId, placements);
     for (const [regionId, entry] of this.entries) {
       // A live-window request can return an error/partial chunk for one neighbor.
       // Keep its last-known graphics while the region is still part of this
@@ -361,12 +376,16 @@ class LiveNeighborSimulation {
         this.root.add(group);
         entry = { group, proxy: createProxy(this.view, group, next.state, tickMs) };
         this.entries.set(next.regionId, entry);
-      } else if (!isStaleSnapshot(entry.proxy, next.state)) {
+      } else if (
+        !isStaleSnapshot(entry.proxy, next.state)
+        && !isSameSnapshotVersion(entry.proxy, next.state)
+      ) {
         // Same-region live window requests can overlap near their timeout boundary
         // or during a soft handoff. Never let a slower, older response roll BOT,
         // structure, or resource graphics back after a newer tick was rendered.
-        // Once a rendered state has version metadata, fail closed on an incoming
-        // snapshot that omits it or regresses a same-tick revision.
+        // Exact duplicate tick+revision snapshots are also common while a warm or
+        // deep-idle neighbor has not advanced; avoid rebuilding its height map and
+        // resyncing every resource, structure, and BOT when nothing changed.
         syncProxy(entry.proxy, next.state, tickMs);
       }
       // Placement metadata is independent of simulation tick freshness, so even
