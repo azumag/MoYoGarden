@@ -100,6 +100,18 @@ test("neighbor BOT glyphs keep cheap locomotion cues without full focused-agent 
   assert.doesNotMatch(animateSource, /mixer\.update|getObjectByName/);
 });
 
+test("live neighbor refreshes do not invalidate the focused shadow map", () => {
+  const syncStart = liveRegionSource.indexOf("  syncWindow(payload, centerRegionId, tickMs) {");
+  const refreshStart = liveRegionSource.indexOf("  refreshModelType(key) {", syncStart);
+  const animateStart = liveRegionSource.indexOf("  animate(time) {", refreshStart);
+  assert.ok(syncStart >= 0 && refreshStart > syncStart && animateStart > refreshStart);
+
+  const syncSource = liveRegionSource.slice(syncStart, refreshStart);
+  const refreshSource = liveRegionSource.slice(refreshStart, animateStart);
+  assert.doesNotMatch(syncSource, /this\.view\.markShadowsDirty\(\)/);
+  assert.doesNotMatch(refreshSource, /this\.view\.markShadowsDirty\(\)/);
+});
+
 test("temporary live-window snapshot gaps keep last-known neighbor objects visible", () => {
   assert.match(liveRegionSource, /const requestedIds = windowRegionIds\(payload, centerRegionId\)/);
   assert.match(liveRegionSource, /if \(requestedIds\.has\(regionId\)\) \{/);
