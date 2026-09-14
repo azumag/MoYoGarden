@@ -1,0 +1,159 @@
+name: One-shot settlement footprint improvement
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    if: github.event.head_commit.message == 'chore: run settlement footprint improvement'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Patch settlement migration scoring
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('src/settlement-migration.ts')
+          text = source_path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one source match, got {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'const SETTLEMENT_CAMP_DENSITY_EPSILON = 1e-6;\nconst SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;',
+              'const SETTLEMENT_CAMP_DENSITY_EPSILON = 1e-6;\nconst SETTLEMENT_STRUCTURE_DENSITY_EPSILON = 1e-6;\nconst SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;',
+          )
+
+          replace_once(
+              '  campSampleCells: number;\n  activeCamps: number;\n  waterCells: number;',
+              '  campSampleCells: number;\n  activeCamps: number;\n  structureSampleCells: number;\n  activeStructures: number;\n  waterCells: number;',
+          )
+
+          replace_once(
+              '    campSampleCells: 0,\n    activeCamps: 0,\n    waterCells: 0,',
+              '    campSampleCells: 0,\n    activeCamps: 0,\n    structureSampleCells: 0,\n    activeStructures: 0,\n    waterCells: 0,',
+          )
+
+          replace_once(
+              '    && Number.isInteger(summary.activeStructures.camp)\n    && summary.activeStructures.camp >= 0;',
+              '    && Number.isInteger(summary.activeStructures.camp)\n    && summary.activeStructures.camp >= 0\n    && Number.isInteger(summary.activeStructures.storehouse)\n    && summary.activeStructures.storehouse >= 0\n    && Number.isInteger(summary.activeStructures.market)\n    && summary.activeStructures.market >= 0\n    && Number.isInteger(summary.activeStructures.workshop)\n    && summary.activeStructures.workshop >= 0;',
+          )
+
+          replace_once(
+              '  return a.passableCells === b.passableCells\n    && a.activeStructures.camp === b.activeStructures.camp;',
+              '  return a.passableCells === b.passableCells\n    && a.activeStructures.camp === b.activeStructures.camp\n    && a.activeStructures.storehouse === b.activeStructures.storehouse\n    && a.activeStructures.market === b.activeStructures.market\n    && a.activeStructures.workshop === b.activeStructures.workshop;',
+          )
+
+          replace_once(
+              '  support.campSampleCells = summary.passableCells;\n  support.activeCamps = summary.activeStructures.camp;',
+              '  support.campSampleCells = summary.passableCells;\n  support.activeCamps = summary.activeStructures.camp;\n  support.structureSampleCells = summary.passableCells;\n  support.activeStructures = summary.activeStructures.camp\n    + summary.activeStructures.storehouse\n    + summary.activeStructures.market\n    + summary.activeStructures.workshop;',
+          )
+
+          replace_once(
+              '  support.campSampleCells = support.passableCells;\n  support.activeCamps = state.structures.filter((structure) =>\n    structure.type === "camp" && structure.status === "active"\n  ).length;\n  return support;',
+              '  support.campSampleCells = support.passableCells;\n  support.activeCamps = state.structures.filter((structure) =>\n    structure.type === "camp" && structure.status === "active"\n  ).length;\n  support.structureSampleCells = support.passableCells;\n  support.activeStructures = state.structures.filter((structure) =>\n    structure.status === "active"\n  ).length;\n  return support;',
+          )
+
+          replace_once(
+              'function settlementContinuationRank(support: SettlementNeighborSupport): number {',
+              '''function structureDensity(support: SettlementNeighborSupport): number {\n  return support.structureSampleCells > 0\n    ? support.activeStructures / support.structureSampleCells\n    : 0;\n}\n\nfunction compareStructureDensity(\n  a: SettlementNeighborSupport,\n  b: SettlementNeighborSupport,\n): number {\n  if (a.structureSampleCells === 0 || b.structureSampleCells === 0) return 0;\n  const delta = structureDensity(a) - structureDensity(b);\n  return Math.abs(delta) > SETTLEMENT_STRUCTURE_DENSITY_EPSILON ? delta : 0;\n}\n\nfunction settlementContinuationRank(support: SettlementNeighborSupport): number {''',
+          )
+
+          replace_once(
+              '''  if (candidate.campSampleCells > 0 && local.campSampleCells > 0) {\n    const candidateCamps = campDensity(candidate);\n    const localCamps = campDensity(local);\n    if (candidateCamps < localCamps - SETTLEMENT_CAMP_DENSITY_EPSILON) return true;\n    if (candidateCamps > localCamps + SETTLEMENT_CAMP_DENSITY_EPSILON) return false;\n  }\n\n  const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);''',
+              '''  if (candidate.campSampleCells > 0 && local.campSampleCells > 0) {\n    const candidateCamps = campDensity(candidate);\n    const localCamps = campDensity(local);\n    if (candidateCamps < localCamps - SETTLEMENT_CAMP_DENSITY_EPSILON) return true;\n    if (candidateCamps > localCamps + SETTLEMENT_CAMP_DENSITY_EPSILON) return false;\n  }\n\n  if (candidate.structureSampleCells > 0 && local.structureSampleCells > 0) {\n    const candidateStructures = structureDensity(candidate);\n    const localStructures = structureDensity(local);\n    if (candidateStructures < localStructures - SETTLEMENT_STRUCTURE_DENSITY_EPSILON) return true;\n    if (candidateStructures > localStructures + SETTLEMENT_STRUCTURE_DENSITY_EPSILON) return false;\n  }\n\n  const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);''',
+          )
+
+          replace_once(
+              '    || comparePopulationDensity(a, b)\n    || compareCampDensity(a, b)\n    || compareResourceAmountDensity(a, b, "food")',
+              '    || comparePopulationDensity(a, b)\n    || compareCampDensity(a, b)\n    // When camp density ties, treat the rest of the active settlement footprint\n    // as low-level evidence that a frontier is already developed. This reuses\n    // the bounded halo summary without fetching remote structure identities.\n    || compareStructureDensity(a, b)\n    || compareResourceAmountDensity(a, b, "food")',
+          )
+
+          source_path.write_text(text)
+
+          test_path = Path('tests/settlement-migration-support-density.test.mjs')
+          test_text = test_path.read_text()
+          marker = 'pioneer prefers less developed frontier when camp and population density tie'
+          if marker in test_text:
+              raise SystemExit('test already present')
+          test_text += r'''
+
+
+test("pioneer prefers less developed frontier when camp and population density tie", () => {
+  const { state, builder } = transitPioneerFixture();
+  for (let index = 0; index < 9; index += 1) {
+    const resident = structuredClone(builder);
+    resident.id = `resident-structure-${index}`;
+    resident.autonomy = false;
+    delete resident.task;
+    state.agents.push(resident);
+  }
+
+  const sharedSeam = { x: 30, y: 11 };
+  const east = haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 0, 0);
+  east.neighborRegionSummary = {
+    resources: { wood: 0, stone: 0, food: 0 },
+    resourceCapacity: { wood: 0, stone: 0, food: 0 },
+    activeStructures: { camp: 0, storehouse: 1, market: 1, workshop: 1 },
+    passableCells: 100,
+    occupants: 2,
+  };
+  const west = haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 0, 0);
+  west.neighborRegionSummary = {
+    resources: { wood: 0, stone: 0, food: 0 },
+    resourceCapacity: { wood: 0, stone: 0, food: 0 },
+    activeStructures: { camp: 0, storehouse: 0, market: 0, workshop: 0 },
+    passableCells: 100,
+    occupants: 2,
+  };
+
+  const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.equal(plan.direction, "W");
+});
+'''
+          test_path.write_text(test_text)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run focused settlement tests
+        run: |
+          npm run build --silent >/tmp/moyo-build.log 2>&1 || { cat /tmp/moyo-build.log; exit 1; }
+          node --test tests/settlement-migration-support-density.test.mjs
+
+      - name: Remove one-shot workflow and commit verified change
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/automation-improve-20260915.yml
+          git config user.name "Tsubasa Azumagakito"
+          git config user.email "azumag@users.noreply.github.com"
+          git add src/settlement-migration.ts tests/settlement-migration-support-density.test.mjs .github/workflows/automation-improve-20260915.yml
+          git commit -m "sim: steer pioneers away from developed frontiers"
+          git push origin HEAD:main
