@@ -1,0 +1,140 @@
+name: One-shot settlement region-summary reuse
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-settlement-region-summary.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Reuse bounded region support for settlement migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Extend the existing rolling-compatible region summary with
+          # sustainable resource capacity. Old snapshots can omit the field.
+          path = Path('src/hex-halo.ts')
+          text = path.read_text()
+          old = '''export interface HexHaloRegionSummary {\n  resources: Record<ResourceKind, number>;\n  passableCells: number;\n  occupants: number;\n}\n'''
+          new = '''export interface HexHaloRegionSummary {\n  resources: Record<ResourceKind, number>;\n  // Optional during rolling deploys. New edge snapshots expose total renewable\n  // carrying capacity so migration can evaluate interior support without a\n  // deeper synchronous read; old summaries remain valid and fall back to the\n  // exact boundary sample.\n  resourceCapacity?: Record<ResourceKind, number>;\n  passableCells: number;\n  occupants: number;\n}\n'''
+          if old not in text:
+              raise SystemExit('hex-halo summary interface contract not found')
+          text = text.replace(old, new, 1)
+          old = '''          resources: { ...observed.regionSummary.resources },\n          passableCells: observed.regionSummary.passableCells,\n          occupants: observed.regionSummary.occupants,\n'''
+          new = '''          resources: { ...observed.regionSummary.resources },\n          ...(observed.regionSummary.resourceCapacity === undefined ? {} : {\n            resourceCapacity: { ...observed.regionSummary.resourceCapacity },\n          }),\n          passableCells: observed.regionSummary.passableCells,\n          occupants: observed.regionSummary.occupants,\n'''
+          if old not in text:
+              raise SystemExit('hex-halo summary clone contract not found')
+          path.write_text(text.replace(old, new, 1))
+
+          # 2) Produce capacity totals from the same bounded edge snapshot read.
+          path = Path('src/halo-region.ts')
+          text = path.read_text()
+          old = '''    const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };\n    let passableCells = 0;\n    for (const tile of state.tiles) {\n      if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;\n      passableCells += 1;\n      if (tile.resource !== undefined && tile.resource.amount > 0) {\n        resources[tile.resource.kind] += tile.resource.amount;\n      }\n    }\n    const regionSummary = {\n      resources,\n      passableCells,\n      occupants: state.agents.length,\n    };\n'''
+          new = '''    const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };\n    const resourceCapacity: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };\n    let passableCells = 0;\n    for (const tile of state.tiles) {\n      if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;\n      passableCells += 1;\n      if (tile.resource !== undefined) {\n        if (tile.resource.amount > 0) resources[tile.resource.kind] += tile.resource.amount;\n        if (tile.resource.maxAmount > 0) resourceCapacity[tile.resource.kind] += tile.resource.maxAmount;\n      }\n    }\n    const regionSummary = {\n      resources,\n      resourceCapacity,\n      passableCells,\n      occupants: state.agents.length,\n    };\n'''
+          if old not in text:
+              raise SystemExit('halo-region summary producer contract not found')
+          path.write_text(text.replace(old, new, 1))
+
+          # 3) Let settlement migration consume whole-region resource support,
+          # while keeping water/drainage/pathogen/erosion observations on the
+          # exact depth-1 boundary sample. A separate resource denominator avoids
+          # corrupting the existing surface-water fraction.
+          path = Path('src/settlement-migration.ts')
+          text = path.read_text()
+          old = 'import type { HexHaloTile } from "./hex-halo.js";\n'
+          new = 'import type { HexHaloRegionSummary, HexHaloTile } from "./hex-halo.js";\n'
+          if old not in text:
+              raise SystemExit('settlement halo import contract not found')
+          text = text.replace(old, new, 1)
+          old = '''interface SettlementNeighborSupport {\n  passableCells: number;\n  waterCells: number;\n'''
+          new = '''interface SettlementNeighborSupport {\n  passableCells: number;\n  resourceSampleCells: number;\n  waterCells: number;\n'''
+          if old not in text:
+              raise SystemExit('settlement support interface contract not found')
+          text = text.replace(old, new, 1)
+          old = '''  return {\n    passableCells: 0,\n    waterCells: 0,\n'''
+          new = '''  return {\n    passableCells: 0,\n    resourceSampleCells: 0,\n    waterCells: 0,\n'''
+          if old not in text:
+              raise SystemExit('empty settlement support contract not found')
+          text = text.replace(old, new, 1)
+          old = '''  support.passableCells += 1;\n  if (Number.isFinite(tile.drainage ?? Number.NaN)) {\n'''
+          new = '''  support.passableCells += 1;\n  support.resourceSampleCells += 1;\n  if (Number.isFinite(tile.drainage ?? Number.NaN)) {\n'''
+          if old not in text:
+              raise SystemExit('settlement tile support contract not found')
+          text = text.replace(old, new, 1)
+          marker = '''function settlementNeighborSupports(\n  halo: readonly HexHaloTile[],\n): Map<string, SettlementNeighborSupport> {\n'''
+          if marker not in text:
+              raise SystemExit('settlement neighbor supports marker not found')
+          helper = '''function validRegionResourceSummary(\n  summary: HexHaloRegionSummary | undefined,\n): summary is HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> } {\n  return summary !== undefined\n    && summary.resourceCapacity !== undefined\n    && Number.isInteger(summary.passableCells)\n    && summary.passableCells > 0\n    && RESOURCE_KINDS.every((kind) =>\n      Number.isFinite(summary.resources[kind])\n      && summary.resources[kind] >= 0\n      && Number.isFinite(summary.resourceCapacity?.[kind])\n      && (summary.resourceCapacity?.[kind] ?? -1) >= 0\n    );\n}\n\nfunction sameRegionResourceSummary(\n  a: HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> },\n  b: HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> },\n): boolean {\n  return a.passableCells === b.passableCells\n    && RESOURCE_KINDS.every((kind) =>\n      a.resources[kind] === b.resources[kind]\n      && a.resourceCapacity[kind] === b.resourceCapacity[kind]\n    );\n}\n\nfunction applyRegionResourceSummary(\n  support: SettlementNeighborSupport,\n  summary: HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> },\n): void {\n  support.resourceSampleCells = summary.passableCells;\n  for (const kind of RESOURCE_KINDS) {\n    support.resources[kind] = summary.resources[kind];\n    support.resourceCapacity[kind] = summary.resourceCapacity[kind];\n  }\n}\n\n'''
+          text = text.replace(marker, helper + marker, 1)
+          old = '''  const supportByRegion = new Map<string, SettlementNeighborSupport>();\n  const seenNeighborCells = new Set<string>();\n  for (const entry of halo) {\n'''
+          new = '''  const supportByRegion = new Map<string, SettlementNeighborSupport>();\n  const resourceSummaryByRegion = new Map<\n    string,\n    HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> }\n  >();\n  const inconsistentResourceSummaryRegions = new Set<string>();\n  const seenNeighborCells = new Set<string>();\n  for (const entry of halo) {\n    const regionSummary = entry.neighborRegionSummary;\n    if (validRegionResourceSummary(regionSummary)) {\n      const current = resourceSummaryByRegion.get(entry.neighborRegionId);\n      if (current === undefined) {\n        resourceSummaryByRegion.set(entry.neighborRegionId, regionSummary);\n      } else if (!sameRegionResourceSummary(current, regionSummary)) {\n        // Different edge reads may straddle a neighbor tick. Do not combine two\n        // whole-region observations into a synthetic state; fall back to the\n        // exact boundary sample for this planning pass.\n        inconsistentResourceSummaryRegions.add(entry.neighborRegionId);\n      }\n    }\n'''
+          if old not in text:
+              raise SystemExit('settlement support loop start contract not found')
+          text = text.replace(old, new, 1)
+          old = '''    addSettlementSupportTile(support, entry.tile);\n  }\n  return supportByRegion;\n}\n'''
+          new = '''    addSettlementSupportTile(support, entry.tile);\n  }\n  for (const [regionId, summary] of resourceSummaryByRegion) {\n    if (inconsistentResourceSummaryRegions.has(regionId)) continue;\n    const support = supportByRegion.get(regionId);\n    if (support !== undefined) applyRegionResourceSummary(support, summary);\n  }\n  return supportByRegion;\n}\n'''
+          if old not in text:
+              raise SystemExit('settlement support loop end contract not found')
+          text = text.replace(old, new, 1)
+          old = '''  return support.passableCells > 0\n    ? support.resourceCapacity[kind] / support.passableCells\n    : 0;\n'''
+          new = '''  return support.resourceSampleCells > 0\n    ? support.resourceCapacity[kind] / support.resourceSampleCells\n    : 0;\n'''
+          if old not in text:
+              raise SystemExit('capacity density contract not found')
+          text = text.replace(old, new, 1)
+          old = '''  return support.passableCells > 0\n    ? support.resources[kind] / support.passableCells\n    : 0;\n'''
+          new = '''  return support.resourceSampleCells > 0\n    ? support.resources[kind] / support.resourceSampleCells\n    : 0;\n'''
+          if old not in text:
+              raise SystemExit('amount density contract not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+
+          # 4) Pin summary capacity cloning and migration behavior.
+          path = Path('tests/halo-region-support-summary.test.mjs')
+          text = path.read_text()
+          old = '''    regionSummary: {\n      resources: { wood: 12, stone: 3, food: 5 },\n      passableCells: 390,\n      occupants: 9,\n    },\n'''
+          new = '''    regionSummary: {\n      resources: { wood: 12, stone: 3, food: 5 },\n      resourceCapacity: { wood: 30, stone: 9, food: 14 },\n      passableCells: 390,\n      occupants: 9,\n    },\n'''
+          if old not in text:
+              raise SystemExit('summary fixture contract not found')
+          text = text.replace(old, new, 1)
+          old = '''  assert.deepEqual(halo[0].neighborRegionSummary, {\n    resources: { wood: 12, stone: 3, food: 5 },\n    passableCells: 390,\n    occupants: 9,\n  });\n'''
+          new = '''  assert.deepEqual(halo[0].neighborRegionSummary, {\n    resources: { wood: 12, stone: 3, food: 5 },\n    resourceCapacity: { wood: 30, stone: 9, food: 14 },\n    passableCells: 390,\n    occupants: 9,\n  });\n'''
+          if old not in text:
+              raise SystemExit('summary assertion contract not found')
+          path.write_text(text.replace(old, new, 1))
+
+          path = Path('tests/settlement-migration-support-density.test.mjs')
+          text = path.read_text()
+          text += '''\n\ntest("pioneer uses whole-region carrying capacity when boundary samples are misleading", () => {\n  const { state, builder } = transitPioneerFixture();\n  const east = haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 1, 1);\n  east.neighborRegionSummary = {\n    resources: { wood: 10, stone: 0, food: 20 },\n    resourceCapacity: { wood: 20, stone: 0, food: 100 },\n    passableCells: 100,\n    occupants: 4,\n  };\n  const west = haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 20, 10);\n  west.neighborRegionSummary = {\n    resources: { wood: 10, stone: 0, food: 20 },\n    resourceCapacity: { wood: 20, stone: 0, food: 50 },\n    passableCells: 100,\n    occupants: 4,\n  };\n\n  const plan = planAutonomousSettlementMigration(state, [east, west]);\n\n  assert.ok(plan);\n  assert.equal(plan.agentId, builder.id);\n  assert.equal(\n    plan.neighborRegionId,\n    "hex-q1-r0",\n    "interior carrying capacity should outweigh a richer-looking boundary cell",\n  );\n  assert.equal(plan.direction, "E");\n});\n\ntest("rolling summaries without capacity keep boundary-based settlement scoring", () => {\n  const { state, builder } = transitPioneerFixture();\n  const east = haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 5, 5);\n  east.neighborRegionSummary = {\n    resources: { wood: 0, stone: 0, food: 500 },\n    passableCells: 397,\n    occupants: 1,\n  };\n  const west = haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 10, 10);\n\n  const plan = planAutonomousSettlementMigration(state, [east, west]);\n\n  assert.ok(plan);\n  assert.equal(plan.agentId, builder.id);\n  assert.equal(\n    plan.neighborRegionId,\n    "hex-q-1-r0",\n    "old summaries must not dilute boundary capacity by a whole-region denominator",\n  );\n  assert.equal(plan.direction, "W");\n});\n'''
+          path.write_text(text)
+          PY
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Full build and tests
+        run: npm run build
+      - name: Commit directly to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/hex-halo.ts src/halo-region.ts src/settlement-migration.ts tests/halo-region-support-summary.test.mjs tests/settlement-migration-support-density.test.mjs
+          git commit -m "sim: reuse region summaries for settlement migration"
+          git push origin HEAD:main
