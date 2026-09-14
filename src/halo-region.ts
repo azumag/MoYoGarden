@@ -361,16 +361,19 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     // This is bounded metadata, not another region fetch: it lets a neighboring
     // logistics planner discover interior supply while keeping depth-1 fan-out.
     const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
+    const resourceCapacity: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     let passableCells = 0;
     for (const tile of state.tiles) {
       if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
       passableCells += 1;
-      if (tile.resource !== undefined && tile.resource.amount > 0) {
-        resources[tile.resource.kind] += tile.resource.amount;
+      if (tile.resource !== undefined) {
+        if (tile.resource.amount > 0) resources[tile.resource.kind] += tile.resource.amount;
+        if (tile.resource.maxAmount > 0) resourceCapacity[tile.resource.kind] += tile.resource.maxAmount;
       }
     }
     const regionSummary = {
       resources,
+      resourceCapacity,
       passableCells,
       occupants: state.agents.length,
     };

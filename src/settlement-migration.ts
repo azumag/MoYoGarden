@@ -1,4 +1,4 @@
-import type { HexHaloTile } from "./hex-halo.js";
+import type { HexHaloRegionSummary, HexHaloTile } from "./hex-halo.js";
 import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
@@ -42,6 +42,7 @@ export interface AutonomousSettlementMigrationPlan {
 
 interface SettlementNeighborSupport {
   passableCells: number;
+  resourceSampleCells: number;
   waterCells: number;
   drainageTotal: number;
   drainageSamples: number;
@@ -78,6 +79,7 @@ function directionRank(direction: HexGridDirection): number {
 function emptySettlementNeighborSupport(): SettlementNeighborSupport {
   return {
     passableCells: 0,
+    resourceSampleCells: 0,
     waterCells: 0,
     drainageTotal: 0,
     drainageSamples: 0,
@@ -105,6 +107,7 @@ function addSettlementSupportTile(
     return;
   }
   support.passableCells += 1;
+  support.resourceSampleCells += 1;
   if (Number.isFinite(tile.drainage ?? Number.NaN)) {
     support.drainageTotal += Math.max(0, Math.min(1, tile.drainage ?? 0));
     support.drainageSamples += 1;
@@ -124,12 +127,66 @@ function addSettlementSupportTile(
   if (resource.amount > 0) support.resources[resource.kind] += resource.amount;
 }
 
+function validRegionResourceSummary(
+  summary: HexHaloRegionSummary | undefined,
+): summary is HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> } {
+  return summary !== undefined
+    && summary.resourceCapacity !== undefined
+    && Number.isInteger(summary.passableCells)
+    && summary.passableCells > 0
+    && RESOURCE_KINDS.every((kind) =>
+      Number.isFinite(summary.resources[kind])
+      && summary.resources[kind] >= 0
+      && Number.isFinite(summary.resourceCapacity?.[kind])
+      && (summary.resourceCapacity?.[kind] ?? -1) >= 0
+    );
+}
+
+function sameRegionResourceSummary(
+  a: HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> },
+  b: HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> },
+): boolean {
+  return a.passableCells === b.passableCells
+    && RESOURCE_KINDS.every((kind) =>
+      a.resources[kind] === b.resources[kind]
+      && a.resourceCapacity[kind] === b.resourceCapacity[kind]
+    );
+}
+
+function applyRegionResourceSummary(
+  support: SettlementNeighborSupport,
+  summary: HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> },
+): void {
+  support.resourceSampleCells = summary.passableCells;
+  for (const kind of RESOURCE_KINDS) {
+    support.resources[kind] = summary.resources[kind];
+    support.resourceCapacity[kind] = summary.resourceCapacity[kind];
+  }
+}
+
 function settlementNeighborSupports(
   halo: readonly HexHaloTile[],
 ): Map<string, SettlementNeighborSupport> {
   const supportByRegion = new Map<string, SettlementNeighborSupport>();
+  const resourceSummaryByRegion = new Map<
+    string,
+    HexHaloRegionSummary & { resourceCapacity: Record<ResourceKind, number> }
+  >();
+  const inconsistentResourceSummaryRegions = new Set<string>();
   const seenNeighborCells = new Set<string>();
   for (const entry of halo) {
+    const regionSummary = entry.neighborRegionSummary;
+    if (validRegionResourceSummary(regionSummary)) {
+      const current = resourceSummaryByRegion.get(entry.neighborRegionId);
+      if (current === undefined) {
+        resourceSummaryByRegion.set(entry.neighborRegionId, regionSummary);
+      } else if (!sameRegionResourceSummary(current, regionSummary)) {
+        // Different edge reads may straddle a neighbor tick. Do not combine two
+        // whole-region observations into a synthetic state; fall back to the
+        // exact boundary sample for this planning pass.
+        inconsistentResourceSummaryRegions.add(entry.neighborRegionId);
+      }
+    }
     const cellKey = `${entry.neighborRegionId}:${entry.neighborPosition.x},${entry.neighborPosition.y}`;
     if (seenNeighborCells.has(cellKey)) continue;
     seenNeighborCells.add(cellKey);
@@ -139,6 +196,11 @@ function settlementNeighborSupports(
       supportByRegion.set(entry.neighborRegionId, support);
     }
     addSettlementSupportTile(support, entry.tile);
+  }
+  for (const [regionId, summary] of resourceSummaryByRegion) {
+    if (inconsistentResourceSummaryRegions.has(regionId)) continue;
+    const support = supportByRegion.get(regionId);
+    if (support !== undefined) applyRegionResourceSummary(support, summary);
   }
   return supportByRegion;
 }
@@ -214,8 +276,8 @@ function resourceCapacityDensity(
   support: SettlementNeighborSupport,
   kind: ResourceKind,
 ): number {
-  return support.passableCells > 0
-    ? support.resourceCapacity[kind] / support.passableCells
+  return support.resourceSampleCells > 0
+    ? support.resourceCapacity[kind] / support.resourceSampleCells
     : 0;
 }
 
@@ -232,8 +294,8 @@ function resourceAmountDensity(
   support: SettlementNeighborSupport,
   kind: ResourceKind,
 ): number {
-  return support.passableCells > 0
-    ? support.resources[kind] / support.passableCells
+  return support.resourceSampleCells > 0
+    ? support.resources[kind] / support.resourceSampleCells
     : 0;
 }
 

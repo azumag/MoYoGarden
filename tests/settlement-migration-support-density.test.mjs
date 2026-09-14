@@ -142,3 +142,55 @@ test("negligible live-supply noise does not override drainage quality", () => {
   );
   assert.equal(plan.direction, "west");
 });
+
+
+test("pioneer uses whole-region carrying capacity when boundary samples are misleading", () => {
+  const { state, builder } = transitPioneerFixture();
+  const east = haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 1, 1);
+  east.neighborRegionSummary = {
+    resources: { wood: 10, stone: 0, food: 20 },
+    resourceCapacity: { wood: 20, stone: 0, food: 100 },
+    passableCells: 100,
+    occupants: 4,
+  };
+  const west = haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 20, 10);
+  west.neighborRegionSummary = {
+    resources: { wood: 10, stone: 0, food: 20 },
+    resourceCapacity: { wood: 20, stone: 0, food: 50 },
+    passableCells: 100,
+    occupants: 4,
+  };
+
+  const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(
+    plan.neighborRegionId,
+    "hex-q1-r0",
+    "interior carrying capacity should outweigh a richer-looking boundary cell",
+  );
+  assert.equal(plan.direction, "E");
+});
+
+test("rolling summaries without capacity keep boundary-based settlement scoring", () => {
+  const { state, builder } = transitPioneerFixture();
+  const east = haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 5, 5);
+  east.neighborRegionSummary = {
+    resources: { wood: 0, stone: 0, food: 500 },
+    passableCells: 397,
+    occupants: 1,
+  };
+  const west = haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 10, 10);
+
+  const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(
+    plan.neighborRegionId,
+    "hex-q-1-r0",
+    "old summaries must not dilute boundary capacity by a whole-region denominator",
+  );
+  assert.equal(plan.direction, "W");
+});

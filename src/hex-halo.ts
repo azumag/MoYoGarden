@@ -26,6 +26,11 @@ export interface HexHaloLink {
 
 export interface HexHaloRegionSummary {
   resources: Record<ResourceKind, number>;
+  // Optional during rolling deploys. New edge snapshots expose total renewable
+  // carrying capacity so migration can evaluate interior support without a
+  // deeper synchronous read; old summaries remain valid and fall back to the
+  // exact boundary sample.
+  resourceCapacity?: Record<ResourceKind, number>;
   passableCells: number;
   occupants: number;
 }
@@ -369,6 +374,9 @@ export function materializeHexHalo(
       ...(observed.regionSummary === undefined ? {} : {
         neighborRegionSummary: {
           resources: { ...observed.regionSummary.resources },
+          ...(observed.regionSummary.resourceCapacity === undefined ? {} : {
+            resourceCapacity: { ...observed.regionSummary.resourceCapacity },
+          }),
           passableCells: observed.regionSummary.passableCells,
           occupants: observed.regionSummary.occupants,
         },

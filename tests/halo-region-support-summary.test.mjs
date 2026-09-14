@@ -85,6 +85,7 @@ test("materialized halo carries a bounded whole-region support summary with lega
     tick: 12,
     regionSummary: {
       resources: { wood: 12, stone: 3, food: 5 },
+      resourceCapacity: { wood: 30, stone: 9, food: 14 },
       passableCells: 390,
       occupants: 9,
     },
@@ -95,6 +96,7 @@ test("materialized halo carries a bounded whole-region support summary with lega
   }]);
   assert.deepEqual(halo[0].neighborRegionSummary, {
     resources: { wood: 12, stone: 3, food: 5 },
+    resourceCapacity: { wood: 30, stone: 9, food: 14 },
     passableCells: 390,
     occupants: 9,
   });
