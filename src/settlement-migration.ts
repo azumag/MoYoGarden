@@ -28,6 +28,7 @@ const SETTLEMENT_EROSION_EPSILON = 1e-6;
 const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;
 const SETTLEMENT_POPULATION_DENSITY_EPSILON = 1e-6;
 const SETTLEMENT_CAMP_DENSITY_EPSILON = 1e-6;
+const SETTLEMENT_STRUCTURE_DENSITY_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_AMOUNT_EPSILON = 1e-6;
 const SETTLEMENT_WATER_FRACTION_EPSILON = 1e-6;
@@ -49,6 +50,8 @@ interface SettlementNeighborSupport {
   occupants: number;
   campSampleCells: number;
   activeCamps: number;
+  structureSampleCells: number;
+  activeStructures: number;
   waterCells: number;
   drainageTotal: number;
   drainageSamples: number;
@@ -90,6 +93,8 @@ function emptySettlementNeighborSupport(): SettlementNeighborSupport {
     occupants: 0,
     campSampleCells: 0,
     activeCamps: 0,
+    structureSampleCells: 0,
+    activeStructures: 0,
     waterCells: 0,
     drainageTotal: 0,
     drainageSamples: 0,
@@ -207,7 +212,13 @@ function validRegionCampSummary(
     && Number.isInteger(summary.passableCells)
     && summary.passableCells > 0
     && Number.isInteger(summary.activeStructures.camp)
-    && summary.activeStructures.camp >= 0;
+    && summary.activeStructures.camp >= 0
+    && Number.isInteger(summary.activeStructures.storehouse)
+    && summary.activeStructures.storehouse >= 0
+    && Number.isInteger(summary.activeStructures.market)
+    && summary.activeStructures.market >= 0
+    && Number.isInteger(summary.activeStructures.workshop)
+    && summary.activeStructures.workshop >= 0;
 }
 
 function sameRegionCampSummary(
@@ -215,7 +226,10 @@ function sameRegionCampSummary(
   b: HexHaloRegionSummary & { activeStructures: NonNullable<HexHaloRegionSummary["activeStructures"]> },
 ): boolean {
   return a.passableCells === b.passableCells
-    && a.activeStructures.camp === b.activeStructures.camp;
+    && a.activeStructures.camp === b.activeStructures.camp
+    && a.activeStructures.storehouse === b.activeStructures.storehouse
+    && a.activeStructures.market === b.activeStructures.market
+    && a.activeStructures.workshop === b.activeStructures.workshop;
 }
 
 function applyRegionCampSummary(
@@ -224,6 +238,11 @@ function applyRegionCampSummary(
 ): void {
   support.campSampleCells = summary.passableCells;
   support.activeCamps = summary.activeStructures.camp;
+  support.structureSampleCells = summary.passableCells;
+  support.activeStructures = summary.activeStructures.camp
+    + summary.activeStructures.storehouse
+    + summary.activeStructures.market
+    + summary.activeStructures.workshop;
 }
 
 function settlementNeighborSupports(
@@ -316,6 +335,10 @@ function localSettlementSupport(state: WorldState): SettlementNeighborSupport {
   support.activeCamps = state.structures.filter((structure) =>
     structure.type === "camp" && structure.status === "active"
   ).length;
+  support.structureSampleCells = support.passableCells;
+  support.activeStructures = state.structures.filter((structure) =>
+    structure.status === "active"
+  ).length;
   return support;
 }
 
@@ -399,6 +422,21 @@ function compareCampDensity(
   if (a.campSampleCells === 0 || b.campSampleCells === 0) return 0;
   const delta = campDensity(a) - campDensity(b);
   return Math.abs(delta) > SETTLEMENT_CAMP_DENSITY_EPSILON ? delta : 0;
+}
+
+function structureDensity(support: SettlementNeighborSupport): number {
+  return support.structureSampleCells > 0
+    ? support.activeStructures / support.structureSampleCells
+    : 0;
+}
+
+function compareStructureDensity(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  if (a.structureSampleCells === 0 || b.structureSampleCells === 0) return 0;
+  const delta = structureDensity(a) - structureDensity(b);
+  return Math.abs(delta) > SETTLEMENT_STRUCTURE_DENSITY_EPSILON ? delta : 0;
 }
 
 function settlementContinuationRank(support: SettlementNeighborSupport): number {
@@ -506,6 +544,13 @@ function shouldContinueSettlementMigration(
     if (candidateCamps > localCamps + SETTLEMENT_CAMP_DENSITY_EPSILON) return false;
   }
 
+  if (candidate.structureSampleCells > 0 && local.structureSampleCells > 0) {
+    const candidateStructures = structureDensity(candidate);
+    const localStructures = structureDensity(local);
+    if (candidateStructures < localStructures - SETTLEMENT_STRUCTURE_DENSITY_EPSILON) return true;
+    if (candidateStructures > localStructures + SETTLEMENT_STRUCTURE_DENSITY_EPSILON) return false;
+  }
+
   const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);
   if (Math.abs(waterFractionDelta) > SETTLEMENT_WATER_FRACTION_EPSILON) {
     return waterFractionDelta > 0;
@@ -531,6 +576,10 @@ function compareSettlementSupport(
     // whole-region summary rather than a single boundary-cell occupancy sample.
     || comparePopulationDensity(a, b)
     || compareCampDensity(a, b)
+    // When camp density ties, treat the rest of the active settlement footprint
+    // as low-level evidence that a frontier is already developed. This reuses
+    // the bounded halo summary without fetching remote structure identities.
+    || compareStructureDensity(a, b)
     || compareResourceAmountDensity(a, b, "food")
     || compareResourceAmountDensity(a, b, "wood")
     || compareResourceAmountDensity(a, b, "stone")
