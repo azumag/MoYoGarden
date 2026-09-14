@@ -380,12 +380,11 @@ class LiveNeighborSimulation {
     // snapshot refreshes therefore cannot change the shadow map and must not
     // force the focused scene to render a new one.
   }
-  refreshModelType(key) {
-    for (const entry of this.entries.values()) {
-      entry.proxy.refreshModelType(key);
-    }
-    // Model refreshes keep using the same non-shadow-casting proxy vocabulary,
-    // so there is no focused-scene shadow map to invalidate here either.
+  refreshModelType(_key) {
+    // Radius-one proxies intentionally stay on the procedural low-detail
+    // vocabulary and never consume authored GLTF clones. Model-library load
+    // events therefore cannot improve their appearance; rebuilding all six
+    // neighbor populations here only creates startup allocation/GC churn.
   }
 
   animate(time) {
