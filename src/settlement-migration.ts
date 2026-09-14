@@ -328,6 +328,9 @@ function compareSettlementPlanCandidate(
     || a.distance - b.distance
     || a.pathCrowding - b.pathCrowding
     || a.crowding - b.crowding
+    // Equivalent migration plans should use the builder with the larger
+    // remaining energy reserve before falling back to stable agent ID order.
+    || b.agent.energy - a.agent.energy
     || a.agent.id.localeCompare(b.agent.id)
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
     || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
