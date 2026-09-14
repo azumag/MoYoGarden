@@ -16,7 +16,7 @@ import {
   type ResourceKind,
   type WorldState,
 } from "./protocol.js";
-import { regionAxialCoordinate } from "./region-topology.js";
+import { hexDistance, regionAxialCoordinate } from "./region-topology.js";
 import { getAgent, getFaction, isPassable } from "./world.js";
 
 const RESIDENT_CAPACITY_PER_CAMP = 6;
@@ -480,6 +480,19 @@ function sameSettlementRegion(a: string | undefined, b: string): boolean {
     && aAxial.r === bAxial.r;
 }
 
+function settlementRouteHysteresisBlocks(
+  previousRegionId: string | undefined,
+  candidateRegionId: string,
+): boolean {
+  if (sameSettlementRegion(previousRegionId, candidateRegionId)) return true;
+  if (previousRegionId === undefined) return false;
+  const previousAxial = regionAxialCoordinate(previousRegionId);
+  const candidateAxial = regionAxialCoordinate(candidateRegionId);
+  return previousAxial !== undefined
+    && candidateAxial !== undefined
+    && hexDistance(previousAxial, candidateAxial) === 1;
+}
+
 export function shouldScoutSettlementMigration(state: WorldState): boolean {
   if (state.agents.some((agent) => isTransitPioneer(state, agent))) return true;
   if (state.tick % SETTLEMENT_MIGRATION_SCOUT_INTERVAL !== 0) return false;
@@ -537,12 +550,16 @@ export function planAutonomousSettlementMigration(
         transitPioneer
         && agent.task?.source === "autonomy"
         && agent.task.type === "build"
-        && sameSettlementRegion(agent.task.settlementPreviousRegionId, entry.neighborRegionId)
+        && settlementRouteHysteresisBlocks(
+          agent.task.settlementPreviousRegionId,
+          entry.neighborRegionId,
+        )
       ) {
-        // One-hop route memory is intentionally bounded: it prevents immediate
-        // A→B→A reversal when support samples change, without turning the task
-        // into an unbounded visited-region log. The next successful handoff
-        // replaces this hint with the region that was just left.
+        // A single previous-region hint now blocks both the exact reversal and
+        // the two axial side steps that would immediately close a 3-region hex
+        // triangle. This stays bounded to one stored region while preventing the
+        // shortest A→B→C→A loop; if every improving frontier falls in that recent
+        // wedge, the pioneer settles instead of oscillating.
         continue;
       }
       const targetKey = positionKey(entry.sourcePosition);
