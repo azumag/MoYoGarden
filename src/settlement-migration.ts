@@ -192,6 +192,15 @@ function resourceCapacityDensity(
     : 0;
 }
 
+function resourceAmountDensity(
+  support: SettlementNeighborSupport,
+  kind: ResourceKind,
+): number {
+  return support.passableCells > 0
+    ? support.resources[kind] / support.passableCells
+    : 0;
+}
+
 function compareContinuationResourceCapacity(
   candidate: SettlementNeighborSupport,
   local: SettlementNeighborSupport,
@@ -239,9 +248,9 @@ function compareSettlementSupport(
     || resourceCapacityDensity(b, "wood") - resourceCapacityDensity(a, "wood")
     || resourceCapacityDensity(b, "stone") - resourceCapacityDensity(a, "stone")
     || compareAveragePathogenReservoir(a, b)
-    || b.resources.food - a.resources.food
-    || b.resources.wood - a.resources.wood
-    || b.resources.stone - a.resources.stone
+    || resourceAmountDensity(b, "food") - resourceAmountDensity(a, "food")
+    || resourceAmountDensity(b, "wood") - resourceAmountDensity(a, "wood")
+    || resourceAmountDensity(b, "stone") - resourceAmountDensity(a, "stone")
     || compareAverageDrainage(a, b)
     || b.waterCells - a.waterCells
     || b.passableCells - a.passableCells

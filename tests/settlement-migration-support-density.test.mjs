@@ -30,7 +30,7 @@ function transitPioneerFixture() {
   return { state, builder };
 }
 
-function haloTile(direction, sourcePosition, neighborRegionId, neighborPosition, maxAmount) {
+function haloTile(direction, sourcePosition, neighborRegionId, neighborPosition, maxAmount, amount = 1) {
   return {
     direction,
     sourcePosition,
@@ -40,7 +40,7 @@ function haloTile(direction, sourcePosition, neighborRegionId, neighborPosition,
       ...neighborPosition,
       terrain: "plain",
       elevation: 0.5,
-      resource: { kind: "food", amount: 1, maxAmount },
+      resource: { kind: "food", amount, maxAmount },
     },
   };
 }
@@ -55,6 +55,24 @@ test("pioneer compares neighboring carrying capacity per sampled land cell", () 
     // West exposes less land, but that land has the stronger sustainable density
     // (15). Observation footprint must not outweigh carrying-capacity quality.
     haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 15),
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.equal(plan.direction, "W");
+});
+
+test("pioneer compares live resource supply per sampled land cell", () => {
+  const { state, builder } = transitPioneerFixture();
+  const plan = planAutonomousSettlementMigration(state, [
+    // Equal sustainable density (10/cell), but East only has 6 live food/cell.
+    // Its larger sampled edge makes the raw live total 12, which must not win.
+    haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 10, 6),
+    haloTile("E", { x: 30, y: 10 }, "hex-q1-r0", { x: 8, y: 10 }, 10, 6),
+    // West has the same carrying-capacity density and only one sampled cell,
+    // but stronger immediately available food density (8/cell).
+    haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 10, 8),
   ]);
 
   assert.ok(plan);
