@@ -92,12 +92,14 @@ test("pioneer compares live resource supply per sampled land cell", () => {
 
 test("pioneer does not treat a larger halo sample as better settlement support", () => {
   const { state, builder } = transitPioneerFixture();
+  const sharedSeam = { x: 30, y: 11 };
   const plan = planAutonomousSettlementMigration(state, [
-    // Equal support quality. East has fewer observed cells but is otherwise
-    // identical, so sample footprint must not become a hidden preference.
-    haloTile("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }, 10),
-    haloTile("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }, 10),
-    haloTile("W", { x: 8, y: 10 }, "hex-q-1-r0", { x: 30, y: 10 }, 10),
+    // Equal support quality and equal route cost isolate the support comparator.
+    // East has fewer observed cells, so a raw sample-count tie-break would make
+    // West win; without that bias the deterministic direction order chooses East.
+    haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 10),
+    haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 10),
+    haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 10 }, 10),
   ]);
 
   assert.ok(plan);
