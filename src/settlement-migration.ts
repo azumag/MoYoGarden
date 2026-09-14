@@ -26,6 +26,7 @@ const LOW_ENERGY_THRESHOLD = 18;
 const SETTLEMENT_DRAINAGE_EPSILON = 1e-6;
 const SETTLEMENT_PATHOGEN_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;
+const SETTLEMENT_WATER_FRACTION_EPSILON = 1e-6;
 export const SETTLEMENT_MIGRATION_SCOUT_INTERVAL = 12;
 
 export interface AutonomousSettlementMigrationPlan {
@@ -202,6 +203,19 @@ function resourceAmountDensity(
     : 0;
 }
 
+function surfaceWaterFraction(support: SettlementNeighborSupport): number {
+  const observedCells = support.passableCells + support.waterCells;
+  return observedCells > 0 ? support.waterCells / observedCells : 0;
+}
+
+function compareSurfaceWaterFraction(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  const delta = surfaceWaterFraction(b) - surfaceWaterFraction(a);
+  return Math.abs(delta) > SETTLEMENT_WATER_FRACTION_EPSILON ? delta : 0;
+}
+
 function compareContinuationResourceCapacity(
   candidate: SettlementNeighborSupport,
   local: SettlementNeighborSupport,
@@ -231,9 +245,10 @@ function shouldContinueSettlementMigration(
     if (candidatePathogen > localPathogen + SETTLEMENT_PATHOGEN_EPSILON) return false;
   }
 
-  const candidateHasWater = candidate.waterCells > 0;
-  const localHasWater = local.waterCells > 0;
-  if (candidateHasWater !== localHasWater) return candidateHasWater;
+  const waterFractionDelta = surfaceWaterFraction(candidate) - surfaceWaterFraction(local);
+  if (Math.abs(waterFractionDelta) > SETTLEMENT_WATER_FRACTION_EPSILON) {
+    return waterFractionDelta > 0;
+  }
 
   if (candidate.drainageSamples === 0 || local.drainageSamples === 0) return false;
   return averageDrainage(candidate) > averageDrainage(local) + SETTLEMENT_DRAINAGE_EPSILON;
@@ -253,7 +268,7 @@ function compareSettlementSupport(
     || resourceAmountDensity(b, "wood") - resourceAmountDensity(a, "wood")
     || resourceAmountDensity(b, "stone") - resourceAmountDensity(a, "stone")
     || compareAverageDrainage(a, b)
-    || b.waterCells - a.waterCells
+    || compareSurfaceWaterFraction(a, b)
     || b.passableCells - a.passableCells
   );
 }

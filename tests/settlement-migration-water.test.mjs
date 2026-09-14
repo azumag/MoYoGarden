@@ -189,3 +189,98 @@ test("surface water alone never becomes a passable migration handoff candidate",
 
   assert.equal(plan, undefined);
 });
+
+test("migration compares surface water by observed-cell fraction instead of raw sample count", () => {
+  const { state, builder } = transitPioneerFixture();
+  const food = (direction, sourcePosition, neighborRegionId, neighborPosition) => ({
+    direction,
+    sourcePosition,
+    neighborRegionId,
+    neighborPosition,
+    tile: {
+      ...neighborPosition,
+      terrain: "plain",
+      elevation: 0.5,
+      resource: { kind: "food", amount: 5, maxAmount: 20 },
+    },
+  });
+  const water = (direction, sourcePosition, neighborRegionId, neighborPosition) => ({
+    direction,
+    sourcePosition,
+    neighborRegionId,
+    neighborPosition,
+    tile: {
+      ...neighborPosition,
+      terrain: "water",
+      elevation: 0.25,
+    },
+  });
+
+  const halo = [
+    food("E", { x: 30, y: 11 }, "hex-q1-r0", { x: 8, y: 11 }),
+    water("E", { x: 29, y: 10 }, "hex-q1-r0", { x: 9, y: 10 }),
+    food("W", { x: 8, y: 11 }, "hex-q-1-r0", { x: 30, y: 11 }),
+    food("W", { x: 9, y: 10 }, "hex-q-1-r0", { x: 29, y: 10 }),
+    food("W", { x: 9, y: 11 }, "hex-q-1-r0", { x: 29, y: 11 }),
+    food("W", { x: 9, y: 12 }, "hex-q-1-r0", { x: 29, y: 12 }),
+    water("W", { x: 10, y: 9 }, "hex-q-1-r0", { x: 28, y: 9 }),
+    water("W", { x: 10, y: 13 }, "hex-q-1-r0", { x: 28, y: 13 }),
+  ];
+
+  const plan = planAutonomousSettlementMigration(state, halo);
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(
+    plan.neighborRegionId,
+    "hex-q1-r0",
+    "one water cell among two observed cells should outrank two water cells among six equally supported cells",
+  );
+});
+
+test("transit pioneer compares local and neighboring water exposure by observed-cell fraction", () => {
+  const { state, builder } = transitPioneerFixture();
+  let localWater;
+  for (const tile of state.tiles) {
+    if (!isHexGridCell(state, tile)) continue;
+    tile.terrain = "plain";
+    tile.resource = { kind: "food", amount: 0, maxAmount: 20 };
+    if (localWater === undefined && (tile.x !== builder.position.x || tile.y !== builder.position.y)) {
+      localWater = tile;
+    }
+  }
+  assert.ok(localWater);
+  localWater.terrain = "water";
+  delete localWater.resource;
+
+  const plan = planAutonomousSettlementMigration(state, [
+    {
+      direction: "E",
+      sourcePosition: { x: 30, y: 11 },
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 8, y: 11 },
+      tile: {
+        x: 8,
+        y: 11,
+        terrain: "plain",
+        elevation: 0.5,
+        resource: { kind: "food", amount: 0, maxAmount: 20 },
+      },
+    },
+    {
+      direction: "E",
+      sourcePosition: { x: 29, y: 10 },
+      neighborRegionId: "hex-q1-r0",
+      neighborPosition: { x: 9, y: 10 },
+      tile: {
+        x: 9,
+        y: 10,
+        terrain: "water",
+        elevation: 0.25,
+      },
+    },
+  ]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q1-r0");
+});
