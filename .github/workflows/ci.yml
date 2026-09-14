@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - deploy
   pull_request:
   workflow_dispatch:
 
@@ -36,7 +37,7 @@ jobs:
 
   production:
     name: Verify production commit
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/deploy'
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 28
