@@ -1,0 +1,60 @@
+from pathlib import Path
+
+path = Path("src/autonomy-region.ts")
+text = path.read_text()
+
+old = """  const expeditions: Array<{\n    agent: Agent;\n    resource: ResourceKind;\n    candidate: HexHaloTile;\n    visibleSupply: number;\n    travelDistance: number;\n    costPerUnit: number;\n  }> = [];"""
+new = """  const expeditions: Array<{\n    agent: Agent;\n    resource: ResourceKind;\n    candidate: HexHaloTile;\n    visibleSupply: number;\n    travelDistance: number;\n    pathCrowding: number;\n    costPerUnit: number;\n  }> = [];"""
+if old not in text:
+    raise SystemExit("expedition shape marker not found")
+text = text.replace(old, new, 1)
+
+old = """  return distances;\n}\n\nfunction remainingInventoryCapacity(agent: Agent): number {"""
+new = """  return distances;\n}\n\ninterface LocalTravelPathScore {\n  distance: number;\n  crowding: number;\n}\n\nfunction localTravelPathScores(\n  state: WorldState,\n  start: GridPosition,\n): Map<string, LocalTravelPathScore> {\n  const scores = new Map<string, LocalTravelPathScore>([\n    [positionKey(start), { distance: 0, crowding: 0 }],\n  ]);\n  const crowdingByPosition = new Map<string, number>();\n  for (const occupant of state.agents) {\n    const key = positionKey(occupant.position);\n    crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);\n  }\n  const queue: GridPosition[] = [{ ...start }];\n\n  for (let cursor = 0; cursor < queue.length; cursor += 1) {\n    const current = queue[cursor];\n    if (current === undefined) break;\n    const currentScore = scores.get(positionKey(current));\n    if (currentScore === undefined) continue;\n    for (const direction of HEX_GRID_DIRECTIONS) {\n      const step = HEX_GRID_DIRECTION_STEPS[direction];\n      const next = { x: current.x + step.x, y: current.y + step.y };\n      if (!isPassable(state, next)) continue;\n      const key = positionKey(next);\n      const candidate: LocalTravelPathScore = {\n        distance: currentScore.distance + 1,\n        crowding: currentScore.crowding + (crowdingByPosition.get(key) ?? 0),\n      };\n      const existing = scores.get(key);\n      if (\n        existing !== undefined &&\n        (existing.distance < candidate.distance ||\n          (existing.distance === candidate.distance && existing.crowding <= candidate.crowding))\n      ) {\n        continue;\n      }\n      scores.set(key, candidate);\n      queue.push(next);\n    }\n  }\n\n  return scores;\n}\n\nfunction remainingInventoryCapacity(agent: Agent): number {"""
+if old not in text:
+    raise SystemExit("local path insertion marker not found")
+text = text.replace(old, new, 1)
+
+old = """    const travelEnergyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);\n    const pathDistances = localPathDistances(state, agent.position);\n    const candidates = halo.flatMap((entry) => {\n      const travelDistance = pathDistances.get(positionKey(entry.sourcePosition));\n      if (\n        travelDistance === undefined ||\n        travelDistance > travelEnergyBudget ||\n        entry.tile.terrain === \"water\" ||\n        entry.tile.resource?.kind !== resource ||\n        entry.tile.resource.amount <= 0\n      ) {\n        return [];\n      }\n      return [{ entry, travelDistance }];\n    });"""
+new = """    const travelEnergyBudget = Math.max(0, agent.energy - LOW_ENERGY_THRESHOLD);\n    const pathScores = localTravelPathScores(state, agent.position);\n    const candidates = halo.flatMap((entry) => {\n      const pathScore = pathScores.get(positionKey(entry.sourcePosition));\n      if (\n        pathScore === undefined ||\n        pathScore.distance > travelEnergyBudget ||\n        entry.tile.terrain === \"water\" ||\n        entry.tile.resource?.kind !== resource ||\n        entry.tile.resource.amount <= 0\n      ) {\n        return [];\n      }\n      return [{\n        entry,\n        travelDistance: pathScore.distance,\n        pathCrowding: pathScore.crowding,\n      }];\n    });"""
+if old not in text:
+    raise SystemExit("travel candidate marker not found")
+text = text.replace(old, new, 1)
+
+old = """      .flatMap(({ entry, travelDistance }) => {"""
+new = """      .flatMap(({ entry, travelDistance, pathCrowding }) => {"""
+if old not in text:
+    raise SystemExit("candidate destructuring marker not found")
+text = text.replace(old, new, 1)
+
+old = """        return [{\n          entry,\n          travelDistance,\n          visibleSupply: supply,\n          costPerUnit: travelDistance / supply,\n        }];"""
+new = """        return [{\n          entry,\n          travelDistance,\n          pathCrowding,\n          visibleSupply: supply,\n          // Crowding is a planning friction, not literal energy consumption.\n          // Keep the existing distance-only energy reserve while preferring a\n          // quiet corridor when two neighboring supplies are otherwise alike.\n          costPerUnit: (travelDistance + pathCrowding) / supply,\n        }];"""
+if old not in text:
+    raise SystemExit("candidate scoring marker not found")
+text = text.replace(old, new, 1)
+
+old = """        || b.visibleSupply - a.visibleSupply\n        || a.travelDistance - b.travelDistance\n        || directionRank(a.entry.direction) - directionRank(b.entry.direction)"""
+new = """        || b.visibleSupply - a.visibleSupply\n        || a.travelDistance - b.travelDistance\n        || a.pathCrowding - b.pathCrowding\n        || directionRank(a.entry.direction) - directionRank(b.entry.direction)"""
+if old not in text:
+    raise SystemExit("candidate sort marker not found")
+text = text.replace(old, new, 1)
+
+old = """      visibleSupply: candidate.visibleSupply,\n      travelDistance: candidate.travelDistance,\n      costPerUnit: candidate.costPerUnit,"""
+new = """      visibleSupply: candidate.visibleSupply,\n      travelDistance: candidate.travelDistance,\n      pathCrowding: candidate.pathCrowding,\n      costPerUnit: candidate.costPerUnit,"""
+if old not in text:
+    raise SystemExit("expedition push marker not found")
+text = text.replace(old, new, 1)
+
+old = """    a.costPerUnit - b.costPerUnit\n    || b.visibleSupply - a.visibleSupply\n    || a.travelDistance - b.travelDistance\n    || a.agent.id.localeCompare(b.agent.id)"""
+new = """    a.costPerUnit - b.costPerUnit\n    || b.visibleSupply - a.visibleSupply\n    || a.travelDistance - b.travelDistance\n    || a.pathCrowding - b.pathCrowding\n    // Equivalent expeditions should use the BOT with more remaining energy;\n    // low-energy workers are more useful staying near the current settlement.\n    || b.agent.energy - a.agent.energy\n    || a.agent.id.localeCompare(b.agent.id)"""
+if old not in text:
+    raise SystemExit("expedition sort marker not found")
+text = text.replace(old, new, 1)
+path.write_text(text)
+
+test_path = Path("tests/autonomous-halo-travel.test.mjs")
+test_text = test_path.read_text()
+marker = 'test("interior autonomy prices crowding into cross-region expedition routes"'
+if marker not in test_text:
+    test_text += '''\n\ntest("interior autonomy prices crowding into cross-region expedition routes", () => {\n  const { state, agent } = depletedInteriorWoodcutter();\n  const eastCells = hexGridBoundaryCells(state, "east");\n  const westCells = hexGridBoundaryCells(state, "west");\n  const east = haloResource(state, "east", Math.floor(eastCells.length / 2), "garden-2", "wood", 8);\n  const west = haloResource(state, "west", Math.floor(westCells.length / 2), "garden-4", "wood", 8);\n  const blocker = state.agents.find((candidate) => candidate.id !== agent.id);\n  assert.ok(blocker);\n  blocker.position = { ...east.sourcePosition };\n\n  const plan = planAutonomousHaloTravel(state, [east, west]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "west");\n  assert.deepEqual(plan.boundaryTarget, west.sourcePosition);\n});\n\ntest("equivalent cross-region expeditions prefer the higher-energy autonomous BOT", () => {\n  const { state, agent: template } = depletedInteriorWoodcutter();\n  const low = structuredClone(template);\n  const high = structuredClone(template);\n  low.id = "agent-a-low-energy-expedition";\n  high.id = "agent-z-high-energy-expedition";\n  low.energy = 50;\n  high.energy = 90;\n  low.capacity = 10;\n  high.capacity = 10;\n  low.inventory = { wood: 0, stone: 0, food: 0 };\n  high.inventory = { wood: 0, stone: 0, food: 0 };\n  low.autonomy = true;\n  high.autonomy = true;\n  low.task = { source: "autonomy", issuedAtTick: 20, type: "gather", resource: "wood" };\n  high.task = { source: "autonomy", issuedAtTick: 21, type: "gather", resource: "wood" };\n  state.agents = [low, high];\n\n  const eastCells = hexGridBoundaryCells(state, "east");\n  const east = haloResource(state, "east", Math.floor(eastCells.length / 2), "garden-2", "wood", 8);\n  const plan = planAutonomousHaloTravel(state, [east]);\n  assert.ok(plan);\n  assert.equal(plan.agentId, high.id);\n});\n'''
+    test_path.write_text(test_text)
