@@ -15,6 +15,7 @@ import {
   type WorldCommand,
   type WorldState,
 } from "./protocol.js";
+import { applyPopulationAging } from "./demography.js";
 import { simulate } from "./simulation.js";
 import { ensureWorldExtent } from "./world-scale.js";
 import {
@@ -441,6 +442,7 @@ function planConceptions(state: WorldState): void {
 }
 
 function applyDemography(state: WorldState): void {
+  applyPopulationAging(state);
   applyLifeStageTransitions(state);
   birthDuePregnancies(state);
   planConceptions(state);
