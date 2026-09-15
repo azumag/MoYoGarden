@@ -1,0 +1,103 @@
+name: MoYoGarden one-shot improvement
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moyo-one-shot-improve
+  cancel-in-progress: false
+
+jobs:
+  improve:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply focused logistics patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected exactly one match in {path}, found {text.count(old)}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'src/halo-region.ts',
+              '''      const headroom = Math.max(\n        0,\n        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),\n      );\n      if (headroom <= 0) continue;\n      storageHeadroom.set(\n        structure.factionId,\n        (storageHeadroom.get(structure.factionId) ?? 0) + headroom,\n      );''',
+              '''      const headroom = Math.max(\n        0,\n        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),\n      );\n      // Keep zero for factions whose active storage is known to be full. An\n      // omitted faction still means "unknown" after bounded top-N truncation,\n      // which lets remote planners distinguish full from merely unobserved.\n      storageHeadroom.set(\n        structure.factionId,\n        (storageHeadroom.get(structure.factionId) ?? 0) + headroom,\n      );'''
+          )
+
+          replace_once(
+              'src/autonomy-region.ts',
+              '''function haloRegionFactionStorageHeadroom(\n  halo: readonly HexHaloTile[],\n  neighborRegionId: string,\n  factionId: string,\n): number | undefined {\n  let minimumHeadroom: number | undefined;\n  for (const entry of halo) {\n    if (entry.neighborRegionId !== neighborRegionId) continue;\n    const headroom = entry.neighborRegionSummary?.storageHeadroomByFaction?.[factionId];\n    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom <= 0) continue;\n    // Multiple seam reads can straddle ticks. Treat this as a routing hint, not\n    // a reservation, and use the most conservative positive observation.\n    minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);\n  }\n  return minimumHeadroom;\n}''',
+              '''function haloRegionFactionStorageHeadroom(\n  halo: readonly HexHaloTile[],\n  neighborRegionId: string,\n  factionId: string,\n): number | undefined {\n  let minimumHeadroom: number | undefined;\n  for (const entry of halo) {\n    if (entry.neighborRegionId !== neighborRegionId) continue;\n    const byFaction = entry.neighborRegionSummary?.storageHeadroomByFaction;\n    if (byFaction === undefined || !Object.prototype.hasOwnProperty.call(byFaction, factionId)) continue;\n    const headroom = byFaction[factionId];\n    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom < 0) continue;\n    // Multiple seam reads can straddle ticks. Treat this as a routing hint, not\n    // a reservation, and use the most conservative observation, including zero\n    // when the remote faction's active storage is explicitly known to be full.\n    minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);\n  }\n  return minimumHeadroom;\n}\n\nfunction storageHeadroomPreference(headroom: number | undefined): number {\n  // Positive observed capacity is best; missing bounded metadata stays neutral;\n  // an explicit zero is actionable evidence that the destination is full.\n  if (headroom === undefined) return 1;\n  return headroom > 0 ? 2 : 0;\n}'''
+          )
+
+          old_sort = '''        || Number((b.destinationStorageHeadroom ?? 0) > 0)\n          - Number((a.destinationStorageHeadroom ?? 0) > 0)\n        || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)'''
+          new_sort = '''        || storageHeadroomPreference(b.destinationStorageHeadroom)\n          - storageHeadroomPreference(a.destinationStorageHeadroom)\n        || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)'''
+          p = Path('src/autonomy-region.ts')
+          text = p.read_text()
+          if text.count(old_sort) != 2:
+              raise SystemExit(f"expected two destination storage sort blocks, found {text.count(old_sort)}")
+          p.write_text(text.replace(old_sort, new_sort))
+
+          replace_once(
+              'tests/autonomy-region-storage-headroom-summary.test.mjs',
+              '''      ...(headroom > 0 ? { storageHeadroomByFaction: { [factionId]: headroom } } : {}),''',
+              '''      ...(headroom === undefined ? {} : { storageHeadroomByFaction: { [factionId]: headroom } }),'''
+          )
+          replace_once(
+              'tests/autonomy-region-storage-headroom-summary.test.mjs',
+              '''  const summary = {\n    resources: { wood: 8, stone: 0, food: 0 },\n    storageHeadroomByFaction: { settlers: 12 },\n    passableCells: 397,\n    occupants: 2,\n  };''',
+              '''  const summary = {\n    resources: { wood: 8, stone: 0, food: 0 },\n    storageHeadroomByFaction: { settlers: 0, traders: 12 },\n    passableCells: 397,\n    occupants: 2,\n  };'''
+          )
+          replace_once(
+              'tests/autonomy-region-storage-headroom-summary.test.mjs',
+              '''  assert.deepEqual(materialized[0].neighborRegionSummary?.storageHeadroomByFaction, { settlers: 12 });\n  materialized[0].neighborRegionSummary.storageHeadroomByFaction.settlers = 1;\n  assert.equal(summary.storageHeadroomByFaction.settlers, 12);''',
+              '''  assert.deepEqual(materialized[0].neighborRegionSummary?.storageHeadroomByFaction, { settlers: 0, traders: 12 });\n  materialized[0].neighborRegionSummary.storageHeadroomByFaction.settlers = 1;\n  assert.equal(summary.storageHeadroomByFaction.settlers, 0);'''
+          )
+          replace_once(
+              'tests/autonomy-region-storage-headroom-summary.test.mjs',
+              '''  const east = halo(state, "east", "garden-2", agent.factionId, 0);\n  const west = halo(state, "west", "hex-q-1-r0", "other-faction", 20);\n  const plan = planAutonomousHaloTravel(state, [west, east]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");''',
+              '''  const east = halo(state, "east", "garden-2", agent.factionId, undefined);\n  const west = halo(state, "west", "hex-q-1-r0", "other-faction", 20);\n  const plan = planAutonomousHaloTravel(state, [west, east]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");'''
+          )
+          p = Path('tests/autonomy-region-storage-headroom-summary.test.mjs')
+          text = p.read_text()
+          marker = '''test("storage headroom for another faction does not bias expedition routing", () => {'''
+          addition = '''test("equivalent expeditions prefer unknown storage over a destination known to be full", () => {\n  const { state, agent } = fixture();\n  const east = halo(state, "east", "garden-2", agent.factionId, 0);\n  const west = halo(state, "west", "hex-q-1-r0", agent.factionId, undefined);\n  const plan = planAutonomousHaloTravel(state, [east, west]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "west");\n  assert.equal(plan.neighborRegionId, "hex-q-1-r0");\n});\n\n'''
+          if text.count(marker) != 1:
+              raise SystemExit('test insertion marker mismatch')
+          p.write_text(text.replace(marker, addition + marker, 1))
+          PY
+
+          git rm .github/workflows/moyo-auto-improve.yml
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck, test, and build
+        run: npm run build
+      - name: Commit verified improvement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/halo-region.ts src/autonomy-region.ts tests/autonomy-region-storage-headroom-summary.test.mjs .github/workflows/moyo-auto-improve.yml
+          git commit -m 'sim: avoid known-full expedition storage'
+          git push origin HEAD:main
