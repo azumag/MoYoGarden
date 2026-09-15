@@ -33,7 +33,8 @@ jobs:
         run: node scripts/one-shot-region-storage-headroom.mjs
 
       - name: Align exact optional typing
-        run: sed -i 's/destinationStorageHeadroom?: number;/destinationStorageHeadroom: number | undefined;/' src/autonomy-region.ts
+        run: |
+          sed -i 's/destinationStorageHeadroom?: number;/destinationStorageHeadroom: number | undefined;/' src/autonomy-region.ts
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
