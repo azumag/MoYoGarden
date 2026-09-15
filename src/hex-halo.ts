@@ -35,6 +35,10 @@ export interface HexHaloRegionSummary {
   // service footprint so neighboring planners can reason about settlement
   // saturation without fetching remote structure snapshots.
   activeStructures?: Record<StructureType, number>;
+  // Optional during rolling deploys. This is a bounded positive-headroom map
+  // (at most a handful of factions), used only as a planning preference; an
+  // omitted faction is unknown rather than proof that remote storage is full.
+  storageHeadroomByFaction?: Record<string, number>;
   passableCells: number;
   occupants: number;
 }
@@ -383,6 +387,9 @@ export function materializeHexHalo(
           }),
           ...(observed.regionSummary.activeStructures === undefined ? {} : {
             activeStructures: { ...observed.regionSummary.activeStructures },
+          }),
+          ...(observed.regionSummary.storageHeadroomByFaction === undefined ? {} : {
+            storageHeadroomByFaction: { ...observed.regionSummary.storageHeadroomByFaction },
           }),
           passableCells: observed.regionSummary.passableCells,
           occupants: observed.regionSummary.occupants,

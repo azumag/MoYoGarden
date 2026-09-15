@@ -536,6 +536,23 @@ function haloRegionResourceSupply(
   return summarizedSupply ?? boundarySupply;
 }
 
+function haloRegionFactionStorageHeadroom(
+  halo: readonly HexHaloTile[],
+  neighborRegionId: string,
+  factionId: string,
+): number | undefined {
+  let minimumHeadroom: number | undefined;
+  for (const entry of halo) {
+    if (entry.neighborRegionId !== neighborRegionId) continue;
+    const headroom = entry.neighborRegionSummary?.storageHeadroomByFaction?.[factionId];
+    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom <= 0) continue;
+    // Multiple seam reads can straddle ticks. Treat this as a routing hint, not
+    // a reservation, and use the most conservative positive observation.
+    minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);
+  }
+  return minimumHeadroom;
+}
+
 function availableHaloSupplyForAgent(
   state: Pick<WorldState, "tick">,
   halo: readonly HexHaloTile[],
@@ -600,6 +617,7 @@ export function planAutonomousHaloTravel(
     travelDistance: number;
     pathCrowding: number;
     destinationCrowding: number;
+    destinationStorageHeadroom: number | undefined;
     costPerUnit: number;
   }> = [];
 
@@ -623,6 +641,13 @@ export function planAutonomousHaloTravel(
         haloRegionResourceSupply(halo, resource, neighborRegionId),
       );
     }
+    const destinationStorageHeadroom = new Map<string, number | undefined>();
+    for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {
+      destinationStorageHeadroom.set(
+        neighborRegionId,
+        haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId),
+      );
+    }
     const candidates = halo.flatMap((entry) => {
       const pathScore = pathScores.get(positionKey(entry.sourcePosition));
       if (
@@ -638,6 +663,7 @@ export function planAutonomousHaloTravel(
         travelDistance: pathScore.distance,
         pathCrowding: pathScore.crowding,
         destinationCrowding: entry.neighborOccupants ?? 0,
+        destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),
       }];
     });
     const claimedSupply = new Map<string, number>();
@@ -648,7 +674,7 @@ export function planAutonomousHaloTravel(
     }
 
     const candidate = candidates
-      .flatMap(({ entry, travelDistance, pathCrowding, destinationCrowding }) => {
+      .flatMap(({ entry, travelDistance, pathCrowding, destinationCrowding, destinationStorageHeadroom }) => {
         const key = haloSupplyKey(entry.neighborRegionId);
         const availableSupply = Math.max(
           0,
@@ -661,6 +687,7 @@ export function planAutonomousHaloTravel(
           travelDistance,
           pathCrowding,
           destinationCrowding,
+          destinationStorageHeadroom,
           visibleSupply: supply,
           // Crowding is a planning friction, not literal energy consumption.
           // Keep the existing distance-only energy reserve while preferring a
@@ -676,6 +703,13 @@ export function planAutonomousHaloTravel(
         || a.travelDistance - b.travelDistance
         || a.pathCrowding - b.pathCrowding
         || a.destinationCrowding - b.destinationCrowding
+        // Equivalent routes should prefer a region that currently has positive
+        // storage headroom for this BOT's own faction. This is deliberately a
+        // tie-break only: remote headroom is not reserved and can change before
+        // arrival, while the existing source-return promise remains the fallback.
+        || Number((b.destinationStorageHeadroom ?? 0) > 0)
+          - Number((a.destinationStorageHeadroom ?? 0) > 0)
+        || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)
         || directionRank(a.entry.direction) - directionRank(b.entry.direction)
         || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
         || a.entry.sourcePosition.y - b.entry.sourcePosition.y
@@ -691,6 +725,7 @@ export function planAutonomousHaloTravel(
       travelDistance: candidate.travelDistance,
       pathCrowding: candidate.pathCrowding,
       destinationCrowding: candidate.destinationCrowding,
+      destinationStorageHeadroom: candidate.destinationStorageHeadroom,
       costPerUnit: candidate.costPerUnit,
     });
   }
@@ -701,6 +736,9 @@ export function planAutonomousHaloTravel(
     || a.travelDistance - b.travelDistance
     || a.pathCrowding - b.pathCrowding
     || a.destinationCrowding - b.destinationCrowding
+    || Number((b.destinationStorageHeadroom ?? 0) > 0)
+      - Number((a.destinationStorageHeadroom ?? 0) > 0)
+    || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)
     // Equivalent expeditions should use the BOT with more remaining energy;
     // low-energy workers are more useful staying near the current settlement.
     || b.agent.energy - a.agent.energy

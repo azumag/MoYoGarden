@@ -19,7 +19,12 @@ import {
   type HexGridDirection,
 } from "./hex-grid.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
-import type { ResourceKind, WorldState } from "./protocol.js";
+import {
+  BUILD_RECIPES,
+  inventoryTotal,
+  type ResourceKind,
+  type WorldState,
+} from "./protocol.js";
 import { parseAxialRegionId, regionGlobalCellOrigin, regionHexWindow } from "./region-topology.js";
 import { WorldRuntime } from "./runtime.js";
 import { getTile } from "./world.js";
@@ -75,6 +80,9 @@ export const HALO_EDGE_READ_TIMEOUT_MS = 5_000;
 // only depleted organic resources in boundary depth 0..3 can observe any halo
 // input. Propagules and windborne vapor are one-step effects and are narrower.
 const HALO_REGROWTH_BOUNDARY_DEPTH = 3;
+// Keep the whole-region logistics hint constant-size even if future worlds
+// contain many factions. Missing entries remain neutral to remote planners.
+const MAX_SUMMARIZED_STORAGE_FACTIONS = 8;
 const DEFAULT_WORLD_SEED = 424_242;
 const PERSISTED_LEGACY_REGION_IDS = ["garden-1", "garden-2", "garden-3"] as const;
 
@@ -363,9 +371,25 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     const resourceCapacity: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     const activeStructures = { camp: 0, storehouse: 0, market: 0, workshop: 0 };
+    const storageHeadroom = new Map<string, number>();
     for (const structure of state.structures) {
-      if (structure.status === "active") activeStructures[structure.type] += 1;
+      if (structure.status !== "active") continue;
+      activeStructures[structure.type] += 1;
+      const headroom = Math.max(
+        0,
+        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
+      );
+      if (headroom <= 0) continue;
+      storageHeadroom.set(
+        structure.factionId,
+        (storageHeadroom.get(structure.factionId) ?? 0) + headroom,
+      );
     }
+    const storageHeadroomByFaction = Object.fromEntries(
+      [...storageHeadroom.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, MAX_SUMMARIZED_STORAGE_FACTIONS),
+    );
     let passableCells = 0;
     for (const tile of state.tiles) {
       if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
@@ -379,6 +403,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       resources,
       resourceCapacity,
       activeStructures,
+      storageHeadroomByFaction,
       passableCells,
       occupants: state.agents.length,
     };
