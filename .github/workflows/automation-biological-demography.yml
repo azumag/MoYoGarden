@@ -31,6 +31,8 @@ jobs:
         run: |
           sed -i 's/growth_pattern.subn(new_demography, runtime, count=1)/growth_pattern.subn(lambda _match: new_demography, runtime, count=1)/' .github/automation-biological-demography.py
           sed -i 's/test_pattern.subn(replacement, sim, count=1)/test_pattern.subn(lambda _match: replacement, sim, count=1)/' .github/automation-biological-demography.py
+          sed -i '/assert.equal(newcomer.lifeStage, "infant");/i\  const birthParent = born.agents.find((entry) => entry.id === parent.id); assert.ok(birthParent);' .github/automation-biological-demography.py
+          sed -i 's/assert.deepEqual(newcomer.position, parent.position);/assert.deepEqual(newcomer.position, birthParent.position);/' .github/automation-biological-demography.py
           python3 .github/automation-biological-demography.py
 
       - name: Install dependencies
