@@ -106,7 +106,6 @@ test("storage headroom for another faction does not bias expedition routing", ()
   assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");
 });
 
-
 function fillFactionStorage(state, factionId) {
   for (const structure of state.structures) {
     if (structure.factionId !== factionId || structure.status !== "active") continue;
