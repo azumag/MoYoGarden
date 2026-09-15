@@ -27,59 +27,20 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-
           src = Path("src/autonomy-region.ts")
           text = src.read_text()
-          old = '''    const availableSourceReturnStorage = Math.max(
-  0,
-  factionStorageCapacityLeft(state, agent.factionId)
-    - reservedReturnStorageForFaction(state, claims, agent.factionId),
-);
-'''
-          new = '''    const availableSourceReturnStorage = Math.max(
-      0,
-      factionStorageCapacityLeft(state, agent.factionId)
-        - reservedReturnStorageForFaction(state, claims, agent.factionId),
-    );
-'''
-          if old not in text:
+          old_capacity = "    const availableSourceReturnStorage = Math.max(\n  0,\n  factionStorageCapacityLeft(state, agent.factionId)\n    - reservedReturnStorageForFaction(state, claims, agent.factionId),\n);\n"
+          new_capacity = "    const availableSourceReturnStorage = Math.max(\n      0,\n      factionStorageCapacityLeft(state, agent.factionId)\n        - reservedReturnStorageForFaction(state, claims, agent.factionId),\n    );\n"
+          if old_capacity not in text:
               raise SystemExit("source capacity formatting anchor missing")
-          text = text.replace(old, new, 1)
-          old = '''      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
-  // Do not launch cargo toward a destination that is explicitly known to
-  // have no storage when this source also has no unreserved return capacity.
-  // Missing remote metadata stays neutral for rolling compatibility: only
-  // two concrete capacity observations can prove the expedition has no sink.
-  if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
-        return [{
-        entry,
-        travelDistance: pathScore.distance,
-        pathCrowding: pathScore.crowding,
-        destinationCrowding: entry.neighborOccupants ?? 0,
-        destinationStorageHeadroom: remoteStorageHeadroom,
-      }];
-'''
-          new = '''      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
-      // Do not launch cargo toward a destination that is explicitly known to
-      // have no storage when this source also has no unreserved return capacity.
-      // Missing remote metadata stays neutral for rolling compatibility: only
-      // two concrete capacity observations can prove the expedition has no sink.
-      if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
-      return [{
-        entry,
-        travelDistance: pathScore.distance,
-        pathCrowding: pathScore.crowding,
-        destinationCrowding: entry.neighborOccupants ?? 0,
-        destinationStorageHeadroom: remoteStorageHeadroom,
-      }];
-'''
-          if old not in text:
+          text = text.replace(old_capacity, new_capacity, 1)
+          old_route = "      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);\n  // Do not launch cargo toward a destination that is explicitly known to\n  // have no storage when this source also has no unreserved return capacity.\n  // Missing remote metadata stays neutral for rolling compatibility: only\n  // two concrete capacity observations can prove the expedition has no sink.\n  if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];\n        return [{\n        entry,\n        travelDistance: pathScore.distance,\n        pathCrowding: pathScore.crowding,\n        destinationCrowding: entry.neighborOccupants ?? 0,\n        destinationStorageHeadroom: remoteStorageHeadroom,\n      }];\n"
+          new_route = "      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);\n      // Do not launch cargo toward a destination that is explicitly known to\n      // have no storage when this source also has no unreserved return capacity.\n      // Missing remote metadata stays neutral for rolling compatibility: only\n      // two concrete capacity observations can prove the expedition has no sink.\n      if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];\n      return [{\n        entry,\n        travelDistance: pathScore.distance,\n        pathCrowding: pathScore.crowding,\n        destinationCrowding: entry.neighborOccupants ?? 0,\n        destinationStorageHeadroom: remoteStorageHeadroom,\n      }];\n"
+          if old_route not in text:
               raise SystemExit("source route formatting anchor missing")
-          src.write_text(text.replace(old, new, 1))
-
+          src.write_text(text.replace(old_route, new_route, 1))
           test = Path("tests/autonomy-region-storage-headroom-summary.test.mjs")
-          t = test.read_text().replace("});\n\n\nfunction fillFactionStorage", "});\n\nfunction fillFactionStorage", 1)
-          test.write_text(t)
+          test.write_text(test.read_text().replace("});\n\n\nfunction fillFactionStorage", "});\n\nfunction fillFactionStorage", 1))
           PY
           git diff --check
       - name: Install dependencies
@@ -95,5 +56,3 @@ jobs:
           git add src/autonomy-region.ts tests/autonomy-region-storage-headroom-summary.test.mjs
           git commit -m "style: format expedition storage safety guard"
           git push origin HEAD:main
-
-# trigger after registration
