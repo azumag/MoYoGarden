@@ -10,11 +10,17 @@ function finiteAxial(value) {
     && Number.isInteger(value.r);
 }
 
-function axialDistance(a, b) {
-  const dq = a.q - b.q;
-  const dr = a.r - b.r;
-  const ds = -dq - dr;
-  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
+const HEX_AXIAL_STEPS = [
+  [1, 0],
+  [1, -1],
+  [0, -1],
+  [-1, 0],
+  [-1, 1],
+  [0, 1],
+];
+
+function axialKey(q, r) {
+  return `${q},${r}`;
 }
 
 export function buildNeighborPreviewPlacements(regions, centerRegionId) {
@@ -54,19 +60,42 @@ export function buildNeighborPreviewPlacements(regions, centerRegionId) {
  * not present in this list; it is already stitched through the primary terrain
  * mesh. Keeping this purely axial avoids relying on rendered floating-point
  * offsets when deciding which preview chunks really share a hex side.
+ *
+ * Indexing the loaded chunks by axial coordinate keeps seam discovery linear
+ * in the number of preview regions instead of comparing every pair. This
+ * matters once far-terrain windows grow beyond the immediate six neighbors.
  */
 export function adjacentHexPreviewPairs(placements) {
   if (!Array.isArray(placements)) return [];
   const candidates = placements
-    .filter((entry) => typeof entry?.regionId === "string" && finiteAxial(entry.axial))
-    .sort((a, b) => a.regionId.localeCompare(b.regionId));
+    .flatMap((entry) => {
+      const axial = entry?.axial;
+      if (typeof entry?.regionId !== "string" || !finiteAxial(axial)) return [];
+      return [{ entry, q: axial.q, r: axial.r }];
+    })
+    .sort((a, b) => a.entry.regionId.localeCompare(b.entry.regionId))
+    .map((candidate, order) => ({ ...candidate, order }));
+
+  const byAxial = new Map();
+  for (const candidate of candidates) {
+    const key = axialKey(candidate.q, candidate.r);
+    const bucket = byAxial.get(key);
+    if (bucket) bucket.push(candidate);
+    else byAxial.set(key, [candidate]);
+  }
+
   const pairs = [];
-  for (let left = 0; left < candidates.length; left += 1) {
-    for (let right = left + 1; right < candidates.length; right += 1) {
-      const source = candidates[left];
-      const target = candidates[right];
-      if (axialDistance(source.axial, target.axial) === 1) pairs.push([source, target]);
+  for (const source of candidates) {
+    const targets = [];
+    for (const [dq, dr] of HEX_AXIAL_STEPS) {
+      const bucket = byAxial.get(axialKey(source.q + dq, source.r + dr));
+      if (!bucket) continue;
+      for (const target of bucket) {
+        if (target.order > source.order) targets.push(target);
+      }
     }
+    targets.sort((a, b) => a.order - b.order);
+    for (const target of targets) pairs.push([source.entry, target.entry]);
   }
   return pairs;
 }
