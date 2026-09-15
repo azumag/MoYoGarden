@@ -106,6 +106,14 @@ interface AutonomousArrivalClaim {
   returnToSourceStorage?: boolean;
 }
 
+interface AutonomousDestinationStorageReservation {
+  claimId: string;
+  sourceRegionId: string;
+  factionId: string;
+  amount: number;
+  expiresAtMs: number;
+}
+
 export interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {
   neighborRegionId: string;
 }
@@ -117,17 +125,23 @@ const AUTONOMOUS_TRAVEL_KEY = "handoff:autonomy:travel:v1";
 const AUTONOMOUS_TRAVELS_KEY = "handoff:autonomy:travel:v2";
 const AUTONOMOUS_SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
+const AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";
 const AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migration:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
 const INTERNAL_AUTONOMY_PREFIX = "/api/internal/autonomy/";
 const INTERNAL_CLAIM_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/register`;
 const INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;
 const INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;
+const INTERNAL_STORAGE_RESERVE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/reserve`;
+const INTERNAL_STORAGE_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/release`;
 const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
 const AUTONOMOUS_SUPPLY_CLAIM_TTL = AUTONOMOUS_TRAVEL_TTL + AUTONOMOUS_SCOUT_INTERVAL;
 const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;
+// Destination admission uses wall-clock expiry because source and destination
+// simulation ticks may advance at different active/warm/cold cadences.
+const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
 const SETTLEMENT_MIGRATION_TTL = 72;
 // Successful bounded catch-up batches can drain debt promptly without
 // putting dozens of full virtual ticks into one DO invocation. Failed
@@ -254,6 +268,24 @@ function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalCla
       && value.settledAmount >= 0
     ))
     && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");
+}
+
+function isDestinationStorageReservation(
+  value: unknown,
+): value is AutonomousDestinationStorageReservation {
+  return isRecord(value)
+    && typeof value.claimId === "string"
+    && value.claimId.length > 0
+    && typeof value.sourceRegionId === "string"
+    && value.sourceRegionId.length > 0
+    && typeof value.factionId === "string"
+    && value.factionId.length > 0
+    && typeof value.amount === "number"
+    && Number.isFinite(value.amount)
+    && value.amount > 0
+    && typeof value.expiresAtMs === "number"
+    && Number.isFinite(value.expiresAtMs)
+    && value.expiresAtMs > 0;
 }
 
 function inventoryAmount(agent: Agent): number {
@@ -977,16 +1009,40 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return active;
   }
 
+  private async releaseRemoteDestinationStorageReservation(
+    claim: AutonomousSupplyClaim | undefined,
+  ): Promise<void> {
+    if (claim?.destinationStorageReserved !== true) return;
+    const sourceRegionId = runtimeAccess(this).runtime.snapshot().regionId;
+    try {
+      await this.autonomyStub(claim.neighborRegionId).fetch(new Request(
+        `https://moyo.internal${INTERNAL_STORAGE_RELEASE_PATH}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-moyo-region-internal": claim.neighborRegionId,
+          },
+          body: JSON.stringify({ claimId: claim.claimId, sourceRegionId }),
+        },
+      ));
+    } catch {
+      // The destination-side wall-clock TTL is the crash-safe fallback. A
+      // failed best-effort release can temporarily underbook, never overbook.
+    }
+  }
+
   private async releaseAutonomousSupplyClaim(claimId: string | undefined): Promise<void> {
     if (claimId === undefined) return;
     const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_SUPPLY_CLAIMS_KEY);
     if (!Array.isArray(stored)) return;
-    const next = stored
-      .filter(isAutonomousSupplyClaim)
-      .filter((claim) => claim.claimId !== claimId);
+    const valid = stored.filter(isAutonomousSupplyClaim);
+    const released = valid.find((claim) => claim.claimId === claimId);
+    const next = valid.filter((claim) => claim.claimId !== claimId);
     if (next.length !== stored.length) {
       await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, next);
     }
+    await this.releaseRemoteDestinationStorageReservation(released);
   }
 
   private async arrivalClaims(): Promise<AutonomousArrivalClaim[]> {
@@ -999,6 +1055,132 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       await this.autonomyState.storage.put(AUTONOMOUS_ARRIVAL_CLAIMS_KEY, valid);
     }
     return valid;
+  }
+
+  private async activeDestinationStorageReservations(
+    now = Date.now(),
+  ): Promise<AutonomousDestinationStorageReservation[]> {
+    const stored = await this.autonomyState.storage.get<unknown>(
+      AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+    );
+    const valid = Array.isArray(stored)
+      ? stored.filter(isDestinationStorageReservation)
+      : [];
+    const active = valid.filter((entry) => entry.expiresAtMs > now);
+    if (!Array.isArray(stored) || active.length !== stored.length) {
+      await this.autonomyState.storage.put(
+        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+        active,
+      );
+    }
+    return active;
+  }
+
+  private async reserveDestinationStorage(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+    }
+    if (
+      !isRecord(body)
+      || typeof body.claimId !== "string"
+      || body.claimId.trim() === ""
+      || typeof body.sourceRegionId !== "string"
+      || !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId)
+      || typeof body.factionId !== "string"
+      || body.factionId.trim() === ""
+      || typeof body.amount !== "number"
+      || !Number.isFinite(body.amount)
+      || body.amount <= 0
+    ) {
+      return new Response(JSON.stringify({ error: "invalid destination storage reservation" }), {
+        status: 400,
+      });
+    }
+
+    const now = Date.now();
+    const reservations = await this.activeDestinationStorageReservations(now);
+    const existing = reservations.find((entry) => entry.claimId === body.claimId);
+    if (existing !== undefined) {
+      if (
+        existing.sourceRegionId !== body.sourceRegionId
+        || existing.factionId !== body.factionId
+      ) {
+        return new Response(JSON.stringify({ error: "claimId already reserved by another source" }), {
+          status: 409,
+        });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        claimId: existing.claimId,
+        grantedAmount: existing.amount,
+        idempotent: true,
+      }), { headers: { "content-type": "application/json; charset=utf-8" } });
+    }
+
+    const state = runtimeAccess(this).runtime.snapshot();
+    const actualHeadroom = factionStorageCapacityLeft(state, body.factionId);
+    const alreadyReserved = reservations.reduce(
+      (sum, entry) => entry.factionId === body.factionId ? sum + entry.amount : sum,
+      0,
+    );
+    const available = Math.max(0, actualHeadroom - alreadyReserved);
+    const grantedAmount = Math.min(body.amount, available);
+    if (grantedAmount > 0) {
+      const reservation: AutonomousDestinationStorageReservation = {
+        claimId: body.claimId,
+        sourceRegionId: body.sourceRegionId,
+        factionId: body.factionId,
+        amount: grantedAmount,
+        expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS,
+      };
+      await this.autonomyState.storage.put(
+        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+        [...reservations, reservation],
+      );
+    }
+    return new Response(JSON.stringify({
+      ok: true,
+      claimId: body.claimId,
+      requestedAmount: body.amount,
+      grantedAmount,
+      remainingHeadroom: Math.max(0, available - grantedAmount),
+    }), { headers: { "content-type": "application/json; charset=utf-8" } });
+  }
+
+  private async releaseDestinationStorage(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+    }
+    if (
+      !isRecord(body)
+      || typeof body.claimId !== "string"
+      || body.claimId.trim() === ""
+      || typeof body.sourceRegionId !== "string"
+      || !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId)
+    ) {
+      return new Response(JSON.stringify({ error: "claimId and sourceRegionId are required" }), {
+        status: 400,
+      });
+    }
+    const reservations = await this.activeDestinationStorageReservations();
+    const next = reservations.filter((entry) =>
+      entry.claimId !== body.claimId || entry.sourceRegionId !== body.sourceRegionId
+    );
+    if (next.length !== reservations.length) {
+      await this.autonomyState.storage.put(
+        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+        next,
+      );
+    }
+    return new Response(JSON.stringify({ ok: true, claimId: body.claimId }), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
   }
 
   private async ensureAutonomyAssigned(request: Request): Promise<Response | undefined> {
@@ -1473,6 +1655,42 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return keep.length;
   }
 
+  private async reserveRemoteDestinationStorage(
+    state: WorldState,
+    claimId: string,
+    neighborRegionId: string,
+    factionId: string,
+    amount: number,
+  ): Promise<number> {
+    try {
+      const response = await this.autonomyStub(neighborRegionId).fetch(new Request(
+        `https://moyo.internal${INTERNAL_STORAGE_RESERVE_PATH}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-moyo-region-internal": neighborRegionId,
+          },
+          body: JSON.stringify({
+            claimId,
+            sourceRegionId: state.regionId,
+            factionId,
+            amount,
+          }),
+        },
+      ));
+      if (!response.ok) return 0;
+      const payload = await response.json() as unknown;
+      if (!isRecord(payload) || typeof payload.grantedAmount !== "number") return 0;
+      if (!Number.isFinite(payload.grantedAmount) || payload.grantedAmount <= 0) return 0;
+      return Math.min(amount, payload.grantedAmount);
+    } catch {
+      // A known remote-only sink must fail closed if its actual destination
+      // admission cannot be confirmed. The next scout cadence can retry.
+      return 0;
+    }
+  }
+
   private async startAutonomousTravels(
     state: WorldState,
     availableSlots: number,
@@ -1509,20 +1727,32 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       );
       const availableReturnStorage = Math.max(0, sourceStorageHeadroom - reservedReturnStorage);
       const returnToSourceStorage = availableReturnStorage > 0;
-      const destinationStorageReserved =
+      const needsDestinationReservation =
         !returnToSourceStorage
         && plan.destinationStorageHeadroom !== undefined
         && plan.destinationStorageHeadroom > 0;
-      // A return reservation is a capacity promise, not just a boolean hint. Bound
-      // the supply claim by still-unreserved source storage so concurrent scouts do
-      // not all plan to deposit into the same final slots. When this expedition
-      // instead relies on a concrete remote sink, reserve the observed destination
-      // headroom within this source DO so later scouts cannot overbook it.
-      const claimedSupply = returnToSourceStorage
+      let destinationStorageReserved = false;
+      // Source-return capacity remains a local promise. If this expedition
+      // depends on a concrete remote sink, ask the destination DO to admit the
+      // claim against current storage plus reservations from every source DO.
+      let claimedSupply = returnToSourceStorage
         ? Math.min(plannedSupply, availableReturnStorage)
-        : destinationStorageReserved
-          ? Math.min(plannedSupply, plan.destinationStorageHeadroom ?? plannedSupply)
-          : plannedSupply;
+        : plannedSupply;
+      if (needsDestinationReservation) {
+        const requestedRemoteStorage = Math.min(
+          plannedSupply,
+          plan.destinationStorageHeadroom ?? plannedSupply,
+        );
+        claimedSupply = await this.reserveRemoteDestinationStorage(
+          state,
+          claimId,
+          plan.neighborRegionId,
+          agent.factionId,
+          requestedRemoteStorage,
+        );
+        destinationStorageReserved = claimedSupply > 0;
+        if (!destinationStorageReserved) break;
+      }
       const pendingPlan: PendingAutonomousTravel = {
         ...plan,
         claimId,
@@ -1719,6 +1949,12 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const url = new URL(request.url);
     const assignmentError = await this.ensureAutonomyAssigned(request);
     if (assignmentError !== undefined) return assignmentError;
+    if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RESERVE_PATH) {
+      return this.reserveDestinationStorage(request);
+    }
+    if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RELEASE_PATH) {
+      return this.releaseDestinationStorage(request);
+    }
     if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {
       return this.registerArrivalClaim(request);
     }

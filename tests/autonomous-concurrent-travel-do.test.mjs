@@ -11,6 +11,7 @@ const CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const HANDOFF_KEY = "handoff:autonomy:v1";
 const TRAVEL_KEY = "handoff:autonomy:travel:v1";
 const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
+const DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";
 
 class MemoryStorage {
   constructor() {
@@ -368,4 +369,75 @@ test("concurrent scouts reserve observed destination storage headroom before lau
   assert.ok(claims.every((claim) => claim.returnToSourceStorage !== true));
   assert.ok(claims.every((claim) => claim.destinationStorageReserved === true));
   assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));
+  const remoteReservations = await east.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+  assert.equal(remoteReservations.length, 2);
+  assert.equal(remoteReservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
+  assert.ok(remoteReservations.every((entry) => entry.sourceRegionId === "garden-1"));
+});
+
+
+test("destination storage admission is shared across source regions and releases idempotently", async () => {
+  const env = environment();
+  const destination = await assignRegion(env, "garden-2");
+  const state = destination.object.runtime.snapshot();
+  const factionId = state.agents[0]?.factionId;
+  assert.ok(factionId);
+
+  for (const structure of state.structures) {
+    if (structure.factionId !== factionId || structure.status !== "active") continue;
+    structure.storage = {
+      wood: BUILD_RECIPES[structure.type].storageCapacity,
+      stone: 0,
+      food: 0,
+    };
+  }
+  state.structures.push({
+    id: "three-slot-shared-destination-storehouse",
+    factionId,
+    type: "storehouse",
+    position: hexGridCenter(state),
+    status: "active",
+    progress: 1,
+    requiredProgress: 1,
+    storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 3, stone: 0, food: 0 },
+  });
+  destination.object.runtime = new WorldRuntime({ state });
+  await destination.object.persist();
+
+  const reserve = async (claimId, sourceRegionId, amount) => {
+    const response = await destination.object.fetch(new Request(
+      "https://moyo.internal/api/internal/autonomy/storage/reserve",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-moyo-region-internal": "garden-2",
+        },
+        body: JSON.stringify({ claimId, sourceRegionId, factionId, amount }),
+      },
+    ));
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+
+  assert.equal((await reserve("source-a", "garden-1", 2)).grantedAmount, 2);
+  assert.equal((await reserve("source-b", "garden-3", 2)).grantedAmount, 1);
+  assert.equal((await reserve("source-c", "garden-1", 1)).grantedAmount, 0);
+  assert.equal((await reserve("source-a", "garden-1", 2)).grantedAmount, 2, "retry must be idempotent");
+
+  const release = await destination.object.fetch(new Request(
+    "https://moyo.internal/api/internal/autonomy/storage/release",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-moyo-region-internal": "garden-2",
+      },
+      body: JSON.stringify({ claimId: "source-a", sourceRegionId: "garden-1" }),
+    },
+  ));
+  assert.equal(release.status, 200);
+  assert.equal((await reserve("source-d", "garden-1", 2)).grantedAmount, 2);
+  const reservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+  assert.equal(reservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
 });
