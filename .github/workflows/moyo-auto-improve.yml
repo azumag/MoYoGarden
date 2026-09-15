@@ -101,8 +101,6 @@ jobs:
           p.write_text(text.replace(marker, addition + marker, 1))
           PY
 
-          git rm .github/workflows/moyo-auto-improve.yml
-
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Typecheck, test, and build
@@ -113,6 +111,6 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/halo-region.ts src/hex-halo.ts src/autonomy-region.ts tests/autonomy-region-storage-headroom-summary.test.mjs .github/workflows/moyo-auto-improve.yml
+          git add src/halo-region.ts src/hex-halo.ts src/autonomy-region.ts tests/autonomy-region-storage-headroom-summary.test.mjs
           git commit -m 'sim: avoid known-full expedition storage'
           git push origin HEAD:main
