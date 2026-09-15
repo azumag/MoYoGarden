@@ -32,25 +32,8 @@ jobs:
       - name: Apply bounded storage-headroom patch
         run: node scripts/one-shot-region-storage-headroom.mjs
 
-      - name: Keep optional headroom exact under TypeScript semantics
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('src/autonomy-region.ts')
-          text = path.read_text()
-          before = '''      destinationCrowding: candidate.destinationCrowding,
-      destinationStorageHeadroom: candidate.destinationStorageHeadroom,
-      costPerUnit: candidate.costPerUnit,'''
-          after = '''      destinationCrowding: candidate.destinationCrowding,
-      ...(candidate.destinationStorageHeadroom === undefined
-        ? {}
-        : { destinationStorageHeadroom: candidate.destinationStorageHeadroom }),
-      costPerUnit: candidate.costPerUnit,'''
-          if before not in text:
-              raise SystemExit('optional-headroom patch anchor missing')
-          path.write_text(text.replace(before, after, 1))
-          PY
+      - name: Align exact optional typing
+        run: sed -i 's/destinationStorageHeadroom?: number;/destinationStorageHeadroom: number | undefined;/' src/autonomy-region.ts
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
