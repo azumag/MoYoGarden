@@ -658,6 +658,11 @@ export function planAutonomousHaloTravel(
         haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId),
       );
     }
+    const availableSourceReturnStorage = Math.max(
+  0,
+  factionStorageCapacityLeft(state, agent.factionId)
+    - reservedReturnStorageForFaction(state, claims, agent.factionId),
+);
     const candidates = halo.flatMap((entry) => {
       const pathScore = pathScores.get(positionKey(entry.sourcePosition));
       if (
@@ -668,12 +673,18 @@ export function planAutonomousHaloTravel(
       ) {
         return [];
       }
-      return [{
+      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
+  // Do not launch cargo toward a destination that is explicitly known to
+  // have no storage when this source also has no unreserved return capacity.
+  // Missing remote metadata stays neutral for rolling compatibility: only
+  // two concrete capacity observations can prove the expedition has no sink.
+  if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
+        return [{
         entry,
         travelDistance: pathScore.distance,
         pathCrowding: pathScore.crowding,
         destinationCrowding: entry.neighborOccupants ?? 0,
-        destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),
+        destinationStorageHeadroom: remoteStorageHeadroom,
       }];
     });
     const claimedSupply = new Map<string, number>();

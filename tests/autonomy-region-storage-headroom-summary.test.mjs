@@ -8,6 +8,7 @@ import {
   isHexGridCell,
 } from "../dist-ts/src/hex-grid.js";
 import { materializeHexHalo } from "../dist-ts/src/hex-halo.js";
+import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
 function fixture() {
@@ -103,4 +104,52 @@ test("storage headroom for another faction does not bias expedition routing", ()
   const plan = planAutonomousHaloTravel(state, [west, east]);
   assert.ok(plan);
   assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");
+});
+
+
+function fillFactionStorage(state, factionId) {
+  for (const structure of state.structures) {
+    if (structure.factionId !== factionId || structure.status !== "active") continue;
+    structure.storage = {
+      wood: BUILD_RECIPES[structure.type].storageCapacity,
+      stone: 0,
+      food: 0,
+    };
+  }
+}
+
+test("known-full destination is rejected when the source has no return storage", () => {
+  const { state, agent } = fixture();
+  fillFactionStorage(state, agent.factionId);
+  const east = halo(state, "east", "garden-2", agent.factionId, 0);
+  const plan = planAutonomousHaloTravel(state, [east]);
+  assert.equal(plan, undefined);
+});
+
+test("unknown destination remains eligible when the source has no return storage", () => {
+  const { state, agent } = fixture();
+  fillFactionStorage(state, agent.factionId);
+  const east = halo(state, "east", "garden-2", agent.factionId, undefined);
+  const plan = planAutonomousHaloTravel(state, [east]);
+  assert.ok(plan);
+  assert.equal(plan.neighborRegionId, "garden-2");
+});
+
+test("known-full destination remains eligible when source return capacity exists", () => {
+  const { state, agent } = fixture();
+  fillFactionStorage(state, agent.factionId);
+  state.structures.push({
+    id: "expedition-return-buffer",
+    factionId: agent.factionId,
+    type: "storehouse",
+    position: hexGridCenter(state),
+    status: "active",
+    progress: 1,
+    requiredProgress: 1,
+    storage: { wood: 0, stone: 0, food: 0 },
+  });
+  const east = halo(state, "east", "garden-2", agent.factionId, 0);
+  const plan = planAutonomousHaloTravel(state, [east]);
+  assert.ok(plan);
+  assert.equal(plan.neighborRegionId, "garden-2");
 });
