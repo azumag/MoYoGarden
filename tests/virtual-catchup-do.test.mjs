@@ -103,6 +103,38 @@ test("capped catch-up preserves remaining debt and schedules a prompt retry", as
   }
 });
 
+test("slow catch-up yields on wall budget without discarding virtual-time debt", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_002_500_000;
+  Date.now = () => now;
+  try {
+    const ctx = new MemoryState();
+    const object = new RegionDurableObject(ctx, env);
+    await ctx.ready;
+    await object.fetch(request("/api/world/snapshot"));
+    const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
+
+    now += 600_000;
+    const baseTick = object.runtime.tick.bind(object.runtime);
+    object.runtime.tick = (...args) => {
+      const result = baseTick(...args);
+      now += 4_500;
+      return result;
+    };
+
+    await object.alarm();
+
+    assert.equal(object.runtime.snapshot().tick, 2, "slow historical ticks should yield after the wall budget");
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 20_000);
+    const health = await (await object.fetch(request("/api/health"))).json();
+    assert.ok(health.virtualTicksDue > 0, "unfinished virtual time must remain as debt");
+    assert.equal(health.virtualTicksRunnable, 12, "next retry remains bounded by the normal tick cap");
+    assert.equal(ctx.storage.alarm, now + 1_000, "yielded debt should retry promptly");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("caught-up cold regions deep-idle without an alarm and warm access wakes them", async () => {
   const originalNow = Date.now;
   let now = 1_800_003_000_000;

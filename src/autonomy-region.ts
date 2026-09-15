@@ -147,6 +147,12 @@ const SETTLEMENT_MIGRATION_TTL = 72;
 // putting dozens of full virtual ticks into one DO invocation. Failed
 // batches keep the normal tick retry to avoid a hot failure loop.
 const CATCH_UP_RETRY_MS = 1_000;
+// Tick count alone does not bound an Alarm when one historical tick is
+// slowed by cross-DO work. Yield after a modest wall-clock slice and
+// preserve the remaining virtual-time debt for the prompt retry. This
+// leaves headroom for outer pathogen/post-processing layers in the same
+// Durable Object invocation without skipping any simulation ticks.
+const CATCH_UP_WALL_BUDGET_MS = 8_000;
 
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
@@ -2069,12 +2075,19 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   override async alarm(): Promise<void> {
     const now = Date.now();
     const ticks = this.virtualTicksForAlarm(now);
+    const batchStartedAt = now;
     const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
     let completed = false;
     try {
       for (let index = 0; index < ticks; index += 1) {
         this.setAlarmRescheduleDeferred(index + 1 < ticks);
         await this.runSingleAlarmTick();
+        if (
+          index + 1 < ticks
+          && Date.now() - batchStartedAt >= CATCH_UP_WALL_BUDGET_MS
+        ) {
+          break;
+        }
       }
       completed = true;
     } finally {
