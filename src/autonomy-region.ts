@@ -544,13 +544,23 @@ function haloRegionFactionStorageHeadroom(
   let minimumHeadroom: number | undefined;
   for (const entry of halo) {
     if (entry.neighborRegionId !== neighborRegionId) continue;
-    const headroom = entry.neighborRegionSummary?.storageHeadroomByFaction?.[factionId];
-    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom <= 0) continue;
+    const byFaction = entry.neighborRegionSummary?.storageHeadroomByFaction;
+    if (byFaction === undefined || !Object.prototype.hasOwnProperty.call(byFaction, factionId)) continue;
+    const headroom = byFaction[factionId];
+    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom < 0) continue;
     // Multiple seam reads can straddle ticks. Treat this as a routing hint, not
-    // a reservation, and use the most conservative positive observation.
+    // a reservation, and use the most conservative observation, including zero
+    // when the remote faction's active storage is explicitly known to be full.
     minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);
   }
   return minimumHeadroom;
+}
+
+function storageHeadroomPreference(headroom: number | undefined): number {
+  // Positive observed capacity is best; missing bounded metadata stays neutral;
+  // an explicit zero is actionable evidence that the destination is full.
+  if (headroom === undefined) return 1;
+  return headroom > 0 ? 2 : 0;
 }
 
 function availableHaloSupplyForAgent(
@@ -707,8 +717,8 @@ export function planAutonomousHaloTravel(
         // storage headroom for this BOT's own faction. This is deliberately a
         // tie-break only: remote headroom is not reserved and can change before
         // arrival, while the existing source-return promise remains the fallback.
-        || Number((b.destinationStorageHeadroom ?? 0) > 0)
-          - Number((a.destinationStorageHeadroom ?? 0) > 0)
+        || storageHeadroomPreference(b.destinationStorageHeadroom)
+          - storageHeadroomPreference(a.destinationStorageHeadroom)
         || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)
         || directionRank(a.entry.direction) - directionRank(b.entry.direction)
         || a.entry.neighborRegionId.localeCompare(b.entry.neighborRegionId)
@@ -736,8 +746,8 @@ export function planAutonomousHaloTravel(
     || a.travelDistance - b.travelDistance
     || a.pathCrowding - b.pathCrowding
     || a.destinationCrowding - b.destinationCrowding
-    || Number((b.destinationStorageHeadroom ?? 0) > 0)
-      - Number((a.destinationStorageHeadroom ?? 0) > 0)
+    || storageHeadroomPreference(b.destinationStorageHeadroom)
+      - storageHeadroomPreference(a.destinationStorageHeadroom)
     || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)
     // Equivalent expeditions should use the BOT with more remaining energy;
     // low-energy workers are more useful staying near the current settlement.

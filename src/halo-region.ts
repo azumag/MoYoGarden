@@ -379,7 +379,9 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         0,
         BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
       );
-      if (headroom <= 0) continue;
+      // Keep zero for factions whose active storage is known to be full. An
+      // omitted faction still means "unknown" after bounded top-N truncation,
+      // which lets remote planners distinguish full from merely unobserved.
       storageHeadroom.set(
         structure.factionId,
         (storageHeadroom.get(structure.factionId) ?? 0) + headroom,

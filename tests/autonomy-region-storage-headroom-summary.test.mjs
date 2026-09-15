@@ -51,7 +51,7 @@ function halo(state, direction, regionId, factionId, headroom) {
       resources: { wood: 8, stone: 0, food: 0 },
       passableCells: 397,
       occupants: 1,
-      ...(headroom > 0 ? { storageHeadroomByFaction: { [factionId]: headroom } } : {}),
+      ...(headroom === undefined ? {} : { storageHeadroomByFaction: { [factionId]: headroom } }),
     },
   };
 }
@@ -59,7 +59,7 @@ function halo(state, direction, regionId, factionId, headroom) {
 test("materialized halo carries bounded faction storage headroom without mutating the snapshot", () => {
   const summary = {
     resources: { wood: 8, stone: 0, food: 0 },
-    storageHeadroomByFaction: { settlers: 12 },
+    storageHeadroomByFaction: { settlers: 0, traders: 12 },
     passableCells: 397,
     occupants: 2,
   };
@@ -71,9 +71,9 @@ test("materialized halo carries bounded faction storage headroom without mutatin
     regionId: "garden-2", direction: "west", revision: 1, tick: 10, regionSummary: summary,
     tiles: [{ position: { x: 8, y: 11 }, tile: { x: 8, y: 11, terrain: "plain", elevation: 0.5 } }],
   }]);
-  assert.deepEqual(materialized[0].neighborRegionSummary?.storageHeadroomByFaction, { settlers: 12 });
+  assert.deepEqual(materialized[0].neighborRegionSummary?.storageHeadroomByFaction, { settlers: 0, traders: 12 });
   materialized[0].neighborRegionSummary.storageHeadroomByFaction.settlers = 1;
-  assert.equal(summary.storageHeadroomByFaction.settlers, 12);
+  assert.equal(summary.storageHeadroomByFaction.settlers, 0);
 });
 
 test("equivalent resource expeditions prefer own-faction destination storage headroom", () => {
@@ -86,9 +86,19 @@ test("equivalent resource expeditions prefer own-faction destination storage hea
   assert.equal(plan.neighborRegionId, "hex-q-1-r0");
 });
 
-test("storage headroom for another faction does not bias expedition routing", () => {
+test("equivalent expeditions prefer unknown storage over a destination known to be full", () => {
   const { state, agent } = fixture();
   const east = halo(state, "east", "garden-2", agent.factionId, 0);
+  const west = halo(state, "west", "hex-q-1-r0", agent.factionId, undefined);
+  const plan = planAutonomousHaloTravel(state, [east, west]);
+  assert.ok(plan);
+  assert.equal(plan.direction, "west");
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+});
+
+test("storage headroom for another faction does not bias expedition routing", () => {
+  const { state, agent } = fixture();
+  const east = halo(state, "east", "garden-2", agent.factionId, undefined);
   const west = halo(state, "west", "hex-q-1-r0", "other-faction", 20);
   const plan = planAutonomousHaloTravel(state, [west, east]);
   assert.ok(plan);
