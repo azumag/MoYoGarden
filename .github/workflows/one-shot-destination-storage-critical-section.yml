@@ -1,4 +1,5 @@
 name: One-shot destination storage critical section
+# retry after tightening the staged TypeScript narrowing
 
 on:
   push:
