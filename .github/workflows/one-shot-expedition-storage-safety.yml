@@ -27,122 +27,105 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          src = Path('src/autonomy-region.ts')
-          text = src.read_text()
-          old = '''    const candidates = halo.flatMap((entry) => {
-      const pathScore = pathScores.get(positionKey(entry.sourcePosition));
-      if (
-        pathScore === undefined ||
-        pathScore.distance > travelEnergyBudget ||
-        entry.tile.terrain === "water" ||
-        (visibleSupply.get(haloSupplyKey(entry.neighborRegionId)) ?? 0) <= 0
-      ) {
-        return [];
-      }
-      return [{
-        entry,
-        travelDistance: pathScore.distance,
-        pathCrowding: pathScore.crowding,
-        destinationCrowding: entry.neighborOccupants ?? 0,
-        destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),
-      }];
-    });
-'''
-          new = '''    const availableSourceReturnStorage = Math.max(
-      0,
-      factionStorageCapacityLeft(state, agent.factionId)
-        - reservedReturnStorageForFaction(state, claims, agent.factionId),
-    );
-    const candidates = halo.flatMap((entry) => {
-      const pathScore = pathScores.get(positionKey(entry.sourcePosition));
-      if (
-        pathScore === undefined ||
-        pathScore.distance > travelEnergyBudget ||
-        entry.tile.terrain === "water" ||
-        (visibleSupply.get(haloSupplyKey(entry.neighborRegionId)) ?? 0) <= 0
-      ) {
-        return [];
-      }
-      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
-      // Do not launch cargo toward a destination that is explicitly known to
-      // have no storage when this source also has no unreserved return capacity.
-      // Missing remote metadata stays neutral for rolling compatibility: only
-      // two concrete capacity observations can prove the expedition has no sink.
-      if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
-      return [{
-        entry,
-        travelDistance: pathScore.distance,
-        pathCrowding: pathScore.crowding,
-        destinationCrowding: entry.neighborOccupants ?? 0,
-        destinationStorageHeadroom: remoteStorageHeadroom,
-      }];
-    });
-'''
-          if old not in text:
-              raise SystemExit('autonomy candidate block not found')
-          src.write_text(text.replace(old, new, 1))
-
-          test = Path('tests/autonomy-region-storage-headroom-summary.test.mjs')
-          t = test.read_text()
-          old_import = 'import { createInitialWorld } from "../dist-ts/src/world.js";\n'
-          new_import = 'import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";\nimport { createInitialWorld } from "../dist-ts/src/world.js";\n'
-          if old_import not in t:
-              raise SystemExit('test import anchor not found')
-          t = t.replace(old_import, new_import, 1)
-          addition = r'''
-
-function fillFactionStorage(state, factionId) {
-  for (const structure of state.structures) {
-    if (structure.factionId !== factionId || structure.status !== "active") continue;
-    structure.storage = {
-      wood: BUILD_RECIPES[structure.type].storageCapacity,
-      stone: 0,
-      food: 0,
-    };
-  }
-}
-
-test("known-full destination is rejected when the source has no return storage", () => {
-  const { state, agent } = fixture();
-  fillFactionStorage(state, agent.factionId);
-  const east = halo(state, "east", "garden-2", agent.factionId, 0);
-  const plan = planAutonomousHaloTravel(state, [east]);
-  assert.equal(plan, undefined);
-});
-
-test("unknown destination remains eligible when the source has no return storage", () => {
-  const { state, agent } = fixture();
-  fillFactionStorage(state, agent.factionId);
-  const east = halo(state, "east", "garden-2", agent.factionId, undefined);
-  const plan = planAutonomousHaloTravel(state, [east]);
-  assert.ok(plan);
-  assert.equal(plan.neighborRegionId, "garden-2");
-});
-
-test("known-full destination remains eligible when source return capacity exists", () => {
-  const { state, agent } = fixture();
-  fillFactionStorage(state, agent.factionId);
-  state.structures.push({
-    id: "expedition-return-buffer",
-    factionId: agent.factionId,
-    type: "storehouse",
-    position: hexGridCenter(state),
-    status: "active",
-    progress: 1,
-    requiredProgress: 1,
-    storage: { wood: 0, stone: 0, food: 0 },
-  });
-  const east = halo(state, "east", "garden-2", agent.factionId, 0);
-  const plan = planAutonomousHaloTravel(state, [east]);
-  assert.ok(plan);
-  assert.equal(plan.neighborRegionId, "garden-2");
-});
-'''
-          test.write_text(t + addition)
-          PY
+          cat > /tmp/expedition-storage.patch <<'PATCH'
+          diff --git a/src/autonomy-region.ts b/src/autonomy-region.ts
+          --- a/src/autonomy-region.ts
+          +++ b/src/autonomy-region.ts
+          @@
+          -    const candidates = halo.flatMap((entry) => {
+          +    const availableSourceReturnStorage = Math.max(
+          +      0,
+          +      factionStorageCapacityLeft(state, agent.factionId)
+          +        - reservedReturnStorageForFaction(state, claims, agent.factionId),
+          +    );
+          +    const candidates = halo.flatMap((entry) => {
+                 const pathScore = pathScores.get(positionKey(entry.sourcePosition));
+                 if (
+                   pathScore === undefined ||
+          @@
+                 ) {
+                   return [];
+                 }
+          +      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
+          +      // Do not launch cargo toward a destination that is explicitly known to
+          +      // have no storage when this source also has no unreserved return capacity.
+          +      // Missing remote metadata stays neutral for rolling compatibility: only
+          +      // two concrete capacity observations can prove the expedition has no sink.
+          +      if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
+                 return [{
+                   entry,
+                   travelDistance: pathScore.distance,
+                   pathCrowding: pathScore.crowding,
+                   destinationCrowding: entry.neighborOccupants ?? 0,
+          -        destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),
+          +        destinationStorageHeadroom: remoteStorageHeadroom,
+                 }];
+               });
+          diff --git a/tests/autonomy-region-storage-headroom-summary.test.mjs b/tests/autonomy-region-storage-headroom-summary.test.mjs
+          --- a/tests/autonomy-region-storage-headroom-summary.test.mjs
+          +++ b/tests/autonomy-region-storage-headroom-summary.test.mjs
+          @@
+           import { materializeHexHalo } from "../dist-ts/src/hex-halo.js";
+          +import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
+           import { createInitialWorld } from "../dist-ts/src/world.js";
+          @@
+           test("storage headroom for another faction does not bias expedition routing", () => {
+             const { state, agent } = fixture();
+             const east = halo(state, "east", "garden-2", agent.factionId, undefined);
+             const west = halo(state, "west", "hex-q-1-r0", "other-faction", 20);
+             const plan = planAutonomousHaloTravel(state, [west, east]);
+             assert.ok(plan);
+             assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");
+           });
+          +
+          +function fillFactionStorage(state, factionId) {
+          +  for (const structure of state.structures) {
+          +    if (structure.factionId !== factionId || structure.status !== "active") continue;
+          +    structure.storage = {
+          +      wood: BUILD_RECIPES[structure.type].storageCapacity,
+          +      stone: 0,
+          +      food: 0,
+          +    };
+          +  }
+          +}
+          +
+          +test("known-full destination is rejected when the source has no return storage", () => {
+          +  const { state, agent } = fixture();
+          +  fillFactionStorage(state, agent.factionId);
+          +  const east = halo(state, "east", "garden-2", agent.factionId, 0);
+          +  const plan = planAutonomousHaloTravel(state, [east]);
+          +  assert.equal(plan, undefined);
+          +});
+          +
+          +test("unknown destination remains eligible when the source has no return storage", () => {
+          +  const { state, agent } = fixture();
+          +  fillFactionStorage(state, agent.factionId);
+          +  const east = halo(state, "east", "garden-2", agent.factionId, undefined);
+          +  const plan = planAutonomousHaloTravel(state, [east]);
+          +  assert.ok(plan);
+          +  assert.equal(plan.neighborRegionId, "garden-2");
+          +});
+          +
+          +test("known-full destination remains eligible when source return capacity exists", () => {
+          +  const { state, agent } = fixture();
+          +  fillFactionStorage(state, agent.factionId);
+          +  state.structures.push({
+          +    id: "expedition-return-buffer",
+          +    factionId: agent.factionId,
+          +    type: "storehouse",
+          +    position: hexGridCenter(state),
+          +    status: "active",
+          +    progress: 1,
+          +    requiredProgress: 1,
+          +    storage: { wood: 0, stone: 0, food: 0 },
+          +  });
+          +  const east = halo(state, "east", "garden-2", agent.factionId, 0);
+          +  const plan = planAutonomousHaloTravel(state, [east]);
+          +  assert.ok(plan);
+          +  assert.equal(plan.neighborRegionId, "garden-2");
+          +});
+          PATCH
+          git apply /tmp/expedition-storage.patch
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
