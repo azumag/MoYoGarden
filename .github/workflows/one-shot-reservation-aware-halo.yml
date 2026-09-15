@@ -1,0 +1,36 @@
+name: One-shot reservation-aware halo summary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-shot-reservation-aware-halo.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply reservation-aware halo summary
+        run: python3 .github/one-shot-reservation-aware-halo.py
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Full validation
+        run: npm run build
+      - name: Commit validated improvement and clean one-shot files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/one-shot-reservation-aware-halo.yml
+          git rm .github/one-shot-reservation-aware-halo.py
+          git add src/autonomy-region.ts tests/autonomous-concurrent-travel-do.test.mjs
+          git commit -m "sim: subtract remote reservations from halo storage headroom"
+          git push origin HEAD:main
