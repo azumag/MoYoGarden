@@ -1,0 +1,241 @@
+name: One-shot return storage reservation fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-storage-reservation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Patch source and regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source_path = Path("src/autonomy-region.ts")
+          source = source_path.read_text()
+
+          old_interface = '''export interface AutonomousSupplyClaim {
+            claimId: string;
+            agentId?: string;
+            resource: ResourceKind;
+            direction: HexGridDirection;
+            neighborRegionId: string;
+            amount: number;
+            settledAmount?: number;
+            expiresAtTick: number;
+            returnToSourceStorage?: boolean;
+          }'''
+          new_interface = '''export interface AutonomousSupplyClaim {
+            claimId: string;
+            agentId?: string;
+            resource: ResourceKind;
+            direction: HexGridDirection;
+            neighborRegionId: string;
+            amount: number;
+            settledAmount?: number;
+            expiresAtTick: number;
+            // Optional during rolling deploys. New return reservations retain the
+            // source faction so storage headroom remains reserved after the BOT has
+            // already handed off and is no longer present in the source WorldState.
+            sourceFactionId?: string;
+            returnToSourceStorage?: boolean;
+          }'''
+          if old_interface not in source:
+              raise SystemExit("AutonomousSupplyClaim interface anchor not found")
+          source = source.replace(old_interface, new_interface, 1)
+
+          old_validator = '''    && typeof value.expiresAtTick === "number"
+            && Number.isInteger(value.expiresAtTick)
+            && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");'''
+          new_validator = '''    && typeof value.expiresAtTick === "number"
+            && Number.isInteger(value.expiresAtTick)
+            && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")
+            && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");'''
+          if old_validator not in source:
+              raise SystemExit("claim validator anchor not found")
+          source = source.replace(old_validator, new_validator, 1)
+
+          old_helper = '''function hasAvailableFactionStorage(state: WorldState, factionId: string): boolean {
+            return factionStorageCapacityLeft(state, factionId) > 0;
+          }
+
+          function resourceIntent'''
+          new_helper = '''function hasAvailableFactionStorage(state: WorldState, factionId: string): boolean {
+            return factionStorageCapacityLeft(state, factionId) > 0;
+          }
+
+          function reservedReturnStorageForFaction(
+            state: WorldState,
+            claims: readonly AutonomousSupplyClaim[],
+            factionId: string,
+          ): number {
+            return claims.reduce((reserved, claim) => {
+              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+              if (claim.sourceFactionId !== undefined) {
+                return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;
+              }
+              const localAgent = claim.agentId === undefined
+                ? undefined
+                : state.agents.find((entry) => entry.id === claim.agentId);
+              if (localAgent !== undefined) {
+                return localAgent.factionId === factionId ? reserved + claim.amount : reserved;
+              }
+              // Rolling-deploy compatibility: an older in-flight return claim can
+              // outlive its source-side BOT. Without a persisted faction we cannot
+              // prove it belongs elsewhere, so reserve its amount conservatively for
+              // every faction until the short claim TTL expires instead of overbooking.
+              return reserved + claim.amount;
+            }, 0);
+          }
+
+          function resourceIntent'''
+          if old_helper not in source:
+              raise SystemExit("storage helper anchor not found")
+          source = source.replace(old_helper, new_helper, 1)
+
+          old_claim_block = '''      const claimId = `autonomy-claim:${state.regionId}:${plan.agentId}:${state.tick}:${plan.direction}:${plan.neighborRegionId}`;
+            const pendingPlan: PendingAutonomousTravel = { ...plan, claimId };
+            const claimedSupply = plan.claimedSupply ?? 0;
+            if (claimedSupply > 0) {
+              workingClaims.push({
+                claimId,
+                agentId: plan.agentId,
+                resource: plan.resource,
+                direction: plan.direction,
+                neighborRegionId: plan.neighborRegionId,
+                amount: claimedSupply,
+                expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
+                // Only promise a return-to-source deposit when that source currently
+                // has real storage headroom. An active but full structure must not
+                // masquerade as usable logistics capacity.
+                returnToSourceStorage: hasAvailableFactionStorage(state, agent.factionId),
+              });
+            }'''
+          new_claim_block = '''      const claimId = `autonomy-claim:${state.regionId}:${plan.agentId}:${state.tick}:${plan.direction}:${plan.neighborRegionId}`;
+            const plannedSupply = plan.claimedSupply ?? 0;
+            const sourceStorageHeadroom = factionStorageCapacityLeft(state, agent.factionId);
+            const reservedReturnStorage = reservedReturnStorageForFaction(
+              state,
+              workingClaims,
+              agent.factionId,
+            );
+            const availableReturnStorage = Math.max(0, sourceStorageHeadroom - reservedReturnStorage);
+            const returnToSourceStorage = availableReturnStorage > 0;
+            // A return reservation is a capacity promise, not just a boolean hint.
+            // Bound its supply claim by still-unreserved source storage so several
+            // scouts started in the same cadence cannot all plan to deposit into
+            // the same final slots. Expeditions without a source return promise
+            // keep their existing behavior and may settle into destination storage.
+            const claimedSupply = returnToSourceStorage
+              ? Math.min(plannedSupply, availableReturnStorage)
+              : plannedSupply;
+            const pendingPlan: PendingAutonomousTravel = {
+              ...plan,
+              claimId,
+              claimedSupply,
+            };
+            if (claimedSupply > 0) {
+              workingClaims.push({
+                claimId,
+                agentId: plan.agentId,
+                resource: plan.resource,
+                direction: plan.direction,
+                neighborRegionId: plan.neighborRegionId,
+                amount: claimedSupply,
+                expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
+                sourceFactionId: agent.factionId,
+                returnToSourceStorage,
+              });
+            }'''
+          if old_claim_block not in source:
+              raise SystemExit("claim creation anchor not found")
+          source = source.replace(old_claim_block, new_claim_block, 1)
+          source_path.write_text(source)
+
+          test_path = Path("tests/autonomous-concurrent-travel-do.test.mjs")
+          test_text = test_path.read_text()
+          old_import = '''import { WorldRuntime } from "../dist-ts/src/runtime.js";'''
+          new_import = '''import { WorldRuntime } from "../dist-ts/src/runtime.js";
+          import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";'''
+          if old_import not in test_text:
+              raise SystemExit("test import anchor not found")
+          test_text = test_text.replace(old_import, new_import, 1)
+
+          addition = r'''
+
+          test("concurrent return expeditions reserve source storage headroom instead of overbooking it", async () => {
+            const { source } = await expeditionFixture(8);
+            const state = source.object.runtime.snapshot();
+            const scout = state.agents.find((agent) => agent.autonomy);
+            assert.ok(scout);
+
+            for (const structure of state.structures) {
+              if (structure.factionId !== scout.factionId || structure.status !== "active") continue;
+              structure.storage = {
+                wood: BUILD_RECIPES[structure.type].storageCapacity,
+                stone: 0,
+                food: 0,
+              };
+            }
+            state.structures.push({
+              id: "three-slot-return-storehouse",
+              factionId: scout.factionId,
+              type: "storehouse",
+              position: hexGridCenter(state),
+              status: "active",
+              progress: 1,
+              requiredProgress: 1,
+              storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 3, stone: 0, food: 0 },
+            });
+            source.object.runtime = new WorldRuntime({ state });
+            await source.object.persist();
+
+            await source.object.alarm();
+            const claims = await source.state.storage.get(CLAIMS_KEY);
+            assert.equal(claims.length, 3);
+            const returnClaims = claims.filter((claim) => claim.returnToSourceStorage === true);
+            assert.equal(returnClaims.reduce((sum, claim) => sum + claim.amount, 0), 3);
+            assert.deepEqual(returnClaims.map((claim) => claim.amount).sort((a, b) => a - b), [1, 2]);
+            assert.equal(claims.filter((claim) => claim.returnToSourceStorage !== true).length, 1);
+            assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));
+          });
+          '''
+          if "concurrent return expeditions reserve source storage headroom" in test_text:
+              raise SystemExit("regression test already exists")
+          test_path.write_text(test_text + addition)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit tested change and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/one-shot-storage-reservation.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/autonomy-region.ts tests/autonomous-concurrent-travel-do.test.mjs .github/workflows/one-shot-storage-reservation.yml
+          git commit -m "sim: reserve storage across concurrent expeditions"
+          git push origin HEAD:main
