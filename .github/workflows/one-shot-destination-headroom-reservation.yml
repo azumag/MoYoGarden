@@ -2,147 +2,134 @@ name: One-shot destination headroom reservation improvement
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - '.github/workflows/one-shot-destination-headroom-reservation.yml'
+      - .github/workflows/one-shot-destination-headroom-reservation.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: moyo-one-shot-destination-headroom-reservation
+  cancel-in-progress: false
+
 jobs:
   improve:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout main
+        uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - name: Apply bounded destination reservation patch
+          node-version: "22"
+
+      - name: Apply bounded destination reservation improvement
+        shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
 
-          path = Path('src/autonomy-region.ts')
-          text = path.read_text()
+          const path = 'src/autonomy-region.ts';
+          let source = fs.readFileSync(path, 'utf8');
 
-          old = '''  claimedSupply?: number;\n}\n'''
-          new = '''  claimedSupply?: number;\n  // Observed remote capacity after subtracting reservations made by other\n  // concurrent expeditions from this source DO. Optional for rolling deploys.\n  destinationStorageHeadroom?: number;\n}\n'''
-          assert old in text, 'PendingAutonomousTravel shape not found'
-          text = text.replace(old, new, 1)
+          function replaceOnce(before, after, label) {
+            const first = source.indexOf(before);
+            if (first < 0) throw new Error(`missing patch anchor: ${label}`);
+            if (source.indexOf(before, first + before.length) >= 0) {
+              throw new Error(`ambiguous patch anchor: ${label}`);
+            }
+            source = source.slice(0, first) + after + source.slice(first + before.length);
+          }
 
-          old = '''  sourceFactionId?: string;\n  returnToSourceStorage?: boolean;\n}\n'''
-          new = '''  sourceFactionId?: string;\n  returnToSourceStorage?: boolean;\n  // A source-local reservation against a concrete remote storage observation.\n  // This prevents concurrent scouts from this DO from all consuming the same\n  // advertised destination headroom while preserving legacy/unknown snapshots.\n  destinationStorageReserved?: boolean;\n}\n'''
-          assert old in text, 'AutonomousSupplyClaim shape not found'
-          text = text.replace(old, new, 1)
+          replaceOnce(
+            `  claimedSupply?: number;\n}\n`,
+            `  claimedSupply?: number;\n  // Observed remote capacity after subtracting reservations made by other\n  // concurrent expeditions from this source DO. Optional for rolling deploys.\n  destinationStorageHeadroom?: number;\n}\n`,
+            'travel headroom field',
+          );
 
-          old = '''    && (value.claimedSupply === undefined || (\n      typeof value.claimedSupply === "number"\n      && Number.isFinite(value.claimedSupply)\n      && value.claimedSupply >= 0\n    ));\n}\n'''
-          new = '''    && (value.claimedSupply === undefined || (\n      typeof value.claimedSupply === "number"\n      && Number.isFinite(value.claimedSupply)\n      && value.claimedSupply >= 0\n    ))\n    && (value.destinationStorageHeadroom === undefined || (\n      typeof value.destinationStorageHeadroom === "number"\n      && Number.isFinite(value.destinationStorageHeadroom)\n      && value.destinationStorageHeadroom >= 0\n    ));\n}\n'''
-          assert old in text, 'travel validator not found'
-          text = text.replace(old, new, 1)
+          replaceOnce(
+            `  sourceFactionId?: string;\n  returnToSourceStorage?: boolean;\n}\n`,
+            `  sourceFactionId?: string;\n  returnToSourceStorage?: boolean;\n  // Source-local reservation against a concrete remote storage observation.\n  // It prevents concurrent scouts in this DO from consuming the same bounded\n  // destination headroom while legacy/unknown snapshots remain neutral.\n  destinationStorageReserved?: boolean;\n}\n`,
+            'claim destination reservation field',
+          );
 
-          old = '''    && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")\n    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");\n}\n'''
-          new = '''    && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")\n    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")\n    && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");\n}\n'''
-          assert old in text, 'claim validator not found'
-          text = text.replace(old, new, 1)
+          replaceOnce(
+            `    && (value.claimedSupply === undefined || (\n      typeof value.claimedSupply === "number"\n      && Number.isFinite(value.claimedSupply)\n      && value.claimedSupply >= 0\n    ));\n}\n`,
+            `    && (value.claimedSupply === undefined || (\n      typeof value.claimedSupply === "number"\n      && Number.isFinite(value.claimedSupply)\n      && value.claimedSupply >= 0\n    ))\n    && (value.destinationStorageHeadroom === undefined || (\n      typeof value.destinationStorageHeadroom === "number"\n      && Number.isFinite(value.destinationStorageHeadroom)\n      && value.destinationStorageHeadroom >= 0\n    ));\n}\n`,
+            'travel validator',
+          );
 
-          anchor = '''function resourceIntent(state: WorldState, agent: Agent): ResourceKind | undefined {\n'''
-          helper = '''function reservedDestinationStorageForFaction(\n  state: WorldState,\n  claims: readonly AutonomousSupplyClaim[],\n  neighborRegionId: string,\n  factionId: string,\n): number {\n  return claims.reduce((reserved, claim) => {\n    if (\n      claim.destinationStorageReserved !== true ||\n      claim.neighborRegionId !== neighborRegionId ||\n      claim.expiresAtTick <= state.tick\n    ) {\n      return reserved;\n    }\n    // New reservations always persist the source faction. If a future/partial\n    // rollout somehow omits it, do not let that ambiguous record consume another\n    // faction's remote headroom. The remote snapshot itself remains only a hint.\n    return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;\n  }, 0);\n}\n\n'''
-          assert anchor in text, 'resourceIntent anchor not found'
-          text = text.replace(anchor, helper + anchor, 1)
+          replaceOnce(
+            `    && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")\n    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");\n}\n`,
+            `    && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")\n    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")\n    && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");\n}\n`,
+            'claim validator',
+          );
 
-          old = '''    const destinationStorageHeadroom = new Map<string, number | undefined>();\n    for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {\n      destinationStorageHeadroom.set(\n        neighborRegionId,\n        haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId),\n      );\n    }\n'''
-          new = '''    const destinationStorageHeadroom = new Map<string, number | undefined>();\n    for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {\n      const observedHeadroom = haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId);\n      const reservedHeadroom = reservedDestinationStorageForFaction(\n        state,\n        claims,\n        neighborRegionId,\n        agent.factionId,\n      );\n      destinationStorageHeadroom.set(\n        neighborRegionId,\n        observedHeadroom === undefined ? undefined : Math.max(0, observedHeadroom - reservedHeadroom),\n      );\n    }\n'''
-          assert old in text, 'destination headroom map not found'
-          text = text.replace(old, new, 1)
+          replaceOnce(
+            `function resourceIntent(state: WorldState, agent: Agent): ResourceKind | undefined {\n`,
+            `function reservedDestinationStorageForFaction(\n  state: WorldState,\n  claims: readonly AutonomousSupplyClaim[],\n  neighborRegionId: string,\n  factionId: string,\n): number {\n  return claims.reduce((reserved, claim) => {\n    if (\n      claim.destinationStorageReserved !== true ||\n      claim.neighborRegionId !== neighborRegionId ||\n      claim.expiresAtTick <= state.tick\n    ) {\n      return reserved;\n    }\n    return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;\n  }, 0);\n}\n\nfunction resourceIntent(state: WorldState, agent: Agent): ResourceKind | undefined {\n`,
+            'destination reservation helper',
+          );
 
-          old = '''    claimedSupply: expedition.visibleSupply,\n  };\n}\n'''
-          new = '''    claimedSupply: expedition.visibleSupply,\n    ...(expedition.destinationStorageHeadroom === undefined\n      ? {}\n      : { destinationStorageHeadroom: expedition.destinationStorageHeadroom }),\n  };\n}\n'''
-          assert old in text, 'travel plan return not found'
-          text = text.replace(old, new, 1)
+          replaceOnce(
+            `    const destinationStorageHeadroom = new Map<string, number | undefined>();\n    for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {\n      destinationStorageHeadroom.set(\n        neighborRegionId,\n        haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId),\n      );\n    }\n`,
+            `    const destinationStorageHeadroom = new Map<string, number | undefined>();\n    for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {\n      const observedHeadroom = haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId);\n      const reservedHeadroom = reservedDestinationStorageForFaction(\n        state,\n        claims,\n        neighborRegionId,\n        agent.factionId,\n      );\n      destinationStorageHeadroom.set(\n        neighborRegionId,\n        observedHeadroom === undefined ? undefined : Math.max(0, observedHeadroom - reservedHeadroom),\n      );\n    }\n`,
+            'destination headroom accounting',
+          );
 
-          old = '''      const returnToSourceStorage = availableReturnStorage > 0;\n      // A return reservation is a capacity promise, not just a boolean hint. Bound\n      // the supply claim by still-unreserved source storage so concurrent scouts do\n      // not all plan to deposit into the same final slots.\n      const claimedSupply = returnToSourceStorage\n        ? Math.min(plannedSupply, availableReturnStorage)\n        : plannedSupply;\n'''
-          new = '''      const returnToSourceStorage = availableReturnStorage > 0;\n      const destinationStorageReserved =\n        !returnToSourceStorage\n        && plan.destinationStorageHeadroom !== undefined\n        && plan.destinationStorageHeadroom > 0;\n      // A return reservation is a capacity promise, not just a boolean hint. Bound\n      // the supply claim by still-unreserved source storage so concurrent scouts do\n      // not all plan to deposit into the same final slots. When this expedition\n      // instead relies on a concrete remote sink, persist that source-local\n      // reservation too so the next scout subtracts it from the same halo headroom.\n      const claimedSupply = returnToSourceStorage\n        ? Math.min(plannedSupply, availableReturnStorage)\n        : destinationStorageReserved\n          ? Math.min(plannedSupply, plan.destinationStorageHeadroom ?? plannedSupply)\n          : plannedSupply;\n'''
-          assert old in text, 'start travel reservation block not found'
-          text = text.replace(old, new, 1)
+          replaceOnce(
+            `    claimedSupply: expedition.visibleSupply,\n  };\n}\n`,
+            `    claimedSupply: expedition.visibleSupply,\n    ...(expedition.destinationStorageHeadroom === undefined\n      ? {}\n      : { destinationStorageHeadroom: expedition.destinationStorageHeadroom }),\n  };\n}\n`,
+            'travel plan destination headroom',
+          );
 
-          old = '''          sourceFactionId: agent.factionId,\n          returnToSourceStorage,\n        });\n'''
-          new = '''          sourceFactionId: agent.factionId,\n          returnToSourceStorage,\n          ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),\n        });\n'''
-          assert old in text, 'claim creation block not found'
-          text = text.replace(old, new, 1)
+          replaceOnce(
+            `      const returnToSourceStorage = availableReturnStorage > 0;\n      // A return reservation is a capacity promise, not just a boolean hint. Bound\n      // the supply claim by still-unreserved source storage so concurrent scouts do\n      // not all plan to deposit into the same final slots.\n      const claimedSupply = returnToSourceStorage\n        ? Math.min(plannedSupply, availableReturnStorage)\n        : plannedSupply;\n`,
+            `      const returnToSourceStorage = availableReturnStorage > 0;\n      const destinationStorageReserved =\n        !returnToSourceStorage\n        && plan.destinationStorageHeadroom !== undefined\n        && plan.destinationStorageHeadroom > 0;\n      // A return reservation is a capacity promise, not just a boolean hint. Bound\n      // the supply claim by still-unreserved source storage so concurrent scouts do\n      // not all plan to deposit into the same final slots. When this expedition\n      // instead relies on a concrete remote sink, reserve the observed destination\n      // headroom within this source DO so later scouts cannot overbook it.\n      const claimedSupply = returnToSourceStorage\n        ? Math.min(plannedSupply, availableReturnStorage)\n        : destinationStorageReserved\n          ? Math.min(plannedSupply, plan.destinationStorageHeadroom ?? plannedSupply)\n          : plannedSupply;\n`,
+            'travel reservation selection',
+          );
 
-          path.write_text(text)
+          replaceOnce(
+            `          sourceFactionId: agent.factionId,\n          returnToSourceStorage,\n        });\n`,
+            `          sourceFactionId: agent.factionId,\n          returnToSourceStorage,\n          ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),\n        });\n`,
+            'claim destination reservation persistence',
+          );
 
-          test_path = Path('tests/autonomous-concurrent-travel-do.test.mjs')
-          tests = test_path.read_text()
-          addition = r'''
+          fs.writeFileSync(path, source);
 
-test("concurrent scouts reserve observed destination storage headroom before launching", async () => {
-  const { source, east } = await expeditionFixture(8);
-  const sourceState = source.object.runtime.snapshot();
-  const scout = sourceState.agents.find((agent) => agent.autonomy);
-  assert.ok(scout);
+          const testPath = 'tests/autonomous-concurrent-travel-do.test.mjs';
+          let tests = fs.readFileSync(testPath, 'utf8');
+          const marker = 'concurrent scouts reserve observed destination storage headroom before launching';
+          if (tests.includes(marker)) throw new Error('destination reservation regression already exists');
+          tests += `\n\ntest("${marker}", async () => {\n  const { source, east } = await expeditionFixture(8);\n  const sourceState = source.object.runtime.snapshot();\n  const scout = sourceState.agents.find((agent) => agent.autonomy);\n  assert.ok(scout);\n\n  for (const structure of sourceState.structures) {\n    if (structure.factionId !== scout.factionId || structure.status !== "active") continue;\n    structure.storage = {\n      wood: BUILD_RECIPES[structure.type].storageCapacity,\n      stone: 0,\n      food: 0,\n    };\n  }\n  source.object.runtime = new WorldRuntime({ state: sourceState });\n  await source.object.persist();\n\n  const eastState = east.object.runtime.snapshot();\n  for (const structure of eastState.structures) {\n    if (structure.factionId !== scout.factionId || structure.status !== "active") continue;\n    structure.storage = {\n      wood: BUILD_RECIPES[structure.type].storageCapacity,\n      stone: 0,\n      food: 0,\n    };\n  }\n  eastState.structures.push({\n    id: "three-slot-expedition-storehouse",\n    factionId: scout.factionId,\n    type: "storehouse",\n    position: hexGridCenter(eastState),\n    status: "active",\n    progress: 1,\n    requiredProgress: 1,\n    storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 3, stone: 0, food: 0 },\n  });\n  east.object.runtime = new WorldRuntime({ state: eastState });\n  await east.object.persist();\n\n  await source.object.alarm();\n  const travels = await source.state.storage.get(TRAVELS_KEY);\n  const claims = await source.state.storage.get(CLAIMS_KEY);\n  assert.equal(travels.length, 2);\n  assert.equal(claims.length, 2);\n  assert.equal(claims.reduce((sum, claim) => sum + claim.amount, 0), 3);\n  assert.deepEqual(claims.map((claim) => claim.amount).sort((a, b) => a - b), [1, 2]);\n  assert.ok(claims.every((claim) => claim.returnToSourceStorage !== true));\n  assert.ok(claims.every((claim) => claim.destinationStorageReserved === true));\n  assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));\n});\n`;
+          fs.writeFileSync(testPath, tests);
+          NODE
 
-  // Remove the source fallback: these expeditions must rely on storage in the
-  // destination region, so its observed headroom is a finite shared sink.
-  for (const structure of sourceState.structures) {
-    if (structure.factionId !== scout.factionId || structure.status !== "active") continue;
-    structure.storage = {
-      wood: BUILD_RECIPES[structure.type].storageCapacity,
-      stone: 0,
-      food: 0,
-    };
-  }
-  source.object.runtime = new WorldRuntime({ state: sourceState });
-  await source.object.persist();
-
-  const eastState = east.object.runtime.snapshot();
-  for (const structure of eastState.structures) {
-    if (structure.factionId !== scout.factionId || structure.status !== "active") continue;
-    structure.storage = {
-      wood: BUILD_RECIPES[structure.type].storageCapacity,
-      stone: 0,
-      food: 0,
-    };
-  }
-  eastState.structures.push({
-    id: "three-slot-expedition-storehouse",
-    factionId: scout.factionId,
-    type: "storehouse",
-    position: hexGridCenter(eastState),
-    status: "active",
-    progress: 1,
-    requiredProgress: 1,
-    storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 3, stone: 0, food: 0 },
-  });
-  east.object.runtime = new WorldRuntime({ state: eastState });
-  await east.object.persist();
-
-  await source.object.alarm();
-  const travels = await source.state.storage.get(TRAVELS_KEY);
-  const claims = await source.state.storage.get(CLAIMS_KEY);
-  assert.equal(travels.length, 2);
-  assert.equal(claims.length, 2);
-  assert.equal(claims.reduce((sum, claim) => sum + claim.amount, 0), 3);
-  assert.deepEqual(claims.map((claim) => claim.amount).sort((a, b) => a - b), [1, 2]);
-  assert.ok(claims.every((claim) => claim.returnToSourceStorage !== true));
-  assert.ok(claims.every((claim) => claim.destinationStorageReserved === true));
-  assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));
-});
-'''
-          assert 'concurrent scouts reserve observed destination storage headroom before launching' not in tests
-          test_path.write_text(tests + addition)
-          PY
       - name: Install dependencies
         run: npm install --no-audit --no-fund
-      - name: Full validation
+
+      - name: Typecheck, test, and build
         run: npm run build
-      - name: Commit validated improvement and remove one-shot workflow
+
+      - name: Commit validated improvement to main
+        shell: bash
         run: |
+          set -euo pipefail
+          git add src/autonomy-region.ts tests/autonomous-concurrent-travel-do.test.mjs
+          git rm .github/workflows/one-shot-destination-headroom-reservation.yml
+          git restore --worktree .
+          git clean -fd
+          git diff --cached --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/one-shot-destination-headroom-reservation.yml
-          git add src/autonomy-region.ts tests/autonomous-concurrent-travel-do.test.mjs
           git commit -m "sim: reserve observed remote storage across scouts"
           git push origin HEAD:main
