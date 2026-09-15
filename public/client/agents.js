@@ -373,12 +373,6 @@ export const agentMethods = {
     const agent = entry.agent;
     const moving = entry.from.distanceToSquared(entry.to) > 0.001
       || /moving|travel|gather|haul/i.test(agent.status || "");
-    const phase = time * 0.0075
-      + hash2(agent.position.x, agent.position.y, agent.id.length) * Math.PI * 2;
-    const stride = moving ? Math.sin(phase) * 0.54 : Math.sin(phase * 0.2) * 0.02;
-    const bob = moving
-      ? Math.abs(Math.sin(phase)) * 0.04
-      : Math.sin(phase * 0.25) * 0.009;
 
     if (entry.mixer && entry.high?.visible) {
       const desired = moving ? (entry.moveAction || entry.idleAction) : (entry.idleAction || entry.moveAction);
@@ -394,27 +388,38 @@ export const agentMethods = {
       entry.lastMixerTime = time;
     }
 
-    for (const model of [entry.high, entry.medium]) {
-      if (!model || model.userData?.moyoAuthoredAgent) continue;
-      const leftLeg = model.getObjectByName("LeftLegPivot");
-      const rightLeg = model.getObjectByName("RightLegPivot");
-      const leftArm = model.getObjectByName("LeftArmPivot");
-      const rightArm = model.getObjectByName("RightArmPivot");
-      const torso = model.getObjectByName("FactionTorso");
-      const tailLeft = model.getObjectByName("MoyoCoatTailLeft");
-      const tailRight = model.getObjectByName("MoyoCoatTailRight");
-      if (leftLeg) leftLeg.rotation.x = stride;
-      if (rightLeg) rightLeg.rotation.x = -stride;
-      if (leftArm) leftArm.rotation.x = -stride * 0.72;
-      if (rightArm) rightArm.rotation.x = stride * 0.72;
-      if (torso) torso.position.y = 1.05 + bob;
-      if (tailLeft) tailLeft.rotation.x = -0.14 + (moving ? Math.abs(Math.sin(phase)) * 0.18 : 0.02);
-      if (tailRight) tailRight.rotation.x = -0.14 + (moving ? Math.abs(Math.sin(phase + 0.55)) * 0.18 : 0.02);
+    const visibleProceduralModels = [entry.high, entry.medium].filter(
+      (model) => model?.visible && !model.userData?.moyoAuthoredAgent,
+    );
+    if (visibleProceduralModels.length > 0) {
+      const phase = time * 0.0075
+        + hash2(agent.position.x, agent.position.y, agent.id.length) * Math.PI * 2;
+      const stride = moving ? Math.sin(phase) * 0.54 : Math.sin(phase * 0.2) * 0.02;
+      const bob = moving
+        ? Math.abs(Math.sin(phase)) * 0.04
+        : Math.sin(phase * 0.25) * 0.009;
+
+      for (const model of visibleProceduralModels) {
+        const leftLeg = model.getObjectByName("LeftLegPivot");
+        const rightLeg = model.getObjectByName("RightLegPivot");
+        const leftArm = model.getObjectByName("LeftArmPivot");
+        const rightArm = model.getObjectByName("RightArmPivot");
+        const torso = model.getObjectByName("FactionTorso");
+        const tailLeft = model.getObjectByName("MoyoCoatTailLeft");
+        const tailRight = model.getObjectByName("MoyoCoatTailRight");
+        if (leftLeg) leftLeg.rotation.x = stride;
+        if (rightLeg) rightLeg.rotation.x = -stride;
+        if (leftArm) leftArm.rotation.x = -stride * 0.72;
+        if (rightArm) rightArm.rotation.x = stride * 0.72;
+        if (torso) torso.position.y = 1.05 + bob;
+        if (tailLeft) tailLeft.rotation.x = -0.14 + (moving ? Math.abs(Math.sin(phase)) * 0.18 : 0.02);
+        if (tailRight) tailRight.rotation.x = -0.14 + (moving ? Math.abs(Math.sin(phase + 0.55)) * 0.18 : 0.02);
+      }
     }
     if (entry.contactShadow) {
       entry.contactShadow.material.opacity = moving ? 0.13 : 0.17;
       entry.contactShadow.scale.x = moving ? 1.36 : 1.25;
     }
-    entry.ring.rotation.z = time * 0.0012;
+    if (entry.ring.visible) entry.ring.rotation.z = time * 0.0012;
   },
 };
