@@ -1,0 +1,36 @@
+name: One-shot clean generated build artifacts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/one-shot-clean-build-artifacts.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove generated files accidentally staged by validation
+        run: |
+          git rm -r --ignore-unmatch package-lock.json public/assets/authored
+          git checkout 212425d8acabb9e19222050840cc484ff94d96cc -- src/build-meta.ts
+          rm -f .github/workflows/one-shot-clean-build-artifacts.yml
+
+      - name: Commit cleanup to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "chore: remove generated validation artifacts"
+          git push origin HEAD:main
