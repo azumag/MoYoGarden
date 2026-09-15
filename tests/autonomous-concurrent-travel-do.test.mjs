@@ -17,9 +17,21 @@ class MemoryStorage {
   constructor() {
     this.values = new Map();
     this.alarm = null;
+    this.transactionTail = Promise.resolve();
   }
   async get(key) { return structuredClone(this.values.get(key)); }
   async put(key, value) { this.values.set(key, structuredClone(value)); }
+  async transaction(callback) {
+    const previous = this.transactionTail;
+    let release;
+    this.transactionTail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await callback(this);
+    } finally {
+      release();
+    }
+  }
   async getAlarm() { return this.alarm; }
   async setAlarm(value) { this.alarm = value instanceof Date ? value.getTime() : value; }
   async deleteAlarm() { this.alarm = null; }
@@ -32,7 +44,7 @@ class MemoryState {
     this.ready = Promise.resolve();
   }
   blockConcurrencyWhile(callback) {
-    const result = Promise.resolve().then(callback);
+    const result = this.ready.then(callback);
     this.ready = result.catch(() => {});
     return result;
   }
@@ -420,10 +432,21 @@ test("destination storage admission is shared across source regions and releases
     return response.json();
   };
 
-  assert.equal((await reserve("source-a", "garden-1", 2)).grantedAmount, 2);
-  assert.equal((await reserve("source-b", "garden-3", 2)).grantedAmount, 1);
+  const [sourceA, sourceB] = await Promise.all([
+    reserve("source-a", "garden-1", 2),
+    reserve("source-b", "garden-3", 2),
+  ]);
+  assert.deepEqual(
+    [sourceA.grantedAmount, sourceB.grantedAmount].sort((left, right) => left - right),
+    [1, 2],
+    "concurrent source regions must share one atomic three-slot budget",
+  );
   assert.equal((await reserve("source-c", "garden-1", 1)).grantedAmount, 0);
-  assert.equal((await reserve("source-a", "garden-1", 2)).grantedAmount, 2, "retry must be idempotent");
+  assert.equal(
+    (await reserve("source-a", "garden-1", 2)).grantedAmount,
+    sourceA.grantedAmount,
+    "retry must be idempotent",
+  );
 
   const release = await destination.object.fetch(new Request(
     "https://moyo.internal/api/internal/autonomy/storage/release",
@@ -437,7 +460,11 @@ test("destination storage admission is shared across source regions and releases
     },
   ));
   assert.equal(release.status, 200);
-  assert.equal((await reserve("source-d", "garden-1", 2)).grantedAmount, 2);
+  assert.equal(
+    (await reserve("source-d", "garden-1", 2)).grantedAmount,
+    sourceA.grantedAmount,
+    "releasing one source must restore exactly its admitted capacity",
+  );
   const reservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
   assert.equal(reservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
 });

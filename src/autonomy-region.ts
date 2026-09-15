@@ -1100,53 +1100,83 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       });
     }
 
+    const claimId = body.claimId;
+    const sourceRegionId = body.sourceRegionId;
+    const factionId = body.factionId;
+    const requestedAmount = body.amount;
     const now = Date.now();
-    const reservations = await this.activeDestinationStorageReservations(now);
-    const existing = reservations.find((entry) => entry.claimId === body.claimId);
-    if (existing !== undefined) {
-      if (
-        existing.sourceRegionId !== body.sourceRegionId
-        || existing.factionId !== body.factionId
-      ) {
-        return new Response(JSON.stringify({ error: "claimId already reserved by another source" }), {
-          status: 409,
-        });
-      }
-      return new Response(JSON.stringify({
-        ok: true,
-        claimId: existing.claimId,
-        grantedAmount: existing.amount,
-        idempotent: true,
-      }), { headers: { "content-type": "application/json; charset=utf-8" } });
-    }
-
     const state = runtimeAccess(this).runtime.snapshot();
-    const actualHeadroom = factionStorageCapacityLeft(state, body.factionId);
-    const alreadyReserved = reservations.reduce(
-      (sum, entry) => entry.factionId === body.factionId ? sum + entry.amount : sum,
-      0,
-    );
-    const available = Math.max(0, actualHeadroom - alreadyReserved);
-    const grantedAmount = Math.min(body.amount, available);
-    if (grantedAmount > 0) {
-      const reservation: AutonomousDestinationStorageReservation = {
-        claimId: body.claimId,
-        sourceRegionId: body.sourceRegionId,
-        factionId: body.factionId,
-        amount: grantedAmount,
-        expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS,
-      };
-      await this.autonomyState.storage.put(
-        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
-        [...reservations, reservation],
+    const actualHeadroom = factionStorageCapacityLeft(state, factionId);
+    // Reservation admission is rare (only remote-sink expedition launch), so a
+    // short Durable Object critical section is preferable to a read/modify/write
+    // race across concurrent source regions. Keep only storage I/O and arithmetic
+    // inside the gate; no network fetch occurs while concurrency is blocked.
+    const result = await this.autonomyState.blockConcurrencyWhile(async () => {
+      const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY);
+      const reservations = Array.isArray(stored)
+        ? stored
+          .filter(isDestinationStorageReservation)
+          .filter((entry) => entry.expiresAtMs > now)
+        : [];
+      const existing = reservations.find((entry) => entry.claimId === claimId);
+      if (existing !== undefined) {
+        if (
+          existing.sourceRegionId !== sourceRegionId
+          || existing.factionId !== factionId
+        ) {
+          return { conflict: true as const };
+        }
+        return {
+          conflict: false as const,
+          grantedAmount: existing.amount,
+          remainingHeadroom: Math.max(
+            0,
+            actualHeadroom - reservations.reduce(
+              (sum, entry) => entry.factionId === factionId ? sum + entry.amount : sum,
+              0,
+            ),
+          ),
+          idempotent: true,
+        };
+      }
+
+      const alreadyReserved = reservations.reduce(
+        (sum, entry) => entry.factionId === factionId ? sum + entry.amount : sum,
+        0,
       );
+      const available = Math.max(0, actualHeadroom - alreadyReserved);
+      const grantedAmount = Math.min(requestedAmount, available);
+      const next = grantedAmount > 0
+        ? [...reservations, {
+          claimId: claimId,
+          sourceRegionId: sourceRegionId,
+          factionId: factionId,
+          amount: grantedAmount,
+          expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS,
+        } satisfies AutonomousDestinationStorageReservation]
+        : reservations;
+      if (!Array.isArray(stored) || next.length !== stored.length || grantedAmount > 0) {
+        await this.autonomyState.storage.put(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY, next);
+      }
+      return {
+        conflict: false as const,
+        grantedAmount,
+        remainingHeadroom: Math.max(0, available - grantedAmount),
+        idempotent: false,
+      };
+    });
+    if (result.conflict) {
+      return new Response(JSON.stringify({ error: "claimId already reserved by another source" }), {
+        status: 409,
+      });
     }
     return new Response(JSON.stringify({
       ok: true,
-      claimId: body.claimId,
-      requestedAmount: body.amount,
-      grantedAmount,
-      remainingHeadroom: Math.max(0, available - grantedAmount),
+      claimId: claimId,
+      requestedAmount: requestedAmount,
+      grantedAmount: result.grantedAmount,
+      remainingHeadroom: result.remainingHeadroom,
+      ...(result.idempotent ? { idempotent: true } : {}),
     }), { headers: { "content-type": "application/json; charset=utf-8" } });
   }
 
@@ -1168,16 +1198,23 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         status: 400,
       });
     }
-    const reservations = await this.activeDestinationStorageReservations();
-    const next = reservations.filter((entry) =>
-      entry.claimId !== body.claimId || entry.sourceRegionId !== body.sourceRegionId
-    );
-    if (next.length !== reservations.length) {
-      await this.autonomyState.storage.put(
-        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
-        next,
+    const claimId = body.claimId;
+    const sourceRegionId = body.sourceRegionId;
+    const now = Date.now();
+    await this.autonomyState.blockConcurrencyWhile(async () => {
+      const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY);
+      const reservations = Array.isArray(stored)
+        ? stored
+          .filter(isDestinationStorageReservation)
+          .filter((entry) => entry.expiresAtMs > now)
+        : [];
+      const next = reservations.filter((entry) =>
+        entry.claimId !== claimId || entry.sourceRegionId !== sourceRegionId
       );
-    }
+      if (!Array.isArray(stored) || next.length !== stored.length) {
+        await this.autonomyState.storage.put(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY, next);
+      }
+    });
     return new Response(JSON.stringify({ ok: true, claimId: body.claimId }), {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
