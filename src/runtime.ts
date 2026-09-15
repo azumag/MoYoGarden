@@ -291,6 +291,28 @@ function isAdultForReproduction(agent: Agent, tick: number): boolean {
   return tick - agent.birthTick >= POPULATION_MATURITY_TICKS;
 }
 
+function areCloseReproductiveKin(first: Agent, second: Agent): boolean {
+  const firstParents: readonly string[] = first.parents ?? [];
+  const secondParents: readonly string[] = second.parents ?? [];
+  if (firstParents.includes(second.id) || secondParents.includes(first.id)) return true;
+  return firstParents.some((parentId) => secondParents.includes(parentId));
+}
+
+function pairConversationCount(state: WorldState, firstId: string, secondId: string): number {
+  let count = 0;
+  for (const event of state.events) {
+    if (event.kind !== "agent_conversation" || event.tick > state.tick) continue;
+    const targetAgentId = event.data?.targetAgentId;
+    if (
+      (event.agentId === firstId && targetAgentId === secondId) ||
+      (event.agentId === secondId && targetAgentId === firstId)
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function applyLifeStageTransitions(state: WorldState): void {
   for (const agent of state.agents) {
     if (agent.birthTick === undefined || agent.lifeStage === "adult" || agent.lifeStage === "elder") continue;
@@ -390,12 +412,19 @@ function planConceptions(state: WorldState): void {
         .filter((candidate) =>
           candidate.id !== parent.id &&
           reproductiveRole(candidate) === "partner" &&
+          !areCloseReproductiveKin(parent, candidate) &&
           manhattanDistance(candidate.position, parent.position) <= POPULATION_PARENT_RADIUS
         )
+        .map((candidate) => ({
+          candidate,
+          familiarity: pairConversationCount(state, parent.id, candidate.id),
+          distance: manhattanDistance(candidate.position, parent.position),
+        }))
         .sort((a, b) =>
-          manhattanDistance(a.position, parent.position) - manhattanDistance(b.position, parent.position) ||
-          a.id.localeCompare(b.id)
-        )[0];
+          b.familiarity - a.familiarity ||
+          a.distance - b.distance ||
+          a.candidate.id.localeCompare(b.candidate.id)
+        )[0]?.candidate;
       if (partner === undefined) continue;
 
       parent.pregnancy = {
