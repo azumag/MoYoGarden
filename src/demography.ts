@@ -98,7 +98,11 @@ export function applyPopulationMaintenance(state: WorldState): void {
             : POPULATION_PREGNANCY_HUNGER_ENERGY_COST
         ),
       );
-      if (!nourished) agent.status = "pregnant; food insecure";
+      if (!nourished) {
+        agent.status = agent.lifeStage === "elder"
+          ? "elder; pregnant; food insecure"
+          : "pregnant; food insecure";
+      }
     }
   }
 
