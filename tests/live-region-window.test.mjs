@@ -187,7 +187,7 @@ test("contextual live-neighbor BOT animation is capped below the display frame r
   assert.match(animateSource, /if \(!this\.root\.visible\) return/);
   assert.match(
     animateSource,
-    /time - this\.lastAnimationAt < LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS/,
+    /time - this\.lastAnimationAt < this\.animationIntervalMs/,
   );
   assert.match(animateSource, /this\.lastAnimationAt = time/);
   const throttleGuard = animateSource.indexOf("time - this.lastAnimationAt");

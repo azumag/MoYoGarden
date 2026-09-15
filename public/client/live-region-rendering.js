@@ -11,6 +11,14 @@ const FRAME_PATCH_KEY = "__moyoLiveRegionFramePatched";
 // interpolation still samples the current timestamp, so throttling never changes
 // arrival timing or simulation state.
 const LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 30;
+const CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 15;
+
+function liveNeighborAnimationIntervalMs(quality) {
+  const density = Number(quality?.detailDensity);
+  return Number.isFinite(density) && density <= 0.5
+    ? CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS
+    : LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS;
+}
 
 function finiteHexOrigin(value) {
   return value
@@ -368,6 +376,7 @@ class LiveNeighborSimulation {
     this.entries = new Map();
     this.centerRegionId = null;
     this.lastAnimationAt = Number.NEGATIVE_INFINITY;
+    this.animationIntervalMs = liveNeighborAnimationIntervalMs(view.quality);
     view.worldRoot.add(this.root);
   }
 
@@ -445,7 +454,7 @@ class LiveNeighborSimulation {
     // Soft handoff hides the neighbor root while the next center is prepared; do
     // no per-BOT work while those objects cannot contribute to the frame.
     if (!this.root.visible) return;
-    if (time - this.lastAnimationAt < LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS) return;
+    if (time - this.lastAnimationAt < this.animationIntervalMs) return;
     this.lastAnimationAt = time;
     for (const entry of this.entries.values()) {
       for (const agent of entry.proxy.agentObjects.values()) {
