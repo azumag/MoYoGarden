@@ -33,56 +33,71 @@ jobs:
           def replace_once(path, old, new):
               p = Path(path)
               text = p.read_text()
-              if text.count(old) != 1:
-                  raise SystemExit(f"expected exactly one match in {path}, found {text.count(old)}")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one match in {path}, found {count}: {old[:80]!r}")
               p.write_text(text.replace(old, new, 1))
 
           replace_once(
               'src/halo-region.ts',
-              '''      const headroom = Math.max(\n        0,\n        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),\n      );\n      if (headroom <= 0) continue;\n      storageHeadroom.set(\n        structure.factionId,\n        (storageHeadroom.get(structure.factionId) ?? 0) + headroom,\n      );''',
-              '''      const headroom = Math.max(\n        0,\n        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),\n      );\n      // Keep zero for factions whose active storage is known to be full. An\n      // omitted faction still means "unknown" after bounded top-N truncation,\n      // which lets remote planners distinguish full from merely unobserved.\n      storageHeadroom.set(\n        structure.factionId,\n        (storageHeadroom.get(structure.factionId) ?? 0) + headroom,\n      );'''
+              '''      if (headroom <= 0) continue;\n      storageHeadroom.set(''',
+              '''      // Keep zero for factions whose active storage is known to be full. An\n      // omitted faction still means "unknown" after bounded top-N truncation,\n      // which lets remote planners distinguish full from merely unobserved.\n      storageHeadroom.set(''',
+          )
+
+          replace_once(
+              'src/hex-halo.ts',
+              '''  // Optional during rolling deploys. This is a bounded positive-headroom map\n  // (at most a handful of factions), used only as a planning preference; an\n  // omitted faction is unknown rather than proof that remote storage is full.\n  storageHeadroomByFaction?: Record<string, number>;''',
+              '''  // Optional during rolling deploys. This bounded observed-headroom map can\n  // contain zero for a faction whose active storage is known to be full. An\n  // omitted faction stays unknown (for example after top-N truncation).\n  storageHeadroomByFaction?: Record<string, number>;''',
           )
 
           replace_once(
               'src/autonomy-region.ts',
-              '''function haloRegionFactionStorageHeadroom(\n  halo: readonly HexHaloTile[],\n  neighborRegionId: string,\n  factionId: string,\n): number | undefined {\n  let minimumHeadroom: number | undefined;\n  for (const entry of halo) {\n    if (entry.neighborRegionId !== neighborRegionId) continue;\n    const headroom = entry.neighborRegionSummary?.storageHeadroomByFaction?.[factionId];\n    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom <= 0) continue;\n    // Multiple seam reads can straddle ticks. Treat this as a routing hint, not\n    // a reservation, and use the most conservative positive observation.\n    minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);\n  }\n  return minimumHeadroom;\n}''',
-              '''function haloRegionFactionStorageHeadroom(\n  halo: readonly HexHaloTile[],\n  neighborRegionId: string,\n  factionId: string,\n): number | undefined {\n  let minimumHeadroom: number | undefined;\n  for (const entry of halo) {\n    if (entry.neighborRegionId !== neighborRegionId) continue;\n    const byFaction = entry.neighborRegionSummary?.storageHeadroomByFaction;\n    if (byFaction === undefined || !Object.prototype.hasOwnProperty.call(byFaction, factionId)) continue;\n    const headroom = byFaction[factionId];\n    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom < 0) continue;\n    // Multiple seam reads can straddle ticks. Treat this as a routing hint, not\n    // a reservation, and use the most conservative observation, including zero\n    // when the remote faction's active storage is explicitly known to be full.\n    minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);\n  }\n  return minimumHeadroom;\n}\n\nfunction storageHeadroomPreference(headroom: number | undefined): number {\n  // Positive observed capacity is best; missing bounded metadata stays neutral;\n  // an explicit zero is actionable evidence that the destination is full.\n  if (headroom === undefined) return 1;\n  return headroom > 0 ? 2 : 0;\n}'''
+              '''    const headroom = entry.neighborRegionSummary?.storageHeadroomByFaction?.[factionId];\n    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom <= 0) continue;\n    // Multiple seam reads can straddle ticks. Treat this as a routing hint, not\n    // a reservation, and use the most conservative positive observation.\n    minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);''',
+              '''    const byFaction = entry.neighborRegionSummary?.storageHeadroomByFaction;\n    if (byFaction === undefined || !Object.prototype.hasOwnProperty.call(byFaction, factionId)) continue;\n    const headroom = byFaction[factionId];\n    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom < 0) continue;\n    // Multiple seam reads can straddle ticks. Treat this as a routing hint, not\n    // a reservation, and use the most conservative observation, including zero\n    // when the remote faction's active storage is explicitly known to be full.\n    minimumHeadroom = Math.min(minimumHeadroom ?? headroom, headroom);''',
           )
 
-          old_sort = '''        || Number((b.destinationStorageHeadroom ?? 0) > 0)\n          - Number((a.destinationStorageHeadroom ?? 0) > 0)\n        || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)'''
-          new_sort = '''        || storageHeadroomPreference(b.destinationStorageHeadroom)\n          - storageHeadroomPreference(a.destinationStorageHeadroom)\n        || (b.destinationStorageHeadroom ?? 0) - (a.destinationStorageHeadroom ?? 0)'''
+          replace_once(
+              'src/autonomy-region.ts',
+              '''  return minimumHeadroom;\n}\n\nfunction availableHaloSupplyForAgent(''',
+              '''  return minimumHeadroom;\n}\n\nfunction storageHeadroomPreference(headroom: number | undefined): number {\n  // Positive observed capacity is best; missing bounded metadata stays neutral;\n  // an explicit zero is actionable evidence that the destination is full.\n  if (headroom === undefined) return 1;\n  return headroom > 0 ? 2 : 0;\n}\n\nfunction availableHaloSupplyForAgent(''',
+          )
+
           p = Path('src/autonomy-region.ts')
           text = p.read_text()
-          if text.count(old_sort) != 2:
-              raise SystemExit(f"expected two destination storage sort blocks, found {text.count(old_sort)}")
-          p.write_text(text.replace(old_sort, new_sort))
+          b = 'Number((b.destinationStorageHeadroom ?? 0) > 0)'
+          a = 'Number((a.destinationStorageHeadroom ?? 0) > 0)'
+          if text.count(b) != 2 or text.count(a) != 2:
+              raise SystemExit(f"unexpected storage sort occurrences: b={text.count(b)} a={text.count(a)}")
+          text = text.replace(b, 'storageHeadroomPreference(b.destinationStorageHeadroom)')
+          text = text.replace(a, 'storageHeadroomPreference(a.destinationStorageHeadroom)')
+          p.write_text(text)
 
           replace_once(
               'tests/autonomy-region-storage-headroom-summary.test.mjs',
               '''      ...(headroom > 0 ? { storageHeadroomByFaction: { [factionId]: headroom } } : {}),''',
-              '''      ...(headroom === undefined ? {} : { storageHeadroomByFaction: { [factionId]: headroom } }),'''
+              '''      ...(headroom === undefined ? {} : { storageHeadroomByFaction: { [factionId]: headroom } }),''',
           )
           replace_once(
               'tests/autonomy-region-storage-headroom-summary.test.mjs',
-              '''  const summary = {\n    resources: { wood: 8, stone: 0, food: 0 },\n    storageHeadroomByFaction: { settlers: 12 },\n    passableCells: 397,\n    occupants: 2,\n  };''',
-              '''  const summary = {\n    resources: { wood: 8, stone: 0, food: 0 },\n    storageHeadroomByFaction: { settlers: 0, traders: 12 },\n    passableCells: 397,\n    occupants: 2,\n  };'''
+              '''    storageHeadroomByFaction: { settlers: 12 },''',
+              '''    storageHeadroomByFaction: { settlers: 0, traders: 12 },''',
           )
           replace_once(
               'tests/autonomy-region-storage-headroom-summary.test.mjs',
               '''  assert.deepEqual(materialized[0].neighborRegionSummary?.storageHeadroomByFaction, { settlers: 12 });\n  materialized[0].neighborRegionSummary.storageHeadroomByFaction.settlers = 1;\n  assert.equal(summary.storageHeadroomByFaction.settlers, 12);''',
-              '''  assert.deepEqual(materialized[0].neighborRegionSummary?.storageHeadroomByFaction, { settlers: 0, traders: 12 });\n  materialized[0].neighborRegionSummary.storageHeadroomByFaction.settlers = 1;\n  assert.equal(summary.storageHeadroomByFaction.settlers, 0);'''
+              '''  assert.deepEqual(materialized[0].neighborRegionSummary?.storageHeadroomByFaction, { settlers: 0, traders: 12 });\n  materialized[0].neighborRegionSummary.storageHeadroomByFaction.settlers = 1;\n  assert.equal(summary.storageHeadroomByFaction.settlers, 0);''',
           )
           replace_once(
               'tests/autonomy-region-storage-headroom-summary.test.mjs',
               '''  const east = halo(state, "east", "garden-2", agent.factionId, 0);\n  const west = halo(state, "west", "hex-q-1-r0", "other-faction", 20);\n  const plan = planAutonomousHaloTravel(state, [west, east]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");''',
-              '''  const east = halo(state, "east", "garden-2", agent.factionId, undefined);\n  const west = halo(state, "west", "hex-q-1-r0", "other-faction", 20);\n  const plan = planAutonomousHaloTravel(state, [west, east]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");'''
+              '''  const east = halo(state, "east", "garden-2", agent.factionId, undefined);\n  const west = halo(state, "west", "hex-q-1-r0", "other-faction", 20);\n  const plan = planAutonomousHaloTravel(state, [west, east]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "east", "legacy deterministic route order should remain when own-faction headroom is unknown");''',
           )
           p = Path('tests/autonomy-region-storage-headroom-summary.test.mjs')
           text = p.read_text()
           marker = '''test("storage headroom for another faction does not bias expedition routing", () => {'''
-          addition = '''test("equivalent expeditions prefer unknown storage over a destination known to be full", () => {\n  const { state, agent } = fixture();\n  const east = halo(state, "east", "garden-2", agent.factionId, 0);\n  const west = halo(state, "west", "hex-q-1-r0", agent.factionId, undefined);\n  const plan = planAutonomousHaloTravel(state, [east, west]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "west");\n  assert.equal(plan.neighborRegionId, "hex-q-1-r0");\n});\n\n'''
           if text.count(marker) != 1:
-              raise SystemExit('test insertion marker mismatch')
+              raise SystemExit(f"test insertion marker mismatch: {text.count(marker)}")
+          addition = '''test("equivalent expeditions prefer unknown storage over a destination known to be full", () => {\n  const { state, agent } = fixture();\n  const east = halo(state, "east", "garden-2", agent.factionId, 0);\n  const west = halo(state, "west", "hex-q-1-r0", agent.factionId, undefined);\n  const plan = planAutonomousHaloTravel(state, [east, west]);\n  assert.ok(plan);\n  assert.equal(plan.direction, "west");\n  assert.equal(plan.neighborRegionId, "hex-q-1-r0");\n});\n\n'''
           p.write_text(text.replace(marker, addition + marker, 1))
           PY
 
@@ -98,6 +113,6 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/halo-region.ts src/autonomy-region.ts tests/autonomy-region-storage-headroom-summary.test.mjs .github/workflows/moyo-auto-improve.yml
+          git add src/halo-region.ts src/hex-halo.ts src/autonomy-region.ts tests/autonomy-region-storage-headroom-summary.test.mjs .github/workflows/moyo-auto-improve.yml
           git commit -m 'sim: avoid known-full expedition storage'
           git push origin HEAD:main
