@@ -188,6 +188,20 @@ function rewriteResidentFamilyReference(
   }
 }
 
+function rewriteHistoricalAgentReference(
+  state: WorldState,
+  sourceLocalId: string,
+  promotedId: string,
+): void {
+  if (sourceLocalId === promotedId) return;
+  for (const event of state.events) {
+    if (event.agentId === sourceLocalId) event.agentId = promotedId;
+    if (event.data?.targetAgentId === sourceLocalId) {
+      event.data = { ...event.data, targetAgentId: promotedId };
+    }
+  }
+}
+
 export function detachAgentOwnership(
   state: WorldState,
   pendingCommands: readonly WorldCommand[],
@@ -205,6 +219,11 @@ export function detachAgentOwnership(
   for (const resident of snapshot.state.agents) {
     rewriteResidentFamilyReference(resident, agent.id, promotedId);
   }
+  // Recent events are the current low-level social memory used by pairing and
+  // information sharing. Once a local BOT ID is promoted, keep that bounded
+  // history on the same world-global identity so returning or later-following
+  // family members do not see the same individual as a stranger.
+  rewriteHistoricalAgentReference(snapshot.state, agent.id, promotedId);
 
   const detachedAgent = structuredClone(agent);
   // Demographic references are identity links rather than region-local targets.
