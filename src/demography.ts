@@ -1,4 +1,5 @@
-import type { WorldState } from "./protocol.js";
+import type { Agent, WorldState } from "./protocol.js";
+import { activeFactionStructures, getFaction } from "./world.js";
 
 // Demographic time is intentionally compressed to keep biological causality visible
 // in a persistent world while preserving the production 10-second virtual tick.
@@ -8,6 +9,18 @@ export const POPULATION_MIN_LIFESPAN_TICKS = POPULATION_DAY_TICKS * 24;
 export const POPULATION_LIFESPAN_VARIATION_DAYS = 8;
 export const POPULATION_MAX_LIFESPAN_TICKS =
   POPULATION_MIN_LIFESPAN_TICKS + POPULATION_DAY_TICKS * POPULATION_LIFESPAN_VARIATION_DAYS;
+
+// Pregnancy and dependent care are continuous costs rather than a one-off birth
+// payment. Charging twice per compressed day keeps the feedback visible without
+// adding per-tick storage writes or changing persisted schema.
+export const POPULATION_MAINTENANCE_INTERVAL_TICKS = POPULATION_DAY_TICKS / 2;
+const POPULATION_PREGNANCY_FOOD_COST = 1;
+const POPULATION_DEPENDENT_FOOD_COST = 1;
+const POPULATION_PREGNANCY_ENERGY_COST = 2;
+const POPULATION_PREGNANCY_HUNGER_ENERGY_COST = 6;
+const POPULATION_DEPENDENT_ENERGY_RECOVERY = 6;
+const POPULATION_DEPENDENT_HUNGER_ENERGY_COST = 8;
+const POPULATION_CAREGIVER_ENERGY_COST = 2;
 
 function demographicHash(value: string): number {
   let hash = 2166136261;
@@ -21,6 +34,111 @@ function demographicHash(value: string): number {
 export function naturalLifespanTicks(agentId: string): number {
   const extraDays = demographicHash(agentId) % (POPULATION_LIFESPAN_VARIATION_DAYS + 1);
   return POPULATION_MIN_LIFESPAN_TICKS + extraDays * POPULATION_DAY_TICKS;
+}
+
+function consumeStoredFood(state: WorldState, factionId: string, amount: number): boolean {
+  const faction = getFaction(state, factionId);
+  if (faction === undefined || faction.resources.food < amount) return false;
+  const storages = activeFactionStructures(state, factionId)
+    .filter((structure) => structure.storage.food > 0)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const storedFood = storages.reduce((sum, structure) => sum + structure.storage.food, 0);
+  if (storedFood < amount) return false;
+
+  faction.resources.food -= amount;
+  let remaining = amount;
+  for (const structure of storages) {
+    const taken = Math.min(remaining, structure.storage.food);
+    structure.storage.food -= taken;
+    remaining -= taken;
+    if (remaining === 0) break;
+  }
+  return true;
+}
+
+function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {
+  for (const parentId of dependent.parents ?? []) {
+    const parent = state.agents.find((candidate) =>
+      candidate.id === parentId &&
+      candidate.factionId === dependent.factionId &&
+      candidate.hp > 0
+    );
+    if (parent !== undefined) return parent;
+  }
+  return undefined;
+}
+
+/**
+ * Apply coarse demographic maintenance costs on the same virtual-time axis as
+ * aging. Food comes out of the existing faction/storage ledger, so pregnancy and
+ * childhood now compete with work, stockpiles, and future conceptions instead of
+ * being free between conception and birth/adulthood.
+ */
+export function applyPopulationMaintenance(state: WorldState): void {
+  if (
+    state.tick === 0 ||
+    state.tick % POPULATION_MAINTENANCE_INTERVAL_TICKS !== 0
+  ) {
+    return;
+  }
+
+  const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
+  for (const agent of agents) {
+    if (agent.pregnancy !== undefined && agent.pregnancy.dueAtTick > state.tick) {
+      const nourished = consumeStoredFood(
+        state,
+        agent.factionId,
+        POPULATION_PREGNANCY_FOOD_COST,
+      );
+      agent.energy = Math.max(
+        0,
+        agent.energy - (
+          nourished
+            ? POPULATION_PREGNANCY_ENERGY_COST
+            : POPULATION_PREGNANCY_HUNGER_ENERGY_COST
+        ),
+      );
+      if (!nourished) agent.status = "pregnant; food insecure";
+    }
+  }
+
+  for (const dependent of agents) {
+    if (
+      (dependent.lifeStage !== "infant" && dependent.lifeStage !== "juvenile") ||
+      dependent.birthTick === undefined ||
+      state.tick <= dependent.birthTick
+    ) {
+      continue;
+    }
+
+    const nourished = consumeStoredFood(
+      state,
+      dependent.factionId,
+      POPULATION_DEPENDENT_FOOD_COST,
+    );
+    if (nourished) {
+      dependent.energy = Math.min(
+        100,
+        dependent.energy + POPULATION_DEPENDENT_ENERGY_RECOVERY,
+      );
+      if (dependent.status.includes("food insecure")) {
+        dependent.status = dependent.lifeStage === "infant"
+          ? "infant; dependent on parents"
+          : "juvenile; growing with the settlement";
+      }
+    } else {
+      dependent.energy = Math.max(
+        0,
+        dependent.energy - POPULATION_DEPENDENT_HUNGER_ENERGY_COST,
+      );
+      dependent.status = `${dependent.lifeStage}; food insecure`;
+    }
+
+    const caregiver = dependentCaregiver(state, dependent);
+    if (caregiver !== undefined) {
+      caregiver.energy = Math.max(0, caregiver.energy - POPULATION_CAREGIVER_ENERGY_COST);
+    }
+  }
 }
 
 export function applyPopulationAging(state: WorldState): void {
@@ -46,4 +164,5 @@ export function applyPopulationAging(state: WorldState): void {
     survivors.push(agent);
   }
   state.agents = survivors;
+  applyPopulationMaintenance(state);
 }
