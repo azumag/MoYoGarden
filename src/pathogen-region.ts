@@ -355,7 +355,7 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
       )
     ).filter((value): value is PathogenEdgeSnapshot => value !== undefined);
     return {
-      pressure: pathogenHaloPressureMap(links, edges),
+      pressure: pathogenHaloPressureMap(links, edges, this.pathogenEnvironmentFrame(state)),
       reservoir: pathogenHaloReservoirMap(links, edges),
     };
   }

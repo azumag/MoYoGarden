@@ -1,7 +1,14 @@
-import { hexGridBoundaryCells, hexGridNeighbors, type HexGridDirection } from "./hex-grid.js";
+import {
+  HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
+  hexGridBoundaryCells,
+  hexGridNeighbors,
+  oppositeHexGridDirection,
+  type HexGridDirection,
+} from "./hex-grid.js";
 import type { HexHaloLink } from "./hex-halo.js";
 import { positionKey, type Agent, type GridPosition, type Tile, type WorldState } from "./protocol.js";
-import { sampleWorldConditions } from "./world-scale.js";
+import { sampleWorldConditions, sampleWorldWind } from "./world-scale.js";
 
 export interface PathogenEnvironmentFrame {
   worldSeed: number;
@@ -46,6 +53,11 @@ const PATHOGEN_RECOVERY_ENERGY_BAND = 0.015;
 const PATHOGEN_CLIMATE_PERSISTENCE_GAIN = 0.35;
 const PATHOGEN_SAME_CELL_CONTACT_GAIN = 0.11;
 const PATHOGEN_ADJACENT_CONTACT_GAIN = 0.06;
+// Airflow should shape near-field transmission without making an old save more
+// infectious than before. An upwind carrier keeps the legacy adjacent-contact
+// gain; other directions lose at most 18% as stronger shared-world wind carries
+// aerosols away from the receiving BOT. Same-cell contact is unchanged.
+const PATHOGEN_NON_UPWIND_CONTACT_REDUCTION = 0.18;
 const PATHOGEN_RESERVOIR_SHEDDING_GAIN = 0.04;
 const PATHOGEN_RESERVOIR_EXPOSURE_GAIN = 0.035;
 const PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN =
@@ -349,7 +361,28 @@ function buildPathogenContactIndex(agents: readonly Agent[]): PathogenContactInd
   return mutable;
 }
 
-function localContactExposure(index: PathogenContactIndex, target: Agent): number {
+export function pathogenAdjacentContactGain(
+  position: GridPosition,
+  sourceDirection: HexGridDirection,
+  environment: PathogenEnvironmentFrame | undefined,
+): number {
+  if (environment === undefined) return PATHOGEN_ADJACENT_CONTACT_GAIN;
+  const wind = sampleWorldWind(
+    environment.worldSeed,
+    environment.originX + position.x,
+    environment.originY + position.y,
+  );
+  const upwindDirection = oppositeHexGridDirection(wind.direction);
+  if (sourceDirection === upwindDirection) return PATHOGEN_ADJACENT_CONTACT_GAIN;
+  return PATHOGEN_ADJACENT_CONTACT_GAIN *
+    (1 - wind.strength * PATHOGEN_NON_UPWIND_CONTACT_REDUCTION);
+}
+
+function localContactExposure(
+  index: PathogenContactIndex,
+  target: Agent,
+  environment: PathogenEnvironmentFrame | undefined,
+): number {
   let exposure = 0;
   const addBucket = (position: GridPosition, gain: number): void => {
     const bucket = index.get(positionKey(position));
@@ -361,8 +394,12 @@ function localContactExposure(index: PathogenContactIndex, target: Agent): numbe
   };
 
   addBucket(target.position, PATHOGEN_SAME_CELL_CONTACT_GAIN);
-  for (const neighbor of hexGridNeighbors(target.position)) {
-    addBucket(neighbor, PATHOGEN_ADJACENT_CONTACT_GAIN);
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    addBucket(
+      { x: target.position.x + step.x, y: target.position.y + step.y },
+      pathogenAdjacentContactGain(target.position, direction, environment),
+    );
   }
   return exposure;
 }
@@ -424,6 +461,7 @@ export function pathogenEdgeSnapshot(
 export function pathogenHaloPressureMap(
   links: readonly HexHaloLink[],
   edges: readonly PathogenEdgeSnapshot[],
+  environment?: PathogenEnvironmentFrame,
 ): Map<string, number> {
   const index = new Map<string, number>();
   for (const edge of edges) {
@@ -442,7 +480,17 @@ export function pathogenHaloPressureMap(
     );
     if (pressure === undefined || pressure <= 0) continue;
     const key = positionKey(link.sourcePosition);
-    result.set(key, unionPressure(result.get(key) ?? 0, pressure));
+    // Keep exact seam behavior aligned with ordinary local adjacency. The map
+    // still stores normalized infectious pressure; scaling by the ratio here
+    // lets applyPathogenSteps retain its existing adjacent-contact gain while
+    // shared-world wind attenuates non-upwind sources identically on both sides
+    // of a Durable Object boundary.
+    const gainRatio = pathogenAdjacentContactGain(
+      link.sourcePosition,
+      link.direction,
+      environment,
+    ) / PATHOGEN_ADJACENT_CONTACT_GAIN;
+    result.set(key, unionPressure(result.get(key) ?? 0, pressure * gainRatio));
   }
   return result;
 }
@@ -505,7 +553,7 @@ function singlePathogenStep(
     const current = previousLoads.get(agent.id) ?? 0;
     const currentImmunity = previousImmunity.get(agent.id) ?? 0;
     const climatePersistence = pathogenClimatePersistence(agent.position, environment);
-    const directContact = localContactExposure(contactIndex, agent);
+    const directContact = localContactExposure(contactIndex, agent, environment);
     const environmentalExposure = localReservoirExposure(previousReservoir, agent.position);
     const contact = unionPressure(directContact, environmentalExposure) *
       clamp01(1 - currentImmunity * PATHOGEN_IMMUNITY_MAX_EFFECT);
@@ -573,9 +621,11 @@ function singlePathogenStep(
  * cells on its slower cadence.
  *
  * Same-cell crowding is intentionally a stronger contact than sharing an edge.
- * An exact cross-region halo contact uses the same adjacent-cell gain as an
- * ordinary local six-neighbor contact, so a Durable Object seam does not change
- * transmission strength. Environmental reservoir exposure follows the same hex
+ * Shared-world wind modestly attenuates non-upwind adjacent transmission while
+ * preserving the legacy gain for an upwind carrier. Exact cross-region halo
+ * contact applies the same directional factor as an ordinary local six-neighbor
+ * contact, so a Durable Object seam does not change transmission strength.
+ * Environmental reservoir exposure follows the same hex
  * geometry: same-cell burden is strongest, immediate six-neighbor burden is
  * weaker, and a ghost-cell burden across a DO seam uses that exact adjacent
  * strength without copying or mutating the remote tile. Existing local `flowTo`
