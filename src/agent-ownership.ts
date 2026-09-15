@@ -158,6 +158,36 @@ export function globalHandoffAgentId(agentId: string, originRegionId: string): s
   return `${GLOBAL_AGENT_PREFIX}${originRegionId}:${agentId}`;
 }
 
+function promoteAgentFamilyReferences(agent: Agent, originRegionId: string): void {
+  if (agent.parents !== undefined) {
+    agent.parents = agent.parents.map((parentId) =>
+      globalHandoffAgentId(parentId, originRegionId)
+    ) as [string, string];
+  }
+  if (agent.pregnancy !== undefined) {
+    agent.pregnancy = {
+      ...agent.pregnancy,
+      partnerId: globalHandoffAgentId(agent.pregnancy.partnerId, originRegionId),
+    };
+  }
+}
+
+function rewriteResidentFamilyReference(
+  agent: Agent,
+  sourceLocalId: string,
+  promotedId: string,
+): void {
+  if (sourceLocalId === promotedId) return;
+  if (agent.parents !== undefined) {
+    agent.parents = agent.parents.map((parentId) =>
+      parentId === sourceLocalId ? promotedId : parentId
+    ) as [string, string];
+  }
+  if (agent.pregnancy?.partnerId === sourceLocalId) {
+    agent.pregnancy = { ...agent.pregnancy, partnerId: promotedId };
+  }
+}
+
 export function detachAgentOwnership(
   state: WorldState,
   pendingCommands: readonly WorldCommand[],
@@ -171,10 +201,20 @@ export function detachAgentOwnership(
 
   const snapshot = cloneSnapshot(state, pendingCommands);
   snapshot.state.agents = snapshot.state.agents.filter((entry) => entry.id !== agentId);
+  const promotedId = globalHandoffAgentId(agent.id, state.regionId);
+  for (const resident of snapshot.state.agents) {
+    rewriteResidentFamilyReference(resident, agent.id, promotedId);
+  }
+
+  const detachedAgent = structuredClone(agent);
+  // Demographic references are identity links rather than region-local targets.
+  // Normalize them before the moving agent leaves its origin so a partner or
+  // parent that crosses later receives the exact same stable global identity.
+  promoteAgentFamilyReferences(detachedAgent, state.regionId);
   return {
     ok: true,
     value: {
-      agent: structuredClone(agent),
+      agent: detachedAgent,
       snapshot,
     },
   };
@@ -208,6 +248,9 @@ export function attachAgentOwnership(
   // IDs remain unchanged on all later handoffs.
   arrived.id = arrivedId;
   arrived.position = { ...targetPosition };
+  // Keep lineage and active pregnancy references on the same stable identity
+  // scheme even when callers attach a legacy snapshot without first detaching it.
+  promoteAgentFamilyReferences(arrived, originRegionId);
   // Coordinate-bound tasks still belong to the source region and must be
   // cleared. Region-independent autonomous intent can survive only after its
   // source-local target has been stripped and will be re-resolved on arrival.
