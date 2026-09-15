@@ -3,276 +3,268 @@ from pathlib import Path
 simulation = Path("src/simulation.ts")
 text = simulation.read_text()
 
-old_constants = '''const DEPOSIT_CROWDING_THRESHOLD = 3;
-const DEPOSIT_CROWDED_THROUGHPUT = 3;
-'''
-new_constants = '''const DEPOSIT_CROWDING_THRESHOLD = 3;
-const DEPOSIT_CROWDED_THROUGHPUT = 3;
-// Destination demand should matter before BOTs physically stack on the same hex,
-// but congestion must not send workers on arbitrarily long detours. Three agents
-// already marks gather/deposit work as crowded, so each reservation adds half a
-// hex of planning cost and the total detour pressure is capped at three hexes.
-const DESTINATION_CROWDING_PENALTY_PER_AGENT = 0.5;
-const DESTINATION_CROWDING_PENALTY_CAP = 3;
-'''
-assert old_constants in text, "destination crowding constants marker changed"
-text = text.replace(old_constants, new_constants, 1)
+old_helpers = '''function depositThroughputAtCrowding(crowding: number, availableCapacity: number): number {
+  return crowding >= DEPOSIT_CROWDING_THRESHOLD
+    ? Math.min(availableCapacity, DEPOSIT_CROWDED_THROUGHPUT)
+    : availableCapacity;
+}
 
-old_storage = '''function nearestDepositStructure(
+function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "gather" }>): void {
+'''
+new_helpers = '''function depositThroughputAtCrowding(crowding: number, availableCapacity: number): number {
+  return crowding >= DEPOSIT_CROWDING_THRESHOLD
+    ? Math.min(availableCapacity, DEPOSIT_CROWDED_THROUGHPUT)
+    : availableCapacity;
+}
+
+function rebalanceAutonomousGatherTarget(
   state: WorldState,
-  factionId: string,
-  position: GridPosition,
-): Structure | undefined {
-  const candidates = activeFactionStructures(state, factionId)
-    .filter((structure) => storageCapacityLeft(structure) > 0);
+  agent: Agent,
+  task: Extract<AgentTask, { type: "gather" }>,
+  target: GridPosition,
+): GridPosition {
+  if (!agent.autonomy || task.source !== "autonomy" || samePosition(agent.position, target)) return target;
+  const congestion = resourceCongestionIndex(state, task.resource);
+  if ((congestion.get(positionKey(target)) ?? 0) < GATHER_CROWDING_THRESHOLD) return target;
+
+  const candidate = nearestResource(state, agent.position, task.resource);
+  if (
+    candidate === undefined ||
+    samePosition(candidate, target) ||
+    manhattanDistance(candidate, agent.position) > manhattanDistance(target, agent.position)
+  ) {
+    return target;
+  }
+  return candidate;
+}
+
+function rebalanceAutonomousDepositTarget(
+  state: WorldState,
+  agent: Agent,
+  task: Extract<AgentTask, { type: "deposit" }>,
+  structure: Structure,
+): Structure {
+  if (!agent.autonomy || task.source !== "autonomy" || samePosition(agent.position, structure.position)) {
+    return structure;
+  }
+  const candidates = activeFactionStructures(state, agent.factionId)
+    .filter((candidate) => storageCapacityLeft(candidate) > 0);
   const congestion = depositCongestionIndex(state, candidates);
-  return candidates
-    .sort((a, b) => {
-      const distance = manhattanDistance(a.position, position) - manhattanDistance(b.position, position);
-      if (distance !== 0) return distance;
-      const congestionDifference = (congestion.get(a.id) ?? 0) - (congestion.get(b.id) ?? 0);
-      return congestionDifference || a.id.localeCompare(b.id);
-    })[0];
-}
-'''
-new_storage = '''function destinationCrowdingScore(distance: number, congestion: number): number {
-  return distance + Math.min(
-    DESTINATION_CROWDING_PENALTY_CAP,
-    Math.max(0, congestion) * DESTINATION_CROWDING_PENALTY_PER_AGENT,
-  );
+  if ((congestion.get(structure.id) ?? 0) < DEPOSIT_CROWDING_THRESHOLD) return structure;
+
+  const candidate = nearestDepositStructure(state, agent.factionId, agent.position);
+  if (
+    candidate === undefined ||
+    candidate.id === structure.id ||
+    manhattanDistance(candidate.position, agent.position) >
+      manhattanDistance(structure.position, agent.position)
+  ) {
+    return structure;
+  }
+  return candidate;
 }
 
-function nearestDepositStructure(
-  state: WorldState,
-  factionId: string,
-  position: GridPosition,
-): Structure | undefined {
-  const candidates = activeFactionStructures(state, factionId)
-    .filter((structure) => storageCapacityLeft(structure) > 0);
-  const congestion = depositCongestionIndex(state, candidates);
-  return candidates
-    .sort((a, b) => {
-      const distanceA = manhattanDistance(a.position, position);
-      const distanceB = manhattanDistance(b.position, position);
-      const congestionA = congestion.get(a.id) ?? 0;
-      const congestionB = congestion.get(b.id) ?? 0;
-      const scoreDifference =
-        destinationCrowdingScore(distanceA, congestionA) -
-        destinationCrowdingScore(distanceB, congestionB);
-      if (scoreDifference !== 0) return scoreDifference;
-      return distanceA - distanceB || congestionA - congestionB || a.id.localeCompare(b.id);
-    })[0];
-}
+function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "gather" }>): void {
 '''
-assert old_storage in text, "nearestDepositStructure block changed"
-text = text.replace(old_storage, new_storage, 1)
+assert old_helpers in text, "crowding helper insertion marker changed"
+text = text.replace(old_helpers, new_helpers, 1)
 
-old_resource = '''function nearestResource(
-  state: WorldState,
-  origin: GridPosition,
-  resource: ResourceKind,
-): GridPosition | undefined {
-  const candidates = state.tiles.filter((candidate) =>
-    candidate.resource?.kind === resource &&
-    candidate.resource.amount > 0 &&
-    candidate.terrain !== "water"
-  );
-  const congestion = resourceCongestionIndex(state, resource);
-  const tile = candidates
-    .sort((a, b) => {
-      const distance = manhattanDistance(a, origin) - manhattanDistance(b, origin);
-      if (distance !== 0) return distance;
-      const congestionDifference =
-        (congestion.get(positionKey(a)) ?? 0) - (congestion.get(positionKey(b)) ?? 0);
-      return congestionDifference || a.y - b.y || a.x - b.x;
-    })[0];
-  return tile === undefined ? undefined : { x: tile.x, y: tile.y };
-}
+old_gather_move = '''  if (!samePosition(agent.position, target)) {
+    moveAgent(state, agent, target);
+    return;
+  }
 '''
-new_resource = '''function nearestResource(
-  state: WorldState,
-  origin: GridPosition,
-  resource: ResourceKind,
-): GridPosition | undefined {
-  const candidates = state.tiles.filter((candidate) =>
-    candidate.resource?.kind === resource &&
-    candidate.resource.amount > 0 &&
-    candidate.terrain !== "water"
-  );
-  const congestion = resourceCongestionIndex(state, resource);
-  const tile = candidates
-    .sort((a, b) => {
-      const distanceA = manhattanDistance(a, origin);
-      const distanceB = manhattanDistance(b, origin);
-      const congestionA = congestion.get(positionKey(a)) ?? 0;
-      const congestionB = congestion.get(positionKey(b)) ?? 0;
-      const scoreDifference =
-        destinationCrowdingScore(distanceA, congestionA) -
-        destinationCrowdingScore(distanceB, congestionB);
-      if (scoreDifference !== 0) return scoreDifference;
-      return distanceA - distanceB || congestionA - congestionB || a.y - b.y || a.x - b.x;
-    })[0];
-  return tile === undefined ? undefined : { x: tile.x, y: tile.y };
-}
+new_gather_move = '''  if (!samePosition(agent.position, target)) {
+    const rebalancedTarget = rebalanceAutonomousGatherTarget(state, agent, task, target);
+    if (!samePosition(rebalancedTarget, target)) {
+      target = rebalancedTarget;
+      task.target = rebalancedTarget;
+    }
+    moveAgent(state, agent, target);
+    return;
+  }
 '''
-assert old_resource in text, "nearestResource block changed"
-text = text.replace(old_resource, new_resource, 1)
+assert old_gather_move in text, "executeGather movement block changed"
+text = text.replace(old_gather_move, new_gather_move, 1)
+
+old_deposit_target = '''  if (structure === undefined) {
+    delete agent.task;
+    agent.status = "no storage available";
+    return;
+  }
+  task.structureId = structure.id;
+  if (!samePosition(agent.position, structure.position)) {
+'''
+new_deposit_target = '''  if (structure === undefined) {
+    delete agent.task;
+    agent.status = "no storage available";
+    return;
+  }
+  structure = rebalanceAutonomousDepositTarget(state, agent, task, structure);
+  task.structureId = structure.id;
+  if (!samePosition(agent.position, structure.position)) {
+'''
+assert old_deposit_target in text, "executeDeposit target block changed"
+text = text.replace(old_deposit_target, new_deposit_target, 1)
 simulation.write_text(text)
 
-Path("tests/simulation-destination-crowding.test.mjs").write_text(r'''import assert from "node:assert/strict";
+Path("tests/simulation-task-rebalance.test.mjs").write_text(r'''import assert from "node:assert/strict";
 import test from "node:test";
 import { simulate } from "../dist-ts/src/simulation.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
-const ORIGIN = { x: 19, y: 11 };
-const NEAR = { x: 20, y: 11 };
-const FAR = { x: 21, y: 11 };
-
-function emptyInventory() {
-  return { wood: 0, stone: 0, food: 0 };
-}
+const ORIGIN = { x: 7, y: 5 };
+const EAST = { x: 8, y: 5 };
+const SOUTHEAST = { x: 7, y: 6 };
+const FAR_EAST = { x: 9, y: 5 };
 
 function fixture() {
-  const state = createInitialWorld({ seed: 26091541, width: 40, height: 24 });
-  const template = state.agents[0];
-  assert.ok(template);
-  const faction = state.factions.find((entry) => entry.id === template.factionId);
-  assert.ok(faction);
-  state.tick = 1;
-  state.events = [];
-  state.structures = [];
+  const state = createInitialWorld({ seed: 26091542, width: 16, height: 12 });
   for (const tile of state.tiles) {
-    if (tile.terrain === "water") tile.terrain = "plain";
+    tile.terrain = "plain";
     delete tile.resource;
   }
-  const makeAgent = (id, position = ORIGIN) => ({
+  state.structures = [];
+  state.events = [];
+  state.processedCommandIds = [];
+  const template = state.agents.find((agent) => agent.role === "woodcutter") ?? state.agents[0];
+  assert.ok(template);
+  template.position = { ...ORIGIN };
+  template.energy = 100;
+  template.inventory = { wood: 0, stone: 0, food: 0 };
+  template.autonomy = true;
+  delete template.task;
+  const makeBlocker = (id) => ({
     ...template,
     id,
     name: id,
-    position: { ...position },
-    hp: 100,
-    energy: 100,
-    inventory: emptyInventory(),
+    position: { ...ORIGIN },
+    inventory: { wood: 0, stone: 0, food: 0 },
     autonomy: false,
     task: undefined,
   });
-  return { state, faction, makeAgent };
+  return { state, worker: template, makeBlocker };
 }
 
-function setWood(state, position) {
+function putWood(state, position) {
   const tile = state.tiles.find((entry) => entry.x === position.x && entry.y === position.y);
   assert.ok(tile);
-  tile.terrain = "plain";
   tile.resource = { kind: "wood", amount: 20, maxAmount: 20 };
 }
 
-function gatherBlocker(makeAgent, index) {
-  const agent = makeAgent(`gather-blocker-${index}`);
+function reserveGather(agent, target) {
   agent.task = {
     source: "autonomy",
     issuedAtTick: 1,
     type: "gather",
     resource: "wood",
-    target: { ...NEAR },
+    target: { ...target },
   };
-  return agent;
 }
 
-test("resource selection keeps the nearest deposit when demand is low", () => {
-  const { state, makeAgent } = fixture();
-  setWood(state, NEAR);
-  setWood(state, FAR);
-  const worker = makeAgent("worker-low-demand");
-  worker.task = {
-    source: "autonomy",
-    issuedAtTick: state.tick,
-    type: "gather",
-    resource: "wood",
-  };
-  state.agents = [worker];
+test("persisted autonomous gather intent rebalances to an equally near open resource", () => {
+  const { state, worker, makeBlocker } = fixture();
+  putWood(state, EAST);
+  putWood(state, SOUTHEAST);
+  reserveGather(worker, EAST);
+  const blockerA = makeBlocker("gather-reservation-a");
+  const blockerB = makeBlocker("gather-reservation-b");
+  reserveGather(blockerA, EAST);
+  reserveGather(blockerB, EAST);
+  state.agents = [worker, blockerA, blockerB];
 
   const next = simulate(state).state;
-  const moved = next.agents.find((entry) => entry.id === worker.id);
+  const moved = next.agents.find((agent) => agent.id === worker.id);
   assert.ok(moved);
   assert.equal(moved.task?.type, "gather");
-  assert.deepEqual(moved.task.target, NEAR);
+  assert.deepEqual(moved.task.target, SOUTHEAST);
+  assert.deepEqual(moved.position, SOUTHEAST);
 });
 
-test("resource selection accepts a one-hop detour around a reserved crowded deposit", () => {
-  const { state, makeAgent } = fixture();
-  setWood(state, NEAR);
-  setWood(state, FAR);
-  const worker = makeAgent("worker-crowded-resource");
-  worker.task = {
-    source: "autonomy",
-    issuedAtTick: state.tick,
-    type: "gather",
-    resource: "wood",
-  };
-  state.agents = [
-    worker,
-    gatherBlocker(makeAgent, 1),
-    gatherBlocker(makeAgent, 2),
-    gatherBlocker(makeAgent, 3),
-    gatherBlocker(makeAgent, 4),
-  ];
+test("persisted gather intent never takes a longer detour merely to avoid congestion", () => {
+  const { state, worker, makeBlocker } = fixture();
+  putWood(state, EAST);
+  putWood(state, FAR_EAST);
+  reserveGather(worker, EAST);
+  const blockerA = makeBlocker("gather-distance-a");
+  const blockerB = makeBlocker("gather-distance-b");
+  reserveGather(blockerA, EAST);
+  reserveGather(blockerB, EAST);
+  state.agents = [worker, blockerA, blockerB];
 
   const next = simulate(state).state;
-  const moved = next.agents.find((entry) => entry.id === worker.id);
+  const moved = next.agents.find((agent) => agent.id === worker.id);
   assert.ok(moved);
   assert.equal(moved.task?.type, "gather");
-  assert.deepEqual(moved.task.target, FAR);
+  assert.deepEqual(moved.task.target, EAST);
+  assert.deepEqual(moved.position, EAST);
 });
 
-function activeStorehouse(id, factionId, position) {
+function camp(id, factionId, position) {
   return {
     id,
     factionId,
-    type: "storehouse",
+    type: "camp",
     position: { ...position },
     status: "active",
-    progress: 1,
-    requiredProgress: 1,
-    storage: emptyInventory(),
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 0 },
   };
 }
 
-function depositBlocker(makeAgent, index, structureId) {
-  const agent = makeAgent(`deposit-blocker-${index}`);
-  agent.inventory.wood = 1;
+function reserveDeposit(agent, structureId) {
+  agent.inventory = { wood: 2, stone: 0, food: 0 };
   agent.task = {
     source: "autonomy",
     issuedAtTick: 1,
     type: "deposit",
     structureId,
   };
-  return agent;
 }
 
-test("storage selection accepts a one-hop detour around a reserved crowded storehouse", () => {
-  const { state, faction, makeAgent } = fixture();
-  const near = activeStorehouse("near-storehouse", faction.id, NEAR);
-  const far = activeStorehouse("far-storehouse", faction.id, FAR);
-  state.structures = [near, far];
-  const carrier = makeAgent("carrier-crowded-storage");
-  carrier.inventory.wood = 4;
-  carrier.task = {
-    source: "autonomy",
-    issuedAtTick: state.tick,
-    type: "deposit",
-  };
-  state.agents = [
-    carrier,
-    depositBlocker(makeAgent, 1, near.id),
-    depositBlocker(makeAgent, 2, near.id),
-    depositBlocker(makeAgent, 3, near.id),
-    depositBlocker(makeAgent, 4, near.id),
-  ];
+test("persisted autonomous deposit intent rebalances to an equally near open store", () => {
+  const { state, worker, makeBlocker } = fixture();
+  const crowded = camp("crowded-store", worker.factionId, EAST);
+  const open = camp("open-store", worker.factionId, SOUTHEAST);
+  state.structures = [crowded, open];
+  reserveDeposit(worker, crowded.id);
+  const blockerA = makeBlocker("deposit-reservation-a");
+  const blockerB = makeBlocker("deposit-reservation-b");
+  reserveDeposit(blockerA, crowded.id);
+  reserveDeposit(blockerB, crowded.id);
+  state.agents = [worker, blockerA, blockerB];
 
   const next = simulate(state).state;
-  const moved = next.agents.find((entry) => entry.id === carrier.id);
+  const moved = next.agents.find((agent) => agent.id === worker.id);
   assert.ok(moved);
   assert.equal(moved.task?.type, "deposit");
-  assert.equal(moved.task.structureId, far.id);
+  assert.equal(moved.task.structureId, open.id);
+  assert.deepEqual(moved.position, open.position);
+});
+
+test("external gather intent is not rewritten by autonomous crowd balancing", () => {
+  const { state, worker, makeBlocker } = fixture();
+  putWood(state, EAST);
+  putWood(state, SOUTHEAST);
+  worker.task = {
+    source: "external",
+    issuedAtTick: 1,
+    type: "gather",
+    resource: "wood",
+    target: { ...EAST },
+  };
+  const blockerA = makeBlocker("external-safety-a");
+  const blockerB = makeBlocker("external-safety-b");
+  reserveGather(blockerA, EAST);
+  reserveGather(blockerB, EAST);
+  state.agents = [worker, blockerA, blockerB];
+
+  const next = simulate(state).state;
+  const moved = next.agents.find((agent) => agent.id === worker.id);
+  assert.ok(moved);
+  assert.equal(moved.task?.source, "external");
+  assert.deepEqual(moved.task?.target, EAST);
+  assert.deepEqual(moved.position, EAST);
 });
 ''')
