@@ -1,0 +1,48 @@
+{
+  "version": "0.3.11",
+  "upstreamRepo": "KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0",
+  "upstreamCommit": "672074b73ba276876a19e8816ecdc5241817ab47",
+  "loaded": [
+    {
+      "key": "authored:agent-worker",
+      "file": "worker.glb",
+      "sourcePath": "addons/kaykit_character_pack_adventures/Characters/gltf/Barbarian.glb",
+      "gitBlobSha": "66d312ab6dc02b35fb648e7585bfdddb4e02eeef",
+      "original": "Barbarian.glb",
+      "animations": 76,
+      "skins": 1,
+      "externalImages": [],
+      "bytes": 3613268,
+      "url": "https://raw.githubusercontent.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0/672074b73ba276876a19e8816ecdc5241817ab47/addons/kaykit_character_pack_adventures/Characters/gltf/Barbarian.glb"
+    },
+    {
+      "key": "authored:agent-roamer",
+      "file": "roamer.glb",
+      "sourcePath": "addons/kaykit_character_pack_adventures/Characters/gltf/Rogue_Hooded.glb",
+      "gitBlobSha": "5d2b1403240d5f9ffff12e02c007572038eca2a8",
+      "original": "Rogue_Hooded.glb",
+      "animations": 76,
+      "skins": 1,
+      "externalImages": [],
+      "bytes": 3597652,
+      "url": "https://raw.githubusercontent.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0/672074b73ba276876a19e8816ecdc5241817ab47/addons/kaykit_character_pack_adventures/Characters/gltf/Rogue_Hooded.glb"
+    }
+  ],
+  "loadedTextures": [
+    {
+      "file": "barbarian_texture.png",
+      "sourcePath": "addons/kaykit_character_pack_adventures/Characters/gltf/barbarian_texture.png",
+      "gitBlobSha": "29d2db09000ac28e626cf24c3d5ff48f7c324351",
+      "bytes": 15089,
+      "url": "https://raw.githubusercontent.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0/672074b73ba276876a19e8816ecdc5241817ab47/addons/kaykit_character_pack_adventures/Characters/gltf/barbarian_texture.png"
+    },
+    {
+      "file": "rogue_texture.png",
+      "sourcePath": "addons/kaykit_character_pack_adventures/Characters/gltf/rogue_texture.png",
+      "gitBlobSha": "542954baba7281f028f93306943fc780b1ebcf55",
+      "bytes": 16670,
+      "url": "https://raw.githubusercontent.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0/672074b73ba276876a19e8816ecdc5241817ab47/addons/kaykit_character_pack_adventures/Characters/gltf/rogue_texture.png"
+    }
+  ],
+  "failed": []
+}

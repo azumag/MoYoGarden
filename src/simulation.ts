@@ -922,6 +922,53 @@ function depositThroughputAtCrowding(crowding: number, availableCapacity: number
     : availableCapacity;
 }
 
+function rebalanceAutonomousGatherTarget(
+  state: WorldState,
+  agent: Agent,
+  task: Extract<AgentTask, { type: "gather" }>,
+  target: GridPosition,
+): GridPosition {
+  if (!agent.autonomy || task.source !== "autonomy" || samePosition(agent.position, target)) return target;
+  const congestion = resourceCongestionIndex(state, task.resource);
+  if ((congestion.get(positionKey(target)) ?? 0) < GATHER_CROWDING_THRESHOLD) return target;
+
+  const candidate = nearestResource(state, agent.position, task.resource);
+  if (
+    candidate === undefined ||
+    samePosition(candidate, target) ||
+    manhattanDistance(candidate, agent.position) > manhattanDistance(target, agent.position)
+  ) {
+    return target;
+  }
+  return candidate;
+}
+
+function rebalanceAutonomousDepositTarget(
+  state: WorldState,
+  agent: Agent,
+  task: Extract<AgentTask, { type: "deposit" }>,
+  structure: Structure,
+): Structure {
+  if (!agent.autonomy || task.source !== "autonomy" || samePosition(agent.position, structure.position)) {
+    return structure;
+  }
+  const candidates = activeFactionStructures(state, agent.factionId)
+    .filter((candidate) => storageCapacityLeft(candidate) > 0);
+  const congestion = depositCongestionIndex(state, candidates);
+  if ((congestion.get(structure.id) ?? 0) < DEPOSIT_CROWDING_THRESHOLD) return structure;
+
+  const candidate = nearestDepositStructure(state, agent.factionId, agent.position);
+  if (
+    candidate === undefined ||
+    candidate.id === structure.id ||
+    manhattanDistance(candidate.position, agent.position) >
+      manhattanDistance(structure.position, agent.position)
+  ) {
+    return structure;
+  }
+  return candidate;
+}
+
 function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "gather" }>): void {
   if (inventoryTotal(agent.inventory) >= agent.capacity) {
     delete agent.task;
@@ -945,6 +992,11 @@ function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask,
   }
 
   if (!samePosition(agent.position, target)) {
+    const rebalancedTarget = rebalanceAutonomousGatherTarget(state, agent, task, target);
+    if (!samePosition(rebalancedTarget, target)) {
+      target = rebalancedTarget;
+      task.target = rebalancedTarget;
+    }
     moveAgent(state, agent, target);
     return;
   }
@@ -1013,6 +1065,7 @@ function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask
     agent.status = "no storage available";
     return;
   }
+  structure = rebalanceAutonomousDepositTarget(state, agent, task, structure);
   task.structureId = structure.id;
   if (!samePosition(agent.position, structure.position)) {
     moveAgent(state, agent, structure.position);
