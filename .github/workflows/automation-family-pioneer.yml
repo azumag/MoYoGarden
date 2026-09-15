@@ -2,17 +2,16 @@ name: One-shot family-aware pioneer
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - .github/workflows/automation-family-pioneer.yml
+      - ".github/workflows/automation-family-pioneer.yml"
 
 permissions:
   contents: write
 
 jobs:
   improve:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
