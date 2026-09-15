@@ -1,0 +1,48 @@
+name: One-shot social demography pairing v3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/automation-demography-social-pair-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Apply patch
+        run: python3 scripts/automation-demography-social-pair.py
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate implementation
+        run: npm run build
+
+      - name: Commit implementation and remove staging files
+        shell: bash
+        run: |
+          rm -f .github/workflows/automation-demography-social-pair-v3.yml
+          rm -f scripts/automation-demography-social-pair.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/runtime.ts tests/population-pairing-social.test.mjs .github/workflows/automation-demography-social-pair-v3.yml scripts/automation-demography-social-pair.py
+          git diff --cached --check
+          git commit -m 'sim: prefer socially familiar unrelated mates'
+          git push origin HEAD:main
