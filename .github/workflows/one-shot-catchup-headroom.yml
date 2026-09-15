@@ -39,148 +39,69 @@ jobs:
 
           source = Path("src/autonomy-region.ts")
           text = source.read_text()
-          old = '''  override async alarm(): Promise<void> {
-            const now = Date.now();
-            const ticks = this.virtualTicksForAlarm(now);
-            const batchStartedAt = now;
-            const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
-            let completed = false;
-            try {
-              for (let index = 0; index < ticks; index += 1) {
-                this.setAlarmRescheduleDeferred(index + 1 < ticks);
-                await this.runSingleAlarmTick();
-                if (
-                  index + 1 < ticks
-                  && Date.now() - batchStartedAt >= CATCH_UP_WALL_BUDGET_MS
-                ) {
-                  break;
-                }
-              }
-              completed = true;
-            } finally {
-              this.setAlarmRescheduleDeferred(false);
-              this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
-              if (!completed) await this.scheduleCatchUpIfBehind(Date.now());
+
+          marker = "    let completed = false;\n    try {\n"
+          replacement = "    let completed = false;\n    let slowestTickMs = 0;\n    try {\n"
+          if text.count(marker) != 1:
+              raise SystemExit(f"expected one catch-up completed marker, found {text.count(marker)}")
+          text = text.replace(marker, replacement, 1)
+
+          old_loop = '''      for (let index = 0; index < ticks; index += 1) {
+            this.setAlarmRescheduleDeferred(index + 1 < ticks);
+            await this.runSingleAlarmTick();
+            if (
+              index + 1 < ticks
+              && Date.now() - batchStartedAt >= CATCH_UP_WALL_BUDGET_MS
+            ) {
+              break;
             }
-            await this.scheduleCatchUpIfBehind(Date.now(), CATCH_UP_RETRY_MS);
           }
           '''
-          new = '''  override async alarm(): Promise<void> {
-            const now = Date.now();
-            const ticks = this.virtualTicksForAlarm(now);
-            const batchStartedAt = now;
-            const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
-            let completed = false;
-            let slowestTickMs = 0;
-            try {
-              for (let index = 0; index < ticks; index += 1) {
-                // Do not start another historical tick when the slowest tick
-                // already observed in this batch would predictably exceed the
-                // wall-clock slice. Remaining virtual time stays as debt and
-                // is retried promptly; an unexpectedly slow individual tick
-                // can still overrun, but we no longer compound that overrun by
-                // knowingly starting another similarly expensive tick.
-                const elapsedBeforeTick = Math.max(0, Date.now() - batchStartedAt);
-                if (
-                  index > 0
-                  && elapsedBeforeTick + slowestTickMs >= CATCH_UP_WALL_BUDGET_MS
-                ) {
-                  break;
-                }
-                this.setAlarmRescheduleDeferred(index + 1 < ticks);
-                const tickStartedAt = Date.now();
-                await this.runSingleAlarmTick();
-                slowestTickMs = Math.max(
-                  slowestTickMs,
-                  Math.max(0, Date.now() - tickStartedAt),
-                );
-              }
-              completed = true;
-            } finally {
-              this.setAlarmRescheduleDeferred(false);
-              this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
-              if (!completed) await this.scheduleCatchUpIfBehind(Date.now());
+          new_loop = '''      for (let index = 0; index < ticks; index += 1) {
+            // Reserve the slowest duration already observed in this batch before
+            // starting another historical tick. This cannot cap one unexpectedly
+            // slow tick, but it avoids knowingly compounding the overrun.
+            const elapsedBeforeTick = Math.max(0, Date.now() - batchStartedAt);
+            if (
+              index > 0
+              && elapsedBeforeTick + slowestTickMs >= CATCH_UP_WALL_BUDGET_MS
+            ) {
+              break;
             }
-            await this.scheduleCatchUpIfBehind(Date.now(), CATCH_UP_RETRY_MS);
+            this.setAlarmRescheduleDeferred(index + 1 < ticks);
+            const tickStartedAt = Date.now();
+            await this.runSingleAlarmTick();
+            slowestTickMs = Math.max(
+              slowestTickMs,
+              Math.max(0, Date.now() - tickStartedAt),
+            );
           }
           '''
-          if old not in text:
-              raise SystemExit("autonomy-region alarm block did not match expected main")
-          source.write_text(text.replace(old, new, 1))
+          if text.count(old_loop) != 1:
+              raise SystemExit(f"expected one catch-up loop, found {text.count(old_loop)}")
+          source.write_text(text.replace(old_loop, new_loop, 1))
 
           test_file = Path("tests/virtual-catchup-do.test.mjs")
           test_text = test_file.read_text()
-          old_test = '''test("slow catch-up yields on wall budget without discarding virtual-time debt", async () => {
-            const originalNow = Date.now;
-            let now = 1_800_002_500_000;
-            Date.now = () => now;
-            try {
-              const ctx = new MemoryState();
-              const object = new RegionDurableObject(ctx, env);
-              await ctx.ready;
-              await object.fetch(request("/api/world/snapshot"));
-              const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
-
-              now += 600_000;
-              const baseTick = object.runtime.tick.bind(object.runtime);
-              object.runtime.tick = (...args) => {
-                const result = baseTick(...args);
-                now += 4_500;
-                return result;
-              };
-
-              await object.alarm();
-
-              assert.equal(object.runtime.snapshot().tick, 2, "slow historical ticks should yield after the wall budget");
-              assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 20_000);
-              const health = await (await object.fetch(request("/api/health"))).json();
-              assert.ok(health.virtualTicksDue > 0, "unfinished virtual time must remain as debt");
-              assert.equal(health.virtualTicksRunnable, 12, "next retry remains bounded by the normal tick cap");
-              assert.equal(ctx.storage.alarm, now + 1_000, "yielded debt should retry promptly");
-            } finally {
-              Date.now = originalNow;
-            }
-          });
-          '''
-          new_test = '''test("slow catch-up reserves observed tick headroom without discarding virtual-time debt", async () => {
-            const originalNow = Date.now;
-            let now = 1_800_002_500_000;
-            Date.now = () => now;
-            try {
-              const ctx = new MemoryState();
-              const object = new RegionDurableObject(ctx, env);
-              await ctx.ready;
-              await object.fetch(request("/api/world/snapshot"));
-              const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
-
-              now += 600_000;
-              const baseTick = object.runtime.tick.bind(object.runtime);
-              object.runtime.tick = (...args) => {
-                const result = baseTick(...args);
-                now += 4_500;
-                return result;
-              };
-
-              await object.alarm();
-
-              assert.equal(
-                object.runtime.snapshot().tick,
-                1,
-                "a 4.5s historical tick should reserve enough headroom to avoid a predictable 9s batch",
-              );
-              assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 10_000);
-              const health = await (await object.fetch(request("/api/health"))).json();
-              assert.ok(health.virtualTicksDue > 0, "unfinished virtual time must remain as debt");
-              assert.equal(health.virtualTicksRunnable, 12, "next retry remains bounded by the normal tick cap");
-              assert.equal(ctx.storage.alarm, now + 1_000, "yielded debt should retry promptly");
-            } finally {
-              Date.now = originalNow;
-            }
-          });
-          '''
-          if old_test not in test_text:
-              raise SystemExit("virtual catch-up regression block did not match expected main")
-          test_file.write_text(test_text.replace(old_test, new_test, 1))
+          replacements = [
+              (
+                  'test("slow catch-up yields on wall budget without discarding virtual-time debt", async () => {',
+                  'test("slow catch-up reserves observed tick headroom without discarding virtual-time debt", async () => {',
+              ),
+              (
+                  'assert.equal(object.runtime.snapshot().tick, 2, "slow historical ticks should yield after the wall budget");',
+                  'assert.equal(object.runtime.snapshot().tick, 1, "a 4.5s tick should reserve headroom instead of starting a predictable 9s batch");',
+              ),
+              (
+                  'assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 20_000);',
+                  'assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 10_000);',
+              ),
+          ]
+          for old, new in replacements:
+              if test_text.count(old) != 1:
+                  raise SystemExit(f"expected one test marker: {old!r}; found {test_text.count(old)}")
+              test_text = test_text.replace(old, new, 1)
+          test_file.write_text(test_text)
           PY
 
       - name: Install dependencies
