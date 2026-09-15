@@ -41,28 +41,31 @@ jobs:
           const path = 'public/client/live-region-rendering.js';
           let source = fs.readFileSync(path, 'utf8');
 
-          function replaceOnce(before, after, label) {
-            const first = source.indexOf(before);
+          function replaceOnce(text, before, after, label) {
+            const first = text.indexOf(before);
             if (first < 0) throw new Error(`missing patch anchor: ${label}`);
-            if (source.indexOf(before, first + before.length) >= 0) {
+            if (text.indexOf(before, first + before.length) >= 0) {
               throw new Error(`ambiguous patch anchor: ${label}`);
             }
-            source = source.slice(0, first) + after + source.slice(first + before.length);
+            return text.slice(0, first) + after + text.slice(first + before.length);
           }
 
-          replaceOnce(
+          source = replaceOnce(
+            source,
             'const LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 30;\n',
             `const LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 30;\nconst CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 15;\n\nfunction liveNeighborAnimationIntervalMs(quality) {\n  const density = Number(quality?.detailDensity);\n  return Number.isFinite(density) && density <= 0.5\n    ? CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS\n    : LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS;\n}\n`,
             'animation interval constant',
           );
 
-          replaceOnce(
+          source = replaceOnce(
+            source,
             '    this.lastAnimationAt = Number.NEGATIVE_INFINITY;\n',
             '    this.lastAnimationAt = Number.NEGATIVE_INFINITY;\n    this.animationIntervalMs = liveNeighborAnimationIntervalMs(view.quality);\n',
             'controller cadence initialization',
           );
 
-          replaceOnce(
+          source = replaceOnce(
+            source,
             '    if (time - this.lastAnimationAt < LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS) return;\n',
             '    if (time - this.lastAnimationAt < this.animationIntervalMs) return;\n',
             'animation cadence check',
@@ -71,6 +74,16 @@ jobs:
           fs.writeFileSync(path, source);
 
           fs.writeFileSync('tests/live-neighbor-quality-cadence.test.mjs', `import assert from "node:assert/strict";\nimport { readFile } from "node:fs/promises";\nimport test from "node:test";\n\nconst source = await readFile(\n  new URL("../public/client/live-region-rendering.js", import.meta.url),\n  "utf8",\n);\n\ntest("constrained quality profiles reduce contextual neighbor animation cadence", () => {\n  assert.match(source, /const CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 \\/ 15;/);\n  assert.match(source, /function liveNeighborAnimationIntervalMs\\(quality\\)/);\n  assert.match(source, /Number\\(quality\\?\\.detailDensity\\)/);\n  assert.match(source, /density <= 0\\.5/);\n  assert.match(\n    source,\n    /this\\.animationIntervalMs = liveNeighborAnimationIntervalMs\\(view\\.quality\\);/,\n  );\n  assert.match(\n    source,\n    /time - this\\.lastAnimationAt < this\\.animationIntervalMs/,\n  );\n});\n`);
+
+          const contractPath = 'tests/live-region-window.test.mjs';
+          let contractSource = fs.readFileSync(contractPath, 'utf8');
+          contractSource = replaceOnce(
+            contractSource,
+            '/time - this\\.lastAnimationAt < LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS/,',
+            '/time - this\\.lastAnimationAt < this\\.animationIntervalMs/,',
+            'existing live-neighbor cadence contract',
+          );
+          fs.writeFileSync(contractPath, contractSource);
           NODE
 
       - name: Install dependencies
@@ -83,7 +96,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git add public/client/live-region-rendering.js tests/live-neighbor-quality-cadence.test.mjs
+          git add public/client/live-region-rendering.js tests/live-neighbor-quality-cadence.test.mjs tests/live-region-window.test.mjs
           git rm .github/workflows/one-shot-live-neighbor-cadence.yml
           # Build scripts intentionally generate runtime/vendor artifacts and a build marker.
           # Keep only the validated source/test change plus removal of this one-shot workflow.
