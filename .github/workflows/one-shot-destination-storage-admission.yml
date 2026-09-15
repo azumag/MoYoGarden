@@ -1,0 +1,171 @@
+name: One-shot destination storage admission improvement
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-shot-destination-storage-admission.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply destination-side storage admission patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/autonomy-region.ts')
+          text = path.read_text()
+
+          old = '''interface AutonomousArrivalClaim {\n  claimId: string;\n  sourceRegionId: string;\n  agentId: string;\n  resource: ResourceKind;\n  registeredAtTick: number;\n  gatheredAmount?: number;\n  settledAmount?: number;\n  returnToSourceStorage?: boolean;\n}\n\nexport interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {\n'''
+          new = '''interface AutonomousArrivalClaim {\n  claimId: string;\n  sourceRegionId: string;\n  agentId: string;\n  resource: ResourceKind;\n  registeredAtTick: number;\n  gatheredAmount?: number;\n  settledAmount?: number;\n  returnToSourceStorage?: boolean;\n}\n\ninterface AutonomousDestinationStorageReservation {\n  claimId: string;\n  sourceRegionId: string;\n  factionId: string;\n  amount: number;\n  expiresAtMs: number;\n}\n\nexport interface AutonomousHaloHandoffPlan extends PendingAutonomousHandoff {\n'''
+          assert old in text, 'arrival claim interface anchor not found'
+          text = text.replace(old, new, 1)
+
+          old = '''const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\nconst AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migration:v1";\nconst INTERNAL_EDGE_PATH = "/api/internal/halo/edge";\nconst INTERNAL_AUTONOMY_PREFIX = "/api/internal/autonomy/";\nconst INTERNAL_CLAIM_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/register`;\nconst INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;\nconst INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;\n'''
+          new = '''const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\nconst AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";\nconst AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migration:v1";\nconst INTERNAL_EDGE_PATH = "/api/internal/halo/edge";\nconst INTERNAL_AUTONOMY_PREFIX = "/api/internal/autonomy/";\nconst INTERNAL_CLAIM_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/register`;\nconst INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;\nconst INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;\nconst INTERNAL_STORAGE_RESERVE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/reserve`;\nconst INTERNAL_STORAGE_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/release`;\n'''
+          assert old in text, 'autonomy constants anchor not found'
+          text = text.replace(old, new, 1)
+
+          old = '''const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;\nconst SETTLEMENT_MIGRATION_TTL = 72;\n'''
+          new = '''const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;\n// Destination admission is intentionally wall-clock bounded. It protects\n// against cross-source overbooking even when source/destination activity tiers\n// advance simulation ticks at different rates, while stale reservations still\n// self-heal after a crashed source.\nconst DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;\nconst SETTLEMENT_MIGRATION_TTL = 72;\n'''
+          assert old in text, 'travel constants anchor not found'
+          text = text.replace(old, new, 1)
+
+          old = '''function inventoryAmount(agent: Agent): number {\n'''
+          helper = '''function isDestinationStorageReservation(\n  value: unknown,\n): value is AutonomousDestinationStorageReservation {\n  return isRecord(value)\n    && typeof value.claimId === "string"\n    && value.claimId.length > 0\n    && typeof value.sourceRegionId === "string"\n    && value.sourceRegionId.length > 0\n    && typeof value.factionId === "string"\n    && value.factionId.length > 0\n    && typeof value.amount === "number"\n    && Number.isFinite(value.amount)\n    && value.amount > 0\n    && typeof value.expiresAtMs === "number"\n    && Number.isFinite(value.expiresAtMs)\n    && value.expiresAtMs > 0;\n}\n\n'''
+          assert old in text, 'inventoryAmount anchor not found'
+          text = text.replace(old, helper + old, 1)
+
+          old = '''  private async releaseAutonomousSupplyClaim(claimId: string | undefined): Promise<void> {\n    if (claimId === undefined) return;\n    const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_SUPPLY_CLAIMS_KEY);\n    if (!Array.isArray(stored)) return;\n    const next = stored\n      .filter(isAutonomousSupplyClaim)\n      .filter((claim) => claim.claimId !== claimId);\n    if (next.length !== stored.length) {\n      await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, next);\n    }\n  }\n\n  private async arrivalClaims(): Promise<AutonomousArrivalClaim[]> {\n'''
+          new = '''  private async releaseRemoteDestinationStorageReservation(\n    claim: AutonomousSupplyClaim | undefined,\n  ): Promise<void> {\n    if (claim?.destinationStorageReserved !== true) return;\n    const sourceRegionId = runtimeAccess(this).runtime.snapshot().regionId;\n    try {\n      await this.autonomyStub(claim.neighborRegionId).fetch(new Request(\n        `https://moyo.internal${INTERNAL_STORAGE_RELEASE_PATH}`,\n        {\n          method: "POST",\n          headers: {\n            "content-type": "application/json",\n            "x-moyo-region-internal": claim.neighborRegionId,\n          },\n          body: JSON.stringify({ claimId: claim.claimId, sourceRegionId }),\n        },\n      ));\n    } catch {\n      // The destination-side wall-clock TTL is the crash-safe fallback. A\n      // failed best-effort release may temporarily underbook, never overbook.\n    }\n  }\n\n  private async releaseAutonomousSupplyClaim(claimId: string | undefined): Promise<void> {\n    if (claimId === undefined) return;\n    const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_SUPPLY_CLAIMS_KEY);\n    if (!Array.isArray(stored)) return;\n    const valid = stored.filter(isAutonomousSupplyClaim);\n    const released = valid.find((claim) => claim.claimId === claimId);\n    const next = valid.filter((claim) => claim.claimId !== claimId);\n    if (next.length !== stored.length) {\n      await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, next);\n    }\n    await this.releaseRemoteDestinationStorageReservation(released);\n  }\n\n  private async arrivalClaims(): Promise<AutonomousArrivalClaim[]> {\n'''
+          assert old in text, 'releaseAutonomousSupplyClaim block not found'
+          text = text.replace(old, new, 1)
+
+          anchor = '''  private async ensureAutonomyAssigned(request: Request): Promise<Response | undefined> {\n'''
+          methods = '''  private async activeDestinationStorageReservations(\n    now = Date.now(),\n  ): Promise<AutonomousDestinationStorageReservation[]> {\n    const stored = await this.autonomyState.storage.get<unknown>(\n      AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,\n    );\n    const valid = Array.isArray(stored)\n      ? stored.filter(isDestinationStorageReservation)\n      : [];\n    const active = valid.filter((entry) => entry.expiresAtMs > now);\n    if (!Array.isArray(stored) || active.length !== stored.length) {\n      await this.autonomyState.storage.put(\n        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,\n        active,\n      );\n    }\n    return active;\n  }\n\n  private async reserveDestinationStorage(request: Request): Promise<Response> {\n    let body: unknown;\n    try {\n      body = await request.json();\n    } catch {\n      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });\n    }\n    if (\n      !isRecord(body)\n      || typeof body.claimId !== "string"\n      || body.claimId.trim() === ""\n      || typeof body.sourceRegionId !== "string"\n      || !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId)\n      || typeof body.factionId !== "string"\n      || body.factionId.trim() === ""\n      || typeof body.amount !== "number"\n      || !Number.isFinite(body.amount)\n      || body.amount <= 0\n    ) {\n      return new Response(JSON.stringify({ error: "invalid destination storage reservation" }), {\n        status: 400,\n      });\n    }\n\n    const now = Date.now();\n    const reservations = await this.activeDestinationStorageReservations(now);\n    const existing = reservations.find((entry) => entry.claimId === body.claimId);\n    if (existing !== undefined) {\n      if (\n        existing.sourceRegionId !== body.sourceRegionId\n        || existing.factionId !== body.factionId\n      ) {\n        return new Response(JSON.stringify({ error: "claimId already reserved by another source" }), {\n          status: 409,\n        });\n      }\n      return new Response(JSON.stringify({\n        ok: true,\n        claimId: existing.claimId,\n        grantedAmount: existing.amount,\n        idempotent: true,\n      }), { headers: { "content-type": "application/json; charset=utf-8" } });\n    }\n\n    const state = runtimeAccess(this).runtime.snapshot();\n    const actualHeadroom = factionStorageCapacityLeft(state, body.factionId);\n    const alreadyReserved = reservations.reduce(\n      (sum, entry) => entry.factionId === body.factionId ? sum + entry.amount : sum,\n      0,\n    );\n    const available = Math.max(0, actualHeadroom - alreadyReserved);\n    const grantedAmount = Math.min(body.amount, available);\n    if (grantedAmount > 0) {\n      const reservation: AutonomousDestinationStorageReservation = {\n        claimId: body.claimId,\n        sourceRegionId: body.sourceRegionId,\n        factionId: body.factionId,\n        amount: grantedAmount,\n        expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS,\n      };\n      await this.autonomyState.storage.put(\n        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,\n        [...reservations, reservation],\n      );\n    }\n    return new Response(JSON.stringify({\n      ok: true,\n      claimId: body.claimId,\n      requestedAmount: body.amount,\n      grantedAmount,\n      remainingHeadroom: Math.max(0, available - grantedAmount),\n    }), { headers: { "content-type": "application/json; charset=utf-8" } });\n  }\n\n  private async releaseDestinationStorage(request: Request): Promise<Response> {\n    let body: unknown;\n    try {\n      body = await request.json();\n    } catch {\n      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });\n    }\n    if (\n      !isRecord(body)\n      || typeof body.claimId !== "string"\n      || body.claimId.trim() === ""\n      || typeof body.sourceRegionId !== "string"\n      || !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId)\n    ) {\n      return new Response(JSON.stringify({ error: "claimId and sourceRegionId are required" }), {\n        status: 400,\n      });\n    }\n    const reservations = await this.activeDestinationStorageReservations();\n    const next = reservations.filter((entry) =>\n      entry.claimId !== body.claimId || entry.sourceRegionId !== body.sourceRegionId\n    );\n    if (next.length !== reservations.length) {\n      await this.autonomyState.storage.put(\n        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,\n        next,\n      );\n    }\n    return new Response(JSON.stringify({ ok: true, claimId: body.claimId }), {\n      headers: { "content-type": "application/json; charset=utf-8" },\n    });\n  }\n\n'''
+          assert anchor in text, 'ensureAutonomyAssigned anchor not found'
+          text = text.replace(anchor, methods + anchor, 1)
+
+          anchor = '''  private async startAutonomousTravels(\n'''
+          helper = '''  private async reserveRemoteDestinationStorage(\n    state: WorldState,\n    claimId: string,\n    neighborRegionId: string,\n    factionId: string,\n    amount: number,\n  ): Promise<number> {\n    try {\n      const response = await this.autonomyStub(neighborRegionId).fetch(new Request(\n        `https://moyo.internal${INTERNAL_STORAGE_RESERVE_PATH}`,\n        {\n          method: "POST",\n          headers: {\n            "content-type": "application/json",\n            "x-moyo-region-internal": neighborRegionId,\n          },\n          body: JSON.stringify({\n            claimId,\n            sourceRegionId: state.regionId,\n            factionId,\n            amount,\n          }),\n        },\n      ));\n      if (!response.ok) return 0;\n      const payload = await response.json() as unknown;\n      if (!isRecord(payload) || typeof payload.grantedAmount !== "number") return 0;\n      if (!Number.isFinite(payload.grantedAmount) || payload.grantedAmount <= 0) return 0;\n      return Math.min(amount, payload.grantedAmount);\n    } catch {\n      // If this expedition has no source-side return sink, a failed remote\n      // admission must fail closed. It can retry on the next scout cadence.\n      return 0;\n    }\n  }\n\n'''
+          assert anchor in text, 'startAutonomousTravels anchor not found'
+          text = text.replace(anchor, helper + anchor, 1)
+
+          old = '''      const returnToSourceStorage = availableReturnStorage > 0;\n      const destinationStorageReserved =\n        !returnToSourceStorage\n        && plan.destinationStorageHeadroom !== undefined\n        && plan.destinationStorageHeadroom > 0;\n      // A return reservation is a capacity promise, not just a boolean hint. Bound\n      // the supply claim by still-unreserved source storage so concurrent scouts do\n      // not all plan to deposit into the same final slots. When this expedition\n      // instead relies on a concrete remote sink, reserve the observed destination\n      // headroom within this source DO so later scouts cannot overbook it.\n      const claimedSupply = returnToSourceStorage\n        ? Math.min(plannedSupply, availableReturnStorage)\n        : destinationStorageReserved\n          ? Math.min(plannedSupply, plan.destinationStorageHeadroom ?? plannedSupply)\n          : plannedSupply;\n'''
+          new = '''      const returnToSourceStorage = availableReturnStorage > 0;\n      const needsDestinationReservation =\n        !returnToSourceStorage\n        && plan.destinationStorageHeadroom !== undefined\n        && plan.destinationStorageHeadroom > 0;\n      let destinationStorageReserved = false;\n      // Source-return capacity remains a local promise. If this expedition\n      // instead depends on a concrete remote sink, ask the destination DO to\n      // admit the claim against its current storage and shared reservation\n      // ledger. This turns cross-source races into one bounded destination-side\n      // serialization point without adding another halo depth.\n      let claimedSupply = returnToSourceStorage\n        ? Math.min(plannedSupply, availableReturnStorage)\n        : plannedSupply;\n      if (needsDestinationReservation) {\n        const requestedRemoteStorage = Math.min(\n          plannedSupply,\n          plan.destinationStorageHeadroom ?? plannedSupply,\n        );\n        claimedSupply = await this.reserveRemoteDestinationStorage(\n          state,\n          claimId,\n          plan.neighborRegionId,\n          agent.factionId,\n          requestedRemoteStorage,\n        );\n        destinationStorageReserved = claimedSupply > 0;\n        if (!destinationStorageReserved) break;\n      }\n'''
+          assert old in text, 'source-local destination reservation block not found'
+          text = text.replace(old, new, 1)
+
+          old = '''    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {\n      return this.registerArrivalClaim(request);\n    }\n'''
+          new = '''    if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RESERVE_PATH) {\n      return this.reserveDestinationStorage(request);\n    }\n    if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RELEASE_PATH) {\n      return this.releaseDestinationStorage(request);\n    }\n    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {\n      return this.registerArrivalClaim(request);\n    }\n'''
+          assert old in text, 'fetchAutonomyRequest routing anchor not found'
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+
+          test_path = Path('tests/autonomous-concurrent-travel-do.test.mjs')
+          tests = test_path.read_text()
+          old = '''const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\n'''
+          new = '''const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\nconst DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";\n'''
+          assert old in tests, 'test constants anchor not found'
+          tests = tests.replace(old, new, 1)
+
+          old = '''  assert.ok(claims.every((claim) => claim.destinationStorageReserved === true));\n  assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));\n});\n'''
+          new = '''  assert.ok(claims.every((claim) => claim.destinationStorageReserved === true));\n  assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));\n  const remoteReservations = await east.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);\n  assert.equal(remoteReservations.length, 2);\n  assert.equal(remoteReservations.reduce((sum, entry) => sum + entry.amount, 0), 3);\n  assert.ok(remoteReservations.every((entry) => entry.sourceRegionId === "garden-1"));\n});\n'''
+          assert old in tests, 'remote reservation integration assertion anchor not found'
+          tests = tests.replace(old, new, 1)
+
+          addition = r'''
++
++test("destination storage admission is shared across source regions and releases idempotently", async () => {
++  const env = environment();
++  const destination = await assignRegion(env, "garden-2");
++  const state = destination.object.runtime.snapshot();
++  const factionId = state.agents[0]?.factionId;
++  assert.ok(factionId);
++
++  for (const structure of state.structures) {
++    if (structure.factionId !== factionId || structure.status !== "active") continue;
++    structure.storage = {
++      wood: BUILD_RECIPES[structure.type].storageCapacity,
++      stone: 0,
++      food: 0,
++    };
++  }
++  state.structures.push({
++    id: "three-slot-shared-destination-storehouse",
++    factionId,
++    type: "storehouse",
++    position: hexGridCenter(state),
++    status: "active",
++    progress: 1,
++    requiredProgress: 1,
++    storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 3, stone: 0, food: 0 },
++  });
++  destination.object.runtime = new WorldRuntime({ state });
++  await destination.object.persist();
++
++  const reserve = async (claimId, sourceRegionId, amount) => {
++    const response = await destination.object.fetch(new Request(
++      "https://moyo.internal/api/internal/autonomy/storage/reserve",
++      {
++        method: "POST",
++        headers: {
++          "content-type": "application/json",
++          "x-moyo-region-internal": "garden-2",
++        },
++        body: JSON.stringify({ claimId, sourceRegionId, factionId, amount }),
++      },
++    ));
++    assert.equal(response.status, 200);
++    return response.json();
++  };
++
++  assert.equal((await reserve("source-a", "garden-1", 2)).grantedAmount, 2);
++  assert.equal((await reserve("source-b", "garden-3", 2)).grantedAmount, 1);
++  assert.equal((await reserve("source-c", "garden-1", 1)).grantedAmount, 0);
++  assert.equal((await reserve("source-a", "garden-1", 2)).grantedAmount, 2, "retry must be idempotent");
++
++  const release = await destination.object.fetch(new Request(
++    "https://moyo.internal/api/internal/autonomy/storage/release",
++    {
++      method: "POST",
++      headers: {
++        "content-type": "application/json",
++        "x-moyo-region-internal": "garden-2",
++      },
++      body: JSON.stringify({ claimId: "source-a", sourceRegionId: "garden-1" }),
++    },
++  ));
++  assert.equal(release.status, 200);
++  assert.equal((await reserve("source-d", "garden-1", 2)).grantedAmount, 2);
++  const reservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
++  assert.equal(reservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
++});
++'''.replace('\n+', '\n')
++          assert 'destination storage admission is shared across source regions' not in tests
++          test_path.write_text(tests + addition)
++          PY
++      - name: Install dependencies
++        run: npm install --no-audit --no-fund
++      - name: Full validation
++        run: npm run build
++      - name: Commit validated improvement and remove one-shot workflow
++        run: |
++          git config user.name "github-actions[bot]"
++          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
++          git rm .github/workflows/one-shot-destination-storage-admission.yml
++          git add src/autonomy-region.ts tests/autonomous-concurrent-travel-do.test.mjs
++          git commit -m "sim: admit remote cargo against destination storage"
++          git push origin HEAD:main
