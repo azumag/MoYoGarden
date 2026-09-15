@@ -1,0 +1,202 @@
+name: One-shot catch-up headroom patch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-catchup-headroom.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moyo-one-shot-catchup-headroom
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply catch-up headroom patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("src/autonomy-region.ts")
+          text = source.read_text()
+          old = '''  override async alarm(): Promise<void> {
+            const now = Date.now();
+            const ticks = this.virtualTicksForAlarm(now);
+            const batchStartedAt = now;
+            const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
+            let completed = false;
+            try {
+              for (let index = 0; index < ticks; index += 1) {
+                this.setAlarmRescheduleDeferred(index + 1 < ticks);
+                await this.runSingleAlarmTick();
+                if (
+                  index + 1 < ticks
+                  && Date.now() - batchStartedAt >= CATCH_UP_WALL_BUDGET_MS
+                ) {
+                  break;
+                }
+              }
+              completed = true;
+            } finally {
+              this.setAlarmRescheduleDeferred(false);
+              this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
+              if (!completed) await this.scheduleCatchUpIfBehind(Date.now());
+            }
+            await this.scheduleCatchUpIfBehind(Date.now(), CATCH_UP_RETRY_MS);
+          }
+          '''
+          new = '''  override async alarm(): Promise<void> {
+            const now = Date.now();
+            const ticks = this.virtualTicksForAlarm(now);
+            const batchStartedAt = now;
+            const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
+            let completed = false;
+            let slowestTickMs = 0;
+            try {
+              for (let index = 0; index < ticks; index += 1) {
+                // Do not start another historical tick when the slowest tick
+                // already observed in this batch would predictably exceed the
+                // wall-clock slice. Remaining virtual time stays as debt and
+                // is retried promptly; an unexpectedly slow individual tick
+                // can still overrun, but we no longer compound that overrun by
+                // knowingly starting another similarly expensive tick.
+                const elapsedBeforeTick = Math.max(0, Date.now() - batchStartedAt);
+                if (
+                  index > 0
+                  && elapsedBeforeTick + slowestTickMs >= CATCH_UP_WALL_BUDGET_MS
+                ) {
+                  break;
+                }
+                this.setAlarmRescheduleDeferred(index + 1 < ticks);
+                const tickStartedAt = Date.now();
+                await this.runSingleAlarmTick();
+                slowestTickMs = Math.max(
+                  slowestTickMs,
+                  Math.max(0, Date.now() - tickStartedAt),
+                );
+              }
+              completed = true;
+            } finally {
+              this.setAlarmRescheduleDeferred(false);
+              this.endHaloEdgeReadBatch(ownsEdgeReadBatch);
+              if (!completed) await this.scheduleCatchUpIfBehind(Date.now());
+            }
+            await this.scheduleCatchUpIfBehind(Date.now(), CATCH_UP_RETRY_MS);
+          }
+          '''
+          if old not in text:
+              raise SystemExit("autonomy-region alarm block did not match expected main")
+          source.write_text(text.replace(old, new, 1))
+
+          test_file = Path("tests/virtual-catchup-do.test.mjs")
+          test_text = test_file.read_text()
+          old_test = '''test("slow catch-up yields on wall budget without discarding virtual-time debt", async () => {
+            const originalNow = Date.now;
+            let now = 1_800_002_500_000;
+            Date.now = () => now;
+            try {
+              const ctx = new MemoryState();
+              const object = new RegionDurableObject(ctx, env);
+              await ctx.ready;
+              await object.fetch(request("/api/world/snapshot"));
+              const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
+
+              now += 600_000;
+              const baseTick = object.runtime.tick.bind(object.runtime);
+              object.runtime.tick = (...args) => {
+                const result = baseTick(...args);
+                now += 4_500;
+                return result;
+              };
+
+              await object.alarm();
+
+              assert.equal(object.runtime.snapshot().tick, 2, "slow historical ticks should yield after the wall budget");
+              assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 20_000);
+              const health = await (await object.fetch(request("/api/health"))).json();
+              assert.ok(health.virtualTicksDue > 0, "unfinished virtual time must remain as debt");
+              assert.equal(health.virtualTicksRunnable, 12, "next retry remains bounded by the normal tick cap");
+              assert.equal(ctx.storage.alarm, now + 1_000, "yielded debt should retry promptly");
+            } finally {
+              Date.now = originalNow;
+            }
+          });
+          '''
+          new_test = '''test("slow catch-up reserves observed tick headroom without discarding virtual-time debt", async () => {
+            const originalNow = Date.now;
+            let now = 1_800_002_500_000;
+            Date.now = () => now;
+            try {
+              const ctx = new MemoryState();
+              const object = new RegionDurableObject(ctx, env);
+              await ctx.ready;
+              await object.fetch(request("/api/world/snapshot"));
+              const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
+
+              now += 600_000;
+              const baseTick = object.runtime.tick.bind(object.runtime);
+              object.runtime.tick = (...args) => {
+                const result = baseTick(...args);
+                now += 4_500;
+                return result;
+              };
+
+              await object.alarm();
+
+              assert.equal(
+                object.runtime.snapshot().tick,
+                1,
+                "a 4.5s historical tick should reserve enough headroom to avoid a predictable 9s batch",
+              );
+              assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 10_000);
+              const health = await (await object.fetch(request("/api/health"))).json();
+              assert.ok(health.virtualTicksDue > 0, "unfinished virtual time must remain as debt");
+              assert.equal(health.virtualTicksRunnable, 12, "next retry remains bounded by the normal tick cap");
+              assert.equal(ctx.storage.alarm, now + 1_000, "yielded debt should retry promptly");
+            } finally {
+              Date.now = originalNow;
+            }
+          });
+          '''
+          if old_test not in test_text:
+              raise SystemExit("virtual catch-up regression block did not match expected main")
+          test_file.write_text(test_text.replace(old_test, new_test, 1))
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit verified patch and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/one-shot-catchup-headroom.yml
+          git add src/autonomy-region.ts tests/virtual-catchup-do.test.mjs .github/workflows/one-shot-catchup-headroom.yml
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "perf: reserve catch-up tick headroom"
+          git push origin HEAD:main
