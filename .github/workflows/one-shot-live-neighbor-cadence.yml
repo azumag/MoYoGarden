@@ -1,0 +1,96 @@
+name: One-shot live neighbor cadence improvement
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-live-neighbor-cadence.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moyo-one-shot-live-neighbor-cadence
+  cancel-in-progress: false
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply constrained-device cadence improvement
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const path = 'public/client/live-region-rendering.js';
+          let source = fs.readFileSync(path, 'utf8');
+
+          function replaceOnce(before, after, label) {
+            const first = source.indexOf(before);
+            if (first < 0) throw new Error(`missing patch anchor: ${label}`);
+            if (source.indexOf(before, first + before.length) >= 0) {
+              throw new Error(`ambiguous patch anchor: ${label}`);
+            }
+            source = source.slice(0, first) + after + source.slice(first + before.length);
+          }
+
+          replaceOnce(
+            'const LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 30;\n',
+            `const LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 30;\nconst CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 / 15;\n\nfunction liveNeighborAnimationIntervalMs(quality) {\n  const density = Number(quality?.detailDensity);\n  return Number.isFinite(density) && density <= 0.5\n    ? CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS\n    : LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS;\n}\n`,
+            'animation interval constant',
+          );
+
+          replaceOnce(
+            '    this.lastAnimationAt = Number.NEGATIVE_INFINITY;\n',
+            '    this.lastAnimationAt = Number.NEGATIVE_INFINITY;\n    this.animationIntervalMs = liveNeighborAnimationIntervalMs(view.quality);\n',
+            'controller cadence initialization',
+          );
+
+          replaceOnce(
+            '    if (time - this.lastAnimationAt < LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS) return;\n',
+            '    if (time - this.lastAnimationAt < this.animationIntervalMs) return;\n',
+            'animation cadence check',
+          );
+
+          fs.writeFileSync(path, source);
+
+          fs.writeFileSync('tests/live-neighbor-quality-cadence.test.mjs', `import assert from "node:assert/strict";\nimport { readFile } from "node:fs/promises";\nimport test from "node:test";\n\nconst source = await readFile(\n  new URL("../public/client/live-region-rendering.js", import.meta.url),\n  "utf8",\n);\n\ntest("constrained quality profiles reduce contextual neighbor animation cadence", () => {\n  assert.match(source, /const CONSTRAINED_LIVE_NEIGHBOR_ANIMATION_INTERVAL_MS = 1000 \\/ 15;/);\n  assert.match(source, /function liveNeighborAnimationIntervalMs\\(quality\\)/);\n  assert.match(source, /Number\\(quality\\?\\.detailDensity\\)/);\n  assert.match(source, /density <= 0\\.5/);\n  assert.match(\n    source,\n    /this\\.animationIntervalMs = liveNeighborAnimationIntervalMs\\(view\\.quality\\);/,\n  );\n  assert.match(\n    source,\n    /time - this\\.lastAnimationAt < this\\.animationIntervalMs/,\n  );\n});\n`);
+          NODE
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit validated improvement to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add public/client/live-region-rendering.js tests/live-neighbor-quality-cadence.test.mjs
+          git rm .github/workflows/one-shot-live-neighbor-cadence.yml
+          # Build scripts intentionally generate runtime/vendor artifacts and a build marker.
+          # Keep only the validated source/test change plus removal of this one-shot workflow.
+          git restore --worktree .
+          git clean -fd
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "perf: scale neighbor animation cadence on constrained devices"
+          git push origin HEAD:main
