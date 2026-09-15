@@ -70,6 +70,9 @@ interface PendingAutonomousTravel {
   startedAtTick: number;
   claimId?: string;
   claimedSupply?: number;
+  // Observed remote capacity after subtracting reservations made by other
+  // concurrent expeditions from this source DO. Optional for rolling deploys.
+  destinationStorageHeadroom?: number;
 }
 
 export interface AutonomousSupplyClaim {
@@ -86,6 +89,10 @@ export interface AutonomousSupplyClaim {
   // already handed off and is no longer present in the source WorldState.
   sourceFactionId?: string;
   returnToSourceStorage?: boolean;
+  // Source-local reservation against a concrete remote storage observation.
+  // It prevents concurrent scouts in this DO from consuming the same bounded
+  // destination headroom while legacy/unknown snapshots remain neutral.
+  destinationStorageReserved?: boolean;
 }
 
 interface AutonomousArrivalClaim {
@@ -198,6 +205,11 @@ function isPendingAutonomousTravel(value: unknown): value is PendingAutonomousTr
       typeof value.claimedSupply === "number"
       && Number.isFinite(value.claimedSupply)
       && value.claimedSupply >= 0
+    ))
+    && (value.destinationStorageHeadroom === undefined || (
+      typeof value.destinationStorageHeadroom === "number"
+      && Number.isFinite(value.destinationStorageHeadroom)
+      && value.destinationStorageHeadroom >= 0
     ));
 }
 
@@ -220,7 +232,8 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
     && typeof value.expiresAtTick === "number"
     && Number.isInteger(value.expiresAtTick)
     && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")
-    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");
+    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+    && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
 }
 
 function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalClaim {
@@ -291,6 +304,24 @@ function reservedReturnStorageForFaction(
     // it belongs elsewhere, so reserve its amount conservatively for every
     // faction until the short claim TTL expires instead of overbooking.
     return reserved + claim.amount;
+  }, 0);
+}
+
+function reservedDestinationStorageForFaction(
+  state: WorldState,
+  claims: readonly AutonomousSupplyClaim[],
+  neighborRegionId: string,
+  factionId: string,
+): number {
+  return claims.reduce((reserved, claim) => {
+    if (
+      claim.destinationStorageReserved !== true ||
+      claim.neighborRegionId !== neighborRegionId ||
+      claim.expiresAtTick <= state.tick
+    ) {
+      return reserved;
+    }
+    return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;
   }, 0);
 }
 
@@ -653,9 +684,16 @@ export function planAutonomousHaloTravel(
     }
     const destinationStorageHeadroom = new Map<string, number | undefined>();
     for (const neighborRegionId of new Set(halo.map((entry) => entry.neighborRegionId))) {
+      const observedHeadroom = haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId);
+      const reservedHeadroom = reservedDestinationStorageForFaction(
+        state,
+        claims,
+        neighborRegionId,
+        agent.factionId,
+      );
       destinationStorageHeadroom.set(
         neighborRegionId,
-        haloRegionFactionStorageHeadroom(halo, neighborRegionId, agent.factionId),
+        observedHeadroom === undefined ? undefined : Math.max(0, observedHeadroom - reservedHeadroom),
       );
     }
     const availableSourceReturnStorage = Math.max(
@@ -793,6 +831,9 @@ export function planAutonomousHaloTravel(
     issuedAtTick,
     startedAtTick: state.tick,
     claimedSupply: expedition.visibleSupply,
+    ...(expedition.destinationStorageHeadroom === undefined
+      ? {}
+      : { destinationStorageHeadroom: expedition.destinationStorageHeadroom }),
   };
 }
 
@@ -1468,12 +1509,20 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       );
       const availableReturnStorage = Math.max(0, sourceStorageHeadroom - reservedReturnStorage);
       const returnToSourceStorage = availableReturnStorage > 0;
+      const destinationStorageReserved =
+        !returnToSourceStorage
+        && plan.destinationStorageHeadroom !== undefined
+        && plan.destinationStorageHeadroom > 0;
       // A return reservation is a capacity promise, not just a boolean hint. Bound
       // the supply claim by still-unreserved source storage so concurrent scouts do
-      // not all plan to deposit into the same final slots.
+      // not all plan to deposit into the same final slots. When this expedition
+      // instead relies on a concrete remote sink, reserve the observed destination
+      // headroom within this source DO so later scouts cannot overbook it.
       const claimedSupply = returnToSourceStorage
         ? Math.min(plannedSupply, availableReturnStorage)
-        : plannedSupply;
+        : destinationStorageReserved
+          ? Math.min(plannedSupply, plan.destinationStorageHeadroom ?? plannedSupply)
+          : plannedSupply;
       const pendingPlan: PendingAutonomousTravel = {
         ...plan,
         claimId,
@@ -1490,6 +1539,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
           sourceFactionId: agent.factionId,
           returnToSourceStorage,
+          ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
         });
       }
       agent.task = {

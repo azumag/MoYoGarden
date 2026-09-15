@@ -317,3 +317,55 @@ test("concurrent return expeditions reserve source storage headroom instead of o
   assert.equal(claims.filter((claim) => claim.returnToSourceStorage !== true).length, 1);
   assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));
 });
+
+
+test("concurrent scouts reserve observed destination storage headroom before launching", async () => {
+  const { source, east } = await expeditionFixture(8);
+  const sourceState = source.object.runtime.snapshot();
+  const scout = sourceState.agents.find((agent) => agent.autonomy);
+  assert.ok(scout);
+
+  for (const structure of sourceState.structures) {
+    if (structure.factionId !== scout.factionId || structure.status !== "active") continue;
+    structure.storage = {
+      wood: BUILD_RECIPES[structure.type].storageCapacity,
+      stone: 0,
+      food: 0,
+    };
+  }
+  source.object.runtime = new WorldRuntime({ state: sourceState });
+  await source.object.persist();
+
+  const eastState = east.object.runtime.snapshot();
+  for (const structure of eastState.structures) {
+    if (structure.factionId !== scout.factionId || structure.status !== "active") continue;
+    structure.storage = {
+      wood: BUILD_RECIPES[structure.type].storageCapacity,
+      stone: 0,
+      food: 0,
+    };
+  }
+  eastState.structures.push({
+    id: "three-slot-expedition-storehouse",
+    factionId: scout.factionId,
+    type: "storehouse",
+    position: hexGridCenter(eastState),
+    status: "active",
+    progress: 1,
+    requiredProgress: 1,
+    storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 3, stone: 0, food: 0 },
+  });
+  east.object.runtime = new WorldRuntime({ state: eastState });
+  await east.object.persist();
+
+  await source.object.alarm();
+  const travels = await source.state.storage.get(TRAVELS_KEY);
+  const claims = await source.state.storage.get(CLAIMS_KEY);
+  assert.equal(travels.length, 2);
+  assert.equal(claims.length, 2);
+  assert.equal(claims.reduce((sum, claim) => sum + claim.amount, 0), 3);
+  assert.deepEqual(claims.map((claim) => claim.amount).sort((a, b) => a - b), [1, 2]);
+  assert.ok(claims.every((claim) => claim.returnToSourceStorage !== true));
+  assert.ok(claims.every((claim) => claim.destinationStorageReserved === true));
+  assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));
+});
