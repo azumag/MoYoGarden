@@ -30,3 +30,4 @@ jobs:
           git diff --cached --check
           git commit -m "sim: route pioneers toward usable storage capacity"
           git push origin HEAD:main
+# retry after exactOptionalPropertyTypes fix
