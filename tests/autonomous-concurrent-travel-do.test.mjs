@@ -5,6 +5,7 @@ import { HEX_GRID_DIRECTION_STEPS, hexGridBoundaryCells, hexGridCenter, isHexGri
 import { buildConfiguredHexHaloLinks } from "../dist-ts/src/hex-halo.js";
 import { regionCellTransition } from "../dist-ts/src/region-topology.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
+import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
 
 const CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const HANDOFF_KEY = "handoff:autonomy:v1";
@@ -278,4 +279,41 @@ test("resource expeditions remember when their source has storage for the return
   const claims = await source.state.storage.get(CLAIMS_KEY);
   assert.equal(claims.length, 1);
   assert.equal(claims[0].returnToSourceStorage, true);
+});
+
+test("concurrent return expeditions reserve source storage headroom instead of overbooking it", async () => {
+  const { source } = await expeditionFixture(8);
+  const state = source.object.runtime.snapshot();
+  const scout = state.agents.find((agent) => agent.autonomy);
+  assert.ok(scout);
+
+  for (const structure of state.structures) {
+    if (structure.factionId !== scout.factionId || structure.status !== "active") continue;
+    structure.storage = {
+      wood: BUILD_RECIPES[structure.type].storageCapacity,
+      stone: 0,
+      food: 0,
+    };
+  }
+  state.structures.push({
+    id: "three-slot-return-storehouse",
+    factionId: scout.factionId,
+    type: "storehouse",
+    position: hexGridCenter(state),
+    status: "active",
+    progress: 1,
+    requiredProgress: 1,
+    storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 3, stone: 0, food: 0 },
+  });
+  source.object.runtime = new WorldRuntime({ state });
+  await source.object.persist();
+
+  await source.object.alarm();
+  const claims = await source.state.storage.get(CLAIMS_KEY);
+  assert.equal(claims.length, 3);
+  const returnClaims = claims.filter((claim) => claim.returnToSourceStorage === true);
+  assert.equal(returnClaims.reduce((sum, claim) => sum + claim.amount, 0), 3);
+  assert.deepEqual(returnClaims.map((claim) => claim.amount).sort((a, b) => a - b), [1, 2]);
+  assert.equal(claims.filter((claim) => claim.returnToSourceStorage !== true).length, 1);
+  assert.ok(claims.every((claim) => claim.sourceFactionId === scout.factionId));
 });

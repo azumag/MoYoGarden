@@ -81,6 +81,10 @@ export interface AutonomousSupplyClaim {
   amount: number;
   settledAmount?: number;
   expiresAtTick: number;
+  // Optional during rolling deploys. New return reservations retain the
+  // source faction so storage headroom remains reserved after the BOT has
+  // already handed off and is no longer present in the source WorldState.
+  sourceFactionId?: string;
   returnToSourceStorage?: boolean;
 }
 
@@ -215,6 +219,7 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
     ))
     && typeof value.expiresAtTick === "number"
     && Number.isInteger(value.expiresAtTick)
+    && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")
     && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");
 }
 
@@ -263,6 +268,30 @@ function factionStorageCapacityLeft(state: WorldState, factionId: string): numbe
 
 function hasAvailableFactionStorage(state: WorldState, factionId: string): boolean {
   return factionStorageCapacityLeft(state, factionId) > 0;
+}
+
+function reservedReturnStorageForFaction(
+  state: WorldState,
+  claims: readonly AutonomousSupplyClaim[],
+  factionId: string,
+): number {
+  return claims.reduce((reserved, claim) => {
+    if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+    if (claim.sourceFactionId !== undefined) {
+      return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;
+    }
+    const localAgent = claim.agentId === undefined
+      ? undefined
+      : state.agents.find((entry) => entry.id === claim.agentId);
+    if (localAgent !== undefined) {
+      return localAgent.factionId === factionId ? reserved + claim.amount : reserved;
+    }
+    // Rolling-deploy compatibility: an older in-flight return claim can
+    // outlive its source-side BOT. Without a persisted faction we cannot prove
+    // it belongs elsewhere, so reserve its amount conservatively for every
+    // faction until the short claim TTL expires instead of overbooking.
+    return reserved + claim.amount;
+  }, 0);
 }
 
 function resourceIntent(state: WorldState, agent: Agent): ResourceKind | undefined {
@@ -1361,8 +1390,26 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       if (agent === undefined) break;
 
       const claimId = `autonomy-claim:${state.regionId}:${plan.agentId}:${state.tick}:${plan.direction}:${plan.neighborRegionId}`;
-      const pendingPlan: PendingAutonomousTravel = { ...plan, claimId };
-      const claimedSupply = plan.claimedSupply ?? 0;
+      const plannedSupply = plan.claimedSupply ?? 0;
+      const sourceStorageHeadroom = factionStorageCapacityLeft(state, agent.factionId);
+      const reservedReturnStorage = reservedReturnStorageForFaction(
+        state,
+        workingClaims,
+        agent.factionId,
+      );
+      const availableReturnStorage = Math.max(0, sourceStorageHeadroom - reservedReturnStorage);
+      const returnToSourceStorage = availableReturnStorage > 0;
+      // A return reservation is a capacity promise, not just a boolean hint. Bound
+      // the supply claim by still-unreserved source storage so concurrent scouts do
+      // not all plan to deposit into the same final slots.
+      const claimedSupply = returnToSourceStorage
+        ? Math.min(plannedSupply, availableReturnStorage)
+        : plannedSupply;
+      const pendingPlan: PendingAutonomousTravel = {
+        ...plan,
+        claimId,
+        claimedSupply,
+      };
       if (claimedSupply > 0) {
         workingClaims.push({
           claimId,
@@ -1372,10 +1419,8 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           neighborRegionId: plan.neighborRegionId,
           amount: claimedSupply,
           expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
-          // Only promise a return-to-source deposit when that source currently
-          // has real storage headroom. An active but full structure must not
-          // masquerade as usable logistics capacity.
-          returnToSourceStorage: hasAvailableFactionStorage(state, agent.factionId),
+          sourceFactionId: agent.factionId,
+          returnToSourceStorage,
         });
       }
       agent.task = {
