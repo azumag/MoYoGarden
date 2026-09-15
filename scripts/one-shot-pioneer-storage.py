@@ -17,7 +17,7 @@ new = '''interface SettlementSeamCandidate {
   pathCrowding: number;
   crowding: number;
   support: SettlementNeighborSupport;
-  factionStorageHeadroom?: number;
+  factionStorageHeadroom: number | undefined;
 }
 '''
 assert old in text
