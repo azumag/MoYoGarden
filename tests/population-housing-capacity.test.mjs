@@ -3,7 +3,7 @@ import test from "node:test";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
-test("active camps bound population growth until residential capacity expands", () => {
+test("housing capacity gates conception and birth follows a completed gestation", () => {
   const state = createInitialWorld({ seed: 2030 });
   const faction = state.factions.find((entry) => entry.id === "ember");
   assert.ok(faction);
@@ -14,20 +14,24 @@ test("active camps bound population growth until residential capacity expands", 
     if (tile.terrain === "water") tile.terrain = "plain";
   }
 
+  const campPosition = { ...templates[0].position };
   state.agents = state.agents.filter((agent) => agent.factionId !== faction.id);
   for (let index = 0; index < 6; index += 1) {
     const template = structuredClone(templates[index % templates.length]);
     assert.ok(template);
     template.id = `housing-capacity-member-${index + 1}`;
     template.name = `Housing Member ${index + 1}`;
+    template.position = { ...campPosition };
     template.hp = 100;
     template.energy = 100;
     template.autonomy = false;
+    template.reproductiveRole = index % 2 === 0 ? "gestational" : "partner";
+    delete template.pregnancy;
+    delete template.lastBirthTick;
     delete template.task;
     state.agents.push(template);
   }
 
-  const campPosition = { ...state.agents.find((agent) => agent.factionId === faction.id).position };
   state.structures = state.structures.filter((structure) => structure.factionId !== faction.id);
   state.structures.push({
     id: "housing-camp-a",
@@ -43,17 +47,11 @@ test("active camps bound population growth until residential capacity expands", 
   state.tick = 8_639;
 
   const blocked = new WorldRuntime({ state }).tick().state;
-  const blockedFaction = blocked.factions.find((entry) => entry.id === faction.id);
-  const blockedCamp = blocked.structures.find((structure) => structure.id === "housing-camp-a");
-  assert.ok(blockedFaction);
-  assert.ok(blockedCamp);
   assert.equal(blocked.agents.filter((agent) => agent.factionId === faction.id).length, 6);
-  assert.equal(blockedFaction.resources.food, 100);
-  assert.equal(blockedCamp.storage.food, 100);
+  assert.equal(blocked.agents.some((agent) => agent.factionId === faction.id && agent.pregnancy !== undefined), false);
 
   const secondCampPosition = blocked.tiles.find((tile) =>
-    tile.terrain !== "water" &&
-    (tile.x !== campPosition.x || tile.y !== campPosition.y)
+    tile.terrain !== "water" && (tile.x !== campPosition.x || tile.y !== campPosition.y)
   );
   assert.ok(secondCampPosition);
   blocked.structures.push({
@@ -68,12 +66,27 @@ test("active camps bound population growth until residential capacity expands", 
   });
   blocked.tick = 17_279;
 
-  const expanded = new WorldRuntime({ state: blocked }).tick().state;
-  const expandedFaction = expanded.factions.find((entry) => entry.id === faction.id);
-  const expandedCamp = expanded.structures.find((structure) => structure.id === "housing-camp-a");
-  assert.ok(expandedFaction);
-  assert.ok(expandedCamp);
-  assert.equal(expanded.agents.filter((agent) => agent.factionId === faction.id).length, 7);
-  assert.equal(expandedFaction.resources.food, 94);
-  assert.equal(expandedCamp.storage.food, 94);
+  const conceived = new WorldRuntime({ state: blocked }).tick().state;
+  const gestationalParent = conceived.agents.find(
+    (agent) => agent.factionId === faction.id && agent.pregnancy !== undefined,
+  );
+  assert.ok(gestationalParent);
+  const partnerId = gestationalParent.pregnancy?.partnerId;
+  assert.ok(partnerId);
+  assert.equal(conceived.agents.filter((agent) => agent.factionId === faction.id).length, 6);
+  assert.equal(gestationalParent.pregnancy?.conceivedAtTick, 17_280);
+  assert.equal(gestationalParent.pregnancy?.dueAtTick, 25_920);
+  assert.equal(conceived.factions.find((entry) => entry.id === faction.id)?.resources.food, 100);
+
+  conceived.tick = 25_919;
+  const born = new WorldRuntime({ state: conceived }).tick().state;
+  const newborn = born.agents.find((agent) => agent.factionId === faction.id && agent.birthTick === 25_920);
+  assert.ok(newborn);
+  assert.equal(born.agents.filter((agent) => agent.factionId === faction.id).length, 7);
+  assert.equal(newborn.lifeStage, "infant");
+  assert.equal(newborn.autonomy, false);
+  assert.deepEqual(newborn.position, gestationalParent.position);
+  assert.deepEqual(newborn.parents, [gestationalParent.id, partnerId]);
+  assert.equal(born.factions.find((entry) => entry.id === faction.id)?.resources.food, 94);
+  assert.equal(born.structures.find((structure) => structure.id === "housing-camp-a")?.storage.food, 94);
 });

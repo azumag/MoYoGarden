@@ -270,13 +270,15 @@ test("prolonged starvation can reduce a faction's population", () => {
   assert.equal(second.agents.length, initialPopulation - 1);
 });
 
-test("food-secure settlements can grow their population when local hex space is available", () => {
+test("population growth requires conception, gestation, and biological parentage", () => {
   const state = createInitialWorld({ seed: 2029 });
   const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);
   const members = state.agents.filter((agent) => agent.factionId === faction.id);
   assert.ok(members.length >= 2);
   const originalIds = new Set(members.map((agent) => agent.id));
-  const campPosition = { ...members[0].position };
+  const parent = members[0]; assert.ok(parent);
+  const partner = members[1]; assert.ok(partner);
+  const campPosition = { ...parent.position };
 
   faction.resources.food = 40;
   state.structures.push({
@@ -292,20 +294,46 @@ test("food-secure settlements can grow their population when local hex space is 
   for (const member of members) {
     member.hp = 100;
     member.energy = 100;
+    member.reproductiveRole = member.id === parent.id ? "gestational" : "partner";
+    delete member.pregnancy;
+    delete member.lastBirthTick;
     delete member.task;
   }
+  partner.position = { ...parent.position };
   state.tick = 8_639;
 
-  const runtime = new WorldRuntime({ state });
-  const next = runtime.tick().state;
-  const nextFaction = next.factions.find((entry) => entry.id === faction.id); assert.ok(nextFaction);
-  const nextMembers = next.agents.filter((agent) => agent.factionId === faction.id);
+  const conceived = new WorldRuntime({ state }).tick().state;
+  const conceivedParent = conceived.agents.find((entry) => entry.id === parent.id); assert.ok(conceivedParent);
+  assert.equal(conceived.agents.filter((agent) => agent.factionId === faction.id).length, members.length);
+  assert.equal(conceivedParent.pregnancy?.partnerId, partner.id);
+  assert.equal(conceivedParent.pregnancy?.conceivedAtTick, 8_640);
+  assert.equal(conceivedParent.pregnancy?.dueAtTick, 17_280);
+  assert.equal(conceived.factions.find((entry) => entry.id === faction.id)?.resources.food, 40);
+
+  conceived.tick = 17_279;
+  const born = new WorldRuntime({ state: conceived }).tick().state;
+  const nextMembers = born.agents.filter((agent) => agent.factionId === faction.id);
   const newcomer = nextMembers.find((agent) => !originalIds.has(agent.id)); assert.ok(newcomer);
-  const camp = next.structures.find((structure) => structure.id === "population-growth-camp"); assert.ok(camp);
+  const camp = born.structures.find((structure) => structure.id === "population-growth-camp"); assert.ok(camp);
 
   assert.equal(nextMembers.length, members.length + 1);
-  assert.equal(nextFaction.resources.food, 34);
+  assert.equal(born.factions.find((entry) => entry.id === faction.id)?.resources.food, 34);
   assert.equal(camp.storage.food, 34);
-  assert.equal(newcomer.status, "new generation settling");
-  assert.ok(manhattanDistance(newcomer.position, camp.position) <= 3);
+  const birthParent = born.agents.find((entry) => entry.id === parent.id); assert.ok(birthParent);
+  assert.equal(newcomer.lifeStage, "infant");
+  assert.equal(newcomer.autonomy, false);
+  assert.deepEqual(newcomer.parents, [parent.id, partner.id]);
+  assert.deepEqual(newcomer.position, birthParent.position);
+
+  born.tick = 25_919;
+  const juvenile = new WorldRuntime({ state: born }).tick().state.agents.find((entry) => entry.id === newcomer.id);
+  assert.ok(juvenile);
+  assert.equal(juvenile.lifeStage, "juvenile");
+  assert.equal(juvenile.autonomy, false);
+
+  born.tick = 43_199;
+  const adult = new WorldRuntime({ state: born }).tick().state.agents.find((entry) => entry.id === newcomer.id);
+  assert.ok(adult);
+  assert.equal(adult.lifeStage, "adult");
+  assert.equal(adult.autonomy, true);
 });

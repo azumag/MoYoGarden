@@ -90,6 +90,15 @@ export interface TradeTask extends AgentTaskBase {
 
 export type AgentTask = MoveTask | GatherTask | BuildTask | DepositTask | TradeTask;
 
+export type AgentLifeStage = "infant" | "juvenile" | "adult" | "elder";
+export type ReproductiveRole = "gestational" | "partner";
+
+export interface AgentPregnancy {
+  partnerId: string;
+  conceivedAtTick: number;
+  dueAtTick: number;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -103,6 +112,14 @@ export interface Agent {
   autonomy: boolean;
   goal: string;
   status: string;
+  // Optional demographic state keeps persisted schemaVersion=1 worlds readable.
+  // Existing residents without these fields are treated as adult founders.
+  birthTick?: number;
+  lifeStage?: AgentLifeStage;
+  reproductiveRole?: ReproductiveRole;
+  parents?: [string, string];
+  pregnancy?: AgentPregnancy;
+  lastBirthTick?: number;
   settlementMigrationOriginRegionId?: string;
   task?: AgentTask;
 }

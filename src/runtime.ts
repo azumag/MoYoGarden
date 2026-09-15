@@ -42,16 +42,20 @@ export type SnapshotListener = (state: WorldState, receipts: readonly CommandRec
 const LOW_ENERGY_THRESHOLD = 18;
 const FOOD_ENERGY_RECOVERY = 35;
 const STARVATION_DAMAGE = 1;
-// Population growth is demographic, not a minute-scale work cadence. With the
-// production 10s virtual tick, 8,640 ticks is one day. Virtual-time catch-up
-// deliberately preserves this elapsed-time meaning without creating a burst of
-// new residents every few minutes when a sleeping region wakes up.
-const POPULATION_GROWTH_INTERVAL = 8_640;
+// Demography uses a compressed biological timescale. At the production 10s
+// virtual tick, 8,640 ticks is one simulation day. Population can now grow only
+// through conception -> gestation -> birth, and virtual-time catch-up preserves
+// the same elapsed-time semantics for sleeping regions.
+const POPULATION_REPRODUCTION_INTERVAL = 8_640;
+const POPULATION_GESTATION_TICKS = POPULATION_REPRODUCTION_INTERVAL;
+const POPULATION_INFANCY_TICKS = POPULATION_REPRODUCTION_INTERVAL;
+const POPULATION_MATURITY_TICKS = POPULATION_REPRODUCTION_INTERVAL * 3;
+const POPULATION_POSTPARTUM_COOLDOWN_TICKS = POPULATION_REPRODUCTION_INTERVAL;
 const POPULATION_FOOD_BUFFER_PER_AGENT = 4;
-const POPULATION_GROWTH_FOOD_COST = 6;
+const POPULATION_BIRTH_FOOD_COST = 6;
 const POPULATION_HEALTH_THRESHOLD = 70;
 const POPULATION_ENERGY_THRESHOLD = 35;
-const POPULATION_SETTLEMENT_RADIUS = 3;
+const POPULATION_PARENT_RADIUS = 2;
 const POPULATION_RESIDENT_CAPACITY_PER_CAMP = 6;
 const SOCIAL_INTERVAL = 12;
 const SOCIAL_RADIUS = 2;
@@ -234,28 +238,6 @@ function consumeStoredFood(state: WorldState, factionId: string, amount: number)
   return true;
 }
 
-function settlementGrowthSite(state: WorldState, factionId: string): GridPosition | undefined {
-  const camps = activeFactionStructures(state, factionId)
-    .filter((structure) => structure.type === "camp")
-    .sort((a, b) => a.id.localeCompare(b.id));
-  if (camps.length === 0) return undefined;
-
-  const occupied = new Set([
-    ...state.agents.map((agent) => `${agent.position.x},${agent.position.y}`),
-    ...state.structures.map((structure) => `${structure.position.x},${structure.position.y}`),
-  ]);
-  const candidates = state.tiles
-    .filter((tile) => tile.terrain !== "water" && !occupied.has(`${tile.x},${tile.y}`))
-    .map((tile) => ({
-      tile,
-      distance: Math.min(...camps.map((camp) => manhattanDistance(tile, camp.position))),
-    }))
-    .filter((candidate) => candidate.distance <= POPULATION_SETTLEMENT_RADIUS)
-    .sort((a, b) => a.distance - b.distance || a.tile.y - b.tile.y || a.tile.x - b.tile.x);
-  const candidate = candidates[0]?.tile;
-  return candidate === undefined ? undefined : { x: candidate.x, y: candidate.y };
-}
-
 function settlementResidentCapacity(state: WorldState, factionId: string): number {
   return activeFactionStructures(state, factionId)
     .filter((structure) => structure.type === "camp")
@@ -289,43 +271,150 @@ function populationGoal(role: AgentRole): string {
   return "Secure food for the growing settlement";
 }
 
-function applyPopulationGrowth(state: WorldState): void {
-  if (state.tick === 0 || state.tick % POPULATION_GROWTH_INTERVAL !== 0) return;
+function demographicHash(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function reproductiveRole(agent: Agent): "gestational" | "partner" {
+  return agent.reproductiveRole ?? (demographicHash(agent.id) % 2 === 0 ? "gestational" : "partner");
+}
+
+function isAdultForReproduction(agent: Agent, tick: number): boolean {
+  if (agent.lifeStage === "elder") return false;
+  if (agent.lifeStage === "adult") return true;
+  if (agent.birthTick === undefined) return true;
+  return tick - agent.birthTick >= POPULATION_MATURITY_TICKS;
+}
+
+function applyLifeStageTransitions(state: WorldState): void {
+  for (const agent of state.agents) {
+    if (agent.birthTick === undefined || agent.lifeStage === "adult" || agent.lifeStage === "elder") continue;
+    const age = state.tick - agent.birthTick;
+    if (age >= POPULATION_MATURITY_TICKS) {
+      const role = populationRole(state, agent.factionId);
+      agent.lifeStage = "adult";
+      agent.role = role;
+      agent.capacity = role === "builder" ? 32 : 24;
+      agent.autonomy = true;
+      agent.goal = populationGoal(role);
+      if (agent.task?.source === "autonomy") delete agent.task;
+      agent.status = "reached adulthood";
+      continue;
+    }
+    if (age >= POPULATION_INFANCY_TICKS && agent.lifeStage === "infant") {
+      agent.lifeStage = "juvenile";
+      agent.status = "juvenile; growing with the settlement";
+    }
+  }
+}
+
+function birthDuePregnancies(state: WorldState): void {
+  const gestationalParents = [...state.agents]
+    .filter((agent) => agent.pregnancy !== undefined && agent.pregnancy.dueAtTick <= state.tick)
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const parent of gestationalParents) {
+    const pregnancy = parent.pregnancy;
+    if (pregnancy === undefined) continue;
+    const faction = getFaction(state, parent.factionId);
+    if (faction === undefined) {
+      delete parent.pregnancy;
+      continue;
+    }
+
+    const population = state.agents.filter((agent) => agent.factionId === parent.factionId);
+    const generation = population.length + 1;
+    const role = populationRole(state, parent.factionId);
+    const childId = `agent-${parent.factionId}-birth-${state.tick}-${generation}`;
+    const prefix = faction.name.split(/\s+/)[0] || faction.id;
+    const nourished = consumeStoredFood(state, parent.factionId, POPULATION_BIRTH_FOOD_COST);
+
+    state.agents.push({
+      id: childId,
+      name: `${prefix} ${generation}`,
+      factionId: parent.factionId,
+      role,
+      position: { ...parent.position },
+      hp: 100,
+      energy: nourished ? 70 : 35,
+      capacity: 8,
+      inventory: emptyInventory(),
+      autonomy: false,
+      goal: "Grow safely before joining settlement work",
+      status: nourished ? "infant; dependent on parents" : "infant; food insecure",
+      birthTick: state.tick,
+      lifeStage: "infant",
+      reproductiveRole: demographicHash(childId) % 2 === 0 ? "gestational" : "partner",
+      parents: [parent.id, pregnancy.partnerId],
+    });
+    delete parent.pregnancy;
+    parent.lastBirthTick = state.tick;
+    parent.status = `caring for newborn ${prefix} ${generation}`;
+  }
+}
+
+function planConceptions(state: WorldState): void {
+  if (state.tick === 0 || state.tick % POPULATION_REPRODUCTION_INTERVAL !== 0) return;
 
   for (const faction of [...state.factions].sort((a, b) => a.id.localeCompare(b.id))) {
-    const population = state.agents.filter((agent) => agent.factionId === faction.id);
+    const population = state.agents
+      .filter((agent) => agent.factionId === faction.id)
+      .sort((a, b) => a.id.localeCompare(b.id));
     if (population.length < 2) continue;
-    if (population.length >= settlementResidentCapacity(state, faction.id)) continue;
-    const healthyPopulation = population.filter(
-      (agent) => agent.hp >= POPULATION_HEALTH_THRESHOLD && agent.energy >= POPULATION_ENERGY_THRESHOLD,
+    const pregnancies = population.filter((agent) => agent.pregnancy !== undefined).length;
+    if (population.length + pregnancies >= settlementResidentCapacity(state, faction.id)) continue;
+
+    const foodNeeded = population.length * POPULATION_FOOD_BUFFER_PER_AGENT + POPULATION_BIRTH_FOOD_COST;
+    const storedFood = activeFactionStructures(state, faction.id)
+      .reduce((sum, structure) => sum + structure.storage.food, 0);
+    if (faction.resources.food < foodNeeded || storedFood < POPULATION_BIRTH_FOOD_COST) continue;
+
+    const healthyAdults = population.filter((agent) =>
+      isAdultForReproduction(agent, state.tick) &&
+      agent.hp >= POPULATION_HEALTH_THRESHOLD &&
+      agent.energy >= POPULATION_ENERGY_THRESHOLD
     );
-    if (healthyPopulation.length < 2) continue;
+    const gestationalParents = healthyAdults.filter((agent) =>
+      reproductiveRole(agent) === "gestational" &&
+      agent.pregnancy === undefined &&
+      (agent.lastBirthTick === undefined || state.tick - agent.lastBirthTick >= POPULATION_POSTPARTUM_COOLDOWN_TICKS)
+    );
 
-    const foodNeeded =
-      population.length * POPULATION_FOOD_BUFFER_PER_AGENT + POPULATION_GROWTH_FOOD_COST;
-    if (faction.resources.food < foodNeeded) continue;
-    const position = settlementGrowthSite(state, faction.id);
-    if (position === undefined) continue;
-    if (!consumeStoredFood(state, faction.id, POPULATION_GROWTH_FOOD_COST)) continue;
+    for (const parent of gestationalParents) {
+      const partner = healthyAdults
+        .filter((candidate) =>
+          candidate.id !== parent.id &&
+          reproductiveRole(candidate) === "partner" &&
+          manhattanDistance(candidate.position, parent.position) <= POPULATION_PARENT_RADIUS
+        )
+        .sort((a, b) =>
+          manhattanDistance(a.position, parent.position) - manhattanDistance(b.position, parent.position) ||
+          a.id.localeCompare(b.id)
+        )[0];
+      if (partner === undefined) continue;
 
-    const role = populationRole(state, faction.id);
-    const generation = population.length + 1;
-    const prefix = faction.name.split(/\s+/)[0] || faction.id;
-    state.agents.push({
-      id: `agent-${faction.id}-${role}-generation-${state.tick}-${generation}`,
-      name: `${prefix} ${generation}`,
-      factionId: faction.id,
-      role,
-      position,
-      hp: 100,
-      energy: 70,
-      capacity: role === "builder" ? 32 : 24,
-      inventory: emptyInventory(),
-      autonomy: true,
-      goal: populationGoal(role),
-      status: "new generation settling",
-    });
+      parent.pregnancy = {
+        partnerId: partner.id,
+        conceivedAtTick: state.tick,
+        dueAtTick: state.tick + POPULATION_GESTATION_TICKS,
+      };
+      parent.reproductiveRole ??= "gestational";
+      partner.reproductiveRole ??= "partner";
+      parent.status = `expecting offspring with ${partner.name}`;
+      break;
+    }
   }
+}
+
+function applyDemography(state: WorldState): void {
+  applyLifeStageTransitions(state);
+  birthDuePregnancies(state);
+  planConceptions(state);
 }
 
 function factionSupplyShortage(state: WorldState, factionId: string): ResourceKind | undefined {
@@ -746,7 +835,7 @@ export class WorldRuntime {
       if (agent !== undefined) agent.status = status;
     }
     applyStarvation(result.state, starvingAgentIds);
-    applyPopulationGrowth(result.state);
+    applyDemography(result.state);
     applySocialInteractions(result.state);
     result.state.events = result.state.events.slice(-this.#simulationConfig.eventLimit);
     this.#state = result.state;
