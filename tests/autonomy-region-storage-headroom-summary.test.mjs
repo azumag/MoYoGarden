@@ -117,6 +117,23 @@ function fillFactionStorage(state, factionId) {
   }
 }
 
+test("known destination storage headroom caps cargo when source cannot accept a return", () => {
+  const { state, agent } = fixture();
+  fillFactionStorage(state, agent.factionId);
+  const east = halo(state, "east", "garden-2", agent.factionId, 2);
+  const plan = planAutonomousHaloTravel(state, [east]);
+  assert.ok(plan);
+  assert.equal(plan.claimedSupply, 2);
+});
+
+test("unknown destination storage keeps legacy cargo sizing when source cannot accept a return", () => {
+  const { state, agent } = fixture();
+  fillFactionStorage(state, agent.factionId);
+  const east = halo(state, "east", "garden-2", agent.factionId, undefined);
+  const plan = planAutonomousHaloTravel(state, [east]);
+  assert.ok(plan);
+  assert.equal(plan.claimedSupply, Math.min(8, agent.capacity));
+});
 test("known-full destination is rejected when the source has no return storage", () => {
   const { state, agent } = fixture();
   fillFactionStorage(state, agent.factionId);

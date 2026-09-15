@@ -702,14 +702,24 @@ export function planAutonomousHaloTravel(
           (visibleSupply.get(key) ?? 0) - (claimedSupply.get(key) ?? 0),
         );
         const supply = Math.min(capacityLeft, availableSupply);
-        if (supply <= 0) return [];
+        // When the source cannot promise a return sink, a concrete remote
+        // storage observation is also an upper bound on useful cargo. This
+        // does not turn the halo summary into a reservation: concurrent
+        // sources can still race, but one expedition no longer knowingly
+        // gathers more than the only observed sink can accept. Missing
+        // metadata stays backward-compatible and leaves the old sizing intact.
+        const sinkBoundedSupply =
+          destinationStorageHeadroom !== undefined && availableSourceReturnStorage <= 0
+            ? Math.min(supply, destinationStorageHeadroom)
+            : supply;
+        if (sinkBoundedSupply <= 0) return [];
         return [{
           entry,
           travelDistance,
           pathCrowding,
           destinationCrowding,
           destinationStorageHeadroom,
-          visibleSupply: supply,
+          visibleSupply: sinkBoundedSupply,
           // Crowding is a planning friction, not literal energy consumption.
           // Keep the existing distance-only energy reserve while preferring a
           // quiet source corridor and an unjammed arrival cell when neighboring
