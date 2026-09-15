@@ -103,7 +103,7 @@ test("capped catch-up preserves remaining debt and schedules a prompt retry", as
   }
 });
 
-test("slow catch-up yields on wall budget without discarding virtual-time debt", async () => {
+test("slow catch-up reserves observed tick headroom without discarding virtual-time debt", async () => {
   const originalNow = Date.now;
   let now = 1_800_002_500_000;
   Date.now = () => now;
@@ -124,8 +124,8 @@ test("slow catch-up yields on wall budget without discarding virtual-time debt",
 
     await object.alarm();
 
-    assert.equal(object.runtime.snapshot().tick, 2, "slow historical ticks should yield after the wall budget");
-    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 20_000);
+    assert.equal(object.runtime.snapshot().tick, 1, "a 4.5s tick should reserve headroom instead of starting a predictable 9s batch");
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 10_000);
     const health = await (await object.fetch(request("/api/health"))).json();
     assert.ok(health.virtualTicksDue > 0, "unfinished virtual time must remain as debt");
     assert.equal(health.virtualTicksRunnable, 12, "next retry remains bounded by the normal tick cap");

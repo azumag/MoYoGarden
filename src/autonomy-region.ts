@@ -2078,16 +2078,26 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const batchStartedAt = now;
     const ownsEdgeReadBatch = this.beginHaloEdgeReadBatch();
     let completed = false;
+    let slowestTickMs = 0;
     try {
       for (let index = 0; index < ticks; index += 1) {
-        this.setAlarmRescheduleDeferred(index + 1 < ticks);
-        await this.runSingleAlarmTick();
+        // Reserve the slowest duration already observed in this batch before
+        // starting another historical tick. This cannot cap one unexpectedly
+        // slow tick, but it avoids knowingly compounding the overrun.
+        const elapsedBeforeTick = Math.max(0, Date.now() - batchStartedAt);
         if (
-          index + 1 < ticks
-          && Date.now() - batchStartedAt >= CATCH_UP_WALL_BUDGET_MS
+          index > 0
+          && elapsedBeforeTick + slowestTickMs >= CATCH_UP_WALL_BUDGET_MS
         ) {
           break;
         }
+        this.setAlarmRescheduleDeferred(index + 1 < ticks);
+        const tickStartedAt = Date.now();
+        await this.runSingleAlarmTick();
+        slowestTickMs = Math.max(
+          slowestTickMs,
+          Math.max(0, Date.now() - tickStartedAt),
+        );
       }
       completed = true;
     } finally {
