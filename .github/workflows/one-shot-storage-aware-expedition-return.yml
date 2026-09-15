@@ -1,0 +1,153 @@
+name: One-shot storage-aware expedition return
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    if: github.event.head_commit.message == 'chore: stage storage-aware expedition return'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Patch storage-aware expedition return
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('src/autonomy-region.ts')
+          source = source_path.read_text()
+
+          old_import = '''import {
+            positionKey,
+            type Agent,
+            type GridPosition,
+            type ResourceKind,
+            type WorldState,
+          } from "./protocol.js";'''
+          new_import = '''import {
+            BUILD_RECIPES,
+            inventoryTotal,
+            positionKey,
+            type Agent,
+            type GridPosition,
+            type ResourceKind,
+            type WorldState,
+          } from "./protocol.js";'''
+          assert source.count(old_import) == 1, 'protocol import shape changed'
+          source = source.replace(old_import, new_import)
+
+          marker = '''function hasActiveFactionStructure(state: WorldState, factionId: string): boolean {
+            return state.structures.some((structure) =>
+              structure.factionId === factionId && structure.status === "active"
+            );
+          }
+          '''
+          replacement = marker + '''
+          function factionStorageCapacityLeft(state: WorldState, factionId: string): number {
+            return state.structures
+              .filter((structure) =>
+                structure.factionId === factionId && structure.status === "active"
+              )
+              .reduce((available, structure) =>
+                available + Math.max(
+                  0,
+                  BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
+                ),
+              0);
+          }
+
+          function hasAvailableFactionStorage(state: WorldState, factionId: string): boolean {
+            return factionStorageCapacityLeft(state, factionId) > 0;
+          }
+          '''
+          assert source.count(marker) == 1, 'active-structure helper shape changed'
+          source = source.replace(marker, replacement)
+
+          old_return_gate = '''    inventoryAmount(agent) <= 0 ||
+              hasActiveFactionStructure(state, agent.factionId)
+            ) return undefined;'''
+          new_return_gate = '''    inventoryAmount(agent) <= 0 ||
+              hasAvailableFactionStorage(state, agent.factionId)
+            ) return undefined;'''
+          assert source.count(old_return_gate) == 2, 'expected both expedition return gates'
+          source = source.replace(old_return_gate, new_return_gate)
+
+          old_claim = '          returnToSourceStorage: hasActiveFactionStructure(state, agent.factionId),'
+          new_claim = '''          // Only promise a return-to-source deposit when that source currently
+                    // has real storage headroom. An active but full structure must not
+                    // masquerade as usable logistics capacity.
+                    returnToSourceStorage: hasAvailableFactionStorage(state, agent.factionId),'''
+          assert source.count(old_claim) == 1, 'source return claim shape changed'
+          source = source.replace(old_claim, new_claim)
+          source_path.write_text(source)
+
+          test_path = Path('tests/autonomy-supply-claim-do.test.mjs')
+          tests = test_path.read_text()
+          import_anchor = 'import { WorldRuntime } from "../dist-ts/src/runtime.js";\n'
+          assert tests.count(import_anchor) == 1, 'test import shape changed'
+          tests = tests.replace(
+            import_anchor,
+            import_anchor + 'import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";\n',
+          )
+
+          old_name = 'test("completed one-hop expedition routes interior cargo back to its source storage", async () => {'
+          new_name = 'test("completed one-hop expedition returns cargo when destination storage is full", async () => {'
+          assert tests.count(old_name) == 1, 'return expedition regression test shape changed'
+          tests = tests.replace(old_name, new_name)
+
+          start = tests.index(new_name)
+          anchor = '  assert.ok(transition);\n'
+          insert_at = tests.index(anchor, start) + len(anchor)
+          full_remote_storage = '''  eastState.structures.push({
+            id: "full-east-storehouse",
+            factionId: agent.factionId,
+            type: "storehouse",
+            position: { ...transition.targetPosition },
+            status: "active",
+            progress: 1,
+            requiredProgress: 1,
+            storage: {
+              wood: BUILD_RECIPES.storehouse.storageCapacity,
+              stone: 0,
+              food: 0,
+            },
+          });
+          '''
+          tests = tests[:insert_at] + full_remote_storage + tests[insert_at:]
+          test_path.write_text(tests)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit validated change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/autonomy-region.ts tests/autonomy-supply-claim-do.test.mjs
+          git diff --cached --check
+          git diff --cached --quiet && { echo 'No patch produced'; exit 1; }
+          git commit -m 'fix: respect storage capacity on expedition return'
+          git push origin HEAD:main
