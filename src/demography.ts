@@ -39,7 +39,9 @@ export function applyPopulationAging(state: WorldState): void {
     if (age >= POPULATION_ELDER_AGE_TICKS && agent.lifeStage !== "elder") {
       agent.lifeStage = "elder";
       agent.status = "elder; retired from reproduction";
-      if (agent.pregnancy !== undefined) delete agent.pregnancy;
+      // Do not cancel an already-conceived pregnancy at the elder threshold.
+      // Reproduction planning already excludes elders from new conceptions, while
+      // an existing gestation should still run to its due tick causally.
     }
     survivors.push(agent);
   }

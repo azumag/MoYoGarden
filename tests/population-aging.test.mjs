@@ -9,13 +9,14 @@ import {
 } from "../dist-ts/src/demography.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
-test("lineage-born adults become elders before natural death", () => {
+test("lineage-born adults become elders without canceling existing gestation", () => {
   const state = createInitialWorld({ seed: 3901 });
   const agent = state.agents[0];
   assert.ok(agent);
   agent.birthTick = 0;
   agent.lifeStage = "adult";
-  agent.pregnancy = { partnerId: "partner", conceivedAtTick: 1, dueAtTick: 2 };
+  const pregnancy = { partnerId: "partner", conceivedAtTick: 1, dueAtTick: POPULATION_ELDER_AGE_TICKS + 1 };
+  agent.pregnancy = { ...pregnancy };
   state.tick = POPULATION_ELDER_AGE_TICKS;
 
   applyPopulationAging(state);
@@ -23,7 +24,7 @@ test("lineage-born adults become elders before natural death", () => {
   const elder = state.agents.find((entry) => entry.id === agent.id);
   assert.ok(elder);
   assert.equal(elder.lifeStage, "elder");
-  assert.equal(elder.pregnancy, undefined);
+  assert.deepEqual(elder.pregnancy, pregnancy);
   assert.match(elder.status, /^elder;/);
 });
 
