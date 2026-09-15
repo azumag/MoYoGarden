@@ -103,11 +103,14 @@ function animateNeighborAgentGlyph(entry, time, tickMs) {
   // root position exact for the next snapshot interpolation.
   const shell = entry.shell;
   if (!shell) return;
-  const moving = entry.from.distanceToSquared(entry.to) > 0.001
-    || /moving|travel|gather|haul/i.test(entry.agent?.status || "");
+  const moving = entry.moyoMoving ?? (
+    entry.from.distanceToSquared(entry.to) > 0.001
+      || /moving|travel|gather|haul/i.test(entry.agent?.status || "")
+  );
   const position = entry.agent?.position || { x: 0, y: 0 };
-  const phase = time * 0.0075
-    + hash2(position.x, position.y, entry.agent?.id?.length || 0) * Math.PI * 2;
+  const phaseOffset = entry.moyoPhaseOffset
+    ?? hash2(position.x, position.y, entry.agent?.id?.length || 0) * Math.PI * 2;
+  const phase = time * 0.0075 + phaseOffset;
   shell.position.y = moving
     ? Math.abs(Math.sin(phase)) * 0.025
     : Math.sin(phase * 0.2) * 0.004;
@@ -188,6 +191,20 @@ function createNeighborAgentGlyph(proxy, agent, faction) {
   };
 }
 
+function refreshNeighborAgentAnimationState(proxy) {
+  for (const entry of proxy.agentObjects.values()) {
+    const agent = entry.agent;
+    const position = agent?.position || { x: 0, y: 0 };
+    entry.moyoMoving = entry.from.distanceToSquared(entry.to) > 0.001
+      || /moving|travel|gather|haul/i.test(agent?.status || "");
+    entry.moyoPhaseOffset = hash2(
+      position.x,
+      position.y,
+      agent?.id?.length || 0,
+    ) * Math.PI * 2;
+  }
+}
+
 function createProxy(view, group, state, tickMs) {
   const proxy = Object.create(view);
   proxy.worldRoot = group;
@@ -222,6 +239,7 @@ function createProxy(view, group, state, tickMs) {
   proxy.syncResources(state);
   proxy.syncStructures(state);
   proxy.syncAgents(state);
+  refreshNeighborAgentAnimationState(proxy);
   return proxy;
 }
 
@@ -232,6 +250,7 @@ function syncProxy(proxy, state, tickMs) {
   proxy.syncResources(state);
   proxy.syncStructures(state);
   proxy.syncAgents(state);
+  refreshNeighborAgentAnimationState(proxy);
 }
 
 function snapshotTick(state) {
