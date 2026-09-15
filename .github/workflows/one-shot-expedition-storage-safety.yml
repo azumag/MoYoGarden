@@ -35,35 +35,31 @@ jobs:
           candidate_anchor = "    const candidates = halo.flatMap((entry) => {\n"
           if text.count(candidate_anchor) != 1:
               raise SystemExit(f"candidate anchor count={text.count(candidate_anchor)}")
-          text = text.replace(candidate_anchor, '''    const availableSourceReturnStorage = Math.max(
+          source_guard = '''    const availableSourceReturnStorage = Math.max(
             0,
             factionStorageCapacityLeft(state, agent.factionId)
               - reservedReturnStorageForFaction(state, claims, agent.factionId),
           );
-          const candidates = halo.flatMap((entry) => {
-          ''', 1)
-          return_anchor = '''      return [{
-            entry,
-            travelDistance: pathScore.distance,
-            pathCrowding: pathScore.crowding,
-            destinationCrowding: entry.neighborOccupants ?? 0,
-            destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),
-          }];'''
-          if text.count(return_anchor) != 1:
-              raise SystemExit(f"return anchor count={text.count(return_anchor)}")
-          text = text.replace(return_anchor, '''      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
-          // Do not launch cargo toward a destination that is explicitly known to
-          // have no storage when this source also has no unreserved return capacity.
-          // Missing remote metadata stays neutral for rolling compatibility: only
-          // two concrete capacity observations can prove the expedition has no sink.
-          if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
-          return [{
-            entry,
-            travelDistance: pathScore.distance,
-            pathCrowding: pathScore.crowding,
-            destinationCrowding: entry.neighborOccupants ?? 0,
-            destinationStorageHeadroom: remoteStorageHeadroom,
-          }];''', 1)
+          '''
+          text = text.replace(candidate_anchor, source_guard + candidate_anchor, 1)
+          start = text.index(candidate_anchor)
+          end_anchor = "    const claimedSupply = new Map<string, number>();\n"
+          end = text.index(end_anchor, start)
+          block = text[start:end]
+          return_anchor = "      return [{\n"
+          property_anchor = "        destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),\n"
+          if block.count(return_anchor) != 1 or block.count(property_anchor) != 1:
+              raise SystemExit(f"candidate block anchors return={block.count(return_anchor)} property={block.count(property_anchor)}")
+          storage_guard = '''      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
+            // Do not launch cargo toward a destination that is explicitly known to
+            // have no storage when this source also has no unreserved return capacity.
+            // Missing remote metadata stays neutral for rolling compatibility: only
+            // two concrete capacity observations can prove the expedition has no sink.
+            if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
+            '''
+          block = block.replace(return_anchor, storage_guard + return_anchor, 1)
+          block = block.replace(property_anchor, "        destinationStorageHeadroom: remoteStorageHeadroom,\n", 1)
+          text = text[:start] + block + text[end:]
           src.write_text(text)
 
           test = Path("tests/autonomy-region-storage-headroom-summary.test.mjs")
