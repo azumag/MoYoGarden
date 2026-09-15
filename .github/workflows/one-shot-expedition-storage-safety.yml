@@ -32,65 +32,47 @@ jobs:
 
           src = Path("src/autonomy-region.ts")
           text = src.read_text()
-          old = '''    const candidates = halo.flatMap((entry) => {
-            const pathScore = pathScores.get(positionKey(entry.sourcePosition));
-            if (
-              pathScore === undefined ||
-              pathScore.distance > travelEnergyBudget ||
-              entry.tile.terrain === "water" ||
-              (visibleSupply.get(haloSupplyKey(entry.neighborRegionId)) ?? 0) <= 0
-            ) {
-              return [];
-            }
-            return [{
-              entry,
-              travelDistance: pathScore.distance,
-              pathCrowding: pathScore.crowding,
-              destinationCrowding: entry.neighborOccupants ?? 0,
-              destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),
-            }];
-          });'''
-          new = '''    const availableSourceReturnStorage = Math.max(
+          candidate_anchor = "    const candidates = halo.flatMap((entry) => {\n"
+          if text.count(candidate_anchor) != 1:
+              raise SystemExit(f"candidate anchor count={text.count(candidate_anchor)}")
+          text = text.replace(candidate_anchor, '''    const availableSourceReturnStorage = Math.max(
             0,
             factionStorageCapacityLeft(state, agent.factionId)
               - reservedReturnStorageForFaction(state, claims, agent.factionId),
           );
           const candidates = halo.flatMap((entry) => {
-            const pathScore = pathScores.get(positionKey(entry.sourcePosition));
-            if (
-              pathScore === undefined ||
-              pathScore.distance > travelEnergyBudget ||
-              entry.tile.terrain === "water" ||
-              (visibleSupply.get(haloSupplyKey(entry.neighborRegionId)) ?? 0) <= 0
-            ) {
-              return [];
-            }
-            const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
-            // Do not launch cargo toward a destination that is explicitly known to
-            // have no storage when this source also has no unreserved return capacity.
-            // Missing remote metadata stays neutral for rolling compatibility: only
-            // two concrete capacity observations can prove the expedition has no sink.
-            if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
-            return [{
-              entry,
-              travelDistance: pathScore.distance,
-              pathCrowding: pathScore.crowding,
-              destinationCrowding: entry.neighborOccupants ?? 0,
-              destinationStorageHeadroom: remoteStorageHeadroom,
-            }];
-          });'''
-          if old not in text:
-              raise SystemExit("autonomy candidate block not found")
-          src.write_text(text.replace(old, new, 1))
+          ''', 1)
+          return_anchor = '''      return [{
+            entry,
+            travelDistance: pathScore.distance,
+            pathCrowding: pathScore.crowding,
+            destinationCrowding: entry.neighborOccupants ?? 0,
+            destinationStorageHeadroom: destinationStorageHeadroom.get(entry.neighborRegionId),
+          }];'''
+          if text.count(return_anchor) != 1:
+              raise SystemExit(f"return anchor count={text.count(return_anchor)}")
+          text = text.replace(return_anchor, '''      const remoteStorageHeadroom = destinationStorageHeadroom.get(entry.neighborRegionId);
+          // Do not launch cargo toward a destination that is explicitly known to
+          // have no storage when this source also has no unreserved return capacity.
+          // Missing remote metadata stays neutral for rolling compatibility: only
+          // two concrete capacity observations can prove the expedition has no sink.
+          if (remoteStorageHeadroom === 0 && availableSourceReturnStorage <= 0) return [];
+          return [{
+            entry,
+            travelDistance: pathScore.distance,
+            pathCrowding: pathScore.crowding,
+            destinationCrowding: entry.neighborOccupants ?? 0,
+            destinationStorageHeadroom: remoteStorageHeadroom,
+          }];''', 1)
+          src.write_text(text)
 
           test = Path("tests/autonomy-region-storage-headroom-summary.test.mjs")
           t = test.read_text()
           anchor = 'import { createInitialWorld } from "../dist-ts/src/world.js";\n'
-          replacement = 'import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";\n' + anchor
-          if anchor not in t:
-              raise SystemExit("test import anchor not found")
-          t = t.replace(anchor, replacement, 1)
-          addition = '''
+          if t.count(anchor) != 1:
+              raise SystemExit(f"test import anchor count={t.count(anchor)}")
+          t = t.replace(anchor, 'import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";\n' + anchor, 1)
+          t += '''
 
           function fillFactionStorage(state, factionId) {
             for (const structure of state.structures) {
@@ -139,7 +121,7 @@ jobs:
             assert.equal(plan.neighborRegionId, "garden-2");
           });
           '''
-          test.write_text(t + addition)
+          test.write_text(t)
           PY
 
       - name: Install dependencies
