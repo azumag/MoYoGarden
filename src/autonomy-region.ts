@@ -1972,12 +1972,58 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     );
   }
 
+  private async fetchReservationAwareHaloEdge(request: Request): Promise<Response> {
+    const response = await super.fetch(request);
+    if (!response.ok || request.method !== "GET") return response;
+
+    let payload: unknown;
+    try {
+      payload = await response.clone().json();
+    } catch {
+      return response;
+    }
+    if (!isRecord(payload) || !isRecord(payload.regionSummary)) return response;
+    const summary = payload.regionSummary;
+    if (!isRecord(summary.storageHeadroomByFaction)) return response;
+
+    const reservations = await this.activeDestinationStorageReservations();
+    if (reservations.length === 0) return response;
+    const reservedByFaction = new Map<string, number>();
+    for (const reservation of reservations) {
+      reservedByFaction.set(
+        reservation.factionId,
+        (reservedByFaction.get(reservation.factionId) ?? 0) + reservation.amount,
+      );
+    }
+    const storageHeadroomByFaction = { ...summary.storageHeadroomByFaction };
+    for (const [factionId, reserved] of reservedByFaction) {
+      const observed = storageHeadroomByFaction[factionId];
+      if (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0) continue;
+      storageHeadroomByFaction[factionId] = Math.max(0, observed - reserved);
+    }
+
+    return new Response(JSON.stringify({
+      ...payload,
+      regionSummary: {
+        ...summary,
+        storageHeadroomByFaction,
+      },
+    }), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith(INTERNAL_AUTONOMY_PREFIX)) {
       return ["GET", "HEAD", "OPTIONS"].includes(request.method)
         ? this.fetchAutonomyRequest(request)
         : this.withHaloEdgeMutation(() => this.fetchAutonomyRequest(request));
+    }
+    if (request.method === "GET" && url.pathname === INTERNAL_EDGE_PATH) {
+      return this.fetchReservationAwareHaloEdge(request);
     }
     return super.fetch(request);
   }

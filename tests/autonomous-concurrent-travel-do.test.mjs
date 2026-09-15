@@ -448,6 +448,21 @@ test("destination storage admission is shared across source regions and releases
     "retry must be idempotent",
   );
 
+  const edgeResponse = await destination.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edge?direction=west",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(edgeResponse.status, 200);
+  const edge = await edgeResponse.json();
+  assert.equal(
+    edge.regionSummary.storageHeadroomByFaction[factionId],
+    0,
+    "halo summary must advertise headroom after active destination reservations",
+  );
+
   const release = await destination.object.fetch(new Request(
     "https://moyo.internal/api/internal/autonomy/storage/release",
     {
