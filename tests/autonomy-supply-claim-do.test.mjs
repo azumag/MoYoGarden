@@ -5,6 +5,7 @@ import { HEX_GRID_DIRECTION_STEPS, hexGridBoundaryCells, hexGridCenter, isHexGri
 import { buildConfiguredHexHaloLinks } from "../dist-ts/src/hex-halo.js";
 import { regionCellTransition } from "../dist-ts/src/region-topology.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
+import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
 
 const CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const HANDOFF_KEY = "handoff:autonomy:v1";
@@ -476,7 +477,7 @@ test("autonomous handoff follows exact global cell ownership on a slanted seam",
   );
 });
 
-test("completed one-hop expedition routes interior cargo back to its source storage", async () => {
+test("completed one-hop expedition returns cargo when destination storage is full", async () => {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
   const east = await assignRegion(env, "garden-2");
@@ -520,6 +521,20 @@ test("completed one-hop expedition routes interior cargo back to its source stor
     sourceState.height,
   );
   assert.ok(transition);
+  eastState.structures.push({
+  id: "full-east-storehouse",
+  factionId: agent.factionId,
+  type: "storehouse",
+  position: { ...transition.targetPosition },
+  status: "active",
+  progress: 1,
+  requiredProgress: 1,
+  storage: {
+    wood: BUILD_RECIPES.storehouse.storageCapacity,
+    stone: 0,
+    food: 0,
+  },
+});
   const eastStep = HEX_GRID_DIRECTION_STEPS.east;
   const intermediatePosition = {
     x: transition.targetPosition.x + eastStep.x,

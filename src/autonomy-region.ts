@@ -15,6 +15,8 @@ import {
   type RegionActivityTier,
 } from "./halo-region.js";
 import {
+  BUILD_RECIPES,
+  inventoryTotal,
   positionKey,
   type Agent,
   type GridPosition,
@@ -246,6 +248,23 @@ function hasActiveFactionStructure(state: WorldState, factionId: string): boolea
   );
 }
 
+function factionStorageCapacityLeft(state: WorldState, factionId: string): number {
+  return state.structures
+    .filter((structure) =>
+      structure.factionId === factionId && structure.status === "active"
+    )
+    .reduce((available, structure) =>
+      available + Math.max(
+        0,
+        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
+      ),
+    0);
+}
+
+function hasAvailableFactionStorage(state: WorldState, factionId: string): boolean {
+  return factionStorageCapacityLeft(state, factionId) > 0;
+}
+
 function resourceIntent(state: WorldState, agent: Agent): ResourceKind | undefined {
   // Existing gather tasks must obey the same safety gates as idle workers.
   if (agent.energy <= LOW_ENERGY_THRESHOLD || remainingInventoryCapacity(agent) <= 0) return undefined;
@@ -300,7 +319,7 @@ function returnHandoffForArrival(
   if (
     claim.returnToSourceStorage !== true ||
     inventoryAmount(agent) <= 0 ||
-    hasActiveFactionStructure(state, agent.factionId)
+    hasAvailableFactionStorage(state, agent.factionId)
   ) return undefined;
 
   for (const direction of boundaryDirections(state, agent.position)) {
@@ -335,7 +354,7 @@ function returnTravelTargetForArrival(
   if (
     claim.returnToSourceStorage !== true ||
     inventoryAmount(agent) <= 0 ||
-    hasActiveFactionStructure(state, agent.factionId)
+    hasAvailableFactionStorage(state, agent.factionId)
   ) return undefined;
 
   const distances = localPathDistances(state, agent.position);
@@ -1353,7 +1372,10 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           neighborRegionId: plan.neighborRegionId,
           amount: claimedSupply,
           expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
-          returnToSourceStorage: hasActiveFactionStructure(state, agent.factionId),
+          // Only promise a return-to-source deposit when that source currently
+          // has real storage headroom. An active but full structure must not
+          // masquerade as usable logistics capacity.
+          returnToSourceStorage: hasAvailableFactionStorage(state, agent.factionId),
         });
       }
       agent.task = {
