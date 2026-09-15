@@ -44,7 +44,7 @@ jobs:
             destinationCrowding,
             destinationStorageHeadroom,
             visibleSupply: supply,
-'''
+          '''
           new = '''        const supply = Math.min(capacityLeft, availableSupply);
           // When the source cannot promise a return sink, a concrete remote
           // storage observation is also an upper bound on useful cargo. This
@@ -64,7 +64,7 @@ jobs:
             destinationCrowding,
             destinationStorageHeadroom,
             visibleSupply: sinkBoundedSupply,
-'''
+          '''
           if source.count(old) != 1:
               raise SystemExit(f"expected exactly one planner sizing block, found {source.count(old)}")
           source_path.write_text(source.replace(old, new, 1))
@@ -72,7 +72,7 @@ jobs:
           test_path = Path("tests/autonomy-region-storage-headroom-summary.test.mjs")
           test_source = test_path.read_text()
           anchor = '''test("known-full destination is rejected when the source has no return storage", () => {
-'''
+          '''
           addition = '''test("known destination storage headroom caps cargo when source cannot accept a return", () => {
             const { state, agent } = fixture();
             fillFactionStorage(state, agent.factionId);
@@ -92,9 +92,7 @@ jobs:
           });
 
           '''
-          if addition in test_source:
-              pass
-          else:
+          if addition not in test_source:
               if test_source.count(anchor) != 1:
                   raise SystemExit(f"expected exactly one test anchor, found {test_source.count(anchor)}")
               test_path.write_text(test_source.replace(anchor, addition + anchor, 1))
