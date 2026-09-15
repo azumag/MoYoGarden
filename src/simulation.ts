@@ -681,6 +681,53 @@ function nearestResource(
   return tile === undefined ? undefined : { x: tile.x, y: tile.y };
 }
 
+function structureAccessCells(
+  state: Pick<WorldState, "width" | "height" | "tiles" | "structures">,
+  structurePosition: GridPosition,
+  blockedPosition?: GridPosition,
+): GridPosition[] {
+  return NEIGHBORS
+    .map((step) => ({ x: structurePosition.x + step.x, y: structurePosition.y + step.y }))
+    .filter((candidate) => inBounds(state, candidate) && isPassable(state, candidate))
+    .filter((candidate) => blockedPosition === undefined || !samePosition(candidate, blockedPosition))
+    .filter((candidate) =>
+      !state.structures.some((structure) => samePosition(structure.position, candidate))
+    );
+}
+
+function hasUsableStructureAccess(
+  state: Pick<WorldState, "width" | "height" | "tiles" | "structures">,
+  structurePosition: GridPosition,
+  blockedPosition?: GridPosition,
+): boolean {
+  return structureAccessCells(state, structurePosition, blockedPosition).some((accessCell) =>
+    NEIGHBORS.some((step) => {
+      const next = { x: accessCell.x + step.x, y: accessCell.y + step.y };
+      if (samePosition(next, structurePosition)) return false;
+      if (blockedPosition !== undefined && samePosition(next, blockedPosition)) return false;
+      if (!inBounds(state, next) || !isPassable(state, next)) return false;
+      return !state.structures.some((structure) => samePosition(structure.position, next));
+    })
+  );
+}
+
+function buildSitePreservesStructureAccess(state: WorldState, position: GridPosition): boolean {
+  if (!inBounds(state, position) || !isPassable(state, position)) return false;
+  if (state.structures.some((structure) => samePosition(structure.position, position))) return false;
+
+  // Dense blocks are allowed, but every new footprint needs at least one
+  // person-sized approach hex that itself connects onward to another open hex.
+  // This prevents a decorative one-cell pocket from counting as an entrance.
+  if (!hasUsableStructureAccess(state, position, position)) return false;
+
+  // A new building may share an alley with its neighbors, but it must never
+  // consume the last usable entrance / construction approach of an adjacent
+  // existing building.
+  return state.structures
+    .filter((structure) => hexGridDistance(structure.position, position) === 1)
+    .every((structure) => hasUsableStructureAccess(state, structure.position, position));
+}
+
 function findBuildSite(
   state: WorldState,
   origin: GridPosition,
@@ -695,6 +742,7 @@ function findBuildSite(
     : [];
   const candidates = state.tiles
     .filter((tile) => tile.terrain !== "water" && !occupied.has(`${tile.x},${tile.y}`))
+    .filter((tile) => buildSitePreservesStructureAccess(state, tile))
     .filter((tile) => manhattanDistance(tile, origin) <= 5)
     .filter((tile) =>
       activeCampPositions.every((campPosition) =>
@@ -1077,6 +1125,11 @@ function startConstruction(
 ): Structure | undefined {
   if (state.structures.some((structure) => samePosition(structure.position, target))) {
     agent.status = "build site occupied";
+    delete agent.task;
+    return undefined;
+  }
+  if (!buildSitePreservesStructureAccess(state, target)) {
+    agent.status = "build site lacks structure access";
     delete agent.task;
     return undefined;
   }

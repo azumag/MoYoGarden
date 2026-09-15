@@ -42,7 +42,11 @@ export type SnapshotListener = (state: WorldState, receipts: readonly CommandRec
 const LOW_ENERGY_THRESHOLD = 18;
 const FOOD_ENERGY_RECOVERY = 35;
 const STARVATION_DAMAGE = 1;
-const POPULATION_GROWTH_INTERVAL = 60;
+// Population growth is demographic, not a minute-scale work cadence. With the
+// production 10s virtual tick, 8,640 ticks is one day. Virtual-time catch-up
+// deliberately preserves this elapsed-time meaning without creating a burst of
+// new residents every few minutes when a sleeping region wakes up.
+const POPULATION_GROWTH_INTERVAL = 8_640;
 const POPULATION_FOOD_BUFFER_PER_AGENT = 4;
 const POPULATION_GROWTH_FOOD_COST = 6;
 const POPULATION_HEALTH_THRESHOLD = 70;

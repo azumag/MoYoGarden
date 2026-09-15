@@ -294,7 +294,7 @@ test("food-secure settlements can grow their population when local hex space is 
     member.energy = 100;
     delete member.task;
   }
-  state.tick = 59;
+  state.tick = 8_639;
 
   const runtime = new WorldRuntime({ state });
   const next = runtime.tick().state;

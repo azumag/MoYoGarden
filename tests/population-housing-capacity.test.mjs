@@ -40,7 +40,7 @@ test("active camps bound population growth until residential capacity expands", 
     storage: { wood: 0, stone: 0, food: 100 },
   });
   faction.resources.food = 100;
-  state.tick = 59;
+  state.tick = 8_639;
 
   const blocked = new WorldRuntime({ state }).tick().state;
   const blockedFaction = blocked.factions.find((entry) => entry.id === faction.id);
@@ -66,7 +66,7 @@ test("active camps bound population growth until residential capacity expands", 
     requiredProgress: 6,
     storage: { wood: 0, stone: 0, food: 0 },
   });
-  blocked.tick = 119;
+  blocked.tick = 17_279;
 
   const expanded = new WorldRuntime({ state: blocked }).tick().state;
   const expandedFaction = expanded.factions.find((entry) => entry.id === faction.id);
