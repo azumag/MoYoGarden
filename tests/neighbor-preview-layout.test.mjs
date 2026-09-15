@@ -29,6 +29,29 @@ const topology = [
   },
 ];
 
+function hexDiskPlacements(radius) {
+  const placements = [];
+  let axialReads = 0;
+  for (let q = -radius; q <= radius; q += 1) {
+    const minR = Math.max(-radius, -q - radius);
+    const maxR = Math.min(radius, -q + radius);
+    for (let r = minR; r <= maxR; r += 1) {
+      if (q === 0 && r === 0) continue;
+      const axial = { q, r };
+      const entry = { regionId: `hex-${q}-${r}` };
+      Object.defineProperty(entry, "axial", {
+        enumerable: true,
+        get() {
+          axialReads += 1;
+          return axial;
+        },
+      });
+      placements.push(entry);
+    }
+  }
+  return { placements, axialReads: () => axialReads };
+}
+
 test("neighbor preview separates rectangular ownership from regular-hex display placement", () => {
   const placements = buildNeighborPreviewPlacements(topology, "garden-1");
   assert.deepEqual(placements.map(({ regionId, physicalOffset, hexOffset }) => ({
@@ -71,5 +94,18 @@ test("loaded preview regions expose their neighbor-to-neighbor seam instead of o
   assert.deepEqual(
     adjacentHexPreviewPairs(placements).map(([source, target]) => [source.regionId, target.regionId]),
     [["garden-2", "garden-3"]],
+  );
+});
+
+test("preview seam discovery stays bounded for a radius-4 far-terrain window", () => {
+  const adjacentHexPreviewPairs = previewLayout.adjacentHexPreviewPairs;
+  const fixture = hexDiskPlacements(4);
+  const pairs = adjacentHexPreviewPairs(fixture.placements);
+
+  assert.equal(fixture.placements.length, 60);
+  assert.equal(pairs.length, 150, "radius-4 disk without the center has 150 preview-to-preview seams");
+  assert.ok(
+    fixture.axialReads() < 500,
+    `axial metadata should be indexed once per preview instead of rescanned pairwise; reads=${fixture.axialReads()}`,
   );
 });
