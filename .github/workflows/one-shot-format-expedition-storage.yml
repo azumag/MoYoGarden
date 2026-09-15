@@ -95,3 +95,5 @@ jobs:
           git add src/autonomy-region.ts tests/autonomy-region-storage-headroom-summary.test.mjs
           git commit -m "style: format expedition storage safety guard"
           git push origin HEAD:main
+
+# trigger after registration
