@@ -351,3 +351,58 @@ test("pioneer prefers less developed frontier when camp and population density t
   assert.equal(plan.neighborRegionId, "hex-q-1-r0");
   assert.equal(plan.direction, "W");
 });
+
+test("pioneer prefers own-faction storage headroom after settlement support ties", () => {
+  const { state, builder } = transitPioneerFixture();
+  const sharedSeam = { x: 30, y: 11 };
+  const summary = {
+    resources: { wood: 10, stone: 5, food: 20 },
+    resourceCapacity: { wood: 20, stone: 10, food: 40 },
+    activeStructures: { camp: 0, storehouse: 1, market: 0, workshop: 0 },
+    passableCells: 100,
+    occupants: 2,
+  };
+  const east = haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 10, 5);
+  east.neighborRegionSummary = {
+    ...summary,
+    storageHeadroomByFaction: { [builder.factionId]: 0 },
+  };
+  const west = haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 10, 5);
+  west.neighborRegionSummary = {
+    ...summary,
+    storageHeadroomByFaction: { [builder.factionId]: 6 },
+  };
+
+  const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.equal(plan.direction, "W");
+});
+
+test("pioneer ignores another faction's remote storage headroom", () => {
+  const { state, builder } = transitPioneerFixture();
+  const sharedSeam = { x: 30, y: 11 };
+  const summary = {
+    resources: { wood: 10, stone: 5, food: 20 },
+    resourceCapacity: { wood: 20, stone: 10, food: 40 },
+    activeStructures: { camp: 0, storehouse: 1, market: 0, workshop: 0 },
+    passableCells: 100,
+    occupants: 2,
+  };
+  const east = haloTile("E", sharedSeam, "hex-q1-r0", { x: 8, y: 11 }, 10, 5);
+  east.neighborRegionSummary = { ...summary };
+  const west = haloTile("W", sharedSeam, "hex-q-1-r0", { x: 30, y: 11 }, 10, 5);
+  west.neighborRegionSummary = {
+    ...summary,
+    storageHeadroomByFaction: { outsiders: 99 },
+  };
+
+  const plan = planAutonomousSettlementMigration(state, [east, west]);
+
+  assert.ok(plan);
+  assert.equal(plan.agentId, builder.id);
+  assert.equal(plan.neighborRegionId, "hex-q-1-r0");
+  assert.equal(plan.direction, "W");
+});

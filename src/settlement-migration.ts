@@ -69,6 +69,7 @@ interface SettlementSeamCandidate {
   pathCrowding: number;
   crowding: number;
   support: SettlementNeighborSupport;
+  factionStorageHeadroom: number | undefined;
 }
 
 interface SettlementPlanCandidate extends SettlementSeamCandidate {
@@ -598,12 +599,51 @@ function settlementRouteCost(candidate: SettlementSeamCandidate): number {
   return candidate.distance + candidate.pathCrowding;
 }
 
+function settlementStorageHeadroomPreference(headroom: number | undefined): number {
+  if (headroom === undefined) return 1;
+  return headroom > 0 ? 2 : 0;
+}
+
+function compareSettlementStorageHeadroom(
+  a: number | undefined,
+  b: number | undefined,
+): number {
+  const preferenceDelta = settlementStorageHeadroomPreference(b)
+    - settlementStorageHeadroomPreference(a);
+  if (preferenceDelta !== 0) return preferenceDelta;
+  if (a === undefined || b === undefined) return 0;
+  return b - a;
+}
+
+function haloRegionFactionStorageHeadroom(
+  halo: readonly HexHaloTile[],
+  neighborRegionId: string,
+  factionId: string,
+): number | undefined {
+  let minimumHeadroom: number | undefined;
+  for (const entry of halo) {
+    if (entry.neighborRegionId !== neighborRegionId) continue;
+    const byFaction = entry.neighborRegionSummary?.storageHeadroomByFaction;
+    if (byFaction === undefined || !Object.prototype.hasOwnProperty.call(byFaction, factionId)) continue;
+    const headroom = byFaction[factionId];
+    if (typeof headroom !== "number" || !Number.isFinite(headroom) || headroom < 0) continue;
+    minimumHeadroom = minimumHeadroom === undefined
+      ? headroom
+      : Math.min(minimumHeadroom, headroom);
+  }
+  return minimumHeadroom;
+}
+
 function compareSettlementSeamCandidate(
   a: SettlementSeamCandidate,
   b: SettlementSeamCandidate,
 ): number {
   return (
     compareSettlementSupport(a.support, b.support)
+    // Only after ecological support and existing development tie, prefer a
+    // frontier where this faction has usable logistics capacity. Missing
+    // rolling metadata stays neutral; known-full storage is worse than unknown.
+    || compareSettlementStorageHeadroom(a.factionStorageHeadroom, b.factionStorageHeadroom)
     || settlementRouteCost(a) - settlementRouteCost(b)
     || a.distance - b.distance
     || a.pathCrowding - b.pathCrowding
@@ -621,6 +661,10 @@ function compareSettlementPlanCandidate(
 ): number {
   return (
     compareSettlementSupport(a.support, b.support)
+    // Only after ecological support and existing development tie, prefer a
+    // frontier where this faction has usable logistics capacity. Missing
+    // rolling metadata stays neutral; known-full storage is worse than unknown.
+    || compareSettlementStorageHeadroom(a.factionStorageHeadroom, b.factionStorageHeadroom)
     || settlementRouteCost(a) - settlementRouteCost(b)
     || a.distance - b.distance
     || a.pathCrowding - b.pathCrowding
@@ -913,6 +957,11 @@ export function planAutonomousSettlementMigration(
         pathCrowding: path.crowding,
         crowding,
         support,
+        factionStorageHeadroom: haloRegionFactionStorageHeadroom(
+          halo,
+          entry.neighborRegionId,
+          agent.factionId,
+        ),
       };
       if (candidate === undefined || compareSettlementSeamCandidate(next, candidate) < 0) {
         candidate = next;
@@ -930,6 +979,7 @@ export function planAutonomousSettlementMigration(
       crowding: candidate.crowding,
       issuedAtTick,
       support: candidate.support,
+      factionStorageHeadroom: candidate.factionStorageHeadroom,
     };
     if (selected === undefined || compareSettlementPlanCandidate(planCandidate, selected) < 0) {
       selected = planCandidate;
