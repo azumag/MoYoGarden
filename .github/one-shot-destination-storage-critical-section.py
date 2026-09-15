@@ -21,6 +21,10 @@ reserve = reserve.replace("body.claimId", "claimId")
 reserve = reserve.replace("body.sourceRegionId", "sourceRegionId")
 reserve = reserve.replace("body.factionId", "factionId")
 reserve = reserve.replace("body.amount", "requestedAmount")
+reserve = reserve.replace("const claimId = claimId;", "const claimId = body.claimId;")
+reserve = reserve.replace("const sourceRegionId = sourceRegionId;", "const sourceRegionId = body.sourceRegionId;")
+reserve = reserve.replace("const factionId = factionId;", "const factionId = body.factionId;")
+reserve = reserve.replace("const requestedAmount = requestedAmount;", "const requestedAmount = body.amount;")
 reserve = reserve.replace(
     "const result = await this.autonomyState.blockConcurrencyWhile(async () => {",
     '''// Reservation admission is rare (only remote-sink expedition launch), so a
@@ -47,6 +51,8 @@ release = release.replace("transaction.get<unknown>", "this.autonomyState.storag
 release = release.replace("transaction.put(", "this.autonomyState.storage.put(")
 release = release.replace("body.claimId", "claimId")
 release = release.replace("body.sourceRegionId", "sourceRegionId")
+release = release.replace("const claimId = claimId;", "const claimId = body.claimId;")
+release = release.replace("const sourceRegionId = sourceRegionId;", "const sourceRegionId = body.sourceRegionId;")
 text = text[:release_start] + release + text[release_end:]
 source.write_text(text)
 
