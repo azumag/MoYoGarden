@@ -12,6 +12,8 @@ import { WorldView } from "./world-view.js";
 
 const REBASE_TIMEOUT_MS = 15_000;
 const REGION_LAYOUT_TIMEOUT_MS = 8_000;
+const REGION_LAYOUT_RETRY_MIN_MS = 1_000;
+const REGION_LAYOUT_RETRY_MAX_MS = 15_000;
 const PREFETCH_TIMEOUT_MS = 8_000;
 const PREFETCH_MARGIN_TILES = 6;
 const PREFETCH_REFRESH_MS = 60_000;
@@ -21,6 +23,9 @@ let regionLayoutCenter;
 let regionLayoutRequest;
 let regionLayoutRequestCenter;
 let regionLayoutRequestController;
+let regionLayoutRetryCenter;
+let regionLayoutRetryAt = 0;
+let regionLayoutRetryFailures = 0;
 let pendingRebase;
 let pendingRebaseTimer;
 let rebaseInFlight = false;
@@ -142,16 +147,41 @@ function clearPendingRebase() {
   rebaseInFlight = false;
 }
 
+function resetRegionLayoutRetry(centerRegionId) {
+  regionLayoutRetryCenter = centerRegionId;
+  regionLayoutRetryAt = 0;
+  regionLayoutRetryFailures = 0;
+}
+
+function canRequestRegionLayout(centerRegionId, now = Date.now()) {
+  return regionLayoutRetryCenter !== centerRegionId || now >= regionLayoutRetryAt;
+}
+
+function noteRegionLayoutFailure(centerRegionId, now = Date.now()) {
+  if (regionLayoutRetryCenter !== centerRegionId) {
+    resetRegionLayoutRetry(centerRegionId);
+  }
+  regionLayoutRetryFailures += 1;
+  const exponent = Math.min(regionLayoutRetryFailures - 1, 4);
+  const retryDelay = Math.min(
+    REGION_LAYOUT_RETRY_MAX_MS,
+    REGION_LAYOUT_RETRY_MIN_MS * (2 ** exponent),
+  );
+  regionLayoutRetryAt = now + retryDelay;
+}
+
 function ensureRegionLayout(centerRegionId) {
   if (!centerRegionId || location.protocol === "file:") return;
   if (regionLayoutCenter === centerRegionId && regionLayout.length > 0) return;
   if (regionLayoutRequest && regionLayoutRequestCenter === centerRegionId) return;
+  if (!canRequestRegionLayout(centerRegionId)) return;
 
   // A previous region can still be resolving while the camera has already
   // handed off again. Stop that stale request instead of letting multiple
   // metadata reads compete on mobile/slow links. A bounded timeout also keeps
   // one hung request from blocking all future layout retries for this view.
   regionLayoutRequestController?.abort();
+  if (regionLayoutRetryCenter !== centerRegionId) resetRegionLayoutRetry(centerRegionId);
   regionLayoutRequestCenter = centerRegionId;
   const requestedCenter = centerRegionId;
   const controller = new AbortController();
@@ -186,16 +216,23 @@ function ensureRegionLayout(centerRegionId) {
         if (next.length > 0) {
           regionLayout = next;
           regionLayoutCenter = requestedCenter;
+          resetRegionLayoutRetry(requestedCenter);
           return;
         }
       }
       const next = meta?.world?.regionLayout;
-      if (Array.isArray(next)) {
+      if (Array.isArray(next) && next.length > 0) {
         regionLayout = next;
         regionLayoutCenter = requestedCenter;
+        resetRegionLayoutRetry(requestedCenter);
+        return;
       }
+      throw new Error("region metadata did not contain a usable layout");
     })
     .catch((error) => {
+      if (regionLayoutRequestCenter === requestedCenter) {
+        noteRegionLayoutFailure(requestedCenter);
+      }
       if (error?.name !== "AbortError") {
         console.debug("MoYoGarden seamless region metadata unavailable", error);
       }

@@ -23,6 +23,17 @@ test("seamless navigation bounds stale or hung region metadata reads", () => {
   assert.match(navigationSource, /error\?\.name !== "AbortError"/);
 });
 
+test("seamless navigation backs off failed region metadata retries", () => {
+  assert.match(navigationSource, /REGION_LAYOUT_RETRY_MIN_MS\s*=\s*1_000/);
+  assert.match(navigationSource, /REGION_LAYOUT_RETRY_MAX_MS\s*=\s*15_000/);
+  assert.match(navigationSource, /if \(!canRequestRegionLayout\(centerRegionId\)\) return/);
+  assert.match(navigationSource, /regionLayoutRetryFailures \+= 1/);
+  assert.match(navigationSource, /Math\.min\(regionLayoutRetryFailures - 1, 4\)/);
+  assert.match(navigationSource, /noteRegionLayoutFailure\(requestedCenter\)/);
+  assert.match(navigationSource, /resetRegionLayoutRetry\(requestedCenter\)/);
+  assert.match(navigationSource, /Array\.isArray\(next\) && next\.length > 0/);
+});
+
 test("seamless navigation bounds stalled passive region prewarms", () => {
   assert.match(navigationSource, /PREFETCH_TIMEOUT_MS\s*=\s*8_000/);
   assert.match(navigationSource, /setTimeout\(\(\) => controller\.abort\(\), PREFETCH_TIMEOUT_MS\)/);
