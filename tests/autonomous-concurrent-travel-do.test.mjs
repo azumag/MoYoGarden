@@ -483,3 +483,82 @@ test("destination storage admission is shared across source regions and releases
   const reservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
   assert.equal(reservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
 });
+
+test("remote sink reservation remains until gathered cargo leaves the arriving inventory", async () => {
+  const env = environment();
+  await assignRegion(env, "garden-1");
+  const destination = await assignRegion(env, "garden-2");
+  let state = destination.object.runtime.snapshot();
+  const agent = state.agents[0];
+  assert.ok(agent);
+  agent.autonomy = true;
+  agent.role = "woodcutter";
+  agent.capacity = 10;
+  agent.energy = 100;
+  agent.inventory = { wood: 0, stone: 0, food: 0 };
+  agent.task = { source: "autonomy", issuedAtTick: state.tick, type: "gather", resource: "wood" };
+  const factionId = agent.factionId;
+  for (const structure of state.structures) {
+    if (structure.factionId !== factionId || structure.status !== "active") continue;
+    structure.storage = { wood: BUILD_RECIPES[structure.type].storageCapacity, stone: 0, food: 0 };
+  }
+  state.structures.push({
+    id: "reserved-arrival-storehouse", factionId, type: "storehouse",
+    position: hexGridCenter(state), status: "active", progress: 1, requiredProgress: 1,
+    storage: { wood: BUILD_RECIPES.storehouse.storageCapacity - 2, stone: 0, food: 0 },
+  });
+  destination.object.runtime = new WorldRuntime({ state });
+  await destination.object.persist();
+
+  const reservationResponse = await destination.object.fetch(new Request(
+    "https://moyo.internal/api/internal/autonomy/storage/reserve", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-moyo-region-internal": "garden-2" },
+      body: JSON.stringify({ claimId: "remote-sink-cargo", sourceRegionId: "garden-1", factionId, amount: 2 }),
+    },
+  ));
+  assert.equal(reservationResponse.status, 200);
+  assert.equal((await reservationResponse.json()).grantedAmount, 2);
+
+  const arrivalResponse = await destination.object.fetch(new Request(
+    "https://moyo.internal/api/internal/autonomy/claim/register", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-moyo-region-internal": "garden-2" },
+      body: JSON.stringify({ claimId: "remote-sink-cargo", sourceRegionId: "garden-1", agentId: agent.id, resource: "wood" }),
+    },
+  ));
+  assert.equal(arrivalResponse.status, 200);
+  const registered = await destination.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.equal(registered[0].destinationStorageReserved, true);
+  registered[0].gatheredAmount = 2;
+  registered[0].settledAmount = 2;
+  await destination.state.storage.put(ARRIVAL_CLAIMS_KEY, registered);
+
+  state = destination.object.runtime.snapshot();
+  const carrying = state.agents.find((entry) => entry.id === agent.id);
+  assert.ok(carrying);
+  carrying.autonomy = false;
+  carrying.inventory.wood = 2;
+  delete carrying.task;
+  for (const structure of state.structures) {
+    if (structure.factionId !== factionId || structure.status !== "active") continue;
+    structure.storage = { wood: BUILD_RECIPES[structure.type].storageCapacity, stone: 0, food: 0 };
+  }
+  destination.object.runtime = new WorldRuntime({ state });
+  await destination.object.persist();
+
+  await destination.object.alarm();
+  assert.equal((await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY)).length, 1);
+  assert.equal((await destination.state.storage.get(ARRIVAL_CLAIMS_KEY)).length, 1);
+
+  state = destination.object.runtime.snapshot();
+  const delivered = state.agents.find((entry) => entry.id === agent.id);
+  assert.ok(delivered);
+  delivered.inventory.wood = 0;
+  destination.object.runtime = new WorldRuntime({ state });
+  await destination.object.persist();
+
+  await destination.object.alarm();
+  assert.deepEqual(await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY), []);
+  assert.deepEqual(await destination.state.storage.get(ARRIVAL_CLAIMS_KEY), []);
+});

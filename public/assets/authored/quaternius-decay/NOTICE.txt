@@ -1,0 +1,14 @@
+MoYoGarden authored decay asset cache
+version: 0.3.11-q1
+
+Selected geometry originates from Quaternius Medieval Village MegaKit Standard.
+License: Creative Commons CC0 1.0 Universal / Public Domain Dedication.
+Official source: https://quaternius.com
+Pinned mirror: https://github.com/agentkaerf/FreeModels/tree/db3df04d1e4714298a09510b26fb6de6645138a2
+
+Only geometry is retained. Upstream texture/image/sampler references are removed and
+MoYoGarden supplies its own muted PBR material factors before packing self-contained GLBs.
+
+rubble.glb | Prop_Brick1.gltf + Prop_Brick1.bin | CC0-1.0 | 6bdecc7eafe57a0bd157d9bb8f3f0d1437a9859a / d1e12c5ed0d53c1c0836617c12174f5970481862
+support.glb | Prop_Support.gltf + Prop_Support.bin | CC0-1.0 | d3347140c5181823eb1a93384c058f62921e30e4 / a3c6ca8800121ff3ede2d5ed6e3c2fd844ab5696
+fence.glb | Prop_WoodenFence_Single.gltf + Prop_WoodenFence_Single.bin | CC0-1.0 | 72f2b5e220aaba56b358b764fbf380bcdaedb70d / 596969ab7c6fe624b16223681fc932b5cdeed07e

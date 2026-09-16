@@ -1,0 +1,39 @@
+{
+  "version": "0.3.11-q1",
+  "upstreamRepo": "agentkaerf/FreeModels",
+  "upstreamCommit": "db3df04d1e4714298a09510b26fb6de6645138a2",
+  "license": "CC0-1.0",
+  "loaded": [
+    {
+      "key": "authored:decay-rubble",
+      "file": "rubble.glb",
+      "bytes": 4496,
+      "sourceGltf": "Prop_Brick1.gltf",
+      "sourceBin": "Prop_Brick1.bin",
+      "gltfSha": "6bdecc7eafe57a0bd157d9bb8f3f0d1437a9859a",
+      "binSha": "d1e12c5ed0d53c1c0836617c12174f5970481862",
+      "sourceUrl": "https://raw.githubusercontent.com/agentkaerf/FreeModels/db3df04d1e4714298a09510b26fb6de6645138a2/Medieval%20Village%20MegaKit%5BStandard%5D/glTF/Prop_Brick1.gltf"
+    },
+    {
+      "key": "authored:decay-support",
+      "file": "support.glb",
+      "bytes": 2324,
+      "sourceGltf": "Prop_Support.gltf",
+      "sourceBin": "Prop_Support.bin",
+      "gltfSha": "d3347140c5181823eb1a93384c058f62921e30e4",
+      "binSha": "a3c6ca8800121ff3ede2d5ed6e3c2fd844ab5696",
+      "sourceUrl": "https://raw.githubusercontent.com/agentkaerf/FreeModels/db3df04d1e4714298a09510b26fb6de6645138a2/Medieval%20Village%20MegaKit%5BStandard%5D/glTF/Prop_Support.gltf"
+    },
+    {
+      "key": "authored:decay-fence",
+      "file": "fence.glb",
+      "bytes": 4020,
+      "sourceGltf": "Prop_WoodenFence_Single.gltf",
+      "sourceBin": "Prop_WoodenFence_Single.bin",
+      "gltfSha": "72f2b5e220aaba56b358b764fbf380bcdaedb70d",
+      "binSha": "596969ab7c6fe624b16223681fc932b5cdeed07e",
+      "sourceUrl": "https://raw.githubusercontent.com/agentkaerf/FreeModels/db3df04d1e4714298a09510b26fb6de6645138a2/Medieval%20Village%20MegaKit%5BStandard%5D/glTF/Prop_WoodenFence_Single.gltf"
+    }
+  ],
+  "failed": []
+}

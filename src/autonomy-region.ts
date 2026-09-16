@@ -110,6 +110,8 @@ interface AutonomousArrivalClaim {
   gatheredAmount?: number;
   settledAmount?: number;
   returnToSourceStorage?: boolean;
+  // Destination-local admitted capacity; optional for rolling compatibility.
+  destinationStorageReserved?: boolean;
 }
 
 interface AutonomousDestinationStorageReservation {
@@ -280,7 +282,8 @@ function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalCla
       && Number.isFinite(value.settledAmount)
       && value.settledAmount >= 0
     ))
-    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean");
+    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+    && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
 }
 
 function isDestinationStorageReservation(
@@ -1193,6 +1196,27 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     }), { headers: { "content-type": "application/json; charset=utf-8" } });
   }
 
+  private async releaseDestinationStorageReservation(
+    claimId: string,
+    sourceRegionId: string,
+  ): Promise<void> {
+    const now = Date.now();
+    await this.autonomyState.blockConcurrencyWhile(async () => {
+      const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY);
+      const reservations = Array.isArray(stored)
+        ? stored
+          .filter(isDestinationStorageReservation)
+          .filter((entry) => entry.expiresAtMs > now)
+        : [];
+      const next = reservations.filter((entry) =>
+        entry.claimId !== claimId || entry.sourceRegionId !== sourceRegionId
+      );
+      if (!Array.isArray(stored) || next.length !== stored.length) {
+        await this.autonomyState.storage.put(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY, next);
+      }
+    });
+  }
+
   private async releaseDestinationStorage(request: Request): Promise<Response> {
     let body: unknown;
     try {
@@ -1211,28 +1235,11 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         status: 400,
       });
     }
-    const claimId = body.claimId;
-    const sourceRegionId = body.sourceRegionId;
-    const now = Date.now();
-    await this.autonomyState.blockConcurrencyWhile(async () => {
-      const stored = await this.autonomyState.storage.get<unknown>(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY);
-      const reservations = Array.isArray(stored)
-        ? stored
-          .filter(isDestinationStorageReservation)
-          .filter((entry) => entry.expiresAtMs > now)
-        : [];
-      const next = reservations.filter((entry) =>
-        entry.claimId !== claimId || entry.sourceRegionId !== sourceRegionId
-      );
-      if (!Array.isArray(stored) || next.length !== stored.length) {
-        await this.autonomyState.storage.put(AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY, next);
-      }
-    });
+    await this.releaseDestinationStorageReservation(body.claimId, body.sourceRegionId);
     return new Response(JSON.stringify({ ok: true, claimId: body.claimId }), {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
-
   private async registerSettlementFamilyFollow(request: Request): Promise<Response> {
     let body: unknown;
     try {
@@ -1413,6 +1420,10 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         status: 409,
       });
     }
+    const destinationReservations = await this.activeDestinationStorageReservations();
+    const destinationStorageReserved = destinationReservations.some((entry) =>
+      entry.claimId === body.claimId && entry.sourceRegionId === body.sourceRegionId
+    );
     const claims = await this.arrivalClaims();
     const existing = claims.find((entry) => entry.claimId === body.claimId);
     const claim: AutonomousArrivalClaim = {
@@ -1424,6 +1435,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       gatheredAmount: existing?.gatheredAmount ?? 0,
       settledAmount: existing?.settledAmount ?? 0,
       returnToSourceStorage: existing?.returnToSourceStorage ?? body.returnToSourceStorage === true,
+      destinationStorageReserved: existing?.destinationStorageReserved ?? destinationStorageReserved,
     };
     await this.autonomyState.storage.put(
       AUTONOMOUS_ARRIVAL_CLAIMS_KEY,
@@ -1664,12 +1676,32 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         }
       }
 
-      if (reservationExhausted) {
-        dirty = true;
-        continue;
-      }
       if (stillGathering) {
         keep.push(updatedClaim);
+        continue;
+      }
+
+      // Keep admitted sink capacity until gathered cargo leaves this BOT.
+      // Releasing at gather completion can overbook storage before deposit commits.
+      const destinationCargoOutstanding =
+        updatedClaim.destinationStorageReserved === true
+        && gatheredAmount > 0
+        && agent !== undefined
+        && agent.inventory[updatedClaim.resource] > 0;
+      if (destinationCargoOutstanding) {
+        keep.push(updatedClaim);
+        continue;
+      }
+      if (updatedClaim.destinationStorageReserved === true) {
+        await this.releaseDestinationStorageReservation(
+          updatedClaim.claimId,
+          updatedClaim.sourceRegionId,
+        );
+        dirty = true;
+      }
+
+      if (reservationExhausted) {
+        dirty = true;
         continue;
       }
 
