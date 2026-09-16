@@ -19,13 +19,13 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
       - name: Apply family-aware pioneer preference
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           path = Path("src/settlement-migration.ts")
           text = path.read_text()
@@ -78,7 +78,7 @@ jobs:
           '''
           if anchor not in text:
             raise SystemExit("sameSettlementRegion anchor not found")
-          text = text.replace(anchor, "\n" + helper.strip() + "\n\nfunction sameSettlementRegion(a: string | undefined, b: string): boolean {\n", 1)
+          text = text.replace(anchor, "\n" + dedent(helper).strip() + "\n\nfunction sameSettlementRegion(a: string | undefined, b: string): boolean {\n", 1)
 
           old = '''    || a.crowding - b.crowding
               // Equivalent migration plans should use the builder with the larger
@@ -112,7 +112,8 @@ jobs:
           path.write_text(text)
 
           test_path = Path("tests/settlement-family-pioneer.test.mjs")
-          test_path.write_text('''import assert from "node:assert/strict";
+          test_path.write_text(dedent('''
+          import assert from "node:assert/strict";
           import test from "node:test";
           import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
           import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
@@ -212,7 +213,7 @@ jobs:
             assert.ok(plan);
             assert.equal(plan.agentId, attached.id);
           });
-          '''.replace(/^          /gm, ""))
+          ''').lstrip())
           PY
       - name: Validate
         run: npm run build
