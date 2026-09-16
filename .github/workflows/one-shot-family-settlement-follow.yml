@@ -1,0 +1,44 @@
+name: One-shot family settlement follow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-family-settlement-follow.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply, verify, commit, and clean up
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f tools/one-shot-family-settlement-follow.py ]]; then
+            echo "Patch helper already removed; nothing to do."
+            exit 0
+          fi
+          npm install --no-audit --no-fund
+          python3 tools/one-shot-family-settlement-follow.py
+          npm run build
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/protocol.ts src/settlement-migration.ts src/runtime.ts src/agent-ownership.ts src/autonomy-region.ts src/settlement-migration-support.md tests/settlement-family-follow.test.mjs
+          git commit -m "sim: reunite families after frontier settlement"
+          git push origin HEAD:main
+
+          git rm tools/one-shot-family-settlement-follow.py .github/workflows/one-shot-family-settlement-follow.yml
+          git commit -m "chore: remove family settlement follow one-shot"
+          git push origin HEAD:main
