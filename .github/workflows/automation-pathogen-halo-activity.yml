@@ -1,4 +1,4 @@
-name: Verify pathogen halo activity tier
+name: Verify combined pathogen halo materialization
 
 on:
   push:
@@ -25,135 +25,204 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Apply activity-tier pathogen halo patch
+      - name: Apply pathogen halo materialization patch
         shell: python
         run: |
           from pathlib import Path
           import re
           import textwrap
 
-          source_path = Path("src/pathogen-region.ts")
-          source = source_path.read_text()
-          old_import = textwrap.dedent('''\
-          import {
-            buildConfiguredHexHaloLinks,
-            buildDynamicHexHaloLinks,
-            type HexHaloLink,
-          } from "./hex-halo.js";''')
-          new_import = textwrap.dedent('''\
-          import {
-            buildConfiguredHexHaloLinks,
-            type HexHaloLink,
-          } from "./hex-halo.js";
-          import { haloLinksForActivity, type RegionActivityTier } from "./halo-region.js";''')
-          if old_import not in source:
-            raise SystemExit("expected hex-halo import block not found")
-          source = source.replace(old_import, new_import, 1)
-
-          marker = textwrap.dedent('''\
-          export function pathogenHaloLinksForAgents(
-            state: Pick<WorldState, "agents">,
-            links: readonly HexHaloLink[],
-          ): HexHaloLink[] {
-            if (state.agents.length === 0 || links.length === 0) return [];
-            const occupied = new Set(state.agents.map((agent) => positionKey(agent.position)));
-            return links.filter((link) => occupied.has(positionKey(link.sourcePosition)));
-          }
-          ''')
-          helper = textwrap.dedent('''\
-          /**
-           * Keep pathogen cross-region reads on the same activity-tier budget as
-           * the environmental and autonomy halos. Live legacy regions can observe
-           * all six exact global neighbors, while warm/cold legacy regions retain
-           * the configured compatibility fan-out. Canonical regions remain fully
-           * dynamic at every tier because they have no finite configured neighbor
-           * list to fall back to. Historical IDs without a shared global cell frame
-           * stay on the configured compatibility path.
-           */
-          export function pathogenHaloLinksForActivity(
-            extent: Pick<WorldState, "width" | "height">,
-            regionIds: readonly string[],
-            sourceRegionId: string,
-            tier: RegionActivityTier,
-          ): HexHaloLink[] {
-            if (regionGlobalCellOrigin(sourceRegionId, extent.width, extent.height) === undefined) {
-              return buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId);
-            }
-            return haloLinksForActivity(extent, regionIds, sourceRegionId, tier);
-          }
-          ''')
-          if marker not in source:
-            raise SystemExit("expected pathogenHaloLinksForAgents block not found")
-          source = source.replace(marker, marker + "\n" + helper, 1)
-
-          method_pattern = re.compile(
-            r'  private pathogenHaloLinks\(state: WorldState\): HexHaloLink\[\] \{.*?\n  \}\n\n  private async fetchNeighborPathogenEdge',
+          pathogen_path = Path("src/pathogen.ts")
+          source = pathogen_path.read_text()
+          pattern = re.compile(
+            r'export function pathogenHaloPressureMap\(.*?\n\}\n\n/\*\*\n \* Materialize environmental burden.*?export function pathogenHaloReservoirMap\(.*?\n\}\n\nfunction singlePathogenStep',
             re.DOTALL,
           )
-          new_method = textwrap.dedent('''\
-            private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
-              return pathogenHaloLinksForActivity(
-                state,
-                configuredRegionIds(this.pathogenEnv),
-                state.regionId,
-                this.activityTier(),
-              );
+          replacement = textwrap.dedent('''\
+          interface MaterializedPathogenHaloMaps {
+            pressure: Map<string, number>;
+            reservoir: Map<string, number>;
+          }
+
+          function pathogenHaloRemoteKey(
+            regionId: string,
+            direction: HexGridDirection,
+            position: GridPosition,
+          ): string {
+            return `${regionId}:${direction}:${positionKey(position)}`;
+          }
+
+          function materializePathogenHaloMaps(
+            links: readonly HexHaloLink[],
+            edges: readonly PathogenEdgeSnapshot[],
+            environment: PathogenEnvironmentFrame | undefined,
+            includePressure: boolean,
+            includeReservoir: boolean,
+          ): MaterializedPathogenHaloMaps {
+            const pressureIndex = new Map<string, number>();
+            const reservoirIndex = new Map<string, number>();
+            for (const edge of edges) {
+              if (includePressure) {
+                for (const entry of edge.agents) {
+                  pressureIndex.set(
+                    pathogenHaloRemoteKey(edge.regionId, edge.direction, entry.position),
+                    clamp01(entry.pressure),
+                  );
+                }
+              }
+              if (includeReservoir) {
+                for (const entry of edge.reservoirs ?? []) {
+                  reservoirIndex.set(
+                    pathogenHaloRemoteKey(edge.regionId, edge.direction, entry.position),
+                    clamp01(entry.burden),
+                  );
+                }
+              }
             }
 
-            private async fetchNeighborPathogenEdge''')
-          source, replaced = method_pattern.subn(new_method, source, count=1)
+            const pressure = new Map<string, number>();
+            const reservoir = new Map<string, number>();
+            for (const link of links) {
+              const remoteKey = pathogenHaloRemoteKey(
+                link.neighborRegionId,
+                link.neighborDirection,
+                link.neighborPosition,
+              );
+              const localKey = positionKey(link.sourcePosition);
+              if (includePressure) {
+                const remotePressure = pressureIndex.get(remoteKey);
+                if (remotePressure !== undefined && remotePressure > 0) {
+                  // Keep exact seam behavior aligned with ordinary local adjacency.
+                  const gainRatio = pathogenAdjacentContactGain(
+                    link.sourcePosition,
+                    link.direction,
+                    environment,
+                  ) / PATHOGEN_ADJACENT_CONTACT_GAIN;
+                  pressure.set(
+                    localKey,
+                    unionPressure(pressure.get(localKey) ?? 0, remotePressure * gainRatio),
+                  );
+                }
+              }
+              if (includeReservoir) {
+                const burden = reservoirIndex.get(remoteKey);
+                if (burden !== undefined && burden > 0) {
+                  reservoir.set(
+                    localKey,
+                    unionPressure(reservoir.get(localKey) ?? 0, burden),
+                  );
+                }
+              }
+            }
+            return { pressure, reservoir };
+          }
+
+          /**
+           * Materialize both cross-seam carrier pressure and environmental burden
+           * in one pass. Runtime pathogen alarms need both maps together, so sharing
+           * the remote-key lookup and halo-link traversal avoids repeating the same
+           * geometry/string-index work on every cross-region pathogen step.
+           */
+          export function pathogenHaloMaps(
+            links: readonly HexHaloLink[],
+            edges: readonly PathogenEdgeSnapshot[],
+            environment?: PathogenEnvironmentFrame,
+          ): MaterializedPathogenHaloMaps {
+            return materializePathogenHaloMaps(links, edges, environment, true, true);
+          }
+
+          export function pathogenHaloPressureMap(
+            links: readonly HexHaloLink[],
+            edges: readonly PathogenEdgeSnapshot[],
+            environment?: PathogenEnvironmentFrame,
+          ): Map<string, number> {
+            return materializePathogenHaloMaps(links, edges, environment, true, false).pressure;
+          }
+
+          /**
+           * Materialize environmental burden from the exact ghost cells paired with local
+           * boundary cells. This is read-only: the neighbor keeps ownership of its tile
+           * reservoir, while the local region receives only a transient exposure input.
+           */
+          export function pathogenHaloReservoirMap(
+            links: readonly HexHaloLink[],
+            edges: readonly PathogenEdgeSnapshot[],
+          ): Map<string, number> {
+            return materializePathogenHaloMaps(links, edges, undefined, false, true).reservoir;
+          }
+
+          function singlePathogenStep''')
+          source, replaced = pattern.subn(replacement, source, count=1)
           if replaced != 1:
-            raise SystemExit(f"expected one pathogenHaloLinks method, replaced={replaced}")
-          source_path.write_text(source)
+            raise SystemExit(f"expected pressure/reservoir map block, replaced={replaced}")
+          pathogen_path.write_text(source)
 
-          test_path = Path("tests/pathogen-halo-scope.test.mjs")
+          region_path = Path("src/pathogen-region.ts")
+          region = region_path.read_text()
+          old_import = '''  pathogenEdgeSnapshot,\n  pathogenHaloPressureMap,\n  pathogenHaloReservoirMap,\n  pathogenStepCount,'''
+          new_import = '''  pathogenEdgeSnapshot,\n  pathogenHaloMaps,\n  pathogenStepCount,'''
+          if old_import not in region:
+            raise SystemExit("expected pathogen halo map imports not found")
+          region = region.replace(old_import, new_import, 1)
+          old_result = '''    return {\n      pressure: pathogenHaloPressureMap(links, edges, this.pathogenEnvironmentFrame(state)),\n      reservoir: pathogenHaloReservoirMap(links, edges),\n    };'''
+          new_result = '''    return pathogenHaloMaps(links, edges, this.pathogenEnvironmentFrame(state));'''
+          if old_result not in region:
+            raise SystemExit("expected materialized pathogen halo result not found")
+          region = region.replace(old_result, new_result, 1)
+          region_path.write_text(region)
+
+          test_path = Path("tests/pathogen-reservoir-halo.test.mjs")
           test = test_path.read_text()
-          old_test_import = textwrap.dedent('''\
-          import {
-            pathogenHaloEdgeRequests,
-            pathogenHaloLinksForAgents,
-          } from "../dist-ts/src/pathogen-region.js";''')
-          new_test_import = textwrap.dedent('''\
-          import {
-            pathogenHaloEdgeRequests,
-            pathogenHaloLinksForActivity,
-            pathogenHaloLinksForAgents,
-          } from "../dist-ts/src/pathogen-region.js";''')
+          old_test_import = '''  pathogenEdgeSnapshot,\n  pathogenHaloReservoirMap,'''
+          new_test_import = '''  pathogenEdgeSnapshot,\n  pathogenHaloMaps,\n  pathogenHaloPressureMap,\n  pathogenHaloReservoirMap,'''
           if old_test_import not in test:
-            raise SystemExit("expected pathogen halo test import block not found")
+            raise SystemExit("expected pathogen reservoir test imports not found")
           test = test.replace(old_test_import, new_test_import, 1)
-
           test += textwrap.dedent('''\
 
-          test("pathogen halo keeps background legacy fan-out configured while canonical regions stay dynamic", () => {
-            const extent = { width: 40, height: 24 };
-            const legacyRegions = ["garden-1", "garden-2", "garden-3"];
+          test("combined pathogen halo materialization preserves pressure and reservoir semantics", () => {
+            const links = [
+              {
+                sourceRegionId: "garden-1",
+                sourcePosition: { x: 30, y: 11 },
+                direction: "east",
+                neighborRegionId: "garden-2",
+                neighborPosition: { x: 8, y: 11 },
+                neighborDirection: "west",
+              },
+              {
+                sourceRegionId: "garden-1",
+                sourcePosition: { x: 30, y: 11 },
+                direction: "northeast",
+                neighborRegionId: "hex-q1-r-1",
+                neighborPosition: { x: 18, y: 22 },
+                neighborDirection: "southwest",
+              },
+            ];
+            const edges = [
+              {
+                regionId: "garden-2",
+                direction: "west",
+                revision: 8,
+                tick: 60,
+                agents: [{ position: { x: 8, y: 11 }, pressure: 0.35 }],
+                reservoirs: [{ position: { x: 8, y: 11 }, burden: 0.4 }],
+              },
+              {
+                regionId: "hex-q1-r-1",
+                direction: "southwest",
+                revision: 3,
+                tick: 60,
+                agents: [{ position: { x: 18, y: 22 }, pressure: 0.5 }],
+                reservoirs: [{ position: { x: 18, y: 22 }, burden: 0.25 }],
+              },
+            ];
 
-            const activeLegacy = pathogenHaloLinksForActivity(extent, legacyRegions, "garden-1", "active");
-            const warmLegacy = pathogenHaloLinksForActivity(extent, legacyRegions, "garden-1", "warm");
-            const coldLegacy = pathogenHaloLinksForActivity(extent, legacyRegions, "garden-1", "cold");
-            const warmCanonical = pathogenHaloLinksForActivity(extent, legacyRegions, "hex-q2-r0", "warm");
-
-            assert.equal(new Set(activeLegacy.map((link) => link.neighborRegionId)).size, 6);
-            assert.equal(activeLegacy.length, 138, "live legacy regions should retain six-direction pathogen continuity");
-            assert.equal(warmLegacy.length, 46, "warm legacy regions should retain configured-only pathogen fan-out");
-            assert.equal(coldLegacy.length, 46, "cold legacy regions should retain configured-only pathogen fan-out");
-            assert.deepEqual(
-              new Set(warmLegacy.map((link) => link.neighborRegionId)),
-              new Set(["garden-2", "garden-3"]),
-              "warm legacy regions should not wake the four unconfigured frontier neighbors",
-            );
-            assert.deepEqual(
-              new Set(coldLegacy.map((link) => link.neighborRegionId)),
-              new Set(["garden-2", "garden-3"]),
-              "cold legacy regions should keep the same bounded compatibility fan-out",
-            );
-            assert.equal(
-              new Set(warmCanonical.map((link) => link.neighborRegionId)).size,
-              6,
-              "canonical regions must keep dynamic six-neighbor pathogen continuity at every tier",
-            );
-            assert.equal(warmCanonical.length, 138);
+            const combined = pathogenHaloMaps(links, edges);
+            assert.deepEqual(combined.pressure, pathogenHaloPressureMap(links, edges));
+            assert.deepEqual(combined.reservoir, pathogenHaloReservoirMap(links, edges));
+            assert.ok((combined.pressure.get("30,11") ?? 0) > 0.35);
+            assert.ok((combined.reservoir.get("30,11") ?? 0) > 0.4);
           });
           ''')
           test_path.write_text(test)
@@ -171,7 +240,7 @@ jobs:
           rm .github/workflows/automation-pathogen-halo-activity.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/pathogen-region.ts tests/pathogen-halo-scope.test.mjs .github/workflows/automation-pathogen-halo-activity.yml
+          git add src/pathogen.ts src/pathogen-region.ts tests/pathogen-reservoir-halo.test.mjs .github/workflows/automation-pathogen-halo-activity.yml
           git diff --cached --check
-          git commit -m "perf: tier pathogen halo fan-out by activity"
+          git commit -m "perf: share pathogen halo materialization"
           git push origin HEAD:main
