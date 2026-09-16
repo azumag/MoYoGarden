@@ -1,0 +1,198 @@
+name: Reservation lease hardening
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore: stage reservation lease hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Harden destination reservation lifetime
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/autonomy-region.ts')
+          text = path.read_text()
+          start = text.index('  private async activeDestinationStorageReservations(\n')
+          end = text.index('\n  private async reserveDestinationStorage(', start)
+          replacement = '''  private async activeDestinationStorageReservations(
+              now = Date.now(),
+            ): Promise<AutonomousDestinationStorageReservation[]> {
+              const stored = await this.autonomyState.storage.get<unknown>(
+                AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+              );
+              const valid = Array.isArray(stored)
+                ? stored.filter(isDestinationStorageReservation)
+                : [];
+
+              // A wall-clock lease is only a crash fallback. Once an admitted BOT has
+              // actually arrived and still carries the claimed resource, expiring that
+              // lease would advertise capacity that is already physically committed to
+              // in-flight cargo. Keep that reservation alive from destination-local
+              // state, without depending on the source region's tick cadence.
+              const state = runtimeAccess(this).runtime.snapshot();
+              const arrivalClaims = await this.arrivalClaims();
+              const protectedKeys = new Set<string>();
+              for (const claim of arrivalClaims) {
+                if (claim.destinationStorageReserved !== true) continue;
+                const agent = state.agents.find((entry) => entry.id === claim.agentId);
+                if (agent === undefined || agent.inventory[claim.resource] <= 0) continue;
+                protectedKeys.add(`${claim.sourceRegionId}\\u0000${claim.claimId}`);
+              }
+
+              let refreshed = false;
+              const active = valid.flatMap((entry) => {
+                if (entry.expiresAtMs > now) return [entry];
+                if (!protectedKeys.has(`${entry.sourceRegionId}\\u0000${entry.claimId}`)) return [];
+                refreshed = true;
+                return [{ ...entry, expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS }];
+              });
+              if (!Array.isArray(stored) || active.length !== stored.length || refreshed) {
+                await this.autonomyState.storage.put(
+                  AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+                  active,
+                );
+              }
+              return active;
+            }
+'''
+          text = text[:start] + replacement + text[end:]
+
+          old = '''      const existing = reservations.find((entry) => entry.claimId === claimId);
+                if (existing !== undefined) {
+                  if (
+                    existing.sourceRegionId !== sourceRegionId
+                    || existing.factionId !== factionId
+                  ) {
+                    return { conflict: true as const };
+                  }
+                  return {
+                    conflict: false as const,
+                    grantedAmount: existing.amount,
+                    remainingHeadroom: Math.max(
+                      0,
+                      actualHeadroom - reservations.reduce(
+                        (sum, entry) => entry.factionId === factionId ? sum + entry.amount : sum,
+                        0,
+                      ),
+                    ),
+                    idempotent: true,
+                  };
+                }
+'''
+          new = '''      const existing = reservations.find((entry) => entry.claimId === claimId);
+                if (existing !== undefined) {
+                  if (
+                    existing.sourceRegionId !== sourceRegionId
+                    || existing.factionId !== factionId
+                  ) {
+                    return { conflict: true as const };
+                  }
+                  // A retry is proof that the source still owns this admission. Renew
+                  // the wall-clock lease idempotently instead of letting a slow trip
+                  // lose its sink while the source is actively retrying coordination.
+                  const renewed = {
+                    ...existing,
+                    expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS,
+                  };
+                  await this.autonomyState.storage.put(
+                    AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+                    reservations.map((entry) => entry.claimId === claimId ? renewed : entry),
+                  );
+                  return {
+                    conflict: false as const,
+                    grantedAmount: renewed.amount,
+                    remainingHeadroom: Math.max(
+                      0,
+                      actualHeadroom - reservations.reduce(
+                        (sum, entry) => entry.factionId === factionId ? sum + entry.amount : sum,
+                        0,
+                      ),
+                    ),
+                    idempotent: true,
+                  };
+                }
+'''
+          if old not in text:
+              raise SystemExit('reservation idempotency block not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+
+          test_path = Path('tests/autonomous-concurrent-travel-do.test.mjs')
+          test_text = test_path.read_text()
+          needle = '''  carrying.autonomy = false;
+            carrying.inventory.wood = 2;
+            delete carrying.task;
+            for (const structure of state.structures) {
+'''
+          insertion = '''  carrying.autonomy = false;
+            carrying.inventory.wood = 2;
+            delete carrying.task;
+            destination.object.runtime = new WorldRuntime({ state });
+            await destination.object.persist();
+
+            const expiredAt = Date.now() - 1;
+            const expiringReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+            assert.equal(expiringReservations.length, 1);
+            expiringReservations[0].expiresAtMs = expiredAt;
+            await destination.state.storage.put(DESTINATION_STORAGE_RESERVATIONS_KEY, expiringReservations);
+
+            const protectedEdgeResponse = await destination.object.fetch(new Request(
+              "https://moyo.internal/api/internal/halo/edge?direction=west",
+              {
+                method: "GET",
+                headers: { "x-moyo-region-internal": "garden-2" },
+              },
+            ));
+            assert.equal(protectedEdgeResponse.status, 200);
+            const protectedEdge = await protectedEdgeResponse.json();
+            const protectedReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+            assert.equal(protectedReservations.length, 1);
+            assert.ok(protectedReservations[0].expiresAtMs > expiredAt);
+            assert.equal(
+              protectedEdge.regionSummary.storageHeadroomByFaction[factionId],
+              0,
+              "expired wall-clock lease must stay reserved while admitted cargo is still on the BOT",
+            );
+
+            for (const structure of state.structures) {
+'''
+          if needle not in test_text:
+              raise SystemExit('cargo test insertion point not found')
+          test_text = test_text.replace(needle, insertion, 1)
+          test_path.write_text(test_text)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit verified change
+        shell: bash
+        run: |
+          rm .github/workflows/automation-reservation-lease.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'sim: keep admitted storage reserved through delivery'
+          git push origin HEAD:main
