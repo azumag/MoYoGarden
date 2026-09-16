@@ -1,0 +1,57 @@
+name: Reservation formatting cleanup
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore repository indentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('src/autonomy-region.ts')
+          text = source.read_text()
+          start = text.index('private async activeDestinationStorageReservations(\n')
+          end = text.index('\n  private async reserveDestinationStorage(', start)
+          block = text[start:end]
+          block = '\n'.join(('  ' + line) if line else line for line in block.split('\n'))
+          text = text[:start] + block + text[end:]
+          source.write_text(text)
+
+          tests = Path('tests/autonomous-concurrent-travel-do.test.mjs')
+          text = tests.read_text()
+          start = text.index('\ndestination.object.runtime = new WorldRuntime({ state });\n') + 1
+          end = text.index('\n  for (const structure of state.structures) {', start)
+          block = text[start:end]
+          block = '\n'.join(('  ' + line) if line else line for line in block.split('\n'))
+          text = text[:start] + block + text[end:]
+          tests.write_text(text)
+          PY
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck, test, and build
+        run: npm run build
+      - name: Commit verified cleanup
+        run: |
+          rm .github/workflows/automation-reservation-format.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'style: align reservation lease changes'
+          git push origin HEAD:main
