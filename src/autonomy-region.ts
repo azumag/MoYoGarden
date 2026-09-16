@@ -1073,45 +1073,45 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return valid;
   }
 
-private async activeDestinationStorageReservations(
-  now = Date.now(),
-): Promise<AutonomousDestinationStorageReservation[]> {
-  const stored = await this.autonomyState.storage.get<unknown>(
-    AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
-  );
-  const valid = Array.isArray(stored)
-    ? stored.filter(isDestinationStorageReservation)
-    : [];
-
-  // The wall-clock TTL is a crash fallback, not permission to reuse
-  // capacity that is already committed to cargo physically present on
-  // an admitted BOT. Keep such reservations alive from destination-local
-  // state so slow/cold delivery cannot silently overbook the same slots.
-  const state = runtimeAccess(this).runtime.snapshot();
-  const arrivals = await this.arrivalClaims();
-  const protectedKeys = new Set<string>();
-  for (const claim of arrivals) {
-    if (claim.destinationStorageReserved !== true) continue;
-    const agent = state.agents.find((entry) => entry.id === claim.agentId);
-    if (agent === undefined || agent.inventory[claim.resource] <= 0) continue;
-    protectedKeys.add(`${claim.sourceRegionId}\u0000${claim.claimId}`);
-  }
-
-  let refreshed = false;
-  const active = valid.flatMap((entry) => {
-    if (entry.expiresAtMs > now) return [entry];
-    if (!protectedKeys.has(`${entry.sourceRegionId}\u0000${entry.claimId}`)) return [];
-    refreshed = true;
-    return [{ ...entry, expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS }];
-  });
-  if (!Array.isArray(stored) || active.length !== stored.length || refreshed) {
-    await this.autonomyState.storage.put(
+  private async activeDestinationStorageReservations(
+    now = Date.now(),
+  ): Promise<AutonomousDestinationStorageReservation[]> {
+    const stored = await this.autonomyState.storage.get<unknown>(
       AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
-      active,
     );
+    const valid = Array.isArray(stored)
+      ? stored.filter(isDestinationStorageReservation)
+      : [];
+
+    // The wall-clock TTL is a crash fallback, not permission to reuse
+    // capacity that is already committed to cargo physically present on
+    // an admitted BOT. Keep such reservations alive from destination-local
+    // state so slow/cold delivery cannot silently overbook the same slots.
+    const state = runtimeAccess(this).runtime.snapshot();
+    const arrivals = await this.arrivalClaims();
+    const protectedKeys = new Set<string>();
+    for (const claim of arrivals) {
+      if (claim.destinationStorageReserved !== true) continue;
+      const agent = state.agents.find((entry) => entry.id === claim.agentId);
+      if (agent === undefined || agent.inventory[claim.resource] <= 0) continue;
+      protectedKeys.add(`${claim.sourceRegionId}\u0000${claim.claimId}`);
+    }
+
+    let refreshed = false;
+    const active = valid.flatMap((entry) => {
+      if (entry.expiresAtMs > now) return [entry];
+      if (!protectedKeys.has(`${entry.sourceRegionId}\u0000${entry.claimId}`)) return [];
+      refreshed = true;
+      return [{ ...entry, expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS }];
+    });
+    if (!Array.isArray(stored) || active.length !== stored.length || refreshed) {
+      await this.autonomyState.storage.put(
+        AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+        active,
+      );
+    }
+    return active;
   }
-  return active;
-}
 
   private async reserveDestinationStorage(request: Request): Promise<Response> {
     let body: unknown;

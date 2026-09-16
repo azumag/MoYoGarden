@@ -541,31 +541,31 @@ test("remote sink reservation remains until gathered cargo leaves the arriving i
   carrying.inventory.wood = 2;
   delete carrying.task;
 
-destination.object.runtime = new WorldRuntime({ state });
-await destination.object.persist();
-const expiredAt = Date.now() - 1;
-const expiringReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
-assert.equal(expiringReservations.length, 1);
-expiringReservations[0].expiresAtMs = expiredAt;
-await destination.state.storage.put(DESTINATION_STORAGE_RESERVATIONS_KEY, expiringReservations);
+  destination.object.runtime = new WorldRuntime({ state });
+  await destination.object.persist();
+  const expiredAt = Date.now() - 1;
+  const expiringReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+  assert.equal(expiringReservations.length, 1);
+  expiringReservations[0].expiresAtMs = expiredAt;
+  await destination.state.storage.put(DESTINATION_STORAGE_RESERVATIONS_KEY, expiringReservations);
 
-const protectedEdgeResponse = await destination.object.fetch(new Request(
-  "https://moyo.internal/api/internal/halo/edge?direction=west",
-  {
-    method: "GET",
-    headers: { "x-moyo-region-internal": "garden-2" },
-  },
-));
-assert.equal(protectedEdgeResponse.status, 200);
-const protectedEdge = await protectedEdgeResponse.json();
-const protectedReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
-assert.equal(protectedReservations.length, 1);
-assert.ok(protectedReservations[0].expiresAtMs > expiredAt);
-assert.equal(
-  protectedEdge.regionSummary.storageHeadroomByFaction[factionId],
-  0,
-  "expired lease must stay reserved while admitted cargo is still on the BOT",
-);
+  const protectedEdgeResponse = await destination.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edge?direction=west",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(protectedEdgeResponse.status, 200);
+  const protectedEdge = await protectedEdgeResponse.json();
+  const protectedReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+  assert.equal(protectedReservations.length, 1);
+  assert.ok(protectedReservations[0].expiresAtMs > expiredAt);
+  assert.equal(
+    protectedEdge.regionSummary.storageHeadroomByFaction[factionId],
+    0,
+    "expired lease must stay reserved while admitted cargo is still on the BOT",
+  );
   for (const structure of state.structures) {
     if (structure.factionId !== factionId || structure.status !== "active") continue;
     structure.storage = { wood: BUILD_RECIPES[structure.type].storageCapacity, stone: 0, food: 0 };
