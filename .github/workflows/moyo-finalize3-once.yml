@@ -1,4 +1,4 @@
-name: MoYoGarden finalize return storage relay lease v3
+name: MoYoGarden bounded return storage lease
 
 on:
   push:
@@ -21,46 +21,179 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Apply corrected wall-clock lease patch
+      - name: Apply bounded wall-clock return-storage lease
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import base64
-          import re
           from pathlib import Path
-          prefix = "aW1wb3J0IGJhc2U2NApURVNUX0JMT0NLX0I2NCA9ICdDblJsYzNRb0luSmxkSFZ5YmlCallYSm5ieUJ5Wlc1bGQzTWdjMjkxY21ObElITjBiM0poWjJVZ1lua2dkMkZzYkNCamJHOWpheUJoWm5SbGNpQnpiM1Z5WTJVZ2RHbGpheUJsZUhCcGNua2lMQ0JoYzNsdVl5QW9LU0E5UGlCN0NpQWdZMjl1YzNRZ1pXNTJJRDBnWlc1MmFYSnZibTFsYm5Rb0tUc0tJQ0JqYjI1emRDQnlaV3hoZVNBOUlHRjNZV2wwSUdGemMybG5ibEpsWjJsdmJpaGxibllzSUNKbllYSmtaVzR0TWlJcE93b2dJR052Ym5OMElHOXlhV2RwYmlBOUlHRjNZV2wwSUdGemMybG5ibEpsWjJsdmJpaGxibllzSUNKb1pYZ3RjVEl0Y2pBaUtUc0tDaUFnWTI5dWMzUWdjbVZzWVhsVGRHRjBaU0E5SUhKbGJHRjVMbTlpYW1WamRDNXlkVzUwYVcxbExuTnVZWEJ6YUc5MEtDazdDaUFnY21Wc1lYbFRkR0YwWlM1emRISjFZM1IxY21WeklEMGdXMTA3Q2lBZ1ptOXlJQ2hqYjI1emRDQmpZVzVrYVdSaGRHV"
-          source = Path('.github/workflows/moyo-improve-once.yml').read_text()
-          match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)"\)', source)
-          if match is None:
-              raise SystemExit('embedded patch payload not found')
-          code = base64.b64decode(prefix + match.group(1)).decode()
-          obsolete = base64.b64decode("b25lKAoiIiIgICAgICAvLyBTb3VyY2UtcmV0dXJuIGNhcGFjaXR5IGZvbGxvd3MgdGhlIHBoeXNpY2FsIGNhcmdvIHRvby4gU3VwcGx5CiAgICAgIC8vIHNldHRsZW1lbnQgbWVhbnMgdGhlIHJlc291cmNlIHdhcyBnYXRoZXJlZDsgaXQgZG9lcyBub3QgbWVhbiB0aGUKICAgICAgLy8gcHJvbWlzZWQgc291cmNlIHN0b3JhZ2UgaXMgZnJlZSBmb3IgYW5vdGhlciBleHBlZGl0aW9uIHlldC4KICAgICAgY29uc3QgcmV0dXJuQ2FyZ29PdXRzdGFuZGluZyA9CiAgICAgICAgdXBkYXRlZENsYWltLnJldHVyblRvU291cmNlU3RvcmFnZSA9PT0gdHJ1ZQogICAgICAgICYmIGdhdGhlcmVkQW1vdW50ID4gMAogICAgICAgICYmIGFnZW50ICE9PSB1bmRlZmluZWQKICAgICAgICAmJiBhZ2VudC5pbnZlbnRvcnlbdXBkYXRlZENsYWltLnJlc291cmNlXSA+IDA7CiAgICAgIGlmIChyZXR1cm5DYXJnb091dHN0YW5kaW5nKSB7CiIiIiwKIiIiICAgICAgLy8gU291cmNlLXJldHVybiBjYXBhY2l0eSBmb2xsb3dzIHRoZSBwaHlzaWNhbCBjYXJnbyB0b28uIFN1cHBseQogICAgICAvLyBzZXR0bGVtZW50IG1lYW5zIHRoZSByZXNvdXJjZSB3YXMgZ2F0aGVyZWQ7IGl0IGRvZXMgbm90IG1lYW4gdGhlCiAgICAgIC8vIHByb21pc2VkIHNvdXJjZSBzdG9yYWdlIGlzIGZyZWUgZm9yIGFub3RoZXIgZXhwZWRpdGlvbiB5ZXQuCiAgICAgIGlmIChyZXR1cm5DYXJnb091dHN0YW5kaW5nKSB7CiIiIikKCg==").decode()
-          if code.count(obsolete) != 1:
-              raise SystemExit(f'expected one obsolete replacement block, got {code.count(obsolete)}')
-          code = code.replace(obsolete, '', 1)
-          exec(compile(code, '<moyo-improve-once>', 'exec'))
-
           p = Path('src/autonomy-region.ts')
           s = p.read_text()
-          needle = 'const returnCargoOutstanding ='
-          positions = []
-          cursor = 0
-          while True:
-              pos = s.find(needle, cursor)
-              if pos < 0:
-                  break
-              positions.append(pos)
-              cursor = pos + len(needle)
-          if len(positions) != 2:
-              raise SystemExit(f'expected exactly two returnCargoOutstanding declarations after patch, got {len(positions)}')
-          second = positions[1]
-          line_start = s.rfind('\n', 0, second) + 1
-          statement_end = s.find(';\n', second)
-          if statement_end < 0:
-              raise SystemExit('could not locate end of duplicate returnCargoOutstanding declaration')
-          s = s[:line_start] + s[statement_end + 2:]
+          def one(old, new):
+              global s
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match, got {count}: {old[:100]!r}')
+              s = s.replace(old, new, 1)
+          one('''  returnStorageAmount?: number;
+            // Source-local reservation against a concrete remote storage observation.
+          ''','''  returnStorageAmount?: number;
+            // Crash-safe wall-clock lease for promised source storage. Source ticks
+            // may run much faster than a courier in a warm/cold relay region.
+            returnStorageLeaseExpiresAtMs?: number;
+            // Source-local reservation against a concrete remote storage observation.
+          ''')
+          one('''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+            const SETTLEMENT_MIGRATION_TTL = 72;
+          ''','''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+            // Keep a return reservation alive for the same number of claim ticks at
+            // the slowest supported one-hour cold-region cadence. Explicit deposit
+            // still releases it earlier; the wall lease only bounds crash leakage.
+            const RETURN_STORAGE_RESERVATION_TTL_MS = AUTONOMOUS_SUPPLY_CLAIM_TTL * 60 * 60 * 1_000;
+            const SETTLEMENT_MIGRATION_TTL = 72;
+          ''')
+          one('''    && (value.returnStorageAmount === undefined || (
+              typeof value.returnStorageAmount === "number"
+              && Number.isFinite(value.returnStorageAmount)
+              && value.returnStorageAmount >= 0
+            ))
+            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
+          ''','''    && (value.returnStorageAmount === undefined || (
+              typeof value.returnStorageAmount === "number"
+              && Number.isFinite(value.returnStorageAmount)
+              && value.returnStorageAmount >= 0
+            ))
+            && (value.returnStorageLeaseExpiresAtMs === undefined || (
+              typeof value.returnStorageLeaseExpiresAtMs === "number"
+              && Number.isFinite(value.returnStorageLeaseExpiresAtMs)
+              && value.returnStorageLeaseExpiresAtMs > 0
+            ))
+            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
+          ''')
+          one('''function reservedReturnStorageForFaction(
+            state: WorldState,
+            claims: readonly AutonomousSupplyClaim[],
+            factionId: string,
+          ): number {
+            return claims.reduce((reserved, claim) => {
+              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+          ''','''export function returnStorageReservationActive(
+            stateTick: number,
+            claim: AutonomousSupplyClaim,
+            now = Date.now(),
+          ): boolean {
+            if (claim.returnToSourceStorage !== true) return false;
+            const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+            if (reservedAmount <= 0) return false;
+            return claim.expiresAtTick > stateTick
+              || (claim.returnStorageLeaseExpiresAtMs ?? 0) > now;
+          }
+
+          function reservedReturnStorageForFaction(
+            state: WorldState,
+            claims: readonly AutonomousSupplyClaim[],
+            factionId: string,
+          ): number {
+            const now = Date.now();
+            return claims.reduce((reserved, claim) => {
+              if (!returnStorageReservationActive(state.tick, claim, now)) return reserved;
+              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+          ''')
+          one('''    const valid = stored.filter(isAutonomousSupplyClaim);
+            const active = valid.filter((claim) => claim.expiresAtTick > tick);
+            if (active.length !== stored.length) {
+              await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, active);
+            }
+            return active;
+          ''','''    const valid = stored.filter(isAutonomousSupplyClaim);
+            const now = Date.now();
+            let upgraded = false;
+            const normalized = valid.map((claim) => {
+              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+              if (
+                claim.returnToSourceStorage === true
+                && reservedAmount > 0
+                && claim.returnStorageLeaseExpiresAtMs === undefined
+                && claim.expiresAtTick > tick
+              ) {
+                upgraded = true;
+                return { ...claim, returnStorageLeaseExpiresAtMs: now + RETURN_STORAGE_RESERVATION_TTL_MS };
+              }
+              return claim;
+            });
+            const active = normalized.filter((claim) =>
+              claim.expiresAtTick > tick || returnStorageReservationActive(tick, claim, now)
+            );
+            if (active.length !== stored.length || upgraded) {
+              await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, active);
+            }
+            return active;
+          ''')
+          one('''                  returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
+                    expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
+          ''','''                  returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
+                    returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
+                    expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
+          ''')
+          one('''          ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),
+              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
+          ''','''          ...(returnToSourceStorage
+                ? {
+                    returnStorageAmount: claimedSupply,
+                    returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
+                  }
+                : {}),
+              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
+          ''')
           p.write_text(s)
+
+          t = Path('tests/autonomy-material-return-relay.test.mjs')
+          x = t.read_text()
+          marker = 'wall-clock return-storage lease survives source tick skew'
+          if marker in x:
+              raise SystemExit('regression test already exists')
+          x += r'''
+
+test("wall-clock return-storage lease survives source tick skew and still expires crash-safely", async () => {
+  const env = environment();
+  const origin = await assignRegion(env, "hex-q2-r0");
+  const state = origin.object.runtime.snapshot();
+  state.tick = 500;
+  for (const candidate of state.agents) candidate.autonomy = false;
+  const courier = state.agents[0]; assert.ok(courier);
+  origin.object.runtime = new WorldRuntime({ state }); await origin.object.persist();
+  const claim = {
+    claimId: "wall-clock-return", agentId: courier.id, resource: "wood", direction: "W",
+    neighborRegionId: "garden-2", amount: 0, settledAmount: 4, expiresAtTick: state.tick - 1,
+    sourceFactionId: courier.factionId, returnToSourceStorage: true, returnStorageAmount: 4,
+    returnStorageLeaseExpiresAtMs: Date.now() + 30_000,
+  };
+  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [claim]);
+  const settle = await origin.object.fetch(new Request("https://moyo.internal/api/internal/autonomy/claim/settle", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-moyo-region-internal": "hex-q2-r0" },
+    body: JSON.stringify({ claimId: claim.claimId, gatheredAmount: 4 }),
+  }));
+  assert.equal(settle.status, 200);
+  const kept = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  const renewed = kept?.find((entry) => entry.claimId === claim.claimId);
+  assert.ok(renewed, "wall-clock lease should keep return capacity reserved after source tick TTL expires");
+  assert.ok(renewed.expiresAtTick > state.tick, "settlement should refresh the tick fallback after wall-clock rescue");
+  assert.ok(renewed.returnStorageLeaseExpiresAtMs > claim.returnStorageLeaseExpiresAtMs, "settlement should refresh the bounded crash lease");
+
+  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{ ...claim, returnStorageLeaseExpiresAtMs: Date.now() - 1 }]);
+  const expired = await origin.object.fetch(new Request("https://moyo.internal/api/internal/autonomy/claim/settle", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-moyo-region-internal": "hex-q2-r0" },
+    body: JSON.stringify({ claimId: claim.claimId, gatheredAmount: 4 }),
+  }));
+  assert.equal(expired.status, 200);
+  const afterExpiry = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  assert.ok(afterExpiry === undefined || afterExpiry.every((entry) => entry.claimId !== claim.claimId), "expired tick and wall-clock leases should release orphaned capacity");
+});
+'''
+          t.write_text(x)
           PY
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -70,18 +203,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f \
-            .github/workflows/moyo-improve-once.yml \
-            .github/workflows/moyo-fix-once.yml \
-            .github/workflows/moyo-diagnose-once.yml \
-            .github/workflows/moyo-finalize-once.yml \
-            .github/workflows/moyo-finalize2-once.yml \
-            .github/workflows/moyo-finalize3-once.yml \
-            .github/workflows/moyo-build-diagnose-once.yml \
-            .moyo-patch-error \
-            .moyo-build-error
+          rm -f .github/workflows/moyo-improve-once.yml .github/workflows/moyo-fix-once.yml .github/workflows/moyo-diagnose-once.yml .github/workflows/moyo-finalize-once.yml .github/workflows/moyo-finalize2-once.yml .github/workflows/moyo-finalize3-once.yml .github/workflows/moyo-build-diagnose-once.yml .github/workflows/moyo-test-diagnose-once.yml .github/workflows/moyo-newtest-diagnose-once.yml .github/workflows/moyo-relay-debug-once.yml .github/workflows/moyo-complete-once.yml .moyo-patch-error .moyo-build-error .moyo-build-error2 .moyo-focused-error
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'sim: renew return storage across relay delays'
+          git add src/autonomy-region.ts tests/autonomy-material-return-relay.test.mjs
+          git add -A '.github/workflows/moyo-*.yml' '.moyo-*'
+          git commit -m 'sim: decouple return storage lease from source ticks'
           git push origin HEAD:main
