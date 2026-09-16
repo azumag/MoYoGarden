@@ -1,0 +1,136 @@
+name: Reservation lease hardening v2
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Preserve admitted capacity for arrived cargo
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          path = Path('src/autonomy-region.ts')
+          text = path.read_text()
+          start = text.index('  private async activeDestinationStorageReservations(\n')
+          end = text.index('\n  private async reserveDestinationStorage(', start)
+          replacement = dedent('''\
+            private async activeDestinationStorageReservations(
+              now = Date.now(),
+            ): Promise<AutonomousDestinationStorageReservation[]> {
+              const stored = await this.autonomyState.storage.get<unknown>(
+                AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+              );
+              const valid = Array.isArray(stored)
+                ? stored.filter(isDestinationStorageReservation)
+                : [];
+
+              // The wall-clock TTL is a crash fallback, not permission to reuse
+              // capacity that is already committed to cargo physically present on
+              // an admitted BOT. Keep such reservations alive from destination-local
+              // state so slow/cold delivery cannot silently overbook the same slots.
+              const state = runtimeAccess(this).runtime.snapshot();
+              const arrivals = await this.arrivalClaims();
+              const protectedKeys = new Set<string>();
+              for (const claim of arrivals) {
+                if (claim.destinationStorageReserved !== true) continue;
+                const agent = state.agents.find((entry) => entry.id === claim.agentId);
+                if (agent === undefined || agent.inventory[claim.resource] <= 0) continue;
+                protectedKeys.add(`${claim.sourceRegionId}\\u0000${claim.claimId}`);
+              }
+
+              let refreshed = false;
+              const active = valid.flatMap((entry) => {
+                if (entry.expiresAtMs > now) return [entry];
+                if (!protectedKeys.has(`${entry.sourceRegionId}\\u0000${entry.claimId}`)) return [];
+                refreshed = true;
+                return [{ ...entry, expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS }];
+              });
+              if (!Array.isArray(stored) || active.length !== stored.length || refreshed) {
+                await this.autonomyState.storage.put(
+                  AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+                  active,
+                );
+              }
+              return active;
+            }
+          ''')
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text)
+
+          test_path = Path('tests/autonomous-concurrent-travel-do.test.mjs')
+          test_text = test_path.read_text()
+          marker = (
+            '  carrying.autonomy = false;\n'
+            '  carrying.inventory.wood = 2;\n'
+            '  delete carrying.task;\n'
+          )
+          if marker not in test_text:
+              raise SystemExit('cargo reservation test marker not found')
+          insertion = marker + dedent('''\
+
+            destination.object.runtime = new WorldRuntime({ state });
+            await destination.object.persist();
+            const expiredAt = Date.now() - 1;
+            const expiringReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+            assert.equal(expiringReservations.length, 1);
+            expiringReservations[0].expiresAtMs = expiredAt;
+            await destination.state.storage.put(DESTINATION_STORAGE_RESERVATIONS_KEY, expiringReservations);
+
+            const protectedEdgeResponse = await destination.object.fetch(new Request(
+              "https://moyo.internal/api/internal/halo/edge?direction=west",
+              {
+                method: "GET",
+                headers: { "x-moyo-region-internal": "garden-2" },
+              },
+            ));
+            assert.equal(protectedEdgeResponse.status, 200);
+            const protectedEdge = await protectedEdgeResponse.json();
+            const protectedReservations = await destination.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+            assert.equal(protectedReservations.length, 1);
+            assert.ok(protectedReservations[0].expiresAtMs > expiredAt);
+            assert.equal(
+              protectedEdge.regionSummary.storageHeadroomByFaction[factionId],
+              0,
+              "expired lease must stay reserved while admitted cargo is still on the BOT",
+            );
+          ''')
+          test_text = test_text.replace(marker, insertion, 1)
+          test_path.write_text(test_text)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit verified change and clean temporary workflows
+        shell: bash
+        run: |
+          rm -f .github/workflows/automation-reservation-lease.yml
+          rm -f .github/workflows/automation-reservation-lease-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'sim: keep admitted storage reserved through delivery'
+          git push origin HEAD:main
