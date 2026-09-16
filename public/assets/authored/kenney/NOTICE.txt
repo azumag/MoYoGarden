@@ -1,0 +1,13 @@
+MoYoGarden authored asset cache
+version: 0.3.7
+
+The optional nature models in this directory originate from Kenney Nature Kit.
+Kenney Nature Kit is licensed Creative Commons CC0 1.0 (public domain).
+Official source: https://kenney.nl/assets/nature-kit
+Pinned mirror: https://github.com/syuhei176/ai-game-assets/tree/ebfd758dea8db5793c765cc72564efadb36a4ed0
+
+tree_oak.glb | Kenney Nature Kit | CC0 | git-blob b136723ada4b5574b71f727120ab21fa579bf2fb
+tree_pine.glb | Kenney Nature Kit | CC0 | git-blob f1217a9ee5b1d8f2027d39fe6bd151d20be5ab84
+rock_large.glb | Kenney Nature Kit | CC0 | git-blob 40e1365a43b706bd78c2658b48b189c9a35f8923
+rock_medium.glb | Kenney Nature Kit | CC0 | git-blob 31d1fb480f2bd18b47e7d6b8e2308d4b7301da4a
+rock_small.glb | Kenney Nature Kit | CC0 | git-blob b23471253cfafcca5916ffddb79853eca7433195
