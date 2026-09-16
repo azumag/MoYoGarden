@@ -1,0 +1,52 @@
+name: MoYoGarden relay return-storage renewal diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-relay-debug-once.yml
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply candidate patch and prioritize relay marker assertion
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re, textwrap
+          from pathlib import Path
+          workflow = Path('.github/workflows/moyo-finalize3-once.yml').read_text()
+          match = re.search(r"python3 - <<'PY'\n(.*?)\n          PY", workflow, re.S)
+          if match is None:
+              raise SystemExit('candidate patch script not found')
+          exec(compile(textwrap.dedent(match.group(1)), '<candidate-patch>', 'exec'))
+          t = Path('tests/autonomy-material-return-relay.test.mjs')
+          x = t.read_text()
+          old = '''  assert.ok(renewed, "wall-clock lease should keep the reservation active after source tick TTL expires");
+  assert.ok(renewed.expiresAtTick > originState.tick, "remote courier should renew the source tick fallback too");
+  assert.ok(renewed.returnStorageLeaseExpiresAtMs > initialLease, "remote courier should extend the wall-clock storage lease");
+  const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.ok((relayClaims?.[0]?.returnStorageLeaseRenewedAtMs ?? 0) > 0, "relay should remember a successful renewal and avoid per-tick cross-DO spam");
+'''
+          new = '''  assert.ok(renewed, "wall-clock lease should keep the reservation active after source tick TTL expires");
+  const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.ok((relayClaims?.[0]?.returnStorageLeaseRenewedAtMs ?? 0) > 0, "relay should remember a successful renewal and avoid per-tick cross-DO spam");
+  assert.ok(renewed.expiresAtTick > originState.tick, "remote courier should renew the source tick fallback too");
+  assert.ok(renewed.returnStorageLeaseExpiresAtMs > initialLease, "remote courier should extend the wall-clock storage lease");
+'''
+          if x.count(old) != 1:
+              raise SystemExit('candidate assertion block not found')
+          t.write_text(x.replace(old, new, 1))
+          PY
+      - run: npm install --no-audit --no-fund
+      - name: Build candidate
+        run: npm run build
