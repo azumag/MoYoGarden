@@ -2,14 +2,14 @@ name: One-shot moving social memory identity fix
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: stage moving social memory identity fix'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -19,15 +19,22 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-      - run: npm install --no-audit --no-fund
-      - shell: bash
+          node-version: "22"
+      - name: Apply and validate
+        env:
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
         run: |
           set -euo pipefail
+          if [[ "$HEAD_MESSAGE" != "fix: make social memory one-shot runnable" ]]; then
+            echo "Not the staging commit; nothing to do."
+            exit 0
+          fi
+          npm install --no-audit --no-fund
           python3 <<'PY'
           from pathlib import Path
 
-          ownership = Path('src/agent-ownership.ts')
+          ownership = Path("src/agent-ownership.ts")
           text = ownership.read_text()
           old = '''  if (agent.pregnancy !== undefined) {
     agent.pregnancy = {
@@ -53,10 +60,10 @@ jobs:
   }
 }'''
           if text.count(old) != 1:
-              raise SystemExit(f'ownership marker count={text.count(old)}')
+              raise SystemExit(f"ownership marker count={text.count(old)}")
           ownership.write_text(text.replace(old, new, 1))
 
-          test = Path('tests/handoff-social-identity.test.mjs')
+          test = Path("tests/handoff-social-identity.test.mjs")
           text = test.read_text()
           old = '''  assert.equal(
     detached.value.agent.socialMemory?.[0]?.agentId,
@@ -70,13 +77,12 @@ jobs:
   );
   assert.equal(detached.value.agent.socialMemory?.[0]?.familiarity, 3);'''
           if text.count(old) != 1:
-              raise SystemExit(f'test marker count={text.count(old)}')
+              raise SystemExit(f"test marker count={text.count(old)}")
           test.write_text(text.replace(old, new, 1))
           PY
-
           npm run build
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/agent-ownership.ts tests/handoff-social-identity.test.mjs
-          git commit -m 'fix: globalize moving social memory across handoff'
+          git commit -m "fix: globalize moving social memory across handoff"
           git push origin HEAD:main
