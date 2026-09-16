@@ -35,6 +35,18 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f"expected one plan candidate match, got {text.count(old)}")
           path.write_text(text.replace(old, new, 1))
+
+          test_path = Path("tests/settlement-migration-faction-occupancy.test.mjs")
+          test_text = test_path.read_text()
+          replacements = {
+              'summary(3, { rival: 2 })': 'summary(2, { rival: 1 })',
+              'summary(3, { rival: 3 })': 'summary(2, { rival: 2 })',
+          }
+          for old_test, new_test in replacements.items():
+              if test_text.count(old_test) != 1:
+                  raise SystemExit(f"expected one test fixture match for {old_test!r}")
+              test_text = test_text.replace(old_test, new_test, 1)
+          test_path.write_text(test_text)
           PY
       - name: Validate
         shell: bash
