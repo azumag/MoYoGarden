@@ -2,6 +2,43 @@ from pathlib import Path
 
 path = Path("tests/autonomy-material-return-relay.test.mjs")
 text = path.read_text()
+loop = '''  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await first.object.alarm(); await relay.object.alarm(); await origin.object.alarm();
+    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
+    if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
+  }
+'''
+replacement = '''  let loggedRelayArrival = false;
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await first.object.alarm();
+    const relayCourierBeforeTick = relay.object.runtime.snapshot().agents.find((entry) => entry.id.includes("agent-ember-builder"));
+    if (relayCourierBeforeTick !== undefined && !loggedRelayArrival) {
+      loggedRelayArrival = true;
+      console.error("MULTIHOP_BEFORE_RELAY_TICK", JSON.stringify({
+        attempt,
+        courier: relayCourierBeforeTick,
+        arrivalClaims: await relay.state.storage.get(ARRIVAL_CLAIMS_KEY),
+        autonomyHandoff: await relay.state.storage.get("handoff:autonomy:v1"),
+      }));
+    }
+    await relay.object.alarm();
+    if (relayCourierBeforeTick !== undefined && attempt < 45) {
+      const relayCourierAfterTick = relay.object.runtime.snapshot().agents.find((entry) => entry.id.includes("agent-ember-builder"));
+      console.error("MULTIHOP_AFTER_RELAY_TICK", JSON.stringify({
+        attempt,
+        courier: relayCourierAfterTick,
+        arrivalClaims: await relay.state.storage.get(ARRIVAL_CLAIMS_KEY),
+        autonomyHandoff: await relay.state.storage.get("handoff:autonomy:v1"),
+      }));
+    }
+    await origin.object.alarm();
+    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
+    if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
+  }
+'''
+if text.count(loop) != 1:
+    raise SystemExit(f"loop target count: {text.count(loop)}")
+text = text.replace(loop, replacement, 1)
 needle = '  assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");'
 if text.count(needle) != 1:
     raise SystemExit(f"diagnostic target count: {text.count(needle)}")
