@@ -1,0 +1,233 @@
+name: MoYoGarden multi-hop cargo return improvement
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-improve-multihop-return.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - name: Patch multi-hop return relay
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("src/autonomy-region.ts")
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, got {count}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '  claimId?: string;\n  desiredPosition?: GridPosition;',
+              '  claimId?: string;\n  // Preserve the ultimate claim owner when gathered cargo is relayed through\n  // an intermediate region. Optional for rolling compatibility with old pending\n  // handoffs, where the immediate source remains the claim owner.\n  claimSourceRegionId?: string;\n  desiredPosition?: GridPosition;',
+              'pending handoff claim origin',
+          )
+
+          marker = 'function returnHandoffForArrival(\n'
+          helper = '''function regionDistanceToTarget(\n  regionId: string,\n  targetRegionId: string,\n): number | undefined {\n  const region = regionAxialCoordinate(regionId);\n  const target = regionAxialCoordinate(targetRegionId);\n  if (region === undefined || target === undefined) return undefined;\n  const dq = region.q - target.q;\n  const dr = region.r - target.r;\n  return (Math.abs(dq) + Math.abs(dr) + Math.abs(dq + dr)) / 2;\n}\n\n/**\n * Return the remaining macro-hex distance only for a handoff that makes strict\n * progress toward the original material source. Direct legacy/historical source\n * IDs retain the old one-hop behavior even when an axial coordinate is missing.\n */\nexport function materialReturnHopDistance(\n  currentRegionId: string,\n  targetRegionId: string,\n  candidateRegionId: string,\n): number | undefined {\n  if (candidateRegionId === targetRegionId) return 0;\n  const currentDistance = regionDistanceToTarget(currentRegionId, targetRegionId);\n  const candidateDistance = regionDistanceToTarget(candidateRegionId, targetRegionId);\n  if (\n    currentDistance === undefined ||\n    candidateDistance === undefined ||\n    candidateDistance >= currentDistance\n  ) {\n    return undefined;\n  }\n  return candidateDistance;\n}\n\nfunction returnHandoffForArrival(\n'''
+          replace_once(marker, helper, 'return routing helper insertion')
+
+          pattern = re.compile(r'''function returnHandoffForArrival\(\n  state: WorldState,\n  agent: Agent,\n  claim: AutonomousArrivalClaim,\n\): PendingAutonomousHandoff \| undefined \{.*?\n\}\n\nfunction returnTravelTargetForArrival''', re.S)
+          replacement = '''function returnHandoffForArrival(\n  state: WorldState,\n  agent: Agent,\n  claim: AutonomousArrivalClaim,\n): PendingAutonomousHandoff | undefined {\n  if (\n    claim.returnToSourceStorage !== true ||\n    inventoryAmount(agent) <= 0 ||\n    hasAvailableFactionStorage(state, agent.factionId)\n  ) return undefined;\n\n  const candidates = boundaryDirections(state, agent.position).flatMap((direction) => {\n    const step = HEX_GRID_DIRECTION_STEPS[direction];\n    const desiredPosition = {\n      x: agent.position.x + step.x,\n      y: agent.position.y + step.y,\n    };\n    const transition = regionCellTransition(\n      state.regionId,\n      desiredPosition,\n      state.width,\n      state.height,\n    );\n    if (transition === undefined) return [];\n    const targetDistance = materialReturnHopDistance(\n      state.regionId,\n      claim.sourceRegionId,\n      transition.targetRegionId,\n    );\n    if (targetDistance === undefined) return [];\n    return [{ direction, desiredPosition, transition, targetDistance }];\n  }).sort((a, b) =>\n    a.targetDistance - b.targetDistance ||\n    directionRank(a.direction) - directionRank(b.direction) ||\n    a.transition.targetRegionId.localeCompare(b.transition.targetRegionId)\n  );\n  const selected = candidates[0];\n  if (selected === undefined) return undefined;\n  const finalHop = selected.transition.targetRegionId === claim.sourceRegionId;\n  return {\n    transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${selected.direction}`,\n    agentId: agent.id,\n    direction: selected.direction,\n    resource: claim.resource,\n    desiredPosition: selected.desiredPosition,\n    // Intermediate relays must carry the same origin claim. The final hop keeps\n    // the old direct-return behavior and needs no extra arrival bookkeeping.\n    ...(finalHop ? {} : {\n      claimId: claim.claimId,\n      claimSourceRegionId: claim.sourceRegionId,\n      returnToSourceStorage: true,\n    }),\n  };\n}\n\nfunction returnTravelTargetForArrival'''
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'returnHandoffForArrival replacement: {count}')
+
+          pattern = re.compile(r'''function returnTravelTargetForArrival\(\n  state: WorldState,\n  agent: Agent,\n  claim: AutonomousArrivalClaim,\n\): GridPosition \| undefined \{.*?\n\}\n\nfunction samePosition''', re.S)
+          replacement = '''function returnTravelTargetForArrival(\n  state: WorldState,\n  agent: Agent,\n  claim: AutonomousArrivalClaim,\n): GridPosition | undefined {\n  if (\n    claim.returnToSourceStorage !== true ||\n    inventoryAmount(agent) <= 0 ||\n    hasAvailableFactionStorage(state, agent.factionId)\n  ) return undefined;\n\n  const distances = localPathDistances(state, agent.position);\n  const candidates: Array<{\n    position: GridPosition;\n    distance: number;\n    direction: HexGridDirection;\n    targetDistance: number;\n    targetRegionId: string;\n  }> = [];\n  for (const tile of state.tiles) {\n    const position = { x: tile.x, y: tile.y };\n    if (!isHexGridCell(state, position) || !isPassable(state, position)) continue;\n    const distance = distances.get(positionKey(position));\n    if (distance === undefined) continue;\n    for (const direction of boundaryDirections(state, position)) {\n      const step = HEX_GRID_DIRECTION_STEPS[direction];\n      const transition = regionCellTransition(\n        state.regionId,\n        { x: position.x + step.x, y: position.y + step.y },\n        state.width,\n        state.height,\n      );\n      if (transition === undefined) continue;\n      const targetDistance = materialReturnHopDistance(\n        state.regionId,\n        claim.sourceRegionId,\n        transition.targetRegionId,\n      );\n      if (targetDistance === undefined) continue;\n      candidates.push({\n        position,\n        distance,\n        direction,\n        targetDistance,\n        targetRegionId: transition.targetRegionId,\n      });\n    }\n  }\n  return candidates\n    .sort((a, b) =>\n      a.targetDistance - b.targetDistance ||\n      a.distance - b.distance ||\n      directionRank(a.direction) - directionRank(b.direction) ||\n      a.targetRegionId.localeCompare(b.targetRegionId) ||\n      a.position.y - b.position.y ||\n      a.position.x - b.position.x\n    )[0]?.position;\n}\n\nfunction samePosition'''
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'returnTravelTargetForArrival replacement: {count}')
+
+          replace_once(
+              '    const sourceRegionId = runtimeAccess(this).runtime.snapshot().regionId;\n    const target = this.autonomyStub(payload.toRegionId);',
+              '    const sourceRegionId = pending.claimSourceRegionId ?? runtimeAccess(this).runtime.snapshot().regionId;\n    const target = this.autonomyStub(payload.toRegionId);',
+              'preserve ultimate claim source',
+          )
+
+          old = '''    if (\n      arrived?.autonomy !== true ||\n      arrived.task?.source !== "autonomy" ||\n      arrived.task.type !== "gather" ||\n      arrived.task.resource !== body.resource\n    ) {\n      return new Response(JSON.stringify({ error: "arrival agent is not continuing this gather intent" }), {\n        status: 409,\n      });\n    }'''
+          new = '''    const continuingGather =\n      arrived?.autonomy === true &&\n      arrived.task?.source === "autonomy" &&\n      arrived.task.type === "gather" &&\n      arrived.task.resource === body.resource;\n    const continuingReturnDeposit =\n      body.returnToSourceStorage === true &&\n      arrived?.autonomy === true &&\n      arrived.task?.source === "autonomy" &&\n      arrived.task.type === "deposit";\n    if (!continuingGather && !continuingReturnDeposit) {\n      return new Response(JSON.stringify({ error: "arrival agent is not continuing this material intent" }), {\n        status: 409,\n      });\n    }'''
+          replace_once(old, new, 'accept return deposit arrival')
+
+          path.write_text(text)
+
+          test_path = Path("tests/autonomy-material-return-relay.test.mjs")
+          test_path.write_text(r'''import assert from "node:assert/strict";
+import test from "node:test";
+import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
+import { hexGridCenter } from "../dist-ts/src/hex-grid.js";
+import { materialReturnHopDistance } from "../dist-ts/src/autonomy-region.js";
+import { WorldRuntime } from "../dist-ts/src/runtime.js";
+
+const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
+
+class MemoryStorage {
+  constructor() { this.values = new Map(); this.alarm = null; }
+  async get(key) { return structuredClone(this.values.get(key)); }
+  async put(key, value) { this.values.set(key, structuredClone(value)); }
+  async getAlarm() { return this.alarm; }
+  async setAlarm(value) { this.alarm = value instanceof Date ? value.getTime() : value; }
+  async deleteAlarm() { this.alarm = null; }
+}
+class MemoryState {
+  constructor() { this.storage = new MemoryStorage(); this.sockets = []; this.ready = Promise.resolve(); }
+  blockConcurrencyWhile(callback) {
+    const result = this.ready.then(callback);
+    this.ready = result.catch(() => {});
+    return result;
+  }
+  acceptWebSocket(socket) { this.sockets.push(socket); }
+  getWebSockets() { return [...this.sockets]; }
+}
+class MemoryNamespace {
+  constructor(env) { this.env = env; this.entries = new Map(); }
+  idFromName(name) { return name; }
+  get(id) {
+    let entry = this.entries.get(id);
+    if (!entry) {
+      const state = new MemoryState();
+      const object = new RegionDurableObject(state, this.env);
+      entry = { state, object };
+      this.entries.set(id, entry);
+    }
+    return { fetch: async (request) => { await entry.state.ready; return entry.object.fetch(request); } };
+  }
+}
+function environment() {
+  const env = {
+    WORLD_SEED: "919191",
+    REGION_IDS: "garden-1,garden-2,garden-3",
+    TICK_MS: "10000",
+    OPEN_COMMANDS: "false",
+    COMMAND_TOKEN: "command-secret",
+    ADMIN_TOKEN: "admin-secret",
+    ASSETS: { fetch: async () => new Response("not found", { status: 404 }) },
+  };
+  env.REGIONS = new MemoryNamespace(env);
+  return env;
+}
+async function publicJson(env, path) {
+  const response = await worker.fetch(new Request(`https://moyo.example${path}`), env);
+  return { response, body: await response.json() };
+}
+async function assignRegion(env, regionId) {
+  await publicJson(env, `/api/world/snapshot?region=${regionId}`);
+  const entry = env.REGIONS.entries.get(regionId);
+  assert.ok(entry);
+  await entry.state.ready;
+  return entry;
+}
+
+test("material return routing only accepts macro hops that strictly approach the claim origin", () => {
+  assert.equal(materialReturnHopDistance("hex-q0-r0", "hex-q2-r0", "hex-q1-r0"), 1);
+  assert.equal(materialReturnHopDistance("hex-q1-r0", "hex-q2-r0", "hex-q2-r0"), 0);
+  assert.equal(materialReturnHopDistance("hex-q0-r0", "hex-q2-r0", "hex-q-1-r0"), undefined);
+});
+
+test("gathered cargo can relay through a storage-less intermediate region without losing its origin claim", async () => {
+  const env = environment();
+  const first = await assignRegion(env, "hex-q0-r0");
+  const relay = await assignRegion(env, "hex-q1-r0");
+  const origin = await assignRegion(env, "hex-q2-r0");
+
+  const firstState = first.object.runtime.snapshot();
+  firstState.tick = 24;
+  firstState.structures = [];
+  for (const candidate of firstState.agents) candidate.autonomy = false;
+  const courier = firstState.agents[0];
+  assert.ok(courier);
+  courier.autonomy = true;
+  courier.position = hexGridCenter(firstState);
+  courier.energy = 100;
+  courier.capacity = 8;
+  courier.inventory = { wood: 4, stone: 0, food: 0 };
+  courier.task = { source: "autonomy", issuedAtTick: 24, type: "deposit" };
+  first.object.runtime = new WorldRuntime({ state: firstState });
+  await first.object.persist();
+
+  const relayState = relay.object.runtime.snapshot();
+  relayState.structures = [];
+  for (const candidate of relayState.agents) candidate.autonomy = false;
+  relay.object.runtime = new WorldRuntime({ state: relayState });
+  await relay.object.persist();
+
+  const originState = origin.object.runtime.snapshot();
+  for (const candidate of originState.agents) candidate.autonomy = false;
+  const originCenter = hexGridCenter(originState);
+  originState.structures = [{
+    id: "origin-storehouse",
+    factionId: courier.factionId,
+    type: "storehouse",
+    position: { ...originCenter },
+    status: "active",
+    progress: 1,
+    requiredProgress: 1,
+    storage: { wood: 0, stone: 0, food: 0 },
+  }];
+  origin.object.runtime = new WorldRuntime({ state: originState });
+  await origin.object.persist();
+
+  await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{
+    claimId: "two-hop-return",
+    sourceRegionId: "hex-q2-r0",
+    agentId: courier.id,
+    resource: "wood",
+    registeredAtTick: 24,
+    gatheredAmount: 4,
+    settledAmount: 4,
+    returnToSourceStorage: true,
+  }]);
+
+  let deposited = false;
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    await first.object.alarm();
+    await relay.object.alarm();
+    await origin.object.alarm();
+    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
+    if ((storehouse?.storage.wood ?? 0) >= 4) {
+      deposited = true;
+      break;
+    }
+  }
+  assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");
+
+  const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.ok(
+    relayClaims === undefined || relayClaims.length === 0 || relayClaims.every((entry) => entry.sourceRegionId === "hex-q2-r0"),
+    "any in-flight relay bookkeeping must preserve the ultimate source region",
+  );
+});
+''')
+          PY
+      - name: Validate full build
+        run: npm run build
+      - name: Commit product change and remove one-shot workflow
+        shell: bash
+        run: |
+          rm .github/workflows/moyo-improve-multihop-return.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/autonomy-region.ts tests/autonomy-material-return-relay.test.mjs .github/workflows/moyo-improve-multihop-return.yml
+          git commit -m "sim: relay gathered cargo across regions"
+          git push origin HEAD:main
