@@ -2,45 +2,48 @@ name: One-shot spatial caregiver selection
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-spatial-caregiver.yml
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore: stage spatial caregiver selection'
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: main
-
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-
-      - name: Apply caregiver selection patch
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Apply spatial caregiver patch
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           path = Path('src/demography.ts')
           text = path.read_text()
           old_import = 'import type { Agent, WorldState } from "./protocol.js";\n'
-          new_import = 'import { hexGridDistance } from "./hex-grid.js";\n' + old_import
           if 'import { hexGridDistance } from "./hex-grid.js";' not in text:
-              if old_import not in text:
-                  raise SystemExit('demography import anchor not found')
-              text = text.replace(old_import, new_import, 1)
+            if old_import not in text:
+              raise SystemExit('demography import anchor not found')
+            text = text.replace(
+              old_import,
+              'import { hexGridDistance } from "./hex-grid.js";\n' + old_import,
+              1,
+            )
 
-          old = '''export function dependentCaregiverId(
+          old = dedent('''\
+          export function dependentCaregiverId(
             state: WorldState,
             dependent: Agent,
           ): string | undefined {
@@ -54,8 +57,9 @@ jobs:
             }
             return undefined;
           }
-          '''
-          new = '''export function dependentCaregiverId(
+          ''')
+          new = dedent('''\
+          export function dependentCaregiverId(
             state: WorldState,
             dependent: Agent,
           ): string | undefined {
@@ -76,13 +80,13 @@ jobs:
               );
             return candidates[0]?.id;
           }
-          '''
+          ''')
           if old not in text:
-              raise SystemExit('dependentCaregiverId anchor not found')
+            raise SystemExit('dependentCaregiverId anchor not found')
           path.write_text(text.replace(old, new, 1))
 
-          test = Path('tests/demography-caregiver-selection.test.mjs')
-          test.write_text(r'''import test from "node:test";
+          Path('tests/demography-caregiver-selection.test.mjs').write_text(dedent('''\
+          import test from "node:test";
           import assert from "node:assert/strict";
 
           import { dependentCaregiverId } from "../dist-ts/src/demography.js";
@@ -140,19 +144,19 @@ jobs:
 
             assert.equal(dependentCaregiverId(state, child), living.id);
           });
-          '''.replace(/^          /gm, ''))
+          '''))
           PY
-
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Typecheck, test, and build
+      - name: Validate
         run: npm run build
-
-      - name: Commit improvement
+      - name: Commit patch
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin main
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "main moved during validation; refusing non-fast-forward patch"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/demography.ts tests/demography-caregiver-selection.test.mjs
