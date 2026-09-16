@@ -1,0 +1,312 @@
+name: MoYoGarden one-shot return storage fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-improve-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Patch return storage reservation lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('src/autonomy-region.ts')
+          s = p.read_text()
+
+          def one(old, new):
+              global s
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old[:100]!r}')
+              s = s.replace(old, new, 1)
+
+          one(
+          '''  returnToSourceStorage?: boolean;
+          // Source-local reservation against a concrete remote storage observation.
+          ''',
+          '''  returnToSourceStorage?: boolean;
+          // Capacity promised by the source settlement for cargo that has already
+          // been gathered but is still physically in transit. Keep this separate
+          // from `amount`, which shrinks as the remote supply claim is settled.
+          returnStorageAmount?: number;
+          // Source-local reservation against a concrete remote storage observation.
+          ''')
+
+          one(
+          '''    && typeof value.amount === "number"
+              && Number.isFinite(value.amount)
+              && value.amount > 0
+          ''',
+          '''    && typeof value.amount === "number"
+              && Number.isFinite(value.amount)
+              && value.amount >= 0
+              && (
+                value.amount > 0
+                || (
+                  value.returnToSourceStorage === true
+                  && typeof value.returnStorageAmount === "number"
+                  && Number.isFinite(value.returnStorageAmount)
+                  && value.returnStorageAmount > 0
+                )
+              )
+          ''')
+
+          one(
+          '''    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+              && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
+          ''',
+          '''    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+              && (value.returnStorageAmount === undefined || (
+                typeof value.returnStorageAmount === "number"
+                && Number.isFinite(value.returnStorageAmount)
+                && value.returnStorageAmount >= 0
+              ))
+              && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
+          ''')
+
+          one(
+          '''  return claims.reduce((reserved, claim) => {
+              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+              if (claim.sourceFactionId !== undefined) {
+                return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;
+              }
+              const localAgent = claim.agentId === undefined
+                ? undefined
+                : state.agents.find((entry) => entry.id === claim.agentId);
+              if (localAgent !== undefined) {
+                return localAgent.factionId === factionId ? reserved + claim.amount : reserved;
+              }
+              // Rolling-deploy compatibility: an older in-flight return claim can
+              // outlive its source-side BOT. Without a persisted faction we cannot prove
+              // it belongs elsewhere, so reserve its amount conservatively for every
+              // faction until the short claim TTL expires instead of overbooking.
+              return reserved + claim.amount;
+            }, 0);
+          ''',
+          '''  return claims.reduce((reserved, claim) => {
+              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+              if (reservedAmount <= 0) return reserved;
+              if (claim.sourceFactionId !== undefined) {
+                return claim.sourceFactionId === factionId ? reserved + reservedAmount : reserved;
+              }
+              const localAgent = claim.agentId === undefined
+                ? undefined
+                : state.agents.find((entry) => entry.id === claim.agentId);
+              if (localAgent !== undefined) {
+                return localAgent.factionId === factionId ? reserved + reservedAmount : reserved;
+              }
+              // Rolling-deploy compatibility: an older in-flight return claim can
+              // outlive its source-side BOT. Without a persisted faction we cannot prove
+              // it belongs elsewhere, so reserve its amount conservatively for every
+              // faction until the short claim TTL expires instead of overbooking.
+              return reserved + reservedAmount;
+            }, 0);
+          ''')
+
+          one(
+          '''  const finalHop = selected.transition.targetRegionId === claim.sourceRegionId;
+            return {
+              transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${selected.direction}`,
+              agentId: agent.id,
+              direction: selected.direction,
+              resource: claim.resource,
+              desiredPosition: selected.desiredPosition,
+              ...(finalHop ? {} : {
+                claimId: claim.claimId,
+                claimSourceRegionId: claim.sourceRegionId,
+                returnToSourceStorage: true,
+              }),
+            };
+          ''',
+          '''  return {
+              transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${selected.direction}`,
+              agentId: agent.id,
+              direction: selected.direction,
+              resource: claim.resource,
+              desiredPosition: selected.desiredPosition,
+              claimId: claim.claimId,
+              claimSourceRegionId: claim.sourceRegionId,
+              returnToSourceStorage: true,
+            };
+          ''')
+
+          one(
+          '''    const next = remainingAmount > 0
+              ? claims.map((entry) => entry.claimId === claim.claimId
+                ? { ...entry, amount: remainingAmount, settledAmount }
+                : entry)
+              : claims.filter((entry) => entry.claimId !== claim.claimId);
+          ''',
+          '''    const keepReturnStorageReservation =
+              claim.returnToSourceStorage === true
+              && (claim.returnStorageAmount ?? claim.amount) > 0;
+            const next = remainingAmount > 0 || keepReturnStorageReservation
+              ? claims.map((entry) => entry.claimId === claim.claimId
+                ? {
+                    ...entry,
+                    amount: remainingAmount,
+                    settledAmount,
+                    ...(keepReturnStorageReservation
+                      ? {
+                          returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
+                          expiresAtTick: Math.max(
+                            claim.expiresAtTick,
+                            tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
+                          ),
+                        }
+                      : {}),
+                  }
+                : entry)
+              : claims.filter((entry) => entry.claimId !== claim.claimId);
+          ''')
+
+          one(
+          '''        if (
+                  updatedClaim.returnToSourceStorage === true &&
+                  pendingReturn === undefined &&
+                  (existingHandoff === undefined || existingHandoff === null) &&
+                  inventoryAmount(agent) > 0
+                ) {
+          ''',
+          '''        if (
+                  updatedClaim.returnToSourceStorage === true &&
+                  claim.sourceRegionId !== after.regionId &&
+                  pendingReturn === undefined &&
+                  (existingHandoff === undefined || existingHandoff === null) &&
+                  inventoryAmount(agent) > 0
+                ) {
+          ''')
+
+          one(
+          '''      // Keep admitted sink capacity until gathered cargo leaves this BOT.
+              // Releasing at gather completion can overbook storage before deposit commits.
+              const destinationCargoOutstanding =
+          ''',
+          '''      // Source-return capacity follows the physical cargo too. Supply
+              // settlement means the resource was gathered; it does not mean the
+              // promised source storage is free for another expedition yet.
+              const returnCargoOutstanding =
+                updatedClaim.returnToSourceStorage === true
+                && gatheredAmount > 0
+                && agent !== undefined
+                && agent.inventory[updatedClaim.resource] > 0;
+              if (returnCargoOutstanding) {
+                keep.push(updatedClaim);
+                continue;
+              }
+
+              // Keep admitted sink capacity until gathered cargo leaves this BOT.
+              // Releasing at gather completion can overbook storage before deposit commits.
+              const destinationCargoOutstanding =
+          ''')
+
+          one(
+          '''      if (reservationExhausted) {
+                dirty = true;
+                continue;
+              }
+          ''',
+          '''      if (reservationExhausted && updatedClaim.returnToSourceStorage !== true) {
+                dirty = true;
+                continue;
+              }
+          ''')
+
+          one(
+          '''          sourceFactionId: agent.factionId,
+              returnToSourceStorage,
+              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
+          ''',
+          '''          sourceFactionId: agent.factionId,
+              returnToSourceStorage,
+              ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),
+              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
+          ''')
+
+          p.write_text(s)
+
+          t = Path('tests/autonomy-material-return-relay.test.mjs')
+          x = t.read_text()
+          x = x.replace(
+              'const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\n',
+              'const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\nconst SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";\n',
+              1,
+          )
+          needle = '''  origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();
+            await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);
+            let deposited = false;
+          '''
+          repl = '''  origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();
+            await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{ claimId: "two-hop-return", agentId: courier.id, resource: "wood", direction: "W", neighborRegionId: "garden-2", amount: 0, settledAmount: 4, expiresAtTick: originState.tick + 1000, sourceFactionId: courier.factionId, returnToSourceStorage: true, returnStorageAmount: 4 }]);
+            await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);
+            let deposited = false;
+            let observedFinalTransitReservation = false;
+          '''
+          if needle not in x:
+              raise SystemExit('relay setup needle missing')
+          x = x.replace(needle, repl, 1)
+          needle = '''    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
+              if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
+          '''
+          repl = '''    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
+              const finalArrivalClaims = await origin.state.storage.get(ARRIVAL_CLAIMS_KEY);
+              const sourceClaims = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+              if (
+                (storehouse?.storage.wood ?? 0) < 4
+                && finalArrivalClaims?.some((entry) => entry.claimId === "two-hop-return")
+                && sourceClaims?.some((entry) => entry.claimId === "two-hop-return" && entry.returnStorageAmount === 4)
+              ) {
+                observedFinalTransitReservation = true;
+              }
+              if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
+          '''
+          if needle not in x:
+              raise SystemExit('relay loop needle missing')
+          x = x.replace(needle, repl, 1)
+          needle = '''  assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");
+            const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+          '''
+          repl = '''  assert.equal(observedFinalTransitReservation, true, "source storage must remain reserved after the final handoff until physical deposit");
+            assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");
+            const sourceClaimsAfterDeposit = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+            assert.ok(sourceClaimsAfterDeposit === undefined || sourceClaimsAfterDeposit.every((entry) => entry.claimId !== "two-hop-return"));
+            const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+          '''
+          if needle not in x:
+              raise SystemExit('relay assertion needle missing')
+          x = x.replace(needle, repl, 1)
+          t.write_text(x)
+          PY
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck, test, and build
+        run: npm run build
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/moyo-improve-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/autonomy-region.ts tests/autonomy-material-return-relay.test.mjs .github/workflows/moyo-improve-once.yml
+          git commit -m 'sim: reserve return storage until cargo deposit'
+          git push origin HEAD:main
