@@ -102,6 +102,9 @@ export interface AutonomousSupplyClaim {
   // Capacity promised by the source settlement for cargo already gathered but
   // still physically in transit. `amount` separately tracks unclaimed supply.
   returnStorageAmount?: number;
+  // Crash-safe wall-clock lease for source storage promised to cargo in transit.
+  // Optional so existing persisted claims remain compatible during rolling deploys.
+  returnStorageLeaseExpiresAtMs?: number;
   // Source-local reservation against a concrete remote storage observation.
   // It prevents concurrent scouts in this DO from consuming the same bounded
   // destination headroom while legacy/unknown snapshots remain neutral.
@@ -158,6 +161,10 @@ const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;
 // Destination admission uses wall-clock expiry because source and destination
 // simulation ticks may advance at different active/warm/cold cadences.
 const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+// Source simulation ticks can advance much faster than a courier in warm/cold
+// relay regions. Keep the promised return sink alive on wall time as well, but
+// bound crash leakage so abandoned cargo cannot reserve capacity forever.
+const RETURN_STORAGE_RESERVATION_TTL_MS = 6 * 60 * 60 * 1_000;
 const SETTLEMENT_MIGRATION_TTL = 72;
 // Successful bounded catch-up batches can drain debt promptly without
 // putting dozens of full virtual ticks into one DO invocation. Failed
@@ -283,6 +290,11 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
       && Number.isFinite(value.returnStorageAmount)
       && value.returnStorageAmount >= 0
     ))
+    && (value.returnStorageLeaseExpiresAtMs === undefined || (
+      typeof value.returnStorageLeaseExpiresAtMs === "number"
+      && Number.isFinite(value.returnStorageLeaseExpiresAtMs)
+      && value.returnStorageLeaseExpiresAtMs > 0
+    ))
     && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
 }
 
@@ -352,13 +364,26 @@ function hasAvailableFactionStorage(state: WorldState, factionId: string): boole
   return factionStorageCapacityLeft(state, factionId) > 0;
 }
 
+function returnStorageReservationActive(
+  stateTick: number,
+  claim: AutonomousSupplyClaim,
+  now = Date.now(),
+): boolean {
+  if (claim.returnToSourceStorage !== true) return false;
+  const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+  if (reservedAmount <= 0) return false;
+  return claim.expiresAtTick > stateTick
+    || (claim.returnStorageLeaseExpiresAtMs ?? 0) > now;
+}
+
 function reservedReturnStorageForFaction(
   state: WorldState,
   claims: readonly AutonomousSupplyClaim[],
   factionId: string,
 ): number {
+  const now = Date.now();
   return claims.reduce((reserved, claim) => {
-    if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+    if (!returnStorageReservationActive(state.tick, claim, now)) return reserved;
     const reservedAmount = claim.returnStorageAmount ?? claim.amount;
     if (reservedAmount <= 0) return reserved;
     if (claim.sourceFactionId !== undefined) {
@@ -1111,8 +1136,28 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const valid = Array.isArray(stored)
       ? stored.filter(isAutonomousSupplyClaim)
       : [];
-    const active = valid.filter((claim) => claim.expiresAtTick > tick);
-    if (!Array.isArray(stored) || active.length !== stored.length) {
+    const now = Date.now();
+    let upgraded = false;
+    const normalized = valid.map((claim) => {
+      const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+      if (
+        claim.returnToSourceStorage === true
+        && reservedAmount > 0
+        && claim.returnStorageLeaseExpiresAtMs === undefined
+        && claim.expiresAtTick > tick
+      ) {
+        upgraded = true;
+        return {
+          ...claim,
+          returnStorageLeaseExpiresAtMs: now + RETURN_STORAGE_RESERVATION_TTL_MS,
+        };
+      }
+      return claim;
+    });
+    const active = normalized.filter((claim) =>
+      claim.expiresAtTick > tick || returnStorageReservationActive(tick, claim, now)
+    );
+    if (!Array.isArray(stored) || active.length !== stored.length || upgraded) {
       await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, active);
     }
     return active;
@@ -1627,6 +1672,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
             ...(keepReturnStorageReservation
               ? {
                   returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
+                  returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
                   expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
                 }
               : {}),
@@ -2189,7 +2235,12 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
           sourceFactionId: agent.factionId,
           returnToSourceStorage,
-          ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),
+          ...(returnToSourceStorage
+            ? {
+                returnStorageAmount: claimedSupply,
+                returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
+              }
+            : {}),
           ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
         });
       }

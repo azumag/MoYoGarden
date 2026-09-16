@@ -114,3 +114,60 @@ test("blocked relay keeps its ultimate return claim instead of orphaning cargo",
   const afterCourier = relay.object.runtime.snapshot().agents.find((entry) => entry.id === courier.id);
   assert.equal(afterCourier?.inventory.wood, 4);
 });
+
+test("wall-clock return-storage lease survives source tick skew and still expires crash-safely", async () => {
+  const env = environment();
+  const origin = await assignRegion(env, "hex-q2-r0");
+  const state = origin.object.runtime.snapshot();
+  state.tick = 500;
+  for (const candidate of state.agents) candidate.autonomy = false;
+  const courier = state.agents[0];
+  assert.ok(courier);
+  origin.object.runtime = new WorldRuntime({ state });
+  await origin.object.persist();
+
+  const initialLease = Date.now() + 60_000;
+  const claim = {
+    claimId: "wall-clock-return",
+    agentId: courier.id,
+    resource: "wood",
+    direction: "west",
+    neighborRegionId: "garden-2",
+    amount: 0,
+    settledAmount: 4,
+    expiresAtTick: state.tick - 1,
+    sourceFactionId: courier.factionId,
+    returnToSourceStorage: true,
+    returnStorageAmount: 4,
+    returnStorageLeaseExpiresAtMs: initialLease,
+  };
+  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [claim]);
+
+  const settle = await origin.object.fetch(new Request("https://moyo.internal/api/internal/autonomy/claim/settle", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-moyo-region-internal": "hex-q2-r0" },
+    body: JSON.stringify({ claimId: claim.claimId, settledAmount: 4 }),
+  }));
+  assert.equal(settle.status, 200);
+  const kept = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  const renewed = kept?.find((entry) => entry.claimId === claim.claimId);
+  assert.ok(renewed, "wall-clock lease should keep promised return capacity after source tick TTL expires");
+  assert.ok(renewed.expiresAtTick > state.tick, "settlement should refresh the tick fallback");
+  assert.ok(renewed.returnStorageLeaseExpiresAtMs > initialLease, "settlement should refresh the bounded wall-clock lease");
+
+  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{
+    ...claim,
+    returnStorageLeaseExpiresAtMs: Date.now() - 1,
+  }]);
+  const expired = await origin.object.fetch(new Request("https://moyo.internal/api/internal/autonomy/claim/settle", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-moyo-region-internal": "hex-q2-r0" },
+    body: JSON.stringify({ claimId: claim.claimId, settledAmount: 4 }),
+  }));
+  assert.equal(expired.status, 200);
+  const afterExpiry = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  assert.ok(
+    afterExpiry === undefined || afterExpiry.every((entry) => entry.claimId !== claim.claimId),
+    "expired tick and wall-clock leases should release orphaned return capacity",
+  );
+});
