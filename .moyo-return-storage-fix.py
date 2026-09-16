@@ -149,7 +149,7 @@ test("wall-clock return-storage lease survives source tick skew and still expire
     claimId: "wall-clock-return",
     agentId: courier.id,
     resource: "wood",
-    direction: "W",
+    direction: "west",
     neighborRegionId: "garden-2",
     amount: 0,
     settledAmount: 4,
