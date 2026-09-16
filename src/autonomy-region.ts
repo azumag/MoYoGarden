@@ -99,6 +99,9 @@ export interface AutonomousSupplyClaim {
   // already handed off and is no longer present in the source WorldState.
   sourceFactionId?: string;
   returnToSourceStorage?: boolean;
+  // Capacity promised by the source settlement for cargo already gathered but
+  // still physically in transit. `amount` separately tracks unclaimed supply.
+  returnStorageAmount?: number;
   // Source-local reservation against a concrete remote storage observation.
   // It prevents concurrent scouts in this DO from consuming the same bounded
   // destination headroom while legacy/unknown snapshots remain neutral.
@@ -256,7 +259,16 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
     && typeof value.neighborRegionId === "string"
     && typeof value.amount === "number"
     && Number.isFinite(value.amount)
-    && value.amount > 0
+    && value.amount >= 0
+    && (
+      value.amount > 0
+      || (
+        value.returnToSourceStorage === true
+        && typeof value.returnStorageAmount === "number"
+        && Number.isFinite(value.returnStorageAmount)
+        && value.returnStorageAmount > 0
+      )
+    )
     && (value.settledAmount === undefined || (
       typeof value.settledAmount === "number"
       && Number.isFinite(value.settledAmount)
@@ -266,6 +278,11 @@ function isAutonomousSupplyClaim(value: unknown): value is AutonomousSupplyClaim
     && Number.isInteger(value.expiresAtTick)
     && (value.sourceFactionId === undefined || typeof value.sourceFactionId === "string")
     && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+    && (value.returnStorageAmount === undefined || (
+      typeof value.returnStorageAmount === "number"
+      && Number.isFinite(value.returnStorageAmount)
+      && value.returnStorageAmount >= 0
+    ))
     && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
 }
 
@@ -342,20 +359,22 @@ function reservedReturnStorageForFaction(
 ): number {
   return claims.reduce((reserved, claim) => {
     if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+    const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+    if (reservedAmount <= 0) return reserved;
     if (claim.sourceFactionId !== undefined) {
-      return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;
+      return claim.sourceFactionId === factionId ? reserved + reservedAmount : reserved;
     }
     const localAgent = claim.agentId === undefined
       ? undefined
       : state.agents.find((entry) => entry.id === claim.agentId);
     if (localAgent !== undefined) {
-      return localAgent.factionId === factionId ? reserved + claim.amount : reserved;
+      return localAgent.factionId === factionId ? reserved + reservedAmount : reserved;
     }
     // Rolling-deploy compatibility: an older in-flight return claim can
     // outlive its source-side BOT. Without a persisted faction we cannot prove
     // it belongs elsewhere, so reserve its amount conservatively for every
     // faction until the short claim TTL expires instead of overbooking.
-    return reserved + claim.amount;
+    return reserved + reservedAmount;
   }, 0);
 }
 
@@ -496,18 +515,15 @@ function returnHandoffForArrival(
   );
   const selected = candidates[0];
   if (selected === undefined) return undefined;
-  const finalHop = selected.transition.targetRegionId === claim.sourceRegionId;
   return {
     transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${selected.direction}`,
     agentId: agent.id,
     direction: selected.direction,
     resource: claim.resource,
     desiredPosition: selected.desiredPosition,
-    ...(finalHop ? {} : {
-      claimId: claim.claimId,
-      claimSourceRegionId: claim.sourceRegionId,
-      returnToSourceStorage: true,
-    }),
+    claimId: claim.claimId,
+    claimSourceRegionId: claim.sourceRegionId,
+    returnToSourceStorage: true,
   };
 }
 
@@ -1599,9 +1615,22 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const settledAmount = Math.max(previousSettled, body.settledAmount);
     const newlySettled = Math.max(0, settledAmount - previousSettled);
     const remainingAmount = Math.max(0, claim.amount - newlySettled);
-    const next = remainingAmount > 0
+    const keepReturnStorageReservation =
+      claim.returnToSourceStorage === true
+      && (claim.returnStorageAmount ?? claim.amount) > 0;
+    const next = remainingAmount > 0 || keepReturnStorageReservation
       ? claims.map((entry) => entry.claimId === claim.claimId
-        ? { ...entry, amount: remainingAmount, settledAmount }
+        ? {
+            ...entry,
+            amount: remainingAmount,
+            settledAmount,
+            ...(keepReturnStorageReservation
+              ? {
+                  returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
+                  expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
+                }
+              : {}),
+          }
         : entry)
       : claims.filter((entry) => entry.claimId !== claim.claimId);
     await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, next);
@@ -1795,6 +1824,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         // cargo is still on the BOT so later terrain/state changes can replan it.
         if (
           updatedClaim.returnToSourceStorage === true &&
+          claim.sourceRegionId !== after.regionId &&
           pendingReturn === undefined &&
           (existingHandoff === undefined || existingHandoff === null) &&
           inventoryAmount(agent) > 0
@@ -1808,6 +1838,18 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       }
 
       if (stillGathering) {
+        keep.push(updatedClaim);
+        continue;
+      }
+
+      // Gathering settles supply ownership, not the physical sink. Keep
+      // source storage promised until cargo actually leaves the courier.
+      const returnCargoOutstanding =
+        updatedClaim.returnToSourceStorage === true
+        && gatheredAmount > 0
+        && agent !== undefined
+        && agent.inventory[updatedClaim.resource] > 0;
+      if (returnCargoOutstanding) {
         keep.push(updatedClaim);
         continue;
       }
@@ -1831,7 +1873,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         dirty = true;
       }
 
-      if (reservationExhausted) {
+      if (reservationExhausted && updatedClaim.returnToSourceStorage !== true) {
         dirty = true;
         continue;
       }
@@ -2147,6 +2189,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           expiresAtTick: state.tick + AUTONOMOUS_SUPPLY_CLAIM_TTL,
           sourceFactionId: agent.factionId,
           returnToSourceStorage,
+          ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),
           ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
         });
       }

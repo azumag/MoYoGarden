@@ -6,6 +6,7 @@ import { materialReturnHopDistance } from "../dist-ts/src/autonomy-region.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
 const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
+const SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";
 class MemoryStorage {
   constructor() { this.values = new Map(); this.alarm = null; }
   async get(key) { return structuredClone(this.values.get(key)); }
@@ -69,6 +70,11 @@ test("gathered cargo can relay through a storage-less intermediate region withou
   for (const candidate of originState.agents) candidate.autonomy = false;
   originState.structures = [{ id: "origin-storehouse", factionId: courier.factionId, type: "storehouse", position: hexGridCenter(originState), status: "active", progress: 1, requiredProgress: 1, storage: { wood: 0, stone: 0, food: 0 } }];
   origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();
+  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{ claimId: "two-hop-return", agentId: courier.id, resource: "wood", direction: "W", neighborRegionId: "garden-2", amount: 0, settledAmount: 4, expiresAtTick: originState.tick + 1000, sourceFactionId: courier.factionId, returnToSourceStorage: true, returnStorageAmount: 4 }]);
+  const reservedBeforeReturn = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  const returnReservation = reservedBeforeReturn?.find((entry) => entry.claimId === "two-hop-return");
+  assert.equal(returnReservation?.amount, 0, "gathered supply may be fully settled while sink capacity remains reserved");
+  assert.equal(returnReservation?.returnStorageAmount, 4, "source storage reservation must be independent of remaining remote supply");
   await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);
   let deposited = false;
   for (let attempt = 0; attempt < 180; attempt += 1) {
@@ -77,6 +83,8 @@ test("gathered cargo can relay through a storage-less intermediate region withou
     if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
   }
   assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");
+  const sourceClaimsAfterDeposit = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  assert.ok(sourceClaimsAfterDeposit === undefined || sourceClaimsAfterDeposit.every((entry) => entry.claimId !== "two-hop-return"), "source storage reservation must release only after the carried cargo is deposited");
   const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
   assert.ok(relayClaims === undefined || relayClaims.length === 0 || relayClaims.every((entry) => entry.sourceRegionId === "hex-q2-r0"));
 });
