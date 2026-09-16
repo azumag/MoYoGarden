@@ -21,179 +21,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Apply bounded wall-clock return-storage lease
+      - name: Apply candidate patch
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import re
           from pathlib import Path
-          p = Path('src/autonomy-region.ts')
-          s = p.read_text()
-          def one(old, new):
-              global s
-              count = s.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected one match, got {count}: {old[:100]!r}')
-              s = s.replace(old, new, 1)
-          one('''  returnStorageAmount?: number;
-            // Source-local reservation against a concrete remote storage observation.
-          ''','''  returnStorageAmount?: number;
-            // Crash-safe wall-clock lease for promised source storage. Source ticks
-            // may run much faster than a courier in a warm/cold relay region.
-            returnStorageLeaseExpiresAtMs?: number;
-            // Source-local reservation against a concrete remote storage observation.
-          ''')
-          one('''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
-            const SETTLEMENT_MIGRATION_TTL = 72;
-          ''','''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
-            // Keep a return reservation alive for the same number of claim ticks at
-            // the slowest supported one-hour cold-region cadence. Explicit deposit
-            // still releases it earlier; the wall lease only bounds crash leakage.
-            const RETURN_STORAGE_RESERVATION_TTL_MS = AUTONOMOUS_SUPPLY_CLAIM_TTL * 60 * 60 * 1_000;
-            const SETTLEMENT_MIGRATION_TTL = 72;
-          ''')
-          one('''    && (value.returnStorageAmount === undefined || (
-              typeof value.returnStorageAmount === "number"
-              && Number.isFinite(value.returnStorageAmount)
-              && value.returnStorageAmount >= 0
-            ))
-            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
-          ''','''    && (value.returnStorageAmount === undefined || (
-              typeof value.returnStorageAmount === "number"
-              && Number.isFinite(value.returnStorageAmount)
-              && value.returnStorageAmount >= 0
-            ))
-            && (value.returnStorageLeaseExpiresAtMs === undefined || (
-              typeof value.returnStorageLeaseExpiresAtMs === "number"
-              && Number.isFinite(value.returnStorageLeaseExpiresAtMs)
-              && value.returnStorageLeaseExpiresAtMs > 0
-            ))
-            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
-          ''')
-          one('''function reservedReturnStorageForFaction(
-            state: WorldState,
-            claims: readonly AutonomousSupplyClaim[],
-            factionId: string,
-          ): number {
-            return claims.reduce((reserved, claim) => {
-              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
-              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
-          ''','''export function returnStorageReservationActive(
-            stateTick: number,
-            claim: AutonomousSupplyClaim,
-            now = Date.now(),
-          ): boolean {
-            if (claim.returnToSourceStorage !== true) return false;
-            const reservedAmount = claim.returnStorageAmount ?? claim.amount;
-            if (reservedAmount <= 0) return false;
-            return claim.expiresAtTick > stateTick
-              || (claim.returnStorageLeaseExpiresAtMs ?? 0) > now;
-          }
-
-          function reservedReturnStorageForFaction(
-            state: WorldState,
-            claims: readonly AutonomousSupplyClaim[],
-            factionId: string,
-          ): number {
-            const now = Date.now();
-            return claims.reduce((reserved, claim) => {
-              if (!returnStorageReservationActive(state.tick, claim, now)) return reserved;
-              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
-          ''')
-          one('''    const valid = stored.filter(isAutonomousSupplyClaim);
-            const active = valid.filter((claim) => claim.expiresAtTick > tick);
-            if (active.length !== stored.length) {
-              await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, active);
-            }
-            return active;
-          ''','''    const valid = stored.filter(isAutonomousSupplyClaim);
-            const now = Date.now();
-            let upgraded = false;
-            const normalized = valid.map((claim) => {
-              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
-              if (
-                claim.returnToSourceStorage === true
-                && reservedAmount > 0
-                && claim.returnStorageLeaseExpiresAtMs === undefined
-                && claim.expiresAtTick > tick
-              ) {
-                upgraded = true;
-                return { ...claim, returnStorageLeaseExpiresAtMs: now + RETURN_STORAGE_RESERVATION_TTL_MS };
-              }
-              return claim;
-            });
-            const active = normalized.filter((claim) =>
-              claim.expiresAtTick > tick || returnStorageReservationActive(tick, claim, now)
-            );
-            if (active.length !== stored.length || upgraded) {
-              await this.autonomyState.storage.put(AUTONOMOUS_SUPPLY_CLAIMS_KEY, active);
-            }
-            return active;
-          ''')
-          one('''                  returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
-                    expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
-          ''','''                  returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
-                    returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
-                    expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
-          ''')
-          one('''          ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),
-              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
-          ''','''          ...(returnToSourceStorage
-                ? {
-                    returnStorageAmount: claimedSupply,
-                    returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
-                  }
-                : {}),
-              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
-          ''')
-          p.write_text(s)
-
-          t = Path('tests/autonomy-material-return-relay.test.mjs')
-          x = t.read_text()
-          marker = 'wall-clock return-storage lease survives source tick skew'
-          if marker in x:
-              raise SystemExit('regression test already exists')
-          x += r'''
-
-test("wall-clock return-storage lease survives source tick skew and still expires crash-safely", async () => {
-  const env = environment();
-  const origin = await assignRegion(env, "hex-q2-r0");
-  const state = origin.object.runtime.snapshot();
-  state.tick = 500;
-  for (const candidate of state.agents) candidate.autonomy = false;
-  const courier = state.agents[0]; assert.ok(courier);
-  origin.object.runtime = new WorldRuntime({ state }); await origin.object.persist();
-  const claim = {
-    claimId: "wall-clock-return", agentId: courier.id, resource: "wood", direction: "W",
-    neighborRegionId: "garden-2", amount: 0, settledAmount: 4, expiresAtTick: state.tick - 1,
-    sourceFactionId: courier.factionId, returnToSourceStorage: true, returnStorageAmount: 4,
-    returnStorageLeaseExpiresAtMs: Date.now() + 30_000,
-  };
-  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [claim]);
-  const settle = await origin.object.fetch(new Request("https://moyo.internal/api/internal/autonomy/claim/settle", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-moyo-region-internal": "hex-q2-r0" },
-    body: JSON.stringify({ claimId: claim.claimId, gatheredAmount: 4 }),
-  }));
-  assert.equal(settle.status, 200);
-  const kept = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
-  const renewed = kept?.find((entry) => entry.claimId === claim.claimId);
-  assert.ok(renewed, "wall-clock lease should keep return capacity reserved after source tick TTL expires");
-  assert.ok(renewed.expiresAtTick > state.tick, "settlement should refresh the tick fallback after wall-clock rescue");
-  assert.ok(renewed.returnStorageLeaseExpiresAtMs > claim.returnStorageLeaseExpiresAtMs, "settlement should refresh the bounded crash lease");
-
-  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{ ...claim, returnStorageLeaseExpiresAtMs: Date.now() - 1 }]);
-  const expired = await origin.object.fetch(new Request("https://moyo.internal/api/internal/autonomy/claim/settle", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-moyo-region-internal": "hex-q2-r0" },
-    body: JSON.stringify({ claimId: claim.claimId, gatheredAmount: 4 }),
-  }));
-  assert.equal(expired.status, 200);
-  const afterExpiry = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
-  assert.ok(afterExpiry === undefined || afterExpiry.every((entry) => entry.claimId !== claim.claimId), "expired tick and wall-clock leases should release orphaned capacity");
-});
-'''
-          t.write_text(x)
+          source = Path('.github/workflows/moyo-complete-once.yml').read_text()
+          match = re.search(r"python3 - <<'PY'\n(.*?)\n          PY", source, re.S)
+          if match is None:
+              raise SystemExit('candidate patch script not found')
+          lines = match.group(1).splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines)
+          exec(compile(script, '<bounded-return-storage-patch>', 'exec'))
           PY
       - name: Install dependencies
         run: npm install --no-audit --no-fund
