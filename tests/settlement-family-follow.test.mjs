@@ -7,6 +7,7 @@ import {
   planSettlementFamilyFollow,
   registerSettlementFamilyFollowers,
   settlementFamilyAdmissionReady,
+  settlementFamilyHousingHeadroom,
 } from "../dist-ts/src/settlement-migration.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
@@ -154,4 +155,67 @@ test("ownership attach clears the family target only on final arrival", () => {
   const arrived = result.value?.state.agents.find((agent) => agent.id === globalHandoffAgentId(moving.id, source.regionId));
   assert.ok(arrived);
   assert.equal(arrived.settlementFamilyTargetRegionId, undefined);
+});
+
+
+test("family admission uses camp resident headroom and follower registration respects it", () => {
+  const destination = createInitialWorld({ seed: 260922, width: 40, height: 24, regionId: "hex-q1-r0" });
+  clearHex(destination);
+  const faction = destination.factions[0];
+  assert.ok(faction);
+  const residentTemplate = baseAgent(destination);
+  destination.structures = [{
+    id: "frontier-camp",
+    factionId: faction.id,
+    type: "camp",
+    position: { x: 19, y: 11 },
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 0 },
+  }];
+  faction.resources = { wood: 0, stone: 0, food: 2 };
+  destination.agents = Array.from({ length: 5 }, (_, index) => ({
+    ...structuredClone(residentTemplate),
+    id: `resident-${index}`,
+    factionId: faction.id,
+    hp: 100,
+  }));
+  assert.equal(settlementFamilyHousingHeadroom(destination, faction.id), 1);
+  assert.equal(settlementFamilyAdmissionReady(destination, faction.id), true);
+  destination.agents.push({
+    ...structuredClone(residentTemplate),
+    id: "resident-full",
+    factionId: faction.id,
+    hp: 100,
+  });
+  assert.equal(settlementFamilyHousingHeadroom(destination, faction.id), 0);
+  assert.equal(settlementFamilyAdmissionReady(destination, faction.id), false);
+
+  const source = createInitialWorld({ seed: 260923, width: 40, height: 24, regionId: "garden-1" });
+  clearHex(source);
+  const template = baseAgent(source);
+  const pioneerId = globalHandoffAgentId("pioneer", source.regionId);
+  const partner = { ...structuredClone(template), id: "partner", factionId: template.factionId, hp: 100 };
+  const child = {
+    ...structuredClone(template),
+    id: "child",
+    factionId: template.factionId,
+    hp: 100,
+    autonomy: false,
+    lifeStage: "infant",
+    parents: [pioneerId, partner.id],
+  };
+  source.agents = [partner, child];
+  const limited = registerSettlementFamilyFollowers(
+    source,
+    pioneerId,
+    "hex-q1-r0",
+    template.factionId,
+    globalHandoffAgentId(partner.id, source.regionId),
+    1,
+  );
+  assert.deepEqual(limited.agentIds, ["partner"]);
+  assert.equal(partner.settlementFamilyTargetRegionId, "hex-q1-r0");
+  assert.equal(child.settlementFamilyTargetRegionId, undefined);
 });

@@ -31,6 +31,7 @@ import {
   prepareSettlementMigrationKit,
   registerSettlementFamilyFollowers,
   settlementFamilyAdmissionReady,
+  settlementFamilyHousingHeadroom,
   shouldScoutSettlementMigration,
   type AutonomousSettlementMigrationPlan,
 } from "./settlement-migration.js";
@@ -1245,6 +1246,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       || typeof body.targetRegionId !== "string"
       || typeof body.factionId !== "string"
       || (body.pioneerPartnerId !== undefined && typeof body.pioneerPartnerId !== "string")
+      || (body.maxFollowers !== undefined && (typeof body.maxFollowers !== "number" || !Number.isInteger(body.maxFollowers) || body.maxFollowers < 0))
       || regionAxialCoordinate(body.targetRegionId) === undefined
     ) {
       return new Response(JSON.stringify({ error: "invalid settlement family registration" }), { status: 400 });
@@ -1256,6 +1258,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       body.targetRegionId,
       body.factionId,
       body.pioneerPartnerId,
+      body.maxFollowers,
     );
     if (result.agentIds.length > 0) this.replaceRuntimeState(state);
     return new Response(JSON.stringify({
@@ -1286,7 +1289,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         dirty = true;
         continue;
       }
-      if (!settlementFamilyAdmissionReady(state, pioneer.factionId)) continue;
+      const familyHousingHeadroom = settlementFamilyHousingHeadroom(state, pioneer.factionId);
+
+      if (familyHousingHeadroom <= 0 || !settlementFamilyAdmissionReady(state, pioneer.factionId)) continue;
       try {
         const response = await this.autonomyStub(sourceRegionId).fetch(new Request(
           `https://moyo.internal${INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH}`,
@@ -1300,6 +1305,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
               pioneerId: pioneer.id,
               targetRegionId: state.regionId,
               factionId: pioneer.factionId,
+              maxFollowers: familyHousingHeadroom,
               ...(pioneer.pregnancy?.partnerId === undefined
                 ? {}
                 : { pioneerPartnerId: pioneer.pregnancy.partnerId }),

@@ -87,6 +87,7 @@ export function registerSettlementFamilyFollowers(
   targetRegionId: string,
   factionId: string,
   pioneerPartnerId?: string,
+  maxFollowers = MAX_SETTLEMENT_FAMILY_FOLLOWERS,
 ): SettlementFamilyRegistrationResult {
   if (
     regionAxialCoordinate(targetRegionId) === undefined
@@ -127,15 +128,30 @@ export function registerSettlementFamilyFollowers(
     }
   }
 
+  const followerLimit = Number.isFinite(maxFollowers)
+    ? Math.max(0, Math.min(MAX_SETTLEMENT_FAMILY_FOLLOWERS, Math.floor(maxFollowers)))
+    : MAX_SETTLEMENT_FAMILY_FOLLOWERS;
   const selected = [...priorities]
     .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
-    .slice(0, MAX_SETTLEMENT_FAMILY_FOLLOWERS)
+    .slice(0, followerLimit)
     .map(([agentId]) => agentId);
   for (const agentId of selected) {
     const agent = state.agents.find((entry) => entry.id === agentId);
     if (agent !== undefined) agent.settlementFamilyTargetRegionId = targetRegionId;
   }
   return { agentIds: selected, candidateCount: priorities.size };
+}
+
+export function settlementFamilyHousingHeadroom(state: WorldState, factionId: string): number {
+  const activeCamps = state.structures.filter((structure) =>
+    structure.factionId === factionId
+    && structure.status === "active"
+    && structure.type === "camp"
+  ).length;
+  const residents = state.agents.filter((agent) =>
+    agent.factionId === factionId && agent.hp > 0
+  ).length;
+  return Math.max(0, activeCamps * RESIDENT_CAPACITY_PER_CAMP - residents);
 }
 
 export function settlementFamilyAdmissionReady(state: WorldState, factionId: string): boolean {
@@ -145,6 +161,7 @@ export function settlementFamilyAdmissionReady(state: WorldState, factionId: str
     structure.factionId === factionId && structure.status === "active"
   );
   if (!activeStructures.some((structure) => structure.type === "camp")) return false;
+  if (settlementFamilyHousingHeadroom(state, factionId) <= 0) return false;
   const storageHeadroom = activeStructures.reduce(
     (sum, structure) => sum + Math.max(
       0,
