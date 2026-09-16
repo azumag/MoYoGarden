@@ -69,46 +69,19 @@ jobs:
 
           migration = Path('src/settlement-migration.ts')
           text = migration.read_text()
-          import_anchor = '''} from "./hex-grid.js";
-          import {
-            BUILD_RECIPES,
-          '''
-          import_replacement = '''} from "./hex-grid.js";
-          import { dependentCaregiverId } from "./demography.js";
-          import {
-            BUILD_RECIPES,
-          '''
+          import_anchor = '} from "./hex-grid.js";\nimport {\n  BUILD_RECIPES,\n'
+          import_replacement = '} from "./hex-grid.js";\nimport { dependentCaregiverId } from "./demography.js";\nimport {\n  BUILD_RECIPES,\n'
           if import_anchor not in text:
             raise SystemExit('settlement migration import anchor not found')
           text = text.replace(import_anchor, import_replacement, 1)
 
-          caregiver_anchor = '''      const alternateLivingParent = relative.parents.some((parentId) =>
-            parentId !== agent.id && livingSameFaction.has(parentId)
-          );
-          // Leaving a dependent with another living parent is disruptive but still
-          // safer than making the migration remove the child's only living parent.
-          '''
-          caregiver_replacement = '''      const alternateLivingParent = relative.parents.some((parentId) =>
-            parentId !== agent.id && livingSameFaction.has(parentId)
-          );
-          const activeCaregiver = dependentCaregiverId(state, relative) === agent.id;
-          // Migration should reflect the same low-level caregiver that pays the
-          // recurring demographic energy cost. When a co-parent remains, prefer
-          // moving the non-caregiver before the active caregiver; the sole living
-          // parent is still the most disruptive departure. This remains a soft
-          // preference so settlement expansion cannot deadlock on family state.
-          '''
+          caregiver_anchor = '      const alternateLivingParent = relative.parents.some((parentId) =>\n        parentId !== agent.id && livingSameFaction.has(parentId)\n      );\n      // Leaving a dependent with another living parent is disruptive but still\n      // safer than making the migration remove the child\'s only living parent.\n'
+          caregiver_replacement = '      const alternateLivingParent = relative.parents.some((parentId) =>\n        parentId !== agent.id && livingSameFaction.has(parentId)\n      );\n      const activeCaregiver = dependentCaregiverId(state, relative) === agent.id;\n      // Migration should reflect the same low-level caregiver that pays the\n      // recurring demographic energy cost. When a co-parent remains, prefer\n      // moving the non-caregiver before the active caregiver; the sole living\n      // parent is still the most disruptive departure. This remains a soft\n      // preference so settlement expansion cannot deadlock on family state.\n'
           if caregiver_anchor not in text:
             raise SystemExit('family caregiver anchor not found')
           text = text.replace(caregiver_anchor, caregiver_replacement, 1)
-          old_cost = '''      cost += relative.lifeStage === "infant"
-            ? (alternateLivingParent ? 3 : 5)
-            : (alternateLivingParent ? 2 : 3);
-          '''
-          new_cost = '''      cost += relative.lifeStage === "infant"
-            ? (alternateLivingParent ? (activeCaregiver ? 4 : 2) : 5)
-            : (alternateLivingParent ? (activeCaregiver ? 2 : 1) : 3);
-          '''
+          old_cost = '      cost += relative.lifeStage === "infant"\n        ? (alternateLivingParent ? 3 : 5)\n        : (alternateLivingParent ? 2 : 3);\n'
+          new_cost = '      cost += relative.lifeStage === "infant"\n        ? (alternateLivingParent ? (activeCaregiver ? 4 : 2) : 5)\n        : (alternateLivingParent ? (activeCaregiver ? 2 : 1) : 3);\n'
           if old_cost not in text:
             raise SystemExit('family separation cost not found')
           migration.write_text(text.replace(old_cost, new_cost, 1))
