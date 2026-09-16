@@ -60,6 +60,10 @@ interface PendingAutonomousHandoff {
   direction: HexGridDirection;
   resource: ResourceKind | undefined;
   claimId?: string;
+  // Preserve the ultimate claim owner when gathered cargo is relayed through
+  // an intermediate region. Optional for rolling compatibility with old pending
+  // handoffs, where the immediate source remains the claim owner.
+  claimSourceRegionId?: string;
   desiredPosition?: GridPosition;
   returnToSourceStorage?: boolean;
   settlementMigration?: boolean;
@@ -419,6 +423,41 @@ function isBoundaryPosition(state: WorldState, position: Agent["position"]): boo
   return boundaryDirections(state, position).length > 0;
 }
 
+function regionDistanceToTarget(
+  regionId: string,
+  targetRegionId: string,
+): number | undefined {
+  const region = regionAxialCoordinate(regionId);
+  const target = regionAxialCoordinate(targetRegionId);
+  if (region === undefined || target === undefined) return undefined;
+  const dq = region.q - target.q;
+  const dr = region.r - target.r;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(dq + dr)) / 2;
+}
+
+/**
+ * Return the remaining macro-hex distance only for a handoff that makes strict
+ * progress toward the original material source. Direct legacy/historical source
+ * IDs retain the old one-hop behavior even when an axial coordinate is missing.
+ */
+export function materialReturnHopDistance(
+  currentRegionId: string,
+  targetRegionId: string,
+  candidateRegionId: string,
+): number | undefined {
+  if (candidateRegionId === targetRegionId) return 0;
+  const currentDistance = regionDistanceToTarget(currentRegionId, targetRegionId);
+  const candidateDistance = regionDistanceToTarget(candidateRegionId, targetRegionId);
+  if (
+    currentDistance === undefined ||
+    candidateDistance === undefined ||
+    candidateDistance >= currentDistance
+  ) {
+    return undefined;
+  }
+  return candidateDistance;
+}
+
 function returnHandoffForArrival(
   state: WorldState,
   agent: Agent,
@@ -430,7 +469,7 @@ function returnHandoffForArrival(
     hasAvailableFactionStorage(state, agent.factionId)
   ) return undefined;
 
-  for (const direction of boundaryDirections(state, agent.position)) {
+  const candidates = boundaryDirections(state, agent.position).flatMap((direction) => {
     const step = HEX_GRID_DIRECTION_STEPS[direction];
     const desiredPosition = {
       x: agent.position.x + step.x,
@@ -442,16 +481,34 @@ function returnHandoffForArrival(
       state.width,
       state.height,
     );
-    if (transition?.targetRegionId !== claim.sourceRegionId) continue;
-    return {
-      transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${direction}`,
-      agentId: agent.id,
-      direction,
-      resource: claim.resource,
-      desiredPosition,
-    };
-  }
-  return undefined;
+    if (transition === undefined) return [];
+    const targetDistance = materialReturnHopDistance(
+      state.regionId,
+      claim.sourceRegionId,
+      transition.targetRegionId,
+    );
+    if (targetDistance === undefined) return [];
+    return [{ direction, desiredPosition, transition, targetDistance }];
+  }).sort((a, b) =>
+    a.targetDistance - b.targetDistance ||
+    directionRank(a.direction) - directionRank(b.direction) ||
+    a.transition.targetRegionId.localeCompare(b.transition.targetRegionId)
+  );
+  const selected = candidates[0];
+  if (selected === undefined) return undefined;
+  const finalHop = selected.transition.targetRegionId === claim.sourceRegionId;
+  return {
+    transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${selected.direction}`,
+    agentId: agent.id,
+    direction: selected.direction,
+    resource: claim.resource,
+    desiredPosition: selected.desiredPosition,
+    ...(finalHop ? {} : {
+      claimId: claim.claimId,
+      claimSourceRegionId: claim.sourceRegionId,
+      returnToSourceStorage: true,
+    }),
+  };
 }
 
 function returnTravelTargetForArrival(
@@ -466,7 +523,13 @@ function returnTravelTargetForArrival(
   ) return undefined;
 
   const distances = localPathDistances(state, agent.position);
-  const candidates: Array<{ position: GridPosition; distance: number; direction: HexGridDirection }> = [];
+  const candidates: Array<{
+    position: GridPosition;
+    distance: number;
+    direction: HexGridDirection;
+    targetDistance: number;
+    targetRegionId: string;
+  }> = [];
   for (const tile of state.tiles) {
     const position = { x: tile.x, y: tile.y };
     if (!isHexGridCell(state, position) || !isPassable(state, position)) continue;
@@ -480,14 +543,28 @@ function returnTravelTargetForArrival(
         state.width,
         state.height,
       );
-      if (transition?.targetRegionId !== claim.sourceRegionId) continue;
-      candidates.push({ position, distance, direction });
+      if (transition === undefined) continue;
+      const targetDistance = materialReturnHopDistance(
+        state.regionId,
+        claim.sourceRegionId,
+        transition.targetRegionId,
+      );
+      if (targetDistance === undefined) continue;
+      candidates.push({
+        position,
+        distance,
+        direction,
+        targetDistance,
+        targetRegionId: transition.targetRegionId,
+      });
     }
   }
   return candidates
     .sort((a, b) =>
+      a.targetDistance - b.targetDistance ||
       a.distance - b.distance ||
       directionRank(a.direction) - directionRank(b.direction) ||
+      a.targetRegionId.localeCompare(b.targetRegionId) ||
       a.position.y - b.position.y ||
       a.position.x - b.position.x
     )[0]?.position;
@@ -1443,13 +1520,18 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     }
     const state = runtimeAccess(this).runtime.snapshot();
     const arrived = state.agents.find((entry) => entry.id === body.agentId);
-    if (
-      arrived?.autonomy !== true ||
-      arrived.task?.source !== "autonomy" ||
-      arrived.task.type !== "gather" ||
-      arrived.task.resource !== body.resource
-    ) {
-      return new Response(JSON.stringify({ error: "arrival agent is not continuing this gather intent" }), {
+    const continuingGather =
+      arrived?.autonomy === true &&
+      arrived.task?.source === "autonomy" &&
+      arrived.task.type === "gather" &&
+      arrived.task.resource === body.resource;
+    const continuingReturnDeposit =
+      body.returnToSourceStorage === true &&
+      arrived?.autonomy === true &&
+      arrived.task?.source === "autonomy" &&
+      arrived.task.type === "deposit";
+    if (!continuingGather && !continuingReturnDeposit) {
+      return new Response(JSON.stringify({ error: "arrival agent is not continuing this material intent" }), {
         status: 409,
       });
     }
@@ -1567,7 +1649,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     ) {
       return;
     }
-    const sourceRegionId = runtimeAccess(this).runtime.snapshot().regionId;
+    const sourceRegionId = pending.claimSourceRegionId ?? runtimeAccess(this).runtime.snapshot().regionId;
     const target = this.autonomyStub(payload.toRegionId);
     try {
       await target.fetch(new Request(`https://moyo.internal${INTERNAL_CLAIM_REGISTER_PATH}`, {
@@ -1706,6 +1788,22 @@ export class RegionDurableObject extends HaloRegionDurableObject {
             dirty = true;
             continue;
           }
+        }
+
+        // A blocked seam is a physical routing problem, not evidence that the
+        // original storage claim can be forgotten. Keep the ultimate owner while
+        // cargo is still on the BOT so later terrain/state changes can replan it.
+        if (
+          updatedClaim.returnToSourceStorage === true &&
+          pendingReturn === undefined &&
+          (existingHandoff === undefined || existingHandoff === null) &&
+          inventoryAmount(agent) > 0
+        ) {
+          agent.status = `return route to ${claim.sourceRegionId} unavailable; waiting to replan`;
+          keep.push(updatedClaim);
+          this.replaceRuntimeState(after);
+          dirty = true;
+          continue;
         }
       }
 
