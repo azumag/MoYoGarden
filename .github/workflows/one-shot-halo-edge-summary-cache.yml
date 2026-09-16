@@ -1,0 +1,53 @@
+name: One-shot halo edge summary cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-halo-edge-summary-cache.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache whole-region edge summary per revision
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/halo-region.ts')
+          text = path.read_text()
+          field_old = '''  private haloEdgeReadCache: Map<string, HaloEdgeReadCacheEntry> | undefined;\n  private haloEdgeMutationDepth = 0;\n'''
+          field_new = '''  private haloEdgeReadCache: Map<string, HaloEdgeReadCacheEntry> | undefined;\n  private haloEdgeSupportCache: {\n    revision: number;\n    tick: number;\n    regionSummary: NonNullable<HexHaloEdgeSnapshot["regionSummary"]>;\n    occupantsByPosition: Map<string, number>;\n  } | undefined;\n  private haloEdgeMutationDepth = 0;\n'''
+          if field_old not in text:
+              raise SystemExit('cache field anchor not found')
+          text = text.replace(field_old, field_new, 1)
+          start = text.index('  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {')
+          end = text.index('  private haloStub(regionId: string): DurableObjectStub {', start)
+          replacement = '''  private edgeSupport(state: WorldState): NonNullable<typeof this.haloEdgeSupportCache> {\n    const cached = this.haloEdgeSupportCache;\n    if (cached !== undefined && cached.revision === state.revision && cached.tick === state.tick) {\n      return cached;\n    }\n\n    // Whole-region support is identical for all six directional edge reads at\n    // a given state revision. Build it once instead of rescanning every tile,\n    // structure and agent independently for each neighboring Durable Object.\n    const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };\n    const resourceCapacity: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };\n    const activeStructures = { camp: 0, storehouse: 0, market: 0, workshop: 0 };\n    const storageHeadroom = new Map<string, number>();\n    for (const structure of state.structures) {\n      if (structure.status !== "active") continue;\n      activeStructures[structure.type] += 1;\n      const headroom = Math.max(\n        0,\n        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),\n      );\n      storageHeadroom.set(\n        structure.factionId,\n        (storageHeadroom.get(structure.factionId) ?? 0) + headroom,\n      );\n    }\n    const storageHeadroomByFaction = Object.fromEntries(\n      [...storageHeadroom.entries()]\n        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))\n        .slice(0, MAX_SUMMARIZED_STORAGE_FACTIONS),\n    );\n\n    const occupantCounts = new Map<string, number>();\n    const occupantsByPosition = new Map<string, number>();\n    for (const agent of state.agents) {\n      occupantCounts.set(\n        agent.factionId,\n        (occupantCounts.get(agent.factionId) ?? 0) + 1,\n      );\n      const key = `${agent.position.x},${agent.position.y}`;\n      occupantsByPosition.set(key, (occupantsByPosition.get(key) ?? 0) + 1);\n    }\n    const occupantsByFaction = Object.fromEntries(\n      [...occupantCounts.entries()]\n        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))\n        .slice(0, MAX_SUMMARIZED_OCCUPANT_FACTIONS),\n    );\n\n    let passableCells = 0;\n    for (const tile of state.tiles) {\n      if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;\n      passableCells += 1;\n      if (tile.resource !== undefined) {\n        if (tile.resource.amount > 0) resources[tile.resource.kind] += tile.resource.amount;\n        if (tile.resource.maxAmount > 0) resourceCapacity[tile.resource.kind] += tile.resource.maxAmount;\n      }\n    }\n\n    const next = {\n      revision: state.revision,\n      tick: state.tick,\n      regionSummary: {\n        resources,\n        resourceCapacity,\n        activeStructures,\n        storageHeadroomByFaction,\n        occupantsByFaction,\n        passableCells,\n        occupants: state.agents.length,\n      },\n      occupantsByPosition,\n    };\n    this.haloEdgeSupportCache = next;\n    return next;\n  }\n\n  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {\n    const state = runtimeAccess(this).runtime.snapshot();\n    const { regionSummary, occupantsByPosition } = this.edgeSupport(state);\n    const tiles = hexGridBoundaryCells(state, direction).flatMap((position) => {\n      const tile = getTile(state, position);\n      if (tile === undefined) return [];\n      const occupants = occupantsByPosition.get(`${position.x},${position.y}`) ?? 0;\n      return [{\n        position: { ...position },\n        tile: structuredClone(tile),\n        ...(occupants > 0 ? { occupants } : {}),\n      }];\n    });\n    return {\n      regionId: state.regionId,\n      direction,\n      revision: state.revision,\n      tick: state.tick,\n      regionSummary,\n      tiles,\n    };\n  }\n\n'''
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text)
+          PY
+          rm .github/workflows/one-shot-halo-edge-summary-cache.yml
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify full build
+        run: npm run build
+      - name: Commit improvement
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/halo-region.ts .github/workflows/one-shot-halo-edge-summary-cache.yml
+          git commit -m "perf: reuse halo edge support summaries"
+          git push origin HEAD:main
