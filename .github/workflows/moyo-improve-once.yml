@@ -27,136 +27,66 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           p = Path('src/autonomy-region.ts')
           s = p.read_text()
 
-          def one(old, new):
-              global s
-              count = s.count(old)
+          def replace_once(text, old, new, label):
+              count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'expected exactly one match, got {count}: {old[:100]!r}')
-              s = s.replace(old, new, 1)
+                  raise SystemExit(f'{label}: expected 1 match, got {count}')
+              return text.replace(old, new, 1)
 
-          one(
-          '''  returnToSourceStorage?: boolean;
-          // Source-local reservation against a concrete remote storage observation.
-          ''',
-          '''  returnToSourceStorage?: boolean;
-          // Capacity promised by the source settlement for cargo that has already
-          // been gathered but is still physically in transit. Keep this separate
-          // from `amount`, which shrinks as the remote supply claim is settled.
-          returnStorageAmount?: number;
-          // Source-local reservation against a concrete remote storage observation.
-          ''')
+          s = replace_once(
+              s,
+              '  returnToSourceStorage?: boolean;\n  // Source-local reservation against a concrete remote storage observation.',
+              '  returnToSourceStorage?: boolean;\n  // Capacity promised by the source settlement for cargo that has already\n  // been gathered but is still physically in transit. Keep this separate\n  // from `amount`, which shrinks as the remote supply claim is settled.\n  returnStorageAmount?: number;\n  // Source-local reservation against a concrete remote storage observation.',
+              'interface field',
+          )
 
-          one(
-          '''    && typeof value.amount === "number"
-              && Number.isFinite(value.amount)
-              && value.amount > 0
-          ''',
-          '''    && typeof value.amount === "number"
-              && Number.isFinite(value.amount)
-              && value.amount >= 0
-              && (
-                value.amount > 0
-                || (
-                  value.returnToSourceStorage === true
-                  && typeof value.returnStorageAmount === "number"
-                  && Number.isFinite(value.returnStorageAmount)
-                  && value.returnStorageAmount > 0
-                )
-              )
-          ''')
+          s = replace_once(
+              s,
+              '    && typeof value.amount === "number"\n    && Number.isFinite(value.amount)\n    && value.amount > 0',
+              '    && typeof value.amount === "number"\n    && Number.isFinite(value.amount)\n    && value.amount >= 0\n    && (\n      value.amount > 0\n      || (\n        value.returnToSourceStorage === true\n        && typeof value.returnStorageAmount === "number"\n        && Number.isFinite(value.returnStorageAmount)\n        && value.returnStorageAmount > 0\n      )\n    )',
+              'claim amount validator',
+          )
+          s = replace_once(
+              s,
+              '    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")\n    && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");',
+              '    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")\n    && (value.returnStorageAmount === undefined || (\n      typeof value.returnStorageAmount === "number"\n      && Number.isFinite(value.returnStorageAmount)\n      && value.returnStorageAmount >= 0\n    ))\n    && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");',
+              'return storage validator',
+          )
 
-          one(
-          '''    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
-              && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
-          ''',
-          '''    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
-              && (value.returnStorageAmount === undefined || (
-                typeof value.returnStorageAmount === "number"
-                && Number.isFinite(value.returnStorageAmount)
-                && value.returnStorageAmount >= 0
-              ))
-              && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
-          ''')
+          start = s.index('function reservedReturnStorageForFaction(')
+          end = s.index('\n}\n\nfunction reservedDestinationStorageForFaction(', start) + 2
+          block = s[start:end]
+          block = replace_once(
+              block,
+              '    if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;\n',
+              '    if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;\n    const reservedAmount = claim.returnStorageAmount ?? claim.amount;\n    if (reservedAmount <= 0) return reserved;\n',
+              'return reservation amount',
+          )
+          block = block.replace('reserved + claim.amount', 'reserved + reservedAmount')
+          s = s[:start] + block + s[end:]
 
-          one(
-          '''  return claims.reduce((reserved, claim) => {
-              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
-              if (claim.sourceFactionId !== undefined) {
-                return claim.sourceFactionId === factionId ? reserved + claim.amount : reserved;
-              }
-              const localAgent = claim.agentId === undefined
-                ? undefined
-                : state.agents.find((entry) => entry.id === claim.agentId);
-              if (localAgent !== undefined) {
-                return localAgent.factionId === factionId ? reserved + claim.amount : reserved;
-              }
-              // Rolling-deploy compatibility: an older in-flight return claim can
-              // outlive its source-side BOT. Without a persisted faction we cannot prove
-              // it belongs elsewhere, so reserve its amount conservatively for every
-              // faction until the short claim TTL expires instead of overbooking.
-              return reserved + claim.amount;
-            }, 0);
-          ''',
-          '''  return claims.reduce((reserved, claim) => {
-              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
-              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
-              if (reservedAmount <= 0) return reserved;
-              if (claim.sourceFactionId !== undefined) {
-                return claim.sourceFactionId === factionId ? reserved + reservedAmount : reserved;
-              }
-              const localAgent = claim.agentId === undefined
-                ? undefined
-                : state.agents.find((entry) => entry.id === claim.agentId);
-              if (localAgent !== undefined) {
-                return localAgent.factionId === factionId ? reserved + reservedAmount : reserved;
-              }
-              // Rolling-deploy compatibility: an older in-flight return claim can
-              // outlive its source-side BOT. Without a persisted faction we cannot prove
-              // it belongs elsewhere, so reserve its amount conservatively for every
-              // faction until the short claim TTL expires instead of overbooking.
-              return reserved + reservedAmount;
-            }, 0);
-          ''')
+          start = s.index('function returnHandoffForArrival(')
+          end = s.index('\n}\n\nfunction returnTravelTargetForArrival(', start) + 2
+          block = s[start:end]
+          block = replace_once(block, '  const finalHop = selected.transition.targetRegionId === claim.sourceRegionId;\n', '', 'final hop marker')
+          block = replace_once(
+              block,
+              '    ...(finalHop ? {} : {\n      claimId: claim.claimId,\n      claimSourceRegionId: claim.sourceRegionId,\n      returnToSourceStorage: true,\n    }),',
+              '    claimId: claim.claimId,\n    claimSourceRegionId: claim.sourceRegionId,\n    returnToSourceStorage: true,',
+              'final hop claim tracking',
+          )
+          s = s[:start] + block + s[end:]
 
-          one(
-          '''  const finalHop = selected.transition.targetRegionId === claim.sourceRegionId;
-            return {
-              transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${selected.direction}`,
-              agentId: agent.id,
-              direction: selected.direction,
-              resource: claim.resource,
-              desiredPosition: selected.desiredPosition,
-              ...(finalHop ? {} : {
-                claimId: claim.claimId,
-                claimSourceRegionId: claim.sourceRegionId,
-                returnToSourceStorage: true,
-              }),
-            };
-          ''',
-          '''  return {
-              transferId: `return:${state.regionId}:${agent.id}:${state.tick}:${selected.direction}`,
-              agentId: agent.id,
-              direction: selected.direction,
-              resource: claim.resource,
-              desiredPosition: selected.desiredPosition,
-              claimId: claim.claimId,
-              claimSourceRegionId: claim.sourceRegionId,
-              returnToSourceStorage: true,
-            };
-          ''')
-
-          one(
-          '''    const next = remainingAmount > 0
-              ? claims.map((entry) => entry.claimId === claim.claimId
-                ? { ...entry, amount: remainingAmount, settledAmount }
-                : entry)
-              : claims.filter((entry) => entry.claimId !== claim.claimId);
-          ''',
-          '''    const keepReturnStorageReservation =
+          start = s.index('  private async settleArrivalSourceClaim(')
+          end = s.index('\n  private async releaseArrivalSourceClaim(', start)
+          block = s[start:end]
+          pattern = re.compile(r'    const next = remainingAmount > 0\n      \? claims\.map\(\(entry\) => entry\.claimId === claim\.claimId\n        \? \{ \.\.\.entry, amount: remainingAmount, settledAmount \}\n        : entry\)\n      : claims\.filter\(\(entry\) => entry\.claimId !== claim\.claimId\);')
+          replacement = '''    const keepReturnStorageReservation =
               claim.returnToSourceStorage === true
               && (claim.returnStorageAmount ?? claim.amount) > 0;
             const next = remainingAmount > 0 || keepReturnStorageReservation
@@ -176,124 +106,84 @@ jobs:
                       : {}),
                   }
                 : entry)
-              : claims.filter((entry) => entry.claimId !== claim.claimId);
-          ''')
+              : claims.filter((entry) => entry.claimId !== claim.claimId);'''
+          replacement = '\n'.join(line[10:] if line.startswith('          ') else line for line in replacement.splitlines())
+          block, n = pattern.subn(replacement, block, count=1)
+          if n != 1:
+              raise SystemExit(f'settle source claim: expected 1 match, got {n}')
+          s = s[:start] + block + s[end:]
 
-          one(
-          '''        if (
-                  updatedClaim.returnToSourceStorage === true &&
-                  pendingReturn === undefined &&
-                  (existingHandoff === undefined || existingHandoff === null) &&
-                  inventoryAmount(agent) > 0
-                ) {
-          ''',
-          '''        if (
-                  updatedClaim.returnToSourceStorage === true &&
-                  claim.sourceRegionId !== after.regionId &&
-                  pendingReturn === undefined &&
-                  (existingHandoff === undefined || existingHandoff === null) &&
-                  inventoryAmount(agent) > 0
-                ) {
-          ''')
+          start = s.index('  private async reconcileArrivalClaims(')
+          end = s.index('\n  private replaceRuntimeState(', start)
+          block = s[start:end]
+          block = replace_once(
+              block,
+              '          updatedClaim.returnToSourceStorage === true &&\n          pendingReturn === undefined &&',
+              '          updatedClaim.returnToSourceStorage === true &&\n          claim.sourceRegionId !== after.regionId &&\n          pendingReturn === undefined &&',
+              'source arrival waiting guard',
+          )
+          marker = '      // Keep admitted sink capacity until gathered cargo leaves this BOT.\n'
+          insertion = (
+              '      // Source-return capacity follows the physical cargo too. Supply\n'
+              '      // settlement means the resource was gathered; it does not mean the\n'
+              '      // promised source storage is free for another expedition yet.\n'
+              '      const returnCargoOutstanding =\n'
+              '        updatedClaim.returnToSourceStorage === true\n'
+              '        && gatheredAmount > 0\n'
+              '        && agent !== undefined\n'
+              '        && agent.inventory[updatedClaim.resource] > 0;\n'
+              '      if (returnCargoOutstanding) {\n'
+              '        keep.push(updatedClaim);\n'
+              '        continue;\n'
+              '      }\n\n'
+          )
+          block = replace_once(block, marker, insertion + marker, 'return cargo outstanding')
+          block = replace_once(
+              block,
+              '      if (reservationExhausted) {\n        dirty = true;\n        continue;\n      }',
+              '      if (reservationExhausted && updatedClaim.returnToSourceStorage !== true) {\n        dirty = true;\n        continue;\n      }',
+              'return release despite supply exhaustion',
+          )
+          s = s[:start] + block + s[end:]
 
-          one(
-          '''      // Keep admitted sink capacity until gathered cargo leaves this BOT.
-              // Releasing at gather completion can overbook storage before deposit commits.
-              const destinationCargoOutstanding =
-          ''',
-          '''      // Source-return capacity follows the physical cargo too. Supply
-              // settlement means the resource was gathered; it does not mean the
-              // promised source storage is free for another expedition yet.
-              const returnCargoOutstanding =
-                updatedClaim.returnToSourceStorage === true
-                && gatheredAmount > 0
-                && agent !== undefined
-                && agent.inventory[updatedClaim.resource] > 0;
-              if (returnCargoOutstanding) {
-                keep.push(updatedClaim);
-                continue;
-              }
-
-              // Keep admitted sink capacity until gathered cargo leaves this BOT.
-              // Releasing at gather completion can overbook storage before deposit commits.
-              const destinationCargoOutstanding =
-          ''')
-
-          one(
-          '''      if (reservationExhausted) {
-                dirty = true;
-                continue;
-              }
-          ''',
-          '''      if (reservationExhausted && updatedClaim.returnToSourceStorage !== true) {
-                dirty = true;
-                continue;
-              }
-          ''')
-
-          one(
-          '''          sourceFactionId: agent.factionId,
-              returnToSourceStorage,
-              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
-          ''',
-          '''          sourceFactionId: agent.factionId,
-              returnToSourceStorage,
-              ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),
-              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
-          ''')
-
+          start = s.index('  private async startAutonomousTravels(')
+          end = s.index('\n  private async resumeSettlementMigration(', start)
+          block = s[start:end]
+          block = replace_once(
+              block,
+              '          sourceFactionId: agent.factionId,\n          returnToSourceStorage,\n          ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),',
+              '          sourceFactionId: agent.factionId,\n          returnToSourceStorage,\n          ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),\n          ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),',
+              'initial return storage amount',
+          )
+          s = s[:start] + block + s[end:]
           p.write_text(s)
 
           t = Path('tests/autonomy-material-return-relay.test.mjs')
           x = t.read_text()
-          x = x.replace(
+          x = replace_once(
+              x,
               'const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\n',
               'const ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";\nconst SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";\n',
-              1,
+              'test supply key',
           )
-          needle = '''  origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();
-            await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);
-            let deposited = false;
-          '''
-          repl = '''  origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();
-            await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{ claimId: "two-hop-return", agentId: courier.id, resource: "wood", direction: "W", neighborRegionId: "garden-2", amount: 0, settledAmount: 4, expiresAtTick: originState.tick + 1000, sourceFactionId: courier.factionId, returnToSourceStorage: true, returnStorageAmount: 4 }]);
-            await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);
-            let deposited = false;
-            let observedFinalTransitReservation = false;
-          '''
-          if needle not in x:
-              raise SystemExit('relay setup needle missing')
-          x = x.replace(needle, repl, 1)
-          needle = '''    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
-              if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
-          '''
-          repl = '''    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
-              const finalArrivalClaims = await origin.state.storage.get(ARRIVAL_CLAIMS_KEY);
-              const sourceClaims = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
-              if (
-                (storehouse?.storage.wood ?? 0) < 4
-                && finalArrivalClaims?.some((entry) => entry.claimId === "two-hop-return")
-                && sourceClaims?.some((entry) => entry.claimId === "two-hop-return" && entry.returnStorageAmount === 4)
-              ) {
-                observedFinalTransitReservation = true;
-              }
-              if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
-          '''
-          if needle not in x:
-              raise SystemExit('relay loop needle missing')
-          x = x.replace(needle, repl, 1)
-          needle = '''  assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");
-            const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
-          '''
-          repl = '''  assert.equal(observedFinalTransitReservation, true, "source storage must remain reserved after the final handoff until physical deposit");
-            assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");
-            const sourceClaimsAfterDeposit = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
-            assert.ok(sourceClaimsAfterDeposit === undefined || sourceClaimsAfterDeposit.every((entry) => entry.claimId !== "two-hop-return"));
-            const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
-          '''
-          if needle not in x:
-              raise SystemExit('relay assertion needle missing')
-          x = x.replace(needle, repl, 1)
+          x = replace_once(
+              x,
+              '  origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();\n  await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);\n  let deposited = false;\n',
+              '  origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();\n  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{ claimId: "two-hop-return", agentId: courier.id, resource: "wood", direction: "W", neighborRegionId: "garden-2", amount: 0, settledAmount: 4, expiresAtTick: originState.tick + 1000, sourceFactionId: courier.factionId, returnToSourceStorage: true, returnStorageAmount: 4 }]);\n  await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);\n  let deposited = false;\n  let observedFinalTransitReservation = false;\n',
+              'test relay setup',
+          )
+          x = replace_once(
+              x,
+              '    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");\n    if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }\n',
+              '    const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");\n    const finalArrivalClaims = await origin.state.storage.get(ARRIVAL_CLAIMS_KEY);\n    const sourceClaims = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);\n    if ((storehouse?.storage.wood ?? 0) < 4 && finalArrivalClaims?.some((entry) => entry.claimId === "two-hop-return") && sourceClaims?.some((entry) => entry.claimId === "two-hop-return" && entry.returnStorageAmount === 4)) observedFinalTransitReservation = true;\n    if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }\n',
+              'test observe final transit',
+          )
+          x = replace_once(
+              x,
+              '  assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");\n  const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);\n',
+              '  assert.equal(observedFinalTransitReservation, true, "source storage must remain reserved after the final handoff until physical deposit");\n  assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");\n  const sourceClaimsAfterDeposit = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);\n  assert.ok(sourceClaimsAfterDeposit === undefined || sourceClaimsAfterDeposit.every((entry) => entry.claimId !== "two-hop-return"));\n  const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);\n',
+              'test release after deposit',
+          )
           t.write_text(x)
           PY
       - name: Install dependencies
