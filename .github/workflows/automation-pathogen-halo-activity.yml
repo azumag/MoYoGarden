@@ -1,0 +1,174 @@
+name: Verify pathogen halo activity tier
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-pathogen-halo-activity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply activity-tier pathogen halo patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          source_path = Path("src/pathogen-region.ts")
+          source = source_path.read_text()
+          old_import = '''import {
+            buildConfiguredHexHaloLinks,
+            buildDynamicHexHaloLinks,
+            type HexHaloLink,
+          } from "./hex-halo.js";'''
+          new_import = '''import {
+            buildConfiguredHexHaloLinks,
+            type HexHaloLink,
+          } from "./hex-halo.js";
+          import { haloLinksForActivity, type RegionActivityTier } from "./halo-region.js";'''
+          if old_import not in source:
+            raise SystemExit("expected hex-halo import block not found")
+          source = source.replace(old_import, new_import, 1)
+
+          marker = '''export function pathogenHaloLinksForAgents(
+            state: Pick<WorldState, "agents">,
+            links: readonly HexHaloLink[],
+          ): HexHaloLink[] {
+            if (state.agents.length === 0 || links.length === 0) return [];
+            const occupied = new Set(state.agents.map((agent) => positionKey(agent.position)));
+            return links.filter((link) => occupied.has(positionKey(link.sourcePosition)));
+          }
+          '''
+          insertion = marker + '''
+          /**
+           * Keep pathogen cross-region reads on the same activity-tier budget as
+           * the environmental and autonomy halos. Live legacy regions can observe
+           * all six exact global neighbors, while warm/cold legacy regions retain
+           * the configured compatibility fan-out. Canonical regions remain fully
+           * dynamic at every tier because they have no finite configured neighbor
+           * list to fall back to. Historical IDs without a shared global cell frame
+           * stay on the configured compatibility path.
+           */
+          export function pathogenHaloLinksForActivity(
+            extent: Pick<WorldState, "width" | "height">,
+            regionIds: readonly string[],
+            sourceRegionId: string,
+            tier: RegionActivityTier,
+          ): HexHaloLink[] {
+            if (regionGlobalCellOrigin(sourceRegionId, extent.width, extent.height) === undefined) {
+              return buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId);
+            }
+            return haloLinksForActivity(extent, regionIds, sourceRegionId, tier);
+          }
+          '''
+          if marker not in source:
+            raise SystemExit("expected pathogenHaloLinksForAgents block not found")
+          source = source.replace(marker, insertion, 1)
+
+          old_method = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
+            // Regions that already participate in the shared global axial cell frame use
+            // exact six-direction ownership at every activity tier. Historical IDs with
+            // no global identity retain the configured compatibility halo.
+            if (regionGlobalCellOrigin(state.regionId, state.width, state.height) !== undefined) {
+              return buildDynamicHexHaloLinks(state, state.regionId);
+            }
+            return buildConfiguredHexHaloLinks(
+              state,
+              configuredRegionIds(this.pathogenEnv),
+              state.regionId,
+            );
+          }'''
+          new_method = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
+            return pathogenHaloLinksForActivity(
+              state,
+              configuredRegionIds(this.pathogenEnv),
+              state.regionId,
+              this.activityTier(),
+            );
+          }'''
+          if old_method not in source:
+            raise SystemExit("expected pathogenHaloLinks method not found")
+          source = source.replace(old_method, new_method, 1)
+          source_path.write_text(source)
+
+          test_path = Path("tests/pathogen-halo-scope.test.mjs")
+          test = test_path.read_text()
+          old_test_import = '''import {
+            pathogenHaloEdgeRequests,
+            pathogenHaloLinksForAgents,
+          } from "../dist-ts/src/pathogen-region.js";'''
+          new_test_import = '''import {
+            pathogenHaloEdgeRequests,
+            pathogenHaloLinksForActivity,
+            pathogenHaloLinksForAgents,
+          } from "../dist-ts/src/pathogen-region.js";'''
+          if old_test_import not in test:
+            raise SystemExit("expected pathogen halo test import block not found")
+          test = test.replace(old_test_import, new_test_import, 1)
+
+          test += '''
+
+          test("pathogen halo keeps background legacy fan-out configured while canonical regions stay dynamic", () => {
+            const extent = { width: 40, height: 24 };
+            const legacyRegions = ["garden-1", "garden-2", "garden-3"];
+
+            const activeLegacy = pathogenHaloLinksForActivity(extent, legacyRegions, "garden-1", "active");
+            const warmLegacy = pathogenHaloLinksForActivity(extent, legacyRegions, "garden-1", "warm");
+            const coldLegacy = pathogenHaloLinksForActivity(extent, legacyRegions, "garden-1", "cold");
+            const warmCanonical = pathogenHaloLinksForActivity(extent, legacyRegions, "hex-q2-r0", "warm");
+
+            assert.equal(new Set(activeLegacy.map((link) => link.neighborRegionId)).size, 6);
+            assert.equal(activeLegacy.length, 138, "live legacy regions should retain six-direction pathogen continuity");
+            assert.deepEqual(
+              new Set(warmLegacy.map((link) => link.neighborRegionId)),
+              new Set(["garden-2", "garden-3"]),
+              "warm legacy regions should not wake the four unconfigured frontier neighbors",
+            );
+            assert.deepEqual(
+              new Set(coldLegacy.map((link) => link.neighborRegionId)),
+              new Set(["garden-2", "garden-3"]),
+              "cold legacy regions should keep the same bounded compatibility fan-out",
+            );
+            assert.equal(
+              new Set(warmCanonical.map((link) => link.neighborRegionId)).size,
+              6,
+              "canonical regions must keep dynamic six-neighbor pathogen continuity at every tier",
+            );
+            assert.equal(warmCanonical.length, 138);
+          });
+          '''
+          test_path.write_text(test)
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit verified production change
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/automation-pathogen-halo-activity.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pathogen-region.ts tests/pathogen-halo-scope.test.mjs .github/workflows/automation-pathogen-halo-activity.yml
+          git diff --cached --check
+          git commit -m "perf: tier pathogen halo fan-out by activity"
+          git push origin HEAD:main
