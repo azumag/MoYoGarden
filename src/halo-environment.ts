@@ -177,10 +177,18 @@ function usesExactGlobalHaloAdjacency(
   });
 }
 
+function haloWaterGhostsFromLookup(lookup: HaloLookup): HexHaloTile[] {
+  const waterGhosts: HexHaloTile[] = [];
+  for (const ghost of lookup.values()) {
+    if (ghost.tile.terrain === "water") waterGhosts.push(ghost);
+  }
+  return waterGhosts;
+}
+
 function haloWaterInfluence(
   state: Pick<WorldState, "regionId" | "width" | "height">,
   position: GridPosition,
-  lookup: HaloLookup,
+  waterGhosts: readonly HexHaloTile[],
 ): number {
   const sourceOrigin = regionGlobalCellOrigin(state.regionId, state.width, state.height);
   const sourceGlobal = sourceOrigin === undefined
@@ -190,8 +198,7 @@ function haloWaterInfluence(
       y: sourceOrigin.y + position.y,
     };
   let influence = 0;
-  for (const ghost of lookup.values()) {
-    if (ghost.tile.terrain !== "water") continue;
+  for (const ghost of waterGhosts) {
     // Axial-aware dynamic halo links share an exact global cell frame. Measure
     // the target directly against the ghost only when the link itself is an
     // exact cross-region adjacency; legacy side-pair links retain the existing
@@ -592,6 +599,7 @@ function surfaceMoistureWithHaloLookup(
   position: GridPosition,
   lookup: HaloLookup,
   catchmentContribution?: ReadonlyMap<string, number>,
+  waterGhosts?: readonly HexHaloTile[],
   environment?: HaloEnvironmentFrame,
 ): number {
   const tile = getTile(state, position);
@@ -612,7 +620,10 @@ function surfaceMoistureWithHaloLookup(
     }
   }
 
-  waterInfluence = Math.max(waterInfluence, haloWaterInfluence(state, position, lookup));
+  waterInfluence = Math.max(
+    waterInfluence,
+    haloWaterInfluence(state, position, waterGhosts ?? haloWaterGhostsFromLookup(lookup)),
+  );
   const windborneMoisture = upwindWaterVaporMoisture(state, position, lookup, environment);
   const vegetationCover =
     tile.resource?.kind === "wood" && tile.resource.maxAmount > 0
@@ -648,11 +659,13 @@ export function surfaceMoistureWithHaloAt(
 ): number {
   const lookup = hexHaloLookup(halo);
   const catchmentContribution = haloCatchmentContributionMapFromLookup(state, lookup);
+  const waterGhosts = haloWaterGhostsFromLookup(lookup);
   return surfaceMoistureWithHaloLookup(
     state,
     position,
     lookup,
     catchmentContribution,
+    waterGhosts,
     environment,
   );
 }
@@ -662,6 +675,7 @@ function resourceRegrowthChanceWithHaloLookup(
   tile: Tile,
   lookup: HaloLookup,
   catchmentContribution?: ReadonlyMap<string, number>,
+  waterGhosts?: readonly HexHaloTile[],
   environment?: HaloEnvironmentFrame,
 ): number {
   if (tile.resource === undefined || tile.resource.kind === "stone") return 0.18;
@@ -670,6 +684,7 @@ function resourceRegrowthChanceWithHaloLookup(
     tile,
     lookup,
     catchmentContribution,
+    waterGhosts,
     environment,
   );
   const propaguleInfluence = neighboringPropaguleInfluence(
@@ -696,11 +711,13 @@ export function resourceRegrowthChanceWithHalo(
 ): number {
   const lookup = hexHaloLookup(halo);
   const catchmentContribution = haloCatchmentContributionMapFromLookup(state, lookup);
+  const waterGhosts = haloWaterGhostsFromLookup(lookup);
   return resourceRegrowthChanceWithHaloLookup(
     state,
     tile,
     lookup,
     catchmentContribution,
+    waterGhosts,
     environment,
   );
 }
@@ -727,6 +744,7 @@ export function applyHaloRegrowthCompensation(
   const beforeTiles = new Map(before.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]));
   const lookup = hexHaloLookup(halo);
   const catchmentContribution = haloCatchmentContributionMapFromLookup(after, lookup);
+  const waterGhosts = haloWaterGhostsFromLookup(lookup);
   const random = createRandom(after.rngState);
   let grown = 0;
 
@@ -753,6 +771,7 @@ export function applyHaloRegrowthCompensation(
       tile,
       lookup,
       catchmentContribution,
+      waterGhosts,
       environment,
     );
     if (haloChance <= localChance) continue;
