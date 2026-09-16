@@ -24,21 +24,43 @@ jobs:
       - name: Apply, verify, commit, and clean up
         shell: bash
         run: |
-          set -euo pipefail
+          set -u -o pipefail
           if [[ ! -f tools/one-shot-family-settlement-follow.py ]]; then
             echo "Patch helper already removed; nothing to do."
             exit 0
           fi
-          npm install --no-audit --no-fund
-          python3 tools/one-shot-family-settlement-follow.py
-          npm run build
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          log=/tmp/family-follow-one-shot.log
+          : > "$log"
+          if ! npm install --no-audit --no-fund >>"$log" 2>&1; then
+            status=install
+          elif ! python3 tools/one-shot-family-settlement-follow.py >>"$log" 2>&1; then
+            status=patch
+          elif ! npm run build >>"$log" 2>&1; then
+            status=build
+          else
+            status=ok
+          fi
+
+          if [[ "$status" != ok ]]; then
+            git restore src tests 2>/dev/null || true
+            {
+              echo "stage=$status"
+              cat "$log"
+            } > tools/family-follow-diagnostics.txt
+            git add tools/family-follow-diagnostics.txt
+            git commit -m "chore: capture family follow one-shot failure"
+            git push origin HEAD:main
+            exit 1
+          fi
+
           git add src/protocol.ts src/settlement-migration.ts src/runtime.ts src/agent-ownership.ts src/autonomy-region.ts src/settlement-migration-support.md tests/settlement-family-follow.test.mjs
           git commit -m "sim: reunite families after frontier settlement"
           git push origin HEAD:main
 
           git rm tools/one-shot-family-settlement-follow.py .github/workflows/one-shot-family-settlement-follow.yml
+          rm -f tools/family-follow-diagnostics.txt
+          git add -A tools
           git commit -m "chore: remove family settlement follow one-shot"
           git push origin HEAD:main
