@@ -26,9 +26,7 @@ jobs:
       - name: Apply multi-hop cargo return improvement
         run: python3 .github/scripts/moyo_multihop_return.py
       - name: Add failure diagnostics to generated test
-        shell: bash
-        run: >-
-          node -e 'const fs=require("fs"); const p="tests/autonomy-material-return-relay.test.mjs"; let s=fs.readFileSync(p,"utf8"); const old="  assert.equal(deposited, true, \"cargo should cross both ownership handoffs and deposit at the origin storehouse\");"; const diag="  if (!deposited) console.error(JSON.stringify({ first: first.object.runtime.snapshot(), relay: relay.object.runtime.snapshot(), origin: origin.object.runtime.snapshot(), firstStorage: [...first.state.storage.values.entries()], relayStorage: [...relay.state.storage.values.entries()], originStorage: [...origin.state.storage.values.entries()] }, null, 2));\\n" + old; if (!s.includes(old)) throw new Error("diagnostic target missing"); fs.writeFileSync(p,s.replace(old,diag));'
+        run: python3 .github/scripts/moyo_multihop_diag.py
       - name: Validate full build
         id: validate
         continue-on-error: true
@@ -50,6 +48,7 @@ jobs:
         run: |
           rm .github/workflows/moyo-improve-multihop-return.yml
           rm .github/scripts/moyo_multihop_return.py
+          rm .github/scripts/moyo_multihop_diag.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
