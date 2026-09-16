@@ -66,7 +66,12 @@ test("production region activity tiers map direct, hex-window prefetch, and cold
   const deepIdleHealth = await (await object.fetch(request("/api/health"))).json();
   assert.equal(deepIdleHealth.deepIdle, true);
 
-  await object.fetch(request("/api/world/snapshot", { headers: { "x-moyo-prefetch": "1" } }));
+  const warmResponse = await object.fetch(request("/api/world/snapshot", {
+    method: "HEAD",
+    headers: { "x-moyo-prefetch": "1" },
+  }));
+  assert.equal(warmResponse.status, 204);
+  assert.equal(await warmResponse.text(), "", "passive warm-up should not serialize a world snapshot");
   const warmHealth = await (await object.fetch(request("/api/health"))).json();
   assert.equal(warmHealth.tickMode, "warm");
   assert.equal(warmHealth.effectiveTickMs, 60000);

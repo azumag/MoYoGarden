@@ -12,6 +12,7 @@ const HEX_STEPS = {
 
 export function regionWarmSnapshotRequestInit() {
   return {
+    method: "HEAD",
     cache: "no-store",
     headers: { "x-moyo-prefetch": "1" },
   };

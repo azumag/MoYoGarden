@@ -299,7 +299,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   private noteRequestActivity(request: Request): boolean {
     const url = new URL(request.url);
     const passivePrefetch =
-      request.method === "GET" &&
+      (request.method === "GET" || request.method === "HEAD") &&
       url.pathname === "/api/world/snapshot" &&
       request.headers.get("x-moyo-prefetch") === "1";
     const now = Date.now();
@@ -609,12 +609,28 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     const touchedActivity = this.noteRequestActivity(request);
     const url = new URL(request.url);
     let response: Response;
-    if (url.pathname === INTERNAL_EDGE_PATH || url.pathname === PUBLIC_HALO_PATH) {
+    const bodylessPassivePrefetch =
+      request.method === "HEAD" &&
+      url.pathname === "/api/world/snapshot" &&
+      request.headers.get("x-moyo-prefetch") === "1";
+    if (
+      url.pathname === INTERNAL_EDGE_PATH ||
+      url.pathname === PUBLIC_HALO_PATH ||
+      bodylessPassivePrefetch
+    ) {
       const assignmentError = await this.ensureHaloAssigned(request);
       if (assignmentError !== undefined) return assignmentError;
     }
 
-    if (request.method === "GET" && url.pathname === INTERNAL_EDGE_PATH) {
+    if (bodylessPassivePrefetch) {
+      response = new Response(null, {
+        status: 204,
+        headers: {
+          "cache-control": "no-store",
+          "access-control-allow-origin": "*",
+        },
+      });
+    } else if (request.method === "GET" && url.pathname === INTERNAL_EDGE_PATH) {
       const direction = directionValue(url.searchParams.get("direction"));
       response = direction === undefined
         ? json({ error: "valid hex direction is required" }, 400)

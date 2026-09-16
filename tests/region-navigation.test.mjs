@@ -38,6 +38,7 @@ test("region metadata requests are scoped to the current bounded hex window", ()
 
 test("region warmup snapshots stay passive instead of promoting neighbors to active cadence", () => {
   const init = regionWarmSnapshotRequestInit();
+  assert.equal(init.method, "HEAD");
   assert.equal(init.cache, "no-store");
   const headers = new Headers(init.headers);
   assert.equal(headers.get("x-moyo-prefetch"), "1");
