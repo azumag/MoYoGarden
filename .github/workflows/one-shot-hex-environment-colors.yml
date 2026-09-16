@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           HEAD_MESSAGE="$(git log -1 --pretty=%s)"
-          if [[ "$HEAD_MESSAGE" != "fix: make hex terrain one-shot valid" ]]; then
+          if [[ "$HEAD_MESSAGE" != "fix: rerun hex terrain environment one-shot" ]]; then
             echo "Not the staging commit; nothing to do."
             exit 0
           fi
