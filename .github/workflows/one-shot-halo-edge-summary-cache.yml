@@ -21,7 +21,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - name: Cache whole-region edge summary per revision
         run: |
           python3 - <<'PY'
@@ -41,7 +40,7 @@ jobs:
           PY
           rm .github/workflows/one-shot-halo-edge-summary-cache.yml
       - name: Install dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
       - name: Verify full build
         run: npm run build
       - name: Commit improvement
