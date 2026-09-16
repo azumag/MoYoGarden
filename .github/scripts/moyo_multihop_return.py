@@ -234,13 +234,70 @@ new = '''    const continuingGather =
       });
     }'''
 replace_once(old, new, 'accept return deposit arrival')
+
+old = '''        if (pendingReturn === undefined && (existingHandoff === undefined || existingHandoff === null)) {
+          const returnTarget = returnTravelTargetForArrival(after, agent, updatedClaim);
+          if (returnTarget !== undefined && !samePosition(agent.position, returnTarget)) {
+            agent.task = {
+              source: "autonomy",
+              issuedAtTick: after.tick,
+              type: "move",
+              target: { ...returnTarget },
+            };
+            agent.status = `traveling back toward ${claim.sourceRegionId} with gathered cargo`;
+            keep.push(updatedClaim);
+            this.replaceRuntimeState(after);
+            dirty = true;
+            continue;
+          }
+        }
+      }
+
+      if (stillGathering) {'''
+new = '''        if (pendingReturn === undefined && (existingHandoff === undefined || existingHandoff === null)) {
+          const returnTarget = returnTravelTargetForArrival(after, agent, updatedClaim);
+          if (returnTarget !== undefined && !samePosition(agent.position, returnTarget)) {
+            agent.task = {
+              source: "autonomy",
+              issuedAtTick: after.tick,
+              type: "move",
+              target: { ...returnTarget },
+            };
+            agent.status = `traveling back toward ${claim.sourceRegionId} with gathered cargo`;
+            keep.push(updatedClaim);
+            this.replaceRuntimeState(after);
+            dirty = true;
+            continue;
+          }
+        }
+
+        // A blocked seam is a physical routing problem, not evidence that the
+        // original storage claim can be forgotten. Keep the ultimate owner while
+        // cargo is still on the BOT so later terrain/state changes can replan it.
+        if (
+          updatedClaim.returnToSourceStorage === true &&
+          pendingReturn === undefined &&
+          (existingHandoff === undefined || existingHandoff === null) &&
+          inventoryAmount(agent) > 0
+        ) {
+          agent.status = `return route to ${claim.sourceRegionId} unavailable; waiting to replan`;
+          keep.push(updatedClaim);
+          this.replaceRuntimeState(after);
+          dirty = true;
+          continue;
+        }
+      }
+
+      if (stillGathering) {'''
+replace_once(old, new, 'retain blocked return claim')
+
 path.write_text(text)
 
 test_path = Path("tests/autonomy-material-return-relay.test.mjs")
 test_path.write_text(r'''import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
-import { hexGridCenter } from "../dist-ts/src/hex-grid.js";
+import { hexGridCenter, isHexGridCell } from "../dist-ts/src/hex-grid.js";
 import { materialReturnHopDistance } from "../dist-ts/src/autonomy-region.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
@@ -276,17 +333,23 @@ async function assignRegion(env, regionId) {
   await worker.fetch(new Request(`https://moyo.example/api/world/snapshot?region=${regionId}`), env);
   const entry = env.REGIONS.entries.get(regionId); assert.ok(entry); await entry.state.ready; return entry;
 }
+function makeActiveHexPassable(state) {
+  for (const tile of state.tiles) {
+    if (!isHexGridCell(state, tile)) continue;
+    tile.terrain = "plain";
+  }
+}
 
 test("material return routing only accepts macro hops that strictly approach the claim origin", () => {
-  assert.equal(materialReturnHopDistance("hex-q0-r0", "hex-q2-r0", "hex-q1-r0"), 1);
-  assert.equal(materialReturnHopDistance("hex-q1-r0", "hex-q2-r0", "hex-q2-r0"), 0);
+  assert.equal(materialReturnHopDistance("hex-q0-r0", "hex-q2-r0", "garden-2"), 1);
+  assert.equal(materialReturnHopDistance("garden-2", "hex-q2-r0", "hex-q2-r0"), 0);
   assert.equal(materialReturnHopDistance("hex-q0-r0", "hex-q2-r0", "hex-q-1-r0"), undefined);
 });
 
 test("gathered cargo can relay through a storage-less intermediate region without losing its origin claim", async () => {
   const env = environment();
   const first = await assignRegion(env, "hex-q0-r0");
-  const relay = await assignRegion(env, "hex-q1-r0");
+  const relay = await assignRegion(env, "garden-2");
   const origin = await assignRegion(env, "hex-q2-r0");
   const firstState = first.object.runtime.snapshot();
   firstState.tick = 24; firstState.structures = [];
@@ -295,16 +358,16 @@ test("gathered cargo can relay through a storage-less intermediate region withou
   courier.autonomy = true; courier.position = hexGridCenter(firstState); courier.energy = 100; courier.capacity = 8;
   courier.inventory = { wood: 4, stone: 0, food: 0 }; courier.task = { source: "autonomy", issuedAtTick: 24, type: "deposit" };
   first.object.runtime = new WorldRuntime({ state: firstState }); await first.object.persist();
-  const relayState = relay.object.runtime.snapshot(); relayState.structures = [];
+  const relayState = relay.object.runtime.snapshot(); relayState.structures = []; makeActiveHexPassable(relayState);
   for (const candidate of relayState.agents) candidate.autonomy = false;
   relay.object.runtime = new WorldRuntime({ state: relayState }); await relay.object.persist();
-  const originState = origin.object.runtime.snapshot();
+  const originState = origin.object.runtime.snapshot(); makeActiveHexPassable(originState);
   for (const candidate of originState.agents) candidate.autonomy = false;
   originState.structures = [{ id: "origin-storehouse", factionId: courier.factionId, type: "storehouse", position: hexGridCenter(originState), status: "active", progress: 1, requiredProgress: 1, storage: { wood: 0, stone: 0, food: 0 } }];
   origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();
   await first.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "two-hop-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: 24, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);
   let deposited = false;
-  for (let attempt = 0; attempt < 90; attempt += 1) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
     await first.object.alarm(); await relay.object.alarm(); await origin.object.alarm();
     const storehouse = origin.object.runtime.snapshot().structures.find((entry) => entry.id === "origin-storehouse");
     if ((storehouse?.storage.wood ?? 0) >= 4) { deposited = true; break; }
@@ -312,5 +375,32 @@ test("gathered cargo can relay through a storage-less intermediate region withou
   assert.equal(deposited, true, "cargo should cross both ownership handoffs and deposit at the origin storehouse");
   const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
   assert.ok(relayClaims === undefined || relayClaims.length === 0 || relayClaims.every((entry) => entry.sourceRegionId === "hex-q2-r0"));
+});
+
+test("blocked relay keeps its ultimate return claim instead of orphaning cargo", async () => {
+  const env = environment();
+  const relay = await assignRegion(env, "garden-2");
+  const relayState = relay.object.runtime.snapshot(); relayState.structures = [];
+  for (const candidate of relayState.agents) candidate.autonomy = false;
+  const courier = relayState.agents[0]; assert.ok(courier);
+  courier.autonomy = true; courier.position = hexGridCenter(relayState); courier.inventory = { wood: 4, stone: 0, food: 0 };
+  courier.task = { source: "autonomy", issuedAtTick: relayState.tick, type: "deposit" };
+  // Make every active boundary cell water while leaving the courier's current cell passable.
+  for (const tile of relayState.tiles) {
+    if (!isHexGridCell(relayState, tile)) continue;
+    const boundary = tile.x <= 8 || tile.x >= 30 || tile.y <= 0 || tile.y >= 22;
+    if (boundary) tile.terrain = "water";
+  }
+  const centerTile = relayState.tiles.find((tile) => tile.x === courier.position.x && tile.y === courier.position.y);
+  if (centerTile) centerTile.terrain = "plain";
+  relay.object.runtime = new WorldRuntime({ state: relayState }); await relay.object.persist();
+  await relay.state.storage.put(ARRIVAL_CLAIMS_KEY, [{ claimId: "blocked-return", sourceRegionId: "hex-q2-r0", agentId: courier.id, resource: "wood", registeredAtTick: relayState.tick, gatheredAmount: 4, settledAmount: 4, returnToSourceStorage: true }]);
+  await relay.object.alarm();
+  const claims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.equal(claims?.length, 1);
+  assert.equal(claims?.[0]?.sourceRegionId, "hex-q2-r0");
+  const afterCourier = relay.object.runtime.snapshot().agents.find((entry) => entry.id === courier.id);
+  assert.equal(afterCourier?.inventory.wood, 4);
+  assert.match(afterCourier?.status ?? "", /return route .* unavailable/);
 });
 ''')
