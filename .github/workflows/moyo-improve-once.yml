@@ -1,0 +1,407 @@
+name: MoYoGarden one-shot return storage lease renewal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-improve-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Patch return storage wall-clock lease renewal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('src/autonomy-region.ts')
+          s = p.read_text()
+
+          def one(old, new):
+              global s
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old[:120]!r}')
+              s = s.replace(old, new, 1)
+
+          one(
+          '''  returnStorageAmount?: number;
+            // Source-local reservation against a concrete remote storage observation.
+          ''',
+          '''  returnStorageAmount?: number;
+            // Wall-clock crash lease for promised source storage. Source ticks can
+            // advance independently from a courier in a warm/cold relay region, so
+            // tick TTL alone must not silently free capacity still backing cargo.
+            returnStorageLeaseExpiresAtMs?: number;
+            // Source-local reservation against a concrete remote storage observation.
+          ''')
+
+          one(
+          '''  // Destination-local admitted capacity; optional for rolling compatibility.
+            destinationStorageReserved?: boolean;
+          ''',
+          '''  // Destination-local admitted capacity; optional for rolling compatibility.
+            destinationStorageReserved?: boolean;
+            // Last successful wall-clock renewal of the ultimate source storage
+            // promise while return cargo is physically owned by this region.
+            returnStorageLeaseRenewedAtMs?: number;
+          ''')
+
+          one(
+          '''const INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;
+            const INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;
+          ''',
+          '''const INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;
+            const INTERNAL_CLAIM_RENEW_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/renew`;
+            const INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;
+          ''')
+
+          one(
+          '''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+            const SETTLEMENT_MIGRATION_TTL = 72;
+          ''',
+          '''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+            const RETURN_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+            const RETURN_STORAGE_RENEW_INTERVAL_MS = 5 * 60 * 1_000;
+            const SETTLEMENT_MIGRATION_TTL = 72;
+          ''')
+
+          one(
+          '''    && (value.returnStorageAmount === undefined || (
+              typeof value.returnStorageAmount === "number"
+              && Number.isFinite(value.returnStorageAmount)
+              && value.returnStorageAmount >= 0
+            ))
+            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
+          ''',
+          '''    && (value.returnStorageAmount === undefined || (
+              typeof value.returnStorageAmount === "number"
+              && Number.isFinite(value.returnStorageAmount)
+              && value.returnStorageAmount >= 0
+            ))
+            && (value.returnStorageLeaseExpiresAtMs === undefined || (
+              typeof value.returnStorageLeaseExpiresAtMs === "number"
+              && Number.isFinite(value.returnStorageLeaseExpiresAtMs)
+              && value.returnStorageLeaseExpiresAtMs > 0
+            ))
+            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
+          ''')
+
+          one(
+          '''    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
+          ''',
+          '''    && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+            && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean")
+            && (value.returnStorageLeaseRenewedAtMs === undefined || (
+              typeof value.returnStorageLeaseRenewedAtMs === "number"
+              && Number.isFinite(value.returnStorageLeaseRenewedAtMs)
+              && value.returnStorageLeaseRenewedAtMs > 0
+            ));
+          ''')
+
+          one(
+          '''function reservedReturnStorageForFaction(
+            state: WorldState,
+            claims: readonly AutonomousSupplyClaim[],
+            factionId: string,
+          ): number {
+            return claims.reduce((reserved, claim) => {
+              if (claim.returnToSourceStorage !== true || claim.expiresAtTick <= state.tick) return reserved;
+              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+          ''',
+          '''function returnStorageReservationActive(
+            stateTick: number,
+            claim: AutonomousSupplyClaim,
+            now = Date.now(),
+          ): boolean {
+            if (claim.returnToSourceStorage !== true) return false;
+            const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+            if (reservedAmount <= 0) return false;
+            return claim.expiresAtTick > stateTick
+              || (claim.returnStorageLeaseExpiresAtMs ?? 0) > now;
+          }
+
+          function reservedReturnStorageForFaction(
+            state: WorldState,
+            claims: readonly AutonomousSupplyClaim[],
+            factionId: string,
+          ): number {
+            const now = Date.now();
+            return claims.reduce((reserved, claim) => {
+              if (!returnStorageReservationActive(state.tick, claim, now)) return reserved;
+              const reservedAmount = claim.returnStorageAmount ?? claim.amount;
+          ''')
+
+          one(
+          '''    const active = valid.filter((claim) => claim.expiresAtTick > tick);
+          ''',
+          '''    const now = Date.now();
+            const active = valid.filter((claim) =>
+              claim.expiresAtTick > tick || returnStorageReservationActive(tick, claim, now)
+            );
+          ''')
+
+          one(
+          '''      destinationStorageReserved: existing?.destinationStorageReserved ?? destinationStorageReserved,
+            };
+          ''',
+          '''      destinationStorageReserved: existing?.destinationStorageReserved ?? destinationStorageReserved,
+              ...(existing?.returnStorageLeaseRenewedAtMs === undefined
+                ? {}
+                : { returnStorageLeaseRenewedAtMs: existing.returnStorageLeaseRenewedAtMs }),
+            };
+          ''')
+
+          one(
+          '''    const previousSettled = claim.settledAmount ?? 0;
+          ''',
+          '''    const now = Date.now();
+            const previousSettled = claim.settledAmount ?? 0;
+          ''')
+
+          one(
+          '''                  returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
+                    expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
+          ''',
+          '''                  returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
+                    returnStorageLeaseExpiresAtMs: now + RETURN_STORAGE_RESERVATION_TTL_MS,
+                    expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
+          ''')
+
+          marker = '''  private async releaseArrivalSourceClaim(request: Request): Promise<Response> {
+          '''
+          insert = '''  private async renewArrivalSourceClaim(request: Request): Promise<Response> {
+            let body: unknown;
+            try {
+              body = await request.json();
+            } catch {
+              return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+            }
+            if (!isRecord(body) || typeof body.claimId !== "string" || body.claimId.trim() === "") {
+              return new Response(JSON.stringify({ error: "claimId is required" }), { status: 400 });
+            }
+
+            const tick = runtimeAccess(this).runtime.snapshot().tick;
+            const claims = await this.activeAutonomousSupplyClaims(tick);
+            const claim = claims.find((entry) => entry.claimId === body.claimId);
+            const reservedAmount = claim?.returnStorageAmount ?? claim?.amount ?? 0;
+            if (claim?.returnToSourceStorage !== true || reservedAmount <= 0) {
+              return new Response(JSON.stringify({ error: "return storage reservation is no longer active" }), {
+                status: 409,
+              });
+            }
+            const now = Date.now();
+            const renewed = {
+              ...claim,
+              expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
+              returnStorageLeaseExpiresAtMs: now + RETURN_STORAGE_RESERVATION_TTL_MS,
+            };
+            await this.autonomyState.storage.put(
+              AUTONOMOUS_SUPPLY_CLAIMS_KEY,
+              claims.map((entry) => entry.claimId === claim.claimId ? renewed : entry),
+            );
+            return new Response(JSON.stringify({
+              ok: true,
+              claimId: claim.claimId,
+              returnStorageAmount: reservedAmount,
+              returnStorageLeaseExpiresAtMs: renewed.returnStorageLeaseExpiresAtMs,
+            }), { headers: { "content-type": "application/json; charset=utf-8" } });
+          }
+
+          ''' + marker
+          one(marker, insert)
+
+          one(
+          '''      const updatedClaim: AutonomousArrivalClaim = {
+              ...claim,
+              gatheredAmount,
+              settledAmount,
+            };
+            const stillGathering =
+          ''',
+          '''      const updatedClaim: AutonomousArrivalClaim = {
+              ...claim,
+              gatheredAmount,
+              settledAmount,
+            };
+            const returnCargoOutstanding =
+              updatedClaim.returnToSourceStorage === true
+              && gatheredAmount > 0
+              && agent !== undefined
+              && agent.inventory[updatedClaim.resource] > 0;
+            if (
+              returnCargoOutstanding
+              && (updatedClaim.returnStorageLeaseRenewedAtMs ?? 0)
+                <= Date.now() - RETURN_STORAGE_RENEW_INTERVAL_MS
+            ) {
+              const renewalNow = Date.now();
+              try {
+                const response = await this.autonomyStub(updatedClaim.sourceRegionId).fetch(new Request(
+                  `https://moyo.internal${INTERNAL_CLAIM_RENEW_PATH}`,
+                  {
+                    method: "POST",
+                    headers: {
+                      "content-type": "application/json",
+                      "x-moyo-region-internal": updatedClaim.sourceRegionId,
+                    },
+                    body: JSON.stringify({ claimId: updatedClaim.claimId }),
+                  },
+                ));
+                if (response.ok) {
+                  updatedClaim.returnStorageLeaseRenewedAtMs = renewalNow;
+                  dirty = true;
+                }
+              } catch {
+                // Keep the physical cargo and retry before the wall-clock crash
+                // lease expires. A transient source DO failure must not orphan it.
+              }
+            }
+            const stillGathering =
+          ''')
+
+          one(
+          '''      // Source-return capacity follows the physical cargo too. Supply
+            // settlement means the resource was gathered; it does not mean the
+            // promised source storage is free for another expedition yet.
+            const returnCargoOutstanding =
+              updatedClaim.returnToSourceStorage === true
+              && gatheredAmount > 0
+              && agent !== undefined
+              && agent.inventory[updatedClaim.resource] > 0;
+            if (returnCargoOutstanding) {
+          ''',
+          '''      // Source-return capacity follows the physical cargo too. Supply
+            // settlement means the resource was gathered; it does not mean the
+            // promised source storage is free for another expedition yet.
+            if (returnCargoOutstanding) {
+          ''')
+
+          one(
+          '''          ...(returnToSourceStorage ? { returnStorageAmount: claimedSupply } : {}),
+              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
+          ''',
+          '''          ...(returnToSourceStorage
+                ? {
+                    returnStorageAmount: claimedSupply,
+                    returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
+                  }
+                : {}),
+              ...(destinationStorageReserved ? { destinationStorageReserved: true } : {}),
+          ''')
+
+          one(
+          '''    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_SETTLE_PATH) {
+              return this.settleArrivalSourceClaim(request);
+            }
+            if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_RELEASE_PATH) {
+          ''',
+          '''    if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_SETTLE_PATH) {
+              return this.settleArrivalSourceClaim(request);
+            }
+            if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_RENEW_PATH) {
+              return this.renewArrivalSourceClaim(request);
+            }
+            if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_RELEASE_PATH) {
+          ''')
+
+          p.write_text(s)
+
+          t = Path('tests/autonomy-material-return-relay.test.mjs')
+          x = t.read_text()
+          x += r'''
+
+test("return cargo renews source storage by wall clock after source tick expiry", async () => {
+  const env = environment();
+  const relay = await assignRegion(env, "garden-2");
+  const origin = await assignRegion(env, "hex-q2-r0");
+
+  const relayState = relay.object.runtime.snapshot();
+  relayState.structures = [];
+  for (const candidate of relayState.agents) candidate.autonomy = false;
+  const courier = relayState.agents[0]; assert.ok(courier);
+  courier.autonomy = true;
+  courier.position = hexGridCenter(relayState);
+  courier.inventory = { wood: 4, stone: 0, food: 0 };
+  courier.task = { source: "autonomy", issuedAtTick: relayState.tick, type: "deposit" };
+  for (const tile of relayState.tiles) {
+    if (!isHexGridCell(relayState, tile)) continue;
+    const boundary = tile.x <= 8 || tile.x >= 30 || tile.y <= 0 || tile.y >= 22;
+    if (boundary) tile.terrain = "water";
+  }
+  const centerTile = relayState.tiles.find((tile) => tile.x === courier.position.x && tile.y === courier.position.y);
+  if (centerTile) centerTile.terrain = "plain";
+  relay.object.runtime = new WorldRuntime({ state: relayState }); await relay.object.persist();
+
+  const originState = origin.object.runtime.snapshot();
+  for (const candidate of originState.agents) candidate.autonomy = false;
+  originState.tick = 500;
+  origin.object.runtime = new WorldRuntime({ state: originState }); await origin.object.persist();
+
+  const initialLease = Date.now() + 30_000;
+  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{
+    claimId: "wall-clock-return",
+    agentId: courier.id,
+    resource: "wood",
+    direction: "W",
+    neighborRegionId: "garden-2",
+    amount: 0,
+    settledAmount: 4,
+    expiresAtTick: originState.tick - 1,
+    sourceFactionId: courier.factionId,
+    returnToSourceStorage: true,
+    returnStorageAmount: 4,
+    returnStorageLeaseExpiresAtMs: initialLease,
+  }]);
+  await relay.state.storage.put(ARRIVAL_CLAIMS_KEY, [{
+    claimId: "wall-clock-return",
+    sourceRegionId: "hex-q2-r0",
+    agentId: courier.id,
+    resource: "wood",
+    registeredAtTick: relayState.tick,
+    gatheredAmount: 4,
+    settledAmount: 4,
+    returnToSourceStorage: true,
+  }]);
+
+  await relay.object.alarm();
+
+  const sourceClaims = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  const renewed = sourceClaims?.find((entry) => entry.claimId === "wall-clock-return");
+  assert.ok(renewed, "wall-clock lease should keep the reservation active after source tick TTL expires");
+  assert.ok(renewed.expiresAtTick > originState.tick, "remote courier should renew the source tick fallback too");
+  assert.ok(renewed.returnStorageLeaseExpiresAtMs > initialLease, "remote courier should extend the wall-clock storage lease");
+  const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  assert.ok((relayClaims?.[0]?.returnStorageLeaseRenewedAtMs ?? 0) > 0, "relay should remember a successful renewal and avoid per-tick cross-DO spam");
+});
+'''
+          t.write_text(x)
+          PY
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck, test, and build
+        run: npm run build
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/moyo-improve-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/autonomy-region.ts tests/autonomy-material-return-relay.test.mjs .github/workflows/moyo-improve-once.yml
+          git commit -m 'sim: renew return storage across relay delays'
+          git push origin HEAD:main
