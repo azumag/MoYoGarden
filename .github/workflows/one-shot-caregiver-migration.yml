@@ -1,0 +1,143 @@
+name: One-shot caregiver-aware migration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-caregiver-migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply caregiver-aware migration patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          demography = Path('src/demography.ts')
+          text = demography.read_text()
+          old = '''function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {
+            for (const parentId of dependent.parents ?? []) {
+              const parent = state.agents.find((candidate) =>
+                candidate.id === parentId &&
+                candidate.factionId === dependent.factionId &&
+                candidate.hp > 0
+              );
+              if (parent !== undefined) return parent;
+            }
+            return undefined;
+          }
+          '''
+          new = '''export function dependentCaregiverId(
+            state: WorldState,
+            dependent: Agent,
+          ): string | undefined {
+            for (const parentId of dependent.parents ?? []) {
+              const parent = state.agents.find((candidate) =>
+                candidate.id === parentId &&
+                candidate.factionId === dependent.factionId &&
+                candidate.hp > 0
+              );
+              if (parent !== undefined) return parent.id;
+            }
+            return undefined;
+          }
+
+          function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {
+            const caregiverId = dependentCaregiverId(state, dependent);
+            return caregiverId === undefined
+              ? undefined
+              : state.agents.find((candidate) => candidate.id === caregiverId);
+          }
+          '''
+          if old not in text:
+            raise SystemExit('dependentCaregiver block not found')
+          demography.write_text(text.replace(old, new, 1))
+
+          migration = Path('src/settlement-migration.ts')
+          text = migration.read_text()
+          import_anchor = '''} from "./hex-grid.js";
+          import {
+            BUILD_RECIPES,
+          '''
+          import_replacement = '''} from "./hex-grid.js";
+          import { dependentCaregiverId } from "./demography.js";
+          import {
+            BUILD_RECIPES,
+          '''
+          if import_anchor not in text:
+            raise SystemExit('settlement migration import anchor not found')
+          text = text.replace(import_anchor, import_replacement, 1)
+
+          old = '''    if (
+              (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
+              && relative.parents?.includes(agent.id)
+            ) {
+              const alternateLivingParent = relative.parents.some((parentId) =>
+                parentId !== agent.id && livingSameFaction.has(parentId)
+              );
+              // Leaving a dependent with another living parent is disruptive but still
+              // safer than making the migration remove the child's only living parent.
+              cost += relative.lifeStage === "infant"
+                ? (alternateLivingParent ? 3 : 5)
+                : (alternateLivingParent ? 2 : 3);
+            }
+          '''
+          new = '''    if (
+              (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
+              && relative.parents?.includes(agent.id)
+            ) {
+              const alternateLivingParent = relative.parents.some((parentId) =>
+                parentId !== agent.id && livingSameFaction.has(parentId)
+              );
+              const activeCaregiver = dependentCaregiverId(state, relative) === agent.id;
+              // Migration should reflect the same low-level caregiver that pays the
+              // recurring demographic energy cost. When a co-parent remains, prefer
+              // moving the non-caregiver before the active caregiver; the sole living
+              // parent is still the most disruptive departure. This remains a soft
+              // preference so settlement expansion cannot deadlock on family state.
+              cost += relative.lifeStage === "infant"
+                ? (alternateLivingParent ? (activeCaregiver ? 4 : 2) : 5)
+                : (alternateLivingParent ? (activeCaregiver ? 2 : 1) : 3);
+            }
+          '''
+          if old not in text:
+            raise SystemExit('family separation block not found')
+          migration.write_text(text.replace(old, new, 1))
+
+          test_file = Path('tests/settlement-family-pioneer.test.mjs')
+          text = test_file.read_text()
+          marker = 'active demographic caregiver is costlier to migrate than the co-parent'
+          if marker not in text:
+            text += '''\n\ntest("active demographic caregiver is costlier to migrate than the co-parent", () => {\n  const state = migrationWorld();\n  const template = state.agents.find((agent) => agent.role === "builder");\n  assert.ok(template);\n  const caregiver = migrationBuilder(template, "agent-a-caregiver", 95);\n  const coparent = migrationBuilder(template, "agent-z-coparent", 70);\n  const infant = structuredClone(template);\n  infant.id = "agent-shared-infant";\n  infant.autonomy = false;\n  infant.lifeStage = "infant";\n  infant.birthTick = 1;\n  infant.energy = 60;\n  infant.position = { x: 19, y: 10 };\n  // Demographic maintenance deterministically charges the first living parent.\n  infant.parents = [caregiver.id, coparent.id];\n  delete infant.task;\n  delete infant.pregnancy;\n  state.agents = [caregiver, coparent, infant];\n\n  const plan = planAutonomousSettlementMigration(state, frontierHalo());\n  assert.ok(plan);\n  assert.equal(plan.agentId, coparent.id);\n});\n'''
+          test_file.write_text(text)
+          PY
+      - name: Validate
+        run: npm run build
+      - name: Commit patch
+        shell: bash
+        run: |
+          git fetch origin main
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "main moved during validation; refusing non-fast-forward patch"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/demography.ts src/settlement-migration.ts tests/settlement-family-pioneer.test.mjs
+          git commit -m "sim: prefer moving non-caregiver parents"
+          git push origin HEAD:main
