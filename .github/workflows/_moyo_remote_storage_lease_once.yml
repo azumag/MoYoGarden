@@ -2,7 +2,8 @@ name: MoYo remote storage lease renewal once
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - .github/workflows/_moyo_remote_storage_lease_once.yml
 
@@ -14,207 +15,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Patch source and regression test
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          source = Path('src/autonomy-region.ts')
-          text = source.read_text()
-
-          old = '''      const existing = reservations.find((entry) => entry.claimId === claimId);
-      if (existing !== undefined) {
-        if (
-          existing.sourceRegionId !== sourceRegionId
-          || existing.factionId !== factionId
-        ) {
-          return { conflict: true as const };
-        }
-        return {
-          conflict: false as const,
-          grantedAmount: existing.amount,
-          remainingHeadroom: Math.max(
-            0,
-            actualHeadroom - reservations.reduce(
-              (sum, entry) => entry.factionId === factionId ? sum + entry.amount : sum,
-              0,
-            ),
-          ),
-          idempotent: true,
-        };
-      }
-'''
-          new = '''      const existing = reservations.find((entry) => entry.claimId === claimId);
-      if (existing !== undefined) {
-        if (
-          existing.sourceRegionId !== sourceRegionId
-          || existing.factionId !== factionId
-        ) {
-          return { conflict: true as const };
-        }
-        // Idempotent retries from the source also renew the wall-clock lease.
-        // This keeps a slow in-flight expedition from losing admitted sink
-        // capacity before the ownership handoff installs destination-local
-        // arrival tracking.
-        const renewed = {
-          ...existing,
-          expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS,
-        };
-        await this.autonomyState.storage.put(
-          AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
-          reservations.map((entry) => entry.claimId === claimId ? renewed : entry),
-        );
-        return {
-          conflict: false as const,
-          grantedAmount: existing.amount,
-          remainingHeadroom: Math.max(
-            0,
-            actualHeadroom - reservations.reduce(
-              (sum, entry) => entry.factionId === factionId ? sum + entry.amount : sum,
-              0,
-            ),
-          ),
-          idempotent: true,
-        };
-      }
-'''
-          if old not in text:
-            raise SystemExit('reserveDestinationStorage patch anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''  private async resumeAutonomousTravels(state: WorldState): Promise<number> {
-    const travels = await this.autonomousTravels();
-    if (travels.length === 0) return 0;
-
-    const keep: PendingAutonomousTravel[] = [];
-    let stateDirty = false;
-    for (const pending of travels) {
-      const agent = state.agents.find((entry) => entry.id === pending.agentId);
-'''
-          new = '''  private async resumeAutonomousTravels(state: WorldState): Promise<number> {
-    const travels = await this.autonomousTravels();
-    if (travels.length === 0) return 0;
-    const claims = await this.activeAutonomousSupplyClaims(state.tick);
-
-    const keep: PendingAutonomousTravel[] = [];
-    let stateDirty = false;
-    for (const pending of travels) {
-      const agent = state.agents.find((entry) => entry.id === pending.agentId);
-'''
-          if old not in text:
-            raise SystemExit('resumeAutonomousTravels header anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''      if (
-        agent.energy <= LOW_ENERGY_THRESHOLD ||
-        remainingInventoryCapacity(agent) <= 0 ||
-        localResourceAvailable(state, pending.resource) ||
-        state.tick - pending.startedAtTick > AUTONOMOUS_TRAVEL_TTL
-      ) {
-        if (isMatchingTravelTask(agent, pending)) {
-          delete agent.task;
-          stateDirty = true;
-        }
-        await this.releaseAutonomousSupplyClaim(pending.claimId);
-        continue;
-      }
-
-      if (samePosition(agent.position, pending.boundaryTarget)) {
-'''
-          new = '''      if (
-        agent.energy <= LOW_ENERGY_THRESHOLD ||
-        remainingInventoryCapacity(agent) <= 0 ||
-        localResourceAvailable(state, pending.resource) ||
-        state.tick - pending.startedAtTick > AUTONOMOUS_TRAVEL_TTL
-      ) {
-        if (isMatchingTravelTask(agent, pending)) {
-          delete agent.task;
-          stateDirty = true;
-        }
-        await this.releaseAutonomousSupplyClaim(pending.claimId);
-        continue;
-      }
-
-      const claim = pending.claimId === undefined
-        ? undefined
-        : claims.find((entry) => entry.claimId === pending.claimId);
-      if (claim?.destinationStorageReserved === true) {
-        const factionId = claim.sourceFactionId ?? agent.factionId;
-        const renewedAmount = await this.reserveRemoteDestinationStorage(
-          state,
-          claim.claimId,
-          claim.neighborRegionId,
-          factionId,
-          claim.amount,
-        );
-        if (renewedAmount < claim.amount) {
-          if (isMatchingTravelTask(agent, pending)) {
-            delete agent.task;
-            stateDirty = true;
-          }
-          agent.status = `remote storage lease lost; replanning ${pending.resource}`;
-          stateDirty = true;
-          await this.releaseAutonomousSupplyClaim(pending.claimId);
-          continue;
-        }
-      }
-
-      if (samePosition(agent.position, pending.boundaryTarget)) {
-'''
-          if old not in text:
-            raise SystemExit('resumeAutonomousTravels lease anchor not found')
-          text = text.replace(old, new, 1)
-          source.write_text(text)
-
-          test = Path('tests/autonomous-concurrent-travel-do.test.mjs')
-          text = test.read_text()
-          old = '''  const remoteReservations = await east.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
-  assert.equal(remoteReservations.length, 2);
-  assert.equal(remoteReservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
-  assert.ok(remoteReservations.every((entry) => entry.sourceRegionId === "garden-1"));
-});
-'''
-          new = '''  const remoteReservations = await east.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
-  assert.equal(remoteReservations.length, 2);
-  assert.equal(remoteReservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
-  assert.ok(remoteReservations.every((entry) => entry.sourceRegionId === "garden-1"));
-
-  const nearExpiry = Date.now() + 1_000;
-  for (const reservation of remoteReservations) reservation.expiresAtMs = nearExpiry;
-  await east.state.storage.put(DESTINATION_STORAGE_RESERVATIONS_KEY, remoteReservations);
-
-  await source.object.alarm();
-  const renewedReservations = await east.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
-  assert.equal(renewedReservations.length, 2);
-  assert.ok(
-    renewedReservations.every((entry) => entry.expiresAtMs > nearExpiry),
-    "source-side in-flight travel must renew admitted remote storage before arrival",
-  );
-});
-'''
-          if old not in text:
-            raise SystemExit('remote reservation regression anchor not found')
-          test.write_text(text.replace(old, new, 1))
-          PY
+      - name: Apply patch
+        run: python3 .github/scripts/moyo_remote_storage_lease_once.py
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Typecheck test and build
         run: npm run build
-      - name: Commit improvement and remove one-shot workflow
+      - name: Commit improvement
         shell: bash
         run: |
           set -euo pipefail
           rm .github/workflows/_moyo_remote_storage_lease_once.yml
+          rm .github/scripts/moyo_remote_storage_lease_once.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/autonomy-region.ts tests/autonomous-concurrent-travel-do.test.mjs .github/workflows/_moyo_remote_storage_lease_once.yml
+          git add src/autonomy-region.ts tests/autonomous-concurrent-travel-do.test.mjs .github/workflows/_moyo_remote_storage_lease_once.yml .github/scripts/moyo_remote_storage_lease_once.py
           git diff --cached --check
           git commit -m 'sim: renew remote storage leases while traveling'
           git push origin HEAD:main
