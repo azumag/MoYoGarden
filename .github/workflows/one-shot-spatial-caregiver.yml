@@ -1,0 +1,160 @@
+name: One-shot spatial caregiver selection
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'chore: stage spatial caregiver selection'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply caregiver selection patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/demography.ts')
+          text = path.read_text()
+          old_import = 'import type { Agent, WorldState } from "./protocol.js";\n'
+          new_import = 'import { hexGridDistance } from "./hex-grid.js";\n' + old_import
+          if 'import { hexGridDistance } from "./hex-grid.js";' not in text:
+              if old_import not in text:
+                  raise SystemExit('demography import anchor not found')
+              text = text.replace(old_import, new_import, 1)
+
+          old = '''export function dependentCaregiverId(
+            state: WorldState,
+            dependent: Agent,
+          ): string | undefined {
+            for (const parentId of dependent.parents ?? []) {
+              const parent = state.agents.find((candidate) =>
+                candidate.id === parentId &&
+                candidate.factionId === dependent.factionId &&
+                candidate.hp > 0
+              );
+              if (parent !== undefined) return parent.id;
+            }
+            return undefined;
+          }
+          '''
+          new = '''export function dependentCaregiverId(
+            state: WorldState,
+            dependent: Agent,
+          ): string | undefined {
+            const candidates = (dependent.parents ?? [])
+              .flatMap((parentId) => {
+                const parent = state.agents.find((candidate) =>
+                  candidate.id === parentId &&
+                  candidate.factionId === dependent.factionId &&
+                  candidate.hp > 0
+                );
+                return parent === undefined ? [] : [parent];
+              })
+              .sort((a, b) =>
+                hexGridDistance(a.position, dependent.position) -
+                  hexGridDistance(b.position, dependent.position) ||
+                b.energy - a.energy ||
+                a.id.localeCompare(b.id)
+              );
+            return candidates[0]?.id;
+          }
+          '''
+          if old not in text:
+              raise SystemExit('dependentCaregiverId anchor not found')
+          path.write_text(text.replace(old, new, 1))
+
+          test = Path('tests/demography-caregiver-selection.test.mjs')
+          test.write_text(r'''import test from "node:test";
+          import assert from "node:assert/strict";
+
+          import { dependentCaregiverId } from "../dist-ts/src/demography.js";
+
+          function adult(id, x, y, energy = 50) {
+            return {
+              id,
+              factionId: "settlers",
+              hp: 100,
+              energy,
+              position: { x, y },
+            };
+          }
+
+          function dependent(parents) {
+            return {
+              id: "child",
+              factionId: "settlers",
+              hp: 100,
+              energy: 50,
+              lifeStage: "infant",
+              parents,
+              position: { x: 10, y: 10 },
+            };
+          }
+
+          test("dependent care follows the spatially closest living parent", () => {
+            const far = adult("parent-far", 3, 3, 100);
+            const near = adult("parent-near", 10, 11, 30);
+            const child = dependent([far.id, near.id]);
+            const state = { agents: [far, near, child] };
+
+            assert.equal(dependentCaregiverId(state, child), near.id);
+          });
+
+          test("co-located parents use energy reserve then stable identity as caregiver tie-breaks", () => {
+            const lower = adult("parent-b", 10, 9, 40);
+            const stronger = adult("parent-a", 11, 10, 70);
+            const child = dependent([lower.id, stronger.id]);
+            const state = { agents: [lower, stronger, child] };
+
+            assert.equal(dependentCaregiverId(state, child), stronger.id);
+            stronger.energy = lower.energy;
+            assert.equal(dependentCaregiverId(state, child), stronger.id);
+          });
+
+          test("dead and cross-faction parents cannot become active caregivers", () => {
+            const dead = adult("parent-dead", 10, 10, 100);
+            dead.hp = 0;
+            const otherFaction = adult("parent-other", 10, 10, 100);
+            otherFaction.factionId = "visitors";
+            const living = adult("parent-living", 13, 10, 20);
+            const child = dependent([dead.id, otherFaction.id, living.id]);
+            const state = { agents: [dead, otherFaction, living, child] };
+
+            assert.equal(dependentCaregiverId(state, child), living.id);
+          });
+          '''.replace(/^          /gm, ''))
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit improvement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/demography.ts tests/demography-caregiver-selection.test.mjs
+          git commit -m "sim: choose caregivers from spatial support"
+          git push origin HEAD:main
