@@ -22,12 +22,7 @@ jobs:
         with:
           node-version: "22"
       - name: Apply bounded family housing admission
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i 's/(\\s+\\} from/(\\} from/' .github/scripts/family_admission_patch.py
-          sed -i 's/body.maxFollowers !== undefined \&\& (!Number.isInteger/body.maxFollowers !== undefined \&\& (typeof body.maxFollowers !== "number" || !Number.isInteger/' .github/scripts/family_admission_patch.py
-          python3 .github/scripts/family_admission_patch.py
+        run: python3 .github/scripts/family_admission_patch.py
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Full validation
