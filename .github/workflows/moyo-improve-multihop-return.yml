@@ -27,17 +27,19 @@ jobs:
         run: |
           python3 .github/scripts/moyo_multihop_return.py
           python3 .github/scripts/moyo_multihop_test_tune.py
+          python3 .github/scripts/moyo_multihop_diag.py
       - name: Validate full build
-        run: npm run build
-      - name: Commit product change
+        id: validate
+        continue-on-error: true
         shell: bash
-        run: |
-          rm .github/workflows/moyo-improve-multihop-return.yml
-          rm .github/scripts/moyo_multihop_return.py
-          rm .github/scripts/moyo_multihop_diag.py
-          rm .github/scripts/moyo_multihop_test_tune.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "sim: relay gathered cargo across regions"
-          git push origin HEAD:main
+        run: npm run build > /tmp/moyo-build.log 2>&1
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moyo-multihop-alias-build-log
+          path: /tmp/moyo-build.log
+          retention-days: 1
+      - name: Fail on validation error
+        if: ${{ steps.validate.outcome != 'success' }}
+        run: exit 1
