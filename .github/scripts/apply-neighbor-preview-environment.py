@@ -1,0 +1,50 @@
+from pathlib import Path
+
+app = Path("public/app.js")
+source = app.read_text()
+import_anchor = 'import { mergeLiveTerrainWindow, terrainWindowTilesChanged } from "./client/terrain-window-cache.js";\n'
+import_line = 'import { environmentalTerrainColor } from "./client/terrain.js";\n'
+if import_line not in source:
+    if import_anchor not in source:
+        raise SystemExit("terrain-window import anchor not found")
+    source = source.replace(import_anchor, import_anchor + import_line, 1)
+
+old = '''    const chunkWidth = Number(chunk.state.width) || app.state.width;
+    const chunkHeight = Number(chunk.state.height) || app.state.height;
+    for (const tile of chunk.state.tiles) {
+      if (!isHexGridCell(tile, chunkWidth, chunkHeight)) continue;
+      const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
+      const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
+      color.offsetHSL(0, 0, (elevation - 0.5) * 0.045);
+'''
+new = '''    const chunkWidth = Number(chunk.state.width) || app.state.width;
+    const chunkHeight = Number(chunk.state.height) || app.state.height;
+    const chunkStateTile = (x, y) => x >= 0 && y >= 0 && x < chunkWidth && y < chunkHeight
+      ? chunk.state.tiles[y * chunkWidth + x]
+      : null;
+    for (const tile of chunk.state.tiles) {
+      if (!isHexGridCell(tile, chunkWidth, chunkHeight)) continue;
+      const color = tile.terrain === "water"
+        ? (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone()
+        : environmentalTerrainColor(chunkStateTile, tile);
+'''
+if old not in source:
+    raise SystemExit("neighbor preview color anchor not found")
+source = source.replace(old, new, 1)
+app.write_text(source)
+
+test_path = Path("tests/hex-terrain-environment.test.mjs")
+tests = test_path.read_text()
+marker = 'test("neighbor preview derives land tint from each chunk environment"'
+if marker not in tests:
+    tests += '''\n\ntest("neighbor preview derives land tint from each chunk environment", async () => {
+  const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = source.indexOf("function buildNeighborPreview");
+  const end = source.indexOf("async function loadTerrainWindow", start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+  assert.match(source, /import \\{ environmentalTerrainColor \\} from "\\.\\/client\\/terrain\\.js"/);
+  assert.match(body, /const chunkStateTile = \\(x, y\\) =>/);
+  assert.match(body, /environmentalTerrainColor\\(chunkStateTile, tile\\)/);
+});\n'''
+    test_path.write_text(tests)
