@@ -29,24 +29,29 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
+          import textwrap
 
           source_path = Path("src/pathogen-region.ts")
           source = source_path.read_text()
-          old_import = '''import {
+          old_import = textwrap.dedent('''\
+          import {
             buildConfiguredHexHaloLinks,
             buildDynamicHexHaloLinks,
             type HexHaloLink,
-          } from "./hex-halo.js";'''
-          new_import = '''import {
+          } from "./hex-halo.js";''')
+          new_import = textwrap.dedent('''\
+          import {
             buildConfiguredHexHaloLinks,
             type HexHaloLink,
           } from "./hex-halo.js";
-          import { haloLinksForActivity, type RegionActivityTier } from "./halo-region.js";'''
+          import { haloLinksForActivity, type RegionActivityTier } from "./halo-region.js";''')
           if old_import not in source:
             raise SystemExit("expected hex-halo import block not found")
           source = source.replace(old_import, new_import, 1)
 
-          marker = '''export function pathogenHaloLinksForAgents(
+          marker = textwrap.dedent('''\
+          export function pathogenHaloLinksForAgents(
             state: Pick<WorldState, "agents">,
             links: readonly HexHaloLink[],
           ): HexHaloLink[] {
@@ -54,8 +59,8 @@ jobs:
             const occupied = new Set(state.agents.map((agent) => positionKey(agent.position)));
             return links.filter((link) => occupied.has(positionKey(link.sourcePosition)));
           }
-          '''
-          insertion = marker + '''
+          ''')
+          helper = textwrap.dedent('''\
           /**
            * Keep pathogen cross-region reads on the same activity-tier budget as
            * the environmental and autonomy halos. Live legacy regions can observe
@@ -76,53 +81,49 @@ jobs:
             }
             return haloLinksForActivity(extent, regionIds, sourceRegionId, tier);
           }
-          '''
+          ''')
           if marker not in source:
             raise SystemExit("expected pathogenHaloLinksForAgents block not found")
-          source = source.replace(marker, insertion, 1)
+          source = source.replace(marker, marker + "\n" + helper, 1)
 
-          old_method = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
-            // Regions that already participate in the shared global axial cell frame use
-            // exact six-direction ownership at every activity tier. Historical IDs with
-            // no global identity retain the configured compatibility halo.
-            if (regionGlobalCellOrigin(state.regionId, state.width, state.height) !== undefined) {
-              return buildDynamicHexHaloLinks(state, state.regionId);
+          method_pattern = re.compile(
+            r'  private pathogenHaloLinks\(state: WorldState\): HexHaloLink\[\] \{.*?\n  \}\n\n  private async fetchNeighborPathogenEdge',
+            re.DOTALL,
+          )
+          new_method = textwrap.dedent('''\
+            private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
+              return pathogenHaloLinksForActivity(
+                state,
+                configuredRegionIds(this.pathogenEnv),
+                state.regionId,
+                this.activityTier(),
+              );
             }
-            return buildConfiguredHexHaloLinks(
-              state,
-              configuredRegionIds(this.pathogenEnv),
-              state.regionId,
-            );
-          }'''
-          new_method = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
-            return pathogenHaloLinksForActivity(
-              state,
-              configuredRegionIds(this.pathogenEnv),
-              state.regionId,
-              this.activityTier(),
-            );
-          }'''
-          if old_method not in source:
-            raise SystemExit("expected pathogenHaloLinks method not found")
-          source = source.replace(old_method, new_method, 1)
+
+            private async fetchNeighborPathogenEdge''')
+          source, replaced = method_pattern.subn(new_method, source, count=1)
+          if replaced != 1:
+            raise SystemExit(f"expected one pathogenHaloLinks method, replaced={replaced}")
           source_path.write_text(source)
 
           test_path = Path("tests/pathogen-halo-scope.test.mjs")
           test = test_path.read_text()
-          old_test_import = '''import {
+          old_test_import = textwrap.dedent('''\
+          import {
             pathogenHaloEdgeRequests,
             pathogenHaloLinksForAgents,
-          } from "../dist-ts/src/pathogen-region.js";'''
-          new_test_import = '''import {
+          } from "../dist-ts/src/pathogen-region.js";''')
+          new_test_import = textwrap.dedent('''\
+          import {
             pathogenHaloEdgeRequests,
             pathogenHaloLinksForActivity,
             pathogenHaloLinksForAgents,
-          } from "../dist-ts/src/pathogen-region.js";'''
+          } from "../dist-ts/src/pathogen-region.js";''')
           if old_test_import not in test:
             raise SystemExit("expected pathogen halo test import block not found")
           test = test.replace(old_test_import, new_test_import, 1)
 
-          test += '''
+          test += textwrap.dedent('''\
 
           test("pathogen halo keeps background legacy fan-out configured while canonical regions stay dynamic", () => {
             const extent = { width: 40, height: 24 };
@@ -135,6 +136,8 @@ jobs:
 
             assert.equal(new Set(activeLegacy.map((link) => link.neighborRegionId)).size, 6);
             assert.equal(activeLegacy.length, 138, "live legacy regions should retain six-direction pathogen continuity");
+            assert.equal(warmLegacy.length, 46, "warm legacy regions should retain configured-only pathogen fan-out");
+            assert.equal(coldLegacy.length, 46, "cold legacy regions should retain configured-only pathogen fan-out");
             assert.deepEqual(
               new Set(warmLegacy.map((link) => link.neighborRegionId)),
               new Set(["garden-2", "garden-3"]),
@@ -152,7 +155,7 @@ jobs:
             );
             assert.equal(warmCanonical.length, 138);
           });
-          '''
+          ''')
           test_path.write_text(test)
 
       - name: Install dependencies
