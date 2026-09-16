@@ -1,0 +1,87 @@
+name: MoYoGarden finalize return storage relay lease v3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-finalize3-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply corrected wall-clock lease patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import re
+          from pathlib import Path
+          prefix = "aW1wb3J0IGJhc2U2NApURVNUX0JMT0NLX0I2NCA9ICdDblJsYzNRb0luSmxkSFZ5YmlCallYSm5ieUJ5Wlc1bGQzTWdjMjkxY21ObElITjBiM0poWjJVZ1lua2dkMkZzYkNCamJHOWpheUJoWm5SbGNpQnpiM1Z5WTJVZ2RHbGpheUJsZUhCcGNua2lMQ0JoYzNsdVl5QW9LU0E5UGlCN0NpQWdZMjl1YzNRZ1pXNTJJRDBnWlc1MmFYSnZibTFsYm5Rb0tUc0tJQ0JqYjI1emRDQnlaV3hoZVNBOUlHRjNZV2wwSUdGemMybG5ibEpsWjJsdmJpaGxibllzSUNKbllYSmtaVzR0TWlJcE93b2dJR052Ym5OMElHOXlhV2RwYmlBOUlHRjNZV2wwSUdGemMybG5ibEpsWjJsdmJpaGxibllzSUNKb1pYZ3RjVEl0Y2pBaUtUc0tDaUFnWTI5dWMzUWdjbVZzWVhsVGRHRjBaU0E5SUhKbGJHRjVMbTlpYW1WamRDNXlkVzUwYVcxbExuTnVZWEJ6YUc5MEtDazdDaUFnY21Wc1lYbFRkR0YwWlM1emRISjFZM1IxY21WeklEMGdXMTA3Q2lBZ1ptOXlJQ2hqYjI1emRDQmpZVzVrYVdSaGRHV"
+          source = Path('.github/workflows/moyo-improve-once.yml').read_text()
+          match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)"\)', source)
+          if match is None:
+              raise SystemExit('embedded patch payload not found')
+          code = base64.b64decode(prefix + match.group(1)).decode()
+          obsolete = base64.b64decode("b25lKAoiIiIgICAgICAvLyBTb3VyY2UtcmV0dXJuIGNhcGFjaXR5IGZvbGxvd3MgdGhlIHBoeXNpY2FsIGNhcmdvIHRvby4gU3VwcGx5CiAgICAgIC8vIHNldHRsZW1lbnQgbWVhbnMgdGhlIHJlc291cmNlIHdhcyBnYXRoZXJlZDsgaXQgZG9lcyBub3QgbWVhbiB0aGUKICAgICAgLy8gcHJvbWlzZWQgc291cmNlIHN0b3JhZ2UgaXMgZnJlZSBmb3IgYW5vdGhlciBleHBlZGl0aW9uIHlldC4KICAgICAgY29uc3QgcmV0dXJuQ2FyZ29PdXRzdGFuZGluZyA9CiAgICAgICAgdXBkYXRlZENsYWltLnJldHVyblRvU291cmNlU3RvcmFnZSA9PT0gdHJ1ZQogICAgICAgICYmIGdhdGhlcmVkQW1vdW50ID4gMAogICAgICAgICYmIGFnZW50ICE9PSB1bmRlZmluZWQKICAgICAgICAmJiBhZ2VudC5pbnZlbnRvcnlbdXBkYXRlZENsYWltLnJlc291cmNlXSA+IDA7CiAgICAgIGlmIChyZXR1cm5DYXJnb091dHN0YW5kaW5nKSB7CiIiIiwKIiIiICAgICAgLy8gU291cmNlLXJldHVybiBjYXBhY2l0eSBmb2xsb3dzIHRoZSBwaHlzaWNhbCBjYXJnbyB0b28uIFN1cHBseQogICAgICAvLyBzZXR0bGVtZW50IG1lYW5zIHRoZSByZXNvdXJjZSB3YXMgZ2F0aGVyZWQ7IGl0IGRvZXMgbm90IG1lYW4gdGhlCiAgICAgIC8vIHByb21pc2VkIHNvdXJjZSBzdG9yYWdlIGlzIGZyZWUgZm9yIGFub3RoZXIgZXhwZWRpdGlvbiB5ZXQuCiAgICAgIGlmIChyZXR1cm5DYXJnb091dHN0YW5kaW5nKSB7CiIiIikKCg==").decode()
+          if code.count(obsolete) != 1:
+              raise SystemExit(f'expected one obsolete replacement block, got {code.count(obsolete)}')
+          code = code.replace(obsolete, '', 1)
+          exec(compile(code, '<moyo-improve-once>', 'exec'))
+
+          p = Path('src/autonomy-region.ts')
+          s = p.read_text()
+          needle = 'const returnCargoOutstanding ='
+          positions = []
+          cursor = 0
+          while True:
+              pos = s.find(needle, cursor)
+              if pos < 0:
+                  break
+              positions.append(pos)
+              cursor = pos + len(needle)
+          if len(positions) != 2:
+              raise SystemExit(f'expected exactly two returnCargoOutstanding declarations after patch, got {len(positions)}')
+          second = positions[1]
+          line_start = s.rfind('\n', 0, second) + 1
+          statement_end = s.find(';\n', second)
+          if statement_end < 0:
+              raise SystemExit('could not locate end of duplicate returnCargoOutstanding declaration')
+          s = s[:line_start] + s[statement_end + 2:]
+          p.write_text(s)
+          PY
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck, test, and build
+        run: npm run build
+      - name: Commit verified implementation and cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/moyo-improve-once.yml \
+            .github/workflows/moyo-fix-once.yml \
+            .github/workflows/moyo-diagnose-once.yml \
+            .github/workflows/moyo-finalize-once.yml \
+            .github/workflows/moyo-finalize2-once.yml \
+            .github/workflows/moyo-finalize3-once.yml \
+            .github/workflows/moyo-build-diagnose-once.yml \
+            .moyo-patch-error \
+            .moyo-build-error
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'sim: renew return storage across relay delays'
+          git push origin HEAD:main
