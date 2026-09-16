@@ -1163,6 +1163,18 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         ) {
           return { conflict: true as const };
         }
+        // Idempotent retries from the source also renew the wall-clock lease.
+        // This keeps a slow in-flight expedition from losing admitted sink
+        // capacity before the ownership handoff installs destination-local
+        // arrival tracking.
+        const renewed = {
+          ...existing,
+          expiresAtMs: now + DESTINATION_STORAGE_RESERVATION_TTL_MS,
+        };
+        await this.autonomyState.storage.put(
+          AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY,
+          reservations.map((entry) => entry.claimId === claimId ? renewed : entry),
+        );
         return {
           conflict: false as const,
           grantedAmount: existing.amount,
@@ -1843,6 +1855,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
   private async resumeAutonomousTravels(state: WorldState): Promise<number> {
     const travels = await this.autonomousTravels();
     if (travels.length === 0) return 0;
+    const claims = await this.activeAutonomousSupplyClaims(state.tick);
 
     const keep: PendingAutonomousTravel[] = [];
     let stateDirty = false;
@@ -1865,6 +1878,29 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         }
         await this.releaseAutonomousSupplyClaim(pending.claimId);
         continue;
+      }
+
+      const claim = pending.claimId === undefined
+        ? undefined
+        : claims.find((entry) => entry.claimId === pending.claimId);
+      if (claim?.destinationStorageReserved === true) {
+        const factionId = claim.sourceFactionId ?? agent.factionId;
+        const renewedAmount = await this.reserveRemoteDestinationStorage(
+          state,
+          claim.claimId,
+          claim.neighborRegionId,
+          factionId,
+          claim.amount,
+        );
+        if (renewedAmount < claim.amount) {
+          if (isMatchingTravelTask(agent, pending)) {
+            delete agent.task;
+          }
+          agent.status = `remote storage lease lost; replanning ${pending.resource}`;
+          stateDirty = true;
+          await this.releaseAutonomousSupplyClaim(pending.claimId);
+          continue;
+        }
       }
 
       if (samePosition(agent.position, pending.boundaryTarget)) {

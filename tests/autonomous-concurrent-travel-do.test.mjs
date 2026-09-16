@@ -385,6 +385,18 @@ test("concurrent scouts reserve observed destination storage headroom before lau
   assert.equal(remoteReservations.length, 2);
   assert.equal(remoteReservations.reduce((sum, entry) => sum + entry.amount, 0), 3);
   assert.ok(remoteReservations.every((entry) => entry.sourceRegionId === "garden-1"));
+
+  const nearExpiry = Date.now() + 1_000;
+  for (const reservation of remoteReservations) reservation.expiresAtMs = nearExpiry;
+  await east.state.storage.put(DESTINATION_STORAGE_RESERVATIONS_KEY, remoteReservations);
+
+  await source.object.alarm();
+  const renewedReservations = await east.state.storage.get(DESTINATION_STORAGE_RESERVATIONS_KEY);
+  assert.equal(renewedReservations.length, 2);
+  assert.ok(
+    renewedReservations.every((entry) => entry.expiresAtMs > nearExpiry),
+    "source-side in-flight travel must renew admitted remote storage before arrival",
+  );
 });
 
 
