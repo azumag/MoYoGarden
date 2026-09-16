@@ -37,10 +37,23 @@ jobs:
             status=install
           elif ! python3 tools/one-shot-family-settlement-follow.py >>"$log" 2>&1; then
             status=patch
-          elif ! npm run build >>"$log" 2>&1; then
-            status=build
           else
-            status=ok
+            python3 - <<'PY' >>"$log" 2>&1
+          from pathlib import Path
+          p = Path("src/agent-ownership.ts")
+          text = p.read_text()
+          old = "arrived.settlementFamilyTargetRegionId === targetState.regionId"
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one ownership target-state fix, got {text.count(old)}")
+          p.write_text(text.replace(old, "arrived.settlementFamilyTargetRegionId === state.regionId", 1))
+          PY
+            if [[ $? -ne 0 ]]; then
+              status=patch-fix
+            elif ! npm run build >>"$log" 2>&1; then
+              status=build
+            else
+              status=ok
+            fi
           fi
 
           if [[ "$status" != ok ]]; then
@@ -50,8 +63,10 @@ jobs:
               cat "$log"
             } > tools/family-follow-diagnostics.txt
             git add tools/family-follow-diagnostics.txt
-            git commit -m "chore: capture family follow one-shot failure"
-            git push origin HEAD:main
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: capture family follow one-shot failure"
+              git push origin HEAD:main
+            fi
             exit 1
           fi
 
