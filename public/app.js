@@ -7,7 +7,7 @@ import { createObservationPanel, updateAgentVitals } from "./client/observation-
 import { resolveQualityProfile } from "./client/quality.js";
 import { regionMetaUrl } from "./client/region-navigation.js";
 import { mergeLiveTerrainWindow, terrainWindowTilesChanged } from "./client/terrain-window-cache.js";
-import { environmentalTerrainColor } from "./client/terrain.js";
+import { createTerrainWindowTileLookup, environmentalTerrainColor } from "./client/terrain.js";
 import { ROLE_LABELS, TERRAIN_COLORS, disposeObject } from "./client/shared.js";
 import { WorldView } from "./client/world-view.js";
 
@@ -178,6 +178,7 @@ function buildNeighborPreview(payload) {
 
   const land = [];
   const water = [];
+  const windowStateTile = createTerrainWindowTileLookup(chunks);
   let neighborChunks = 0;
   for (const chunk of chunks) {
     if (chunk.regionId === app.region || !chunk.state?.tiles || !chunk.origin) continue;
@@ -186,9 +187,7 @@ function buildNeighborPreview(payload) {
     const offsetY = chunk.origin.y - center.origin.y;
     const chunkWidth = Number(chunk.state.width) || app.state.width;
     const chunkHeight = Number(chunk.state.height) || app.state.height;
-    const chunkStateTile = (x, y) => x >= 0 && y >= 0 && x < chunkWidth && y < chunkHeight
-      ? chunk.state.tiles[y * chunkWidth + x]
-      : null;
+    const chunkStateTile = (x, y) => windowStateTile(chunk, x, y);
     for (const tile of chunk.state.tiles) {
       if (!isHexGridCell(tile, chunkWidth, chunkHeight)) continue;
       const color = tile.terrain === "water"

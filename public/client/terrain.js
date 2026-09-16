@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
+import { HEX_GRID_STEPS, hexGridDistance, isHexGridCell } from "./hex-grid.js";
 import { TERRAIN_COLORS, disposeObject, hash2 } from "./shared.js";
 
 const WATER_MOISTURE_RADIUS = 4;
@@ -11,6 +11,54 @@ const RUGGED_GROUND = new THREE.Color(0x77766e);
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
+}
+
+// Resolve terrain samples through the shared global cell frame. This lets
+// moisture and axial relief read exact cells from an adjacent loaded chunk
+// instead of treating a macro-region boundary as the edge of the world.
+export function createTerrainWindowTileLookup(chunks) {
+  const globalTiles = new Map();
+  for (const chunk of chunks ?? []) {
+    const tiles = chunk?.state?.tiles;
+    const width = Number(chunk?.state?.width);
+    const height = Number(chunk?.state?.height);
+    const origin = chunk?.globalCellOrigin;
+    if (
+      !Array.isArray(tiles)
+      || !Number.isInteger(width)
+      || !Number.isInteger(height)
+      || width <= 0
+      || height <= 0
+      || !Number.isInteger(origin?.x)
+      || !Number.isInteger(origin?.y)
+    ) continue;
+    for (const tile of tiles) {
+      // Rectangular compatibility storage overlaps between regions. Only
+      // index cells owned by the active simulation hex so one region's
+      // inactive corner cannot shadow another region's real terrain.
+      if (!isHexGridCell(tile, width, height)) continue;
+      globalTiles.set(`${origin.x + tile.x}:${origin.y + tile.y}`, tile);
+    }
+  }
+
+  return (chunk, x, y) => {
+    if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
+    const origin = chunk?.globalCellOrigin;
+    if (Number.isInteger(origin?.x) && Number.isInteger(origin?.y)) {
+      return globalTiles.get(`${origin.x + x}:${origin.y + y}`) ?? null;
+    }
+    const width = Number(chunk?.state?.width);
+    const height = Number(chunk?.state?.height);
+    if (
+      !Number.isInteger(width)
+      || !Number.isInteger(height)
+      || x < 0
+      || y < 0
+      || x >= width
+      || y >= height
+    ) return null;
+    return chunk?.state?.tiles?.[y * width + x] ?? null;
+  };
 }
 
 function quadNormal(corners) {
