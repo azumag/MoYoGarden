@@ -9,9 +9,10 @@ loop = '''  for (let attempt = 0; attempt < 180; attempt += 1) {
   }
 '''
 replacement = '''  let loggedRelayArrival = false;
+  const promotedCourierId = "agent-global:hex-q0-r0:agent-ember-builder";
   for (let attempt = 0; attempt < 180; attempt += 1) {
     await first.object.alarm();
-    const relayCourierBeforeTick = relay.object.runtime.snapshot().agents.find((entry) => entry.id.includes("agent-ember-builder"));
+    const relayCourierBeforeTick = relay.object.runtime.snapshot().agents.find((entry) => entry.id === promotedCourierId);
     if (relayCourierBeforeTick !== undefined && !loggedRelayArrival) {
       loggedRelayArrival = true;
       console.error("MULTIHOP_BEFORE_RELAY_TICK", JSON.stringify({
@@ -22,8 +23,8 @@ replacement = '''  let loggedRelayArrival = false;
       }));
     }
     await relay.object.alarm();
-    if (relayCourierBeforeTick !== undefined && attempt < 45) {
-      const relayCourierAfterTick = relay.object.runtime.snapshot().agents.find((entry) => entry.id.includes("agent-ember-builder"));
+    if (relayCourierBeforeTick !== undefined && attempt < 90) {
+      const relayCourierAfterTick = relay.object.runtime.snapshot().agents.find((entry) => entry.id === promotedCourierId);
       console.error("MULTIHOP_AFTER_RELAY_TICK", JSON.stringify({
         attempt,
         courier: relayCourierAfterTick,
