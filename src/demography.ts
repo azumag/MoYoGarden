@@ -1,3 +1,4 @@
+import { hexGridDistance } from "./hex-grid.js";
 import type { Agent, WorldState } from "./protocol.js";
 import { activeFactionStructures, getFaction } from "./world.js";
 
@@ -60,15 +61,22 @@ export function dependentCaregiverId(
   state: WorldState,
   dependent: Agent,
 ): string | undefined {
-  for (const parentId of dependent.parents ?? []) {
-    const parent = state.agents.find((candidate) =>
-      candidate.id === parentId &&
-      candidate.factionId === dependent.factionId &&
-      candidate.hp > 0
+  const candidates = (dependent.parents ?? [])
+    .flatMap((parentId) => {
+      const parent = state.agents.find((candidate) =>
+        candidate.id === parentId &&
+        candidate.factionId === dependent.factionId &&
+        candidate.hp > 0
+      );
+      return parent === undefined ? [] : [parent];
+    })
+    .sort((a, b) =>
+      hexGridDistance(a.position, dependent.position) -
+        hexGridDistance(b.position, dependent.position) ||
+      b.energy - a.energy ||
+      a.id.localeCompare(b.id)
     );
-    if (parent !== undefined) return parent.id;
-  }
-  return undefined;
+  return candidates[0]?.id;
 }
 
 function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {
