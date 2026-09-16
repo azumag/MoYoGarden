@@ -15,7 +15,8 @@ import {
   type WorldCommand,
   type WorldState,
 } from "./protocol.js";
-import { applyPopulationAging } from "./demography.js";
+import { applyPopulationAging, dependentCaregiverId } from "./demography.js";
+import { hexGridDistance } from "./hex-grid.js";
 import { simulate } from "./simulation.js";
 import { ensureWorldExtent } from "./world-scale.js";
 import {
@@ -58,6 +59,7 @@ const POPULATION_HEALTH_THRESHOLD = 70;
 const POPULATION_ENERGY_THRESHOLD = 35;
 const POPULATION_PARENT_RADIUS = 2;
 const POPULATION_RESIDENT_CAPACITY_PER_CAMP = 6;
+const POPULATION_DEPENDENT_CARE_RADIUS = 1;
 const SOCIAL_INTERVAL = 12;
 const SOCIAL_RADIUS = 2;
 const SOCIAL_PAIR_COOLDOWN = 48;
@@ -122,6 +124,46 @@ function localFoodDonor(
       b.energy - a.energy ||
       a.id.localeCompare(b.id)
     )[0];
+}
+
+function applyDependentCaregiverFollow(
+  state: WorldState,
+  commandedAgentIds: ReadonlySet<string>,
+): void {
+  const dependents = [...state.agents]
+    .filter((agent) =>
+      agent.hp > 0 &&
+      (agent.lifeStage === "infant" || agent.lifeStage === "juvenile")
+    )
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const dependent of dependents) {
+    // Explicit commands remain authoritative. Dependent following is only a
+    // low-level autonomous care behavior, not a replacement for the command API.
+    if (commandedAgentIds.has(dependent.id) || dependent.task?.source === "external") continue;
+
+    const caregiverId = dependentCaregiverId(state, dependent);
+    const caregiver = caregiverId === undefined ? undefined : getAgent(state, caregiverId);
+    if (caregiver === undefined) continue;
+
+    const distance = hexGridDistance(dependent.position, caregiver.position);
+    if (distance <= POPULATION_DEPENDENT_CARE_RADIUS) {
+      // Non-autonomous dependents do not receive normal worker autonomy tasks, so
+      // an autonomous move here can only be the bounded caregiver-follow intent.
+      if (dependent.task?.source === "autonomy" && dependent.task.type === "move") {
+        delete dependent.task;
+      }
+      continue;
+    }
+
+    dependent.task = {
+      source: "autonomy",
+      issuedAtTick: state.tick,
+      type: "move",
+      target: { ...caregiver.position },
+    };
+    dependent.status = `following caregiver ${caregiver.name}`;
+  }
 }
 
 function applyAutonomousNeeds(
@@ -897,6 +939,7 @@ export class WorldRuntime {
     this.#pendingCommands = [];
     for (const command of commands) this.#queuedCommandIds.delete(command.id);
     const commandedAgentIds = new Set(commands.map((command) => command.agentId));
+    applyDependentCaregiverFollow(this.#state, commandedAgentIds);
     const fedAgents = applyAutonomousNeeds(this.#state, commandedAgentIds);
     const starvingAgentIds = new Set(
       this.#state.agents
