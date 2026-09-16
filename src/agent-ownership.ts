@@ -170,6 +170,16 @@ function promoteAgentFamilyReferences(agent: Agent, originRegionId: string): voi
       partnerId: globalHandoffAgentId(agent.pregnancy.partnerId, originRegionId),
     };
   }
+  if (agent.socialMemory !== undefined) {
+    // socialMemory travels with the moving BOT. Promote source-local peers now:
+    // once this BOT has detached, the source DO cannot mutate its memory when a
+    // remembered peer crosses later. The peer will receive this exact same
+    // world-global ID on its own first handoff.
+    agent.socialMemory = agent.socialMemory.map((memory) => ({
+      ...memory,
+      agentId: globalHandoffAgentId(memory.agentId, originRegionId),
+    }));
+  }
 }
 
 function rewriteResidentFamilyReference(
@@ -232,9 +242,9 @@ export function detachAgentOwnership(
   rewriteHistoricalAgentReference(snapshot.state, agent.id, promotedId);
 
   const detachedAgent = structuredClone(agent);
-  // Demographic references are identity links rather than region-local targets.
-  // Normalize them before the moving agent leaves its origin so a partner or
-  // parent that crosses later receives the exact same stable global identity.
+  // Demographic and durable social references are identity links rather than
+  // region-local targets. Normalize them before the moving agent leaves its
+  // origin so peers that cross later resolve to the same stable identity.
   promoteAgentFamilyReferences(detachedAgent, state.regionId);
   return {
     ok: true,
@@ -273,8 +283,9 @@ export function attachAgentOwnership(
   // IDs remain unchanged on all later handoffs.
   arrived.id = arrivedId;
   arrived.position = { ...targetPosition };
-  // Keep lineage and active pregnancy references on the same stable identity
-  // scheme even when callers attach a legacy snapshot without first detaching it.
+  // Keep lineage, active pregnancy, and durable social references on the same
+  // stable identity scheme even when callers attach a legacy snapshot without
+  // first detaching it.
   promoteAgentFamilyReferences(arrived, originRegionId);
   // Coordinate-bound tasks still belong to the source region and must be
   // cleared. Region-independent autonomous intent can survive only after its
