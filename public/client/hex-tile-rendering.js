@@ -7,6 +7,7 @@ import {
 } from "./hex-grid.js";
 import { regularHexFootprintSize } from "./hex-footprint.js";
 import { TERRAIN_COLORS, disposeObject } from "./shared.js";
+import { environmentalTerrainColor } from "./terrain.js";
 import { buildWeldedHexSurface } from "./terrain-stitch.js";
 import { WorldView } from "./world-view.js";
 
@@ -22,14 +23,15 @@ function tileHeight(view, tile) {
   return view.terrainHeight(tile);
 }
 
-function tileColor(tile) {
-  const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
-  const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
-  const drainage = Number.isFinite(tile.drainage) ? clamp01(tile.drainage) : 0;
-  if (tile.terrain !== "water") {
-    color.offsetHSL(0, 0, (elevation - 0.5) * 0.055 + drainage * 0.025);
+function tileColor(stateTile, tile) {
+  if (tile.terrain === "water") {
+    return (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
   }
-  return color;
+  // The hex renderer used to drop the moisture/vegetation/relief tint that the
+  // fallback terrain already derives from low-level world state. Reuse the same
+  // environmental signal so the visible continuous world reflects simulation
+  // conditions instead of looking like flat categorical biome paint.
+  return environmentalTerrainColor(stateTile, tile);
 }
 
 function buildSurfaceGeometry(surface) {
@@ -99,12 +101,15 @@ WorldView.prototype.buildTerrain = function buildHexTerrain(state) {
   const surfaceHeights = new Map();
   const radius = hexCellRadius(state.width, state.height);
   const surfaceOptions = regionSurfaceOptions(state.width, state.height);
+  const stateTile = (x, y) => x >= 0 && y >= 0 && x < state.width && y < state.height
+    ? state.tiles[y * state.width + x]
+    : null;
 
   for (const tile of state.tiles) {
     if (!isHexGridCell(tile, state.width, state.height)) continue;
     const center = hexTileWorldXZ(tile, state.width, state.height);
     const height = tileHeight(this, tile);
-    const color = tileColor(tile);
+    const color = tileColor(stateTile, tile);
     surfaceHeights.set(`${tile.x}:${tile.y}`, height);
     terrainEntries.push({ x: center.x, z: center.z, height, color });
     if (tile.terrain === "water") {

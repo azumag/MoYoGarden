@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { hexGridDistance } from "./hex-grid.js";
+import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
 import { TERRAIN_COLORS, disposeObject, hash2 } from "./shared.js";
 
 const WATER_MOISTURE_RADIUS = 4;
@@ -27,18 +27,15 @@ function quadNormal(corners) {
   return a.cross(b).normalize().toArray();
 }
 
-function localRelief(stateTile, tile) {
+export function environmentalRelief(stateTile, tile) {
   if (!tile || tile.terrain === "water" || !Number.isFinite(tile.elevation)) return 0;
   let minimum = tile.elevation;
   let maximum = tile.elevation;
-  for (let dy = -1; dy <= 1; dy += 1) {
-    for (let dx = -1; dx <= 1; dx += 1) {
-      if (dx === 0 && dy === 0) continue;
-      const neighbor = stateTile(tile.x + dx, tile.y + dy);
-      if (!neighbor || neighbor.terrain === "water" || !Number.isFinite(neighbor.elevation)) continue;
-      minimum = Math.min(minimum, neighbor.elevation);
-      maximum = Math.max(maximum, neighbor.elevation);
-    }
+  for (const step of HEX_GRID_STEPS) {
+    const neighbor = stateTile(tile.x + step.x, tile.y + step.y);
+    if (!neighbor || neighbor.terrain === "water" || !Number.isFinite(neighbor.elevation)) continue;
+    minimum = Math.min(minimum, neighbor.elevation);
+    maximum = Math.max(maximum, neighbor.elevation);
   }
   return clamp01((maximum - minimum) / 0.22);
 }
@@ -75,11 +72,11 @@ export function environmentalMoisture(stateTile, tile) {
   );
 }
 
-function environmentalTerrainColor(stateTile, tile) {
+export function environmentalTerrainColor(stateTile, tile) {
   const color = (TERRAIN_COLORS[tile.terrain] || TERRAIN_COLORS.plain).clone();
   const moisture = environmentalMoisture(stateTile, tile);
   const elevation = Number.isFinite(tile.elevation) ? tile.elevation : 0.5;
-  const relief = localRelief(stateTile, tile);
+  const relief = environmentalRelief(stateTile, tile);
   const environment = DRY_GROUND.clone().lerp(MOIST_GROUND, moisture);
   environment.lerp(UPLAND_GROUND, Math.max(0, elevation - 0.52) * 0.5);
   environment.lerp(RUGGED_GROUND, relief * 0.28);
@@ -130,7 +127,7 @@ export const terrainMethods = {
       const base = samples.length > 0
         ? samples.reduce((sum, value) => sum + value, 0) / samples.length
         : tileHeight(fallbackTile);
-      const relief = localRelief(stateTile, fallbackTile);
+      const relief = environmentalRelief(stateTile, fallbackTile);
       const noiseScale = 0.03 + relief * 0.075;
       const noise = (hash2(vertexX, vertexY, 501) - 0.5) * noiseScale;
       return base + noise;
