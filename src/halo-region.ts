@@ -262,6 +262,12 @@ export class RegionDurableObject extends MoveRegionDurableObject {
   private lastDirectActivityAt = 0;
   private lastWarmActivityAt = 0;
   private haloEdgeReadCache: Map<string, HaloEdgeReadCacheEntry> | undefined;
+  private haloEdgeSupportCache: {
+    revision: number;
+    tick: number;
+    regionSummary: NonNullable<HexHaloEdgeSnapshot["regionSummary"]>;
+    occupantsByPosition: Map<string, number>;
+  } | undefined;
   private haloEdgeMutationDepth = 0;
 
   constructor(
@@ -364,11 +370,15 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     return response.ok ? undefined : response;
   }
 
-  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {
-    const state = runtimeAccess(this).runtime.snapshot();
-    // Export one tiny whole-region support summary on the existing edge read.
-    // This is bounded metadata, not another region fetch: it lets a neighboring
-    // logistics planner discover interior supply while keeping depth-1 fan-out.
+  private edgeSupport(state: WorldState): NonNullable<typeof this.haloEdgeSupportCache> {
+    const cached = this.haloEdgeSupportCache;
+    if (cached !== undefined && cached.revision === state.revision && cached.tick === state.tick) {
+      return cached;
+    }
+
+    // Whole-region support is identical for all six directional edge reads at
+    // a given state revision. Build it once instead of rescanning every tile,
+    // structure and agent independently for each neighboring Durable Object.
     const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     const resourceCapacity: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     const activeStructures = { camp: 0, storehouse: 0, market: 0, workshop: 0 };
@@ -380,9 +390,6 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         0,
         BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
       );
-      // Keep zero for factions whose active storage is known to be full. An
-      // omitted faction still means "unknown" after bounded top-N truncation,
-      // which lets remote planners distinguish full from merely unobserved.
       storageHeadroom.set(
         structure.factionId,
         (storageHeadroom.get(structure.factionId) ?? 0) + headroom,
@@ -393,18 +400,23 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .slice(0, MAX_SUMMARIZED_STORAGE_FACTIONS),
     );
+
     const occupantCounts = new Map<string, number>();
+    const occupantsByPosition = new Map<string, number>();
     for (const agent of state.agents) {
       occupantCounts.set(
         agent.factionId,
         (occupantCounts.get(agent.factionId) ?? 0) + 1,
       );
+      const key = `${agent.position.x},${agent.position.y}`;
+      occupantsByPosition.set(key, (occupantsByPosition.get(key) ?? 0) + 1);
     }
     const occupantsByFaction = Object.fromEntries(
       [...occupantCounts.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .slice(0, MAX_SUMMARIZED_OCCUPANT_FACTIONS),
     );
+
     let passableCells = 0;
     for (const tile of state.tiles) {
       if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
@@ -414,23 +426,28 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         if (tile.resource.maxAmount > 0) resourceCapacity[tile.resource.kind] += tile.resource.maxAmount;
       }
     }
-    const regionSummary = {
-      resources,
-      resourceCapacity,
-      activeStructures,
-      storageHeadroomByFaction,
-      occupantsByFaction,
-      passableCells,
-      occupants: state.agents.length,
+
+    const next = {
+      revision: state.revision,
+      tick: state.tick,
+      regionSummary: {
+        resources,
+        resourceCapacity,
+        activeStructures,
+        storageHeadroomByFaction,
+        occupantsByFaction,
+        passableCells,
+        occupants: state.agents.length,
+      },
+      occupantsByPosition,
     };
-    // Export only a bounded per-boundary-cell occupancy count, never remote BOT
-    // snapshots. This lets logistics price destination congestion through the
-    // existing depth-1 halo read without adding another cross-DO request.
-    const occupantsByPosition = new Map<string, number>();
-    for (const agent of state.agents) {
-      const key = `${agent.position.x},${agent.position.y}`;
-      occupantsByPosition.set(key, (occupantsByPosition.get(key) ?? 0) + 1);
-    }
+    this.haloEdgeSupportCache = next;
+    return next;
+  }
+
+  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {
+    const state = runtimeAccess(this).runtime.snapshot();
+    const { regionSummary, occupantsByPosition } = this.edgeSupport(state);
     const tiles = hexGridBoundaryCells(state, direction).flatMap((position) => {
       const tile = getTile(state, position);
       if (tile === undefined) return [];
