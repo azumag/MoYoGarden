@@ -75,6 +75,7 @@ interface SettlementSeamCandidate {
 interface SettlementPlanCandidate extends SettlementSeamCandidate {
   agent: Agent;
   issuedAtTick: number;
+  familySeparationCost: number;
 }
 
 interface LocalPathScore {
@@ -669,8 +670,13 @@ function compareSettlementPlanCandidate(
     || a.distance - b.distance
     || a.pathCrowding - b.pathCrowding
     || a.crowding - b.crowding
-    // Equivalent migration plans should use the builder with the larger
-    // remaining energy reserve before falling back to stable agent ID order.
+    // When route and destination are otherwise equivalent, prefer a pioneer
+    // whose departure disrupts fewer dependent family relationships. This is
+    // a soft preference rather than a blockade, so a family-attached builder
+    // can still found the frontier when no safer candidate exists.
+    || a.familySeparationCost - b.familySeparationCost
+    // Equivalent family impact then uses the larger remaining energy reserve
+    // before falling back to stable agent ID order.
     || b.agent.energy - a.agent.energy
     || a.agent.id.localeCompare(b.agent.id)
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
@@ -822,6 +828,35 @@ function isTransitPioneer(state: WorldState, agent: Agent): boolean {
   ) return false;
   const deficit = campKitDeficit(agent);
   return RESOURCE_KINDS.every((kind) => deficit[kind] === 0);
+}
+
+function familySeparationCost(state: WorldState, agent: Agent): number {
+  let cost = 0;
+  if (agent.pregnancy !== undefined && agent.pregnancy.dueAtTick > state.tick) {
+    cost += 4;
+  }
+  for (const relative of state.agents) {
+    if (
+      relative.id === agent.id
+      || relative.factionId !== agent.factionId
+      || relative.hp <= 0
+    ) {
+      continue;
+    }
+    if (
+      (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
+      && relative.parents?.includes(agent.id)
+    ) {
+      cost += relative.lifeStage === "infant" ? 3 : 2;
+    }
+    if (
+      relative.pregnancy?.partnerId === agent.id
+      && relative.pregnancy.dueAtTick > state.tick
+    ) {
+      cost += 4;
+    }
+  }
+  return cost;
 }
 
 function sameSettlementRegion(a: string | undefined, b: string): boolean {
@@ -978,6 +1013,7 @@ export function planAutonomousSettlementMigration(
       pathCrowding: candidate.pathCrowding,
       crowding: candidate.crowding,
       issuedAtTick,
+      familySeparationCost: familySeparationCost(state, agent),
       support: candidate.support,
       factionStorageHeadroom: candidate.factionStorageHeadroom,
     };
