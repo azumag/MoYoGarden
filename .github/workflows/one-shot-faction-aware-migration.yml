@@ -46,7 +46,17 @@ jobs:
               if test_text.count(old_test) != 1:
                   raise SystemExit(f"expected one test fixture match for {old_test!r}")
               test_text = test_text.replace(old_test, new_test, 1)
-          test_path.write_text(test_text)
+
+          marker = '''test("truncated faction composition stays neutral when the pioneer faction is omitted", () => {\n  const { state, builder } = fixture();\n  const seam = { x: 30, y: 11 };\n  const plan = planAutonomousSettlementMigration(state, [\n'''
+          expanded = '''test("truncated faction composition stays neutral when the pioneer faction is omitted", () => {\n  const { state, builder } = fixture();\n  const seam = { x: 30, y: 11 };\n  const baseline = planAutonomousSettlementMigration(state, [\n    candidate(\n      "E",\n      seam,\n      "hex-q1-r0",\n      { x: 8, y: 11 },\n      summary(2),\n    ),\n    candidate(\n      "W",\n      seam,\n      "hex-q-1-r0",\n      { x: 30, y: 11 },\n      summary(2),\n    ),\n  ]);\n  assert.ok(baseline);\n  const plan = planAutonomousSettlementMigration(state, [\n'''
+          if test_text.count(marker) != 1:
+              raise SystemExit("expected one truncated-summary test marker")
+          test_text = test_text.replace(marker, expanded, 1)
+          old_assert = '''  assert.equal(\n    plan.neighborRegionId,\n    "hex-q1-r0",\n    "an omitted faction in an incomplete top-N summary must not be treated as zero residents",\n  );\n'''
+          new_assert = '''  assert.equal(\n    plan.neighborRegionId,\n    baseline.neighborRegionId,\n    "an omitted faction in an incomplete top-N summary must remain neutral",\n  );\n'''
+          if test_text.count(old_assert) != 1:
+              raise SystemExit("expected one truncated-summary assertion")
+          test_path.write_text(test_text.replace(old_assert, new_assert, 1))
           PY
       - name: Validate
         shell: bash
