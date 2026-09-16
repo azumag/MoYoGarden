@@ -1,0 +1,70 @@
+name: MoYoGarden focused return-storage test diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-newtest-diagnose-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply corrected patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import re
+          from pathlib import Path
+          prefix = "aW1wb3J0IGJhc2U2NApURVNUX0JMT0NLX0I2NCA9ICdDblJsYzNRb0luSmxkSFZ5YmlCallYSm5ieUJ5Wlc1bGQzTWdjMjkxY21ObElITjBiM0poWjJVZ1lua2dkMkZzYkNCamJHOWpheUJoWm5SbGNpQnpiM1Z5WTJVZ2RHbGpheUJsZUhCcGNua2lMQ0JoYzNsdVl5QW9LU0E5UGlCN0NpQWdZMjl1YzNRZ1pXNTJJRDBnWlc1MmFYSnZibTFsYm5Rb0tUc0tJQ0JqYjI1emRDQnlaV3hoZVNBOUlHRjNZV2wwSUdGemMybG5ibEpsWjJsdmJpaGxibllzSUNKbllYSmtaVzR0TWlJcE93b2dJR052Ym5OMElHOXlhV2RwYmlBOUlHRjNZV2wwSUdGemMybG5ibEpsWjJsdmJpaGxibllzSUNKb1pYZ3RjVEl0Y2pBaUtUc0tDaUFnWTI5dWMzUWdjbVZzWVhsVGRHRjBaU0E5SUhKbGJHRjVMbTlpYW1WamRDNXlkVzUwYVcxbExuTnVZWEJ6YUc5MEtDazdDaUFnY21Wc1lYbFRkR0YwWlM1emRISjFZM1IxY21WeklEMGdXMTA3Q2lBZ1ptOXlJQ2hqYjI1emRDQmpZVzVrYVdSaGRHV"
+          source = Path('.github/workflows/moyo-improve-once.yml').read_text()
+          match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)"\)', source)
+          code = base64.b64decode(prefix + match.group(1)).decode()
+          obsolete = base64.b64decode("b25lKAoiIiIgICAgICAvLyBTb3VyY2UtcmV0dXJuIGNhcGFjaXR5IGZvbGxvd3MgdGhlIHBoeXNpY2FsIGNhcmdvIHRvby4gU3VwcGx5CiAgICAgIC8vIHNldHRsZW1lbnQgbWVhbnMgdGhlIHJlc291cmNlIHdhcyBnYXRoZXJlZDsgaXQgZG9lcyBub3QgbWVhbiB0aGUKICAgICAgLy8gcHJvbWlzZWQgc291cmNlIHN0b3JhZ2UgaXMgZnJlZSBmb3IgYW5vdGhlciBleHBlZGl0aW9uIHlldC4KICAgICAgY29uc3QgcmV0dXJuQ2FyZ29PdXRzdGFuZGluZyA9CiAgICAgICAgdXBkYXRlZENsYWltLnJldHVyblRvU291cmNlU3RvcmFnZSA9PT0gdHJ1ZQogICAgICAgICYmIGdhdGhlcmVkQW1vdW50ID4gMAogICAgICAgICYmIGFnZW50ICE9PSB1bmRlZmluZWQKICAgICAgICAmJiBhZ2VudC5pbnZlbnRvcnlbdXBkYXRlZENsYWltLnJlc291cmNlXSA+IDA7CiAgICAgIGlmIChyZXR1cm5DYXJnb091dHN0YW5kaW5nKSB7CiIiIiwKIiIiICAgICAgLy8gU291cmNlLXJldHVybiBjYXBhY2l0eSBmb2xsb3dzIHRoZSBwaHlzaWNhbCBjYXJnbyB0b28uIFN1cHBseQogICAgICAvLyBzZXR0bGVtZW50IG1lYW5zIHRoZSByZXNvdXJjZSB3YXMgZ2F0aGVyZWQ7IGl0IGRvZXMgbm90IG1lYW4gdGhlCiAgICAgIC8vIHByb21pc2VkIHNvdXJjZSBzdG9yYWdlIGlzIGZyZWUgZm9yIGFub3RoZXIgZXhwZWRpdGlvbiB5ZXQuCiAgICAgIGlmIChyZXR1cm5DYXJnb091dHN0YW5kaW5nKSB7CiIiIikKCg==").decode()
+          code = code.replace(obsolete, '', 1)
+          exec(compile(code, '<moyo-improve-once>', 'exec'))
+          p = Path('src/autonomy-region.ts')
+          s = p.read_text()
+          needle = 'const returnCargoOutstanding ='
+          positions=[]; cursor=0
+          while True:
+              pos=s.find(needle,cursor)
+              if pos<0: break
+              positions.append(pos); cursor=pos+len(needle)
+          second=positions[1]
+          line_start=s.rfind('\n',0,second)+1
+          statement_end=s.find(';\n',second)
+          s=s[:line_start]+s[statement_end+2:]
+          p.write_text(s)
+          PY
+      - name: Focused test
+        shell: bash
+        run: |
+          set +e
+          npm install --no-audit --no-fund >/tmp/install.log 2>&1
+          node --test tests/autonomy-material-return-relay.test.mjs >/tmp/focused.log 2>&1
+          status=$?
+          { echo "TEST_STATUS=$status"; cat /tmp/focused.log; } > .moyo-focused-error
+          exit 0
+      - name: Persist diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .moyo-focused-error
+          git commit -m 'chore: capture return-storage focused test diagnostic'
+          git push origin HEAD:main
