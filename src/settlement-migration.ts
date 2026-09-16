@@ -831,8 +831,19 @@ function isTransitPioneer(state: WorldState, agent: Agent): boolean {
 }
 
 function familySeparationCost(state: WorldState, agent: Agent): number {
+  const livingSameFaction = new Set(
+    state.agents
+      .filter((relative) => relative.factionId === agent.factionId && relative.hp > 0)
+      .map((relative) => relative.id),
+  );
   let cost = 0;
-  if (agent.pregnancy !== undefined && agent.pregnancy.dueAtTick > state.tick) {
+  if (
+    agent.pregnancy !== undefined
+    && agent.pregnancy.dueAtTick > state.tick
+    && livingSameFaction.has(agent.pregnancy.partnerId)
+  ) {
+    // Pregnancy itself travels with the gestational parent. Count separation
+    // only when the living partner would actually remain in this region.
     cost += 4;
   }
   for (const relative of state.agents) {
@@ -847,7 +858,14 @@ function familySeparationCost(state: WorldState, agent: Agent): number {
       (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
       && relative.parents?.includes(agent.id)
     ) {
-      cost += relative.lifeStage === "infant" ? 3 : 2;
+      const alternateLivingParent = relative.parents.some((parentId) =>
+        parentId !== agent.id && livingSameFaction.has(parentId)
+      );
+      // Leaving a dependent with another living parent is disruptive but still
+      // safer than making the migration remove the child's only living parent.
+      cost += relative.lifeStage === "infant"
+        ? (alternateLivingParent ? 3 : 5)
+        : (alternateLivingParent ? 2 : 3);
     }
     if (
       relative.pregnancy?.partnerId === agent.id

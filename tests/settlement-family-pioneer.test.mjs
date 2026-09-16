@@ -98,3 +98,63 @@ test("family attachment remains a soft preference when no other pioneer can migr
   assert.ok(plan);
   assert.equal(plan.agentId, attached.id);
 });
+
+
+test("pregnancy does not count as separation when the partner is absent from the region", () => {
+  const state = migrationWorld();
+  const template = state.agents.find((agent) => agent.role === "builder");
+  assert.ok(template);
+  const pregnant = migrationBuilder(template, "agent-a-pregnant", 95);
+  pregnant.pregnancy = {
+    partnerId: "agent-partner-already-away",
+    conceivedAtTick: 10,
+    dueAtTick: 100,
+  };
+  const unattached = migrationBuilder(template, "agent-z-unattached", 70);
+  state.agents = [pregnant, unattached];
+
+  const plan = planAutonomousSettlementMigration(state, frontierHalo());
+  assert.ok(plan);
+  assert.equal(plan.agentId, pregnant.id);
+});
+
+test("a sole living parent is costlier to migrate than a parent leaving a co-parent", () => {
+  const state = migrationWorld();
+  const template = state.agents.find((agent) => agent.role === "builder");
+  assert.ok(template);
+  const soleParent = migrationBuilder(template, "agent-a-sole-parent", 95);
+  const coParentCandidate = migrationBuilder(template, "agent-z-coparent", 70);
+  const residentCoParent = structuredClone(template);
+  residentCoParent.id = "agent-resident-coparent";
+  residentCoParent.autonomy = false;
+  residentCoParent.energy = 80;
+  residentCoParent.position = { x: 18, y: 11 };
+  delete residentCoParent.task;
+  delete residentCoParent.pregnancy;
+
+  const soleChild = structuredClone(template);
+  soleChild.id = "agent-sole-child";
+  soleChild.autonomy = false;
+  soleChild.lifeStage = "infant";
+  soleChild.birthTick = 1;
+  soleChild.position = { x: 19, y: 10 };
+  soleChild.parents = [soleParent.id, "agent-missing-parent"];
+  delete soleChild.task;
+  delete soleChild.pregnancy;
+
+  const sharedChild = structuredClone(template);
+  sharedChild.id = "agent-shared-child";
+  sharedChild.autonomy = false;
+  sharedChild.lifeStage = "infant";
+  sharedChild.birthTick = 1;
+  sharedChild.position = { x: 20, y: 10 };
+  sharedChild.parents = [coParentCandidate.id, residentCoParent.id];
+  delete sharedChild.task;
+  delete sharedChild.pregnancy;
+
+  state.agents = [soleParent, coParentCandidate, residentCoParent, soleChild, sharedChild];
+
+  const plan = planAutonomousSettlementMigration(state, frontierHalo());
+  assert.ok(plan);
+  assert.equal(plan.agentId, coParentCandidate.id);
+});
