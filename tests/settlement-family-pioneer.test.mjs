@@ -158,3 +158,28 @@ test("a sole living parent is costlier to migrate than a parent leaving a co-par
   assert.ok(plan);
   assert.equal(plan.agentId, coParentCandidate.id);
 });
+
+
+test("active demographic caregiver is costlier to migrate than the co-parent", () => {
+  const state = migrationWorld();
+  const template = state.agents.find((agent) => agent.role === "builder");
+  assert.ok(template);
+  const caregiver = migrationBuilder(template, "agent-a-caregiver", 95);
+  const coparent = migrationBuilder(template, "agent-z-coparent", 70);
+  const infant = structuredClone(template);
+  infant.id = "agent-shared-infant";
+  infant.autonomy = false;
+  infant.lifeStage = "infant";
+  infant.birthTick = 1;
+  infant.energy = 60;
+  infant.position = { x: 19, y: 10 };
+  // Demographic maintenance deterministically charges the first living parent.
+  infant.parents = [caregiver.id, coparent.id];
+  delete infant.task;
+  delete infant.pregnancy;
+  state.agents = [caregiver, coparent, infant];
+
+  const plan = planAutonomousSettlementMigration(state, frontierHalo());
+  assert.ok(plan);
+  assert.equal(plan.agentId, coparent.id);
+});

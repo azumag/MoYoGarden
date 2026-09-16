@@ -56,16 +56,26 @@ function consumeStoredFood(state: WorldState, factionId: string, amount: number)
   return true;
 }
 
-function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {
+export function dependentCaregiverId(
+  state: WorldState,
+  dependent: Agent,
+): string | undefined {
   for (const parentId of dependent.parents ?? []) {
     const parent = state.agents.find((candidate) =>
       candidate.id === parentId &&
       candidate.factionId === dependent.factionId &&
       candidate.hp > 0
     );
-    if (parent !== undefined) return parent;
+    if (parent !== undefined) return parent.id;
   }
   return undefined;
+}
+
+function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {
+  const caregiverId = dependentCaregiverId(state, dependent);
+  return caregiverId === undefined
+    ? undefined
+    : state.agents.find((candidate) => candidate.id === caregiverId);
 }
 
 /**

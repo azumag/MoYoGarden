@@ -6,6 +6,7 @@ import {
   isHexGridCell,
   type HexGridDirection,
 } from "./hex-grid.js";
+import { dependentCaregiverId } from "./demography.js";
 import {
   BUILD_RECIPES,
   inventoryTotal,
@@ -861,11 +862,15 @@ function familySeparationCost(state: WorldState, agent: Agent): number {
       const alternateLivingParent = relative.parents.some((parentId) =>
         parentId !== agent.id && livingSameFaction.has(parentId)
       );
-      // Leaving a dependent with another living parent is disruptive but still
-      // safer than making the migration remove the child's only living parent.
+      const activeCaregiver = dependentCaregiverId(state, relative) === agent.id;
+      // Migration should reflect the same low-level caregiver that pays the
+      // recurring demographic energy cost. When a co-parent remains, prefer
+      // moving the non-caregiver before the active caregiver; the sole living
+      // parent is still the most disruptive departure. This remains a soft
+      // preference so settlement expansion cannot deadlock on family state.
       cost += relative.lifeStage === "infant"
-        ? (alternateLivingParent ? 3 : 5)
-        : (alternateLivingParent ? 2 : 3);
+        ? (alternateLivingParent ? (activeCaregiver ? 4 : 2) : 5)
+        : (alternateLivingParent ? (activeCaregiver ? 2 : 1) : 3);
     }
     if (
       relative.pregnancy?.partnerId === agent.id
