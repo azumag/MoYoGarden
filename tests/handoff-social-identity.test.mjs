@@ -61,6 +61,7 @@ test("handoff promotes recent social-history references with the moving agent id
   assert.deepEqual(source.events, originalEvents, "input event history remains immutable");
 
   const promotedMoverId = globalHandoffAgentId(moverLocalId, source.regionId);
+  const promotedPeerId = globalHandoffAgentId(peer.id, source.regionId);
   const [outbound, inbound, unrelated] = detached.value.snapshot.state.events;
   assert.ok(outbound);
   assert.ok(inbound);
@@ -78,7 +79,8 @@ test("handoff promotes recent social-history references with the moving agent id
   assert.equal(residentPeer.socialMemory?.[0]?.familiarity, 3);
   assert.equal(
     detached.value.agent.socialMemory?.[0]?.agentId,
-    peer.id,
-    "the moving BOT keeps the still-local peer identity; reciprocal memory will promote when that peer moves",
+    promotedPeerId,
+    "the moving BOT proactively promotes source-local peers so later peer handoff resolves to the same identity",
   );
+  assert.equal(detached.value.agent.socialMemory?.[0]?.familiarity, 3);
 });
