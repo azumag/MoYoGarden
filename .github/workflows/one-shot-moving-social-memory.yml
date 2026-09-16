@@ -1,0 +1,82 @@
+name: One-shot moving social memory identity fix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore: stage moving social memory identity fix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          ownership = Path('src/agent-ownership.ts')
+          text = ownership.read_text()
+          old = '''  if (agent.pregnancy !== undefined) {
+    agent.pregnancy = {
+      ...agent.pregnancy,
+      partnerId: globalHandoffAgentId(agent.pregnancy.partnerId, originRegionId),
+    };
+  }
+}'''
+          new = '''  if (agent.pregnancy !== undefined) {
+    agent.pregnancy = {
+      ...agent.pregnancy,
+      partnerId: globalHandoffAgentId(agent.pregnancy.partnerId, originRegionId),
+    };
+  }
+  if (agent.socialMemory !== undefined) {
+    // socialMemory travels with the moving BOT, so source-local peer IDs must
+    // be promoted proactively. The peer may cross later, and no source DO can
+    // then mutate this BOT's already-detached memory in another region.
+    agent.socialMemory = agent.socialMemory.map((memory) => ({
+      ...memory,
+      agentId: globalHandoffAgentId(memory.agentId, originRegionId),
+    }));
+  }
+}'''
+          if text.count(old) != 1:
+              raise SystemExit(f'ownership marker count={text.count(old)}')
+          ownership.write_text(text.replace(old, new, 1))
+
+          test = Path('tests/handoff-social-identity.test.mjs')
+          text = test.read_text()
+          old = '''  assert.equal(
+    detached.value.agent.socialMemory?.[0]?.agentId,
+    peer.id,
+    "the moving BOT keeps the still-local peer identity; reciprocal memory will promote when that peer moves",
+  );'''
+          new = '''  assert.equal(
+    detached.value.agent.socialMemory?.[0]?.agentId,
+    globalHandoffAgentId(peer.id, source.regionId),
+    "the moving BOT proactively promotes source-local peers so later peer handoff resolves to the same identity",
+  );
+  assert.equal(detached.value.agent.socialMemory?.[0]?.familiarity, 3);'''
+          if text.count(old) != 1:
+              raise SystemExit(f'test marker count={text.count(old)}')
+          test.write_text(text.replace(old, new, 1))
+          PY
+
+          npm run build
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/agent-ownership.ts tests/handoff-social-identity.test.mjs
+          git commit -m 'fix: globalize moving social memory across handoff'
+          git push origin HEAD:main
