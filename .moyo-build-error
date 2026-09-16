@@ -1,0 +1,11 @@
+BUILD_STATUS=2
+
+> moyo-garden@0.3.11 build
+> npm run check && npm run build:web
+
+
+> moyo-garden@0.3.11 check
+> tsc -p tsconfig.json --noEmit
+
+src/autonomy-region.ts(1842,13): error TS2451: Cannot redeclare block-scoped variable 'returnCargoOutstanding'.
+src/autonomy-region.ts(1958,13): error TS2451: Cannot redeclare block-scoped variable 'returnCargoOutstanding'.
