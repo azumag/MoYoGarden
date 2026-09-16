@@ -19,7 +19,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
-          cache: npm
       - name: Patch reservation lifecycle and regression test
         shell: bash
         run: |
@@ -373,7 +372,7 @@ jobs:
           test_path.write_text(tests)
           PY
       - name: Install dependencies
-        run: npm ci
+        run: npm install
       - name: Full build and tests
         run: npm run build
       - name: Commit implementation directly to main
