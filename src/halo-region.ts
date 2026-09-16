@@ -83,6 +83,7 @@ const HALO_REGROWTH_BOUNDARY_DEPTH = 3;
 // Keep the whole-region logistics hint constant-size even if future worlds
 // contain many factions. Missing entries remain neutral to remote planners.
 const MAX_SUMMARIZED_STORAGE_FACTIONS = 8;
+const MAX_SUMMARIZED_OCCUPANT_FACTIONS = 8;
 const DEFAULT_WORLD_SEED = 424_242;
 const PERSISTED_LEGACY_REGION_IDS = ["garden-1", "garden-2", "garden-3"] as const;
 
@@ -392,6 +393,18 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .slice(0, MAX_SUMMARIZED_STORAGE_FACTIONS),
     );
+    const occupantCounts = new Map<string, number>();
+    for (const agent of state.agents) {
+      occupantCounts.set(
+        agent.factionId,
+        (occupantCounts.get(agent.factionId) ?? 0) + 1,
+      );
+    }
+    const occupantsByFaction = Object.fromEntries(
+      [...occupantCounts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, MAX_SUMMARIZED_OCCUPANT_FACTIONS),
+    );
     let passableCells = 0;
     for (const tile of state.tiles) {
       if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
@@ -406,6 +419,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       resourceCapacity,
       activeStructures,
       storageHeadroomByFaction,
+      occupantsByFaction,
       passableCells,
       occupants: state.agents.length,
     };

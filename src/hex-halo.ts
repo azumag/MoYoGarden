@@ -39,6 +39,11 @@ export interface HexHaloRegionSummary {
   // contain zero for a faction whose active storage is known to be full. An
   // omitted faction stays unknown (for example after top-N truncation).
   storageHeadroomByFaction?: Record<string, number>;
+  // Optional bounded population composition. Counts are whole-region residents,
+  // not remote Agent snapshots. Consumers must treat a missing faction as
+  // unknown unless the summarized counts add up to `occupants`, because top-N
+  // truncation can omit small factions in highly mixed regions.
+  occupantsByFaction?: Record<string, number>;
   passableCells: number;
   occupants: number;
 }
@@ -390,6 +395,9 @@ export function materializeHexHalo(
           }),
           ...(observed.regionSummary.storageHeadroomByFaction === undefined ? {} : {
             storageHeadroomByFaction: { ...observed.regionSummary.storageHeadroomByFaction },
+          }),
+          ...(observed.regionSummary.occupantsByFaction === undefined ? {} : {
+            occupantsByFaction: { ...observed.regionSummary.occupantsByFaction },
           }),
           passableCells: observed.regionSummary.passableCells,
           occupants: observed.regionSummary.occupants,

@@ -64,6 +64,11 @@ interface SettlementNeighborSupport {
   resourceCapacity: Record<ResourceKind, number>;
 }
 
+interface SettlementFactionOccupancy {
+  own: number;
+  foreign: number;
+}
+
 interface SettlementSeamCandidate {
   entry: HexHaloTile;
   distance: number;
@@ -71,6 +76,7 @@ interface SettlementSeamCandidate {
   crowding: number;
   support: SettlementNeighborSupport;
   factionStorageHeadroom: number | undefined;
+  factionOccupancy: SettlementFactionOccupancy | undefined;
 }
 
 interface SettlementPlanCandidate extends SettlementSeamCandidate {
@@ -617,6 +623,60 @@ function compareSettlementStorageHeadroom(
   return b - a;
 }
 
+function compareFactionOccupancy(
+  a: SettlementFactionOccupancy | undefined,
+  b: SettlementFactionOccupancy | undefined,
+): number {
+  if (a === undefined || b === undefined) return 0;
+  // Whole-region population density is already compared as ecological pressure.
+  // When that total pressure ties, prefer fewer foreign residents and then an
+  // existing same-faction foothold. This is only a soft tie-break: richer/safer
+  // land still wins, and rolling summaries without composition remain neutral.
+  return a.foreign - b.foreign
+    || Number(b.own > 0) - Number(a.own > 0);
+}
+
+function haloRegionFactionOccupancy(
+  halo: readonly HexHaloTile[],
+  neighborRegionId: string,
+  factionId: string,
+): SettlementFactionOccupancy | undefined {
+  let observation: { occupants: number; counts: Record<string, number> } | undefined;
+  for (const entry of halo) {
+    if (entry.neighborRegionId !== neighborRegionId) continue;
+    const summary = entry.neighborRegionSummary;
+    const counts = summary?.occupantsByFaction;
+    if (summary === undefined || counts === undefined) continue;
+    if (!Number.isInteger(summary.occupants) || summary.occupants < 0) continue;
+    const entries = Object.entries(counts);
+    if (entries.some(([, count]) => !Number.isInteger(count) || count < 0)) continue;
+    const summarized = entries.reduce((sum, [, count]) => sum + count, 0);
+    if (summarized > summary.occupants) continue;
+    if (observation !== undefined) {
+      const previousEntries = Object.entries(observation.counts);
+      if (
+        observation.occupants !== summary.occupants
+        || previousEntries.length !== entries.length
+        || previousEntries.some(([id, count]) => counts[id] !== count)
+      ) {
+        // Independent edge reads can straddle a remote tick. Mixed population
+        // composition is not coherent, so leave this preference neutral.
+        return undefined;
+      }
+      continue;
+    }
+    observation = { occupants: summary.occupants, counts };
+  }
+  if (observation === undefined) return undefined;
+  const own = observation.counts[factionId];
+  const summarized = Object.values(observation.counts).reduce((sum, count) => sum + count, 0);
+  // Absence means zero only when the bounded summary is complete. Otherwise the
+  // faction may simply have fallen below the top-N export cutoff.
+  if (own === undefined && summarized !== observation.occupants) return undefined;
+  const ownCount = own ?? 0;
+  return { own: ownCount, foreign: Math.max(0, observation.occupants - ownCount) };
+}
+
 function haloRegionFactionStorageHeadroom(
   halo: readonly HexHaloTile[],
   neighborRegionId: string,
@@ -642,6 +702,7 @@ function compareSettlementSeamCandidate(
 ): number {
   return (
     compareSettlementSupport(a.support, b.support)
+    || compareFactionOccupancy(a.factionOccupancy, b.factionOccupancy)
     // Only after ecological support and existing development tie, prefer a
     // frontier where this faction has usable logistics capacity. Missing
     // rolling metadata stays neutral; known-full storage is worse than unknown.
@@ -663,6 +724,7 @@ function compareSettlementPlanCandidate(
 ): number {
   return (
     compareSettlementSupport(a.support, b.support)
+    || compareFactionOccupancy(a.factionOccupancy, b.factionOccupancy)
     // Only after ecological support and existing development tie, prefer a
     // frontier where this faction has usable logistics capacity. Missing
     // rolling metadata stays neutral; known-full storage is worse than unknown.
@@ -1020,6 +1082,11 @@ export function planAutonomousSettlementMigration(
           entry.neighborRegionId,
           agent.factionId,
         ),
+        factionOccupancy: haloRegionFactionOccupancy(
+          halo,
+          entry.neighborRegionId,
+          agent.factionId,
+        ),
       };
       if (candidate === undefined || compareSettlementSeamCandidate(next, candidate) < 0) {
         candidate = next;
@@ -1039,6 +1106,7 @@ export function planAutonomousSettlementMigration(
       familySeparationCost: familySeparationCost(state, agent),
       support: candidate.support,
       factionStorageHeadroom: candidate.factionStorageHeadroom,
+      factionOccupancy: candidate.factionOccupancy,
     };
     if (selected === undefined || compareSettlementPlanCandidate(planCandidate, selected) < 0) {
       selected = planCandidate;
