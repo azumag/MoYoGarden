@@ -186,6 +186,13 @@ function rewriteResidentFamilyReference(
   if (agent.pregnancy?.partnerId === sourceLocalId) {
     agent.pregnancy = { ...agent.pregnancy, partnerId: promotedId };
   }
+  if (agent.socialMemory !== undefined) {
+    agent.socialMemory = agent.socialMemory.map((memory) =>
+      memory.agentId === sourceLocalId
+        ? { ...memory, agentId: promotedId }
+        : memory
+    );
+  }
 }
 
 function rewriteHistoricalAgentReference(
@@ -219,10 +226,9 @@ export function detachAgentOwnership(
   for (const resident of snapshot.state.agents) {
     rewriteResidentFamilyReference(resident, agent.id, promotedId);
   }
-  // Recent events are the current low-level social memory used by pairing and
-  // information sharing. Once a local BOT ID is promoted, keep that bounded
-  // history on the same world-global identity so returning or later-following
-  // family members do not see the same individual as a stranger.
+  // Recent events remain a rolling-deploy compatibility memory, while the
+  // bounded per-agent socialMemory above is the durable low-level relationship
+  // state. Promote both to the same world-global identity when a resident leaves.
   rewriteHistoricalAgentReference(snapshot.state, agent.id, promotedId);
 
   const detachedAgent = structuredClone(agent);

@@ -62,6 +62,8 @@ const SOCIAL_INTERVAL = 12;
 const SOCIAL_RADIUS = 2;
 const SOCIAL_PAIR_COOLDOWN = 48;
 const SOCIAL_MAX_CONVERSATIONS_PER_TICK = 2;
+const SOCIAL_MEMORY_LIMIT = 8;
+const SOCIAL_FAMILIARITY_MAX = 32;
 const SOCIAL_ADVICE_ENERGY_THRESHOLD = LOW_ENERGY_THRESHOLD + 7;
 const SOCIAL_KNOWLEDGE_TTL = 96;
 
@@ -314,6 +316,45 @@ function pairConversationCount(state: WorldState, firstId: string, secondId: str
   return count;
 }
 
+function rememberedFamiliarity(agent: Agent, otherId: string): number {
+  const entry = agent.socialMemory?.find((memory) => memory.agentId === otherId);
+  return entry === undefined || !Number.isFinite(entry.familiarity)
+    ? 0
+    : Math.max(0, entry.familiarity);
+}
+
+function pairFamiliarity(state: WorldState, first: Agent, second: Agent): number {
+  // Read either side so rolling-deploy or handoff snapshots with one reciprocal
+  // memory missing still retain the strongest known relationship. Recent events
+  // remain a compatibility fallback for persisted worlds that predate socialMemory.
+  return Math.max(
+    rememberedFamiliarity(first, second.id),
+    rememberedFamiliarity(second, first.id),
+    pairConversationCount(state, first.id, second.id),
+  );
+}
+
+function rememberSocialInteraction(agent: Agent, otherId: string, tick: number): void {
+  if (agent.id === otherId) return;
+  const memory = (agent.socialMemory ?? []).map((entry) => ({ ...entry }));
+  const existing = memory.find((entry) => entry.agentId === otherId);
+  if (existing === undefined) {
+    memory.push({ agentId: otherId, familiarity: 1, lastInteractionTick: tick });
+  } else {
+    existing.familiarity = Math.min(
+      SOCIAL_FAMILIARITY_MAX,
+      Math.max(0, existing.familiarity) + 1,
+    );
+    existing.lastInteractionTick = tick;
+  }
+  memory.sort((a, b) =>
+    b.familiarity - a.familiarity ||
+    b.lastInteractionTick - a.lastInteractionTick ||
+    a.agentId.localeCompare(b.agentId)
+  );
+  agent.socialMemory = memory.slice(0, SOCIAL_MEMORY_LIMIT);
+}
+
 function applyLifeStageTransitions(state: WorldState): void {
   for (const agent of state.agents) {
     if (agent.birthTick === undefined || agent.lifeStage === "adult" || agent.lifeStage === "elder") continue;
@@ -418,7 +459,7 @@ function planConceptions(state: WorldState): void {
         )
         .map((candidate) => ({
           candidate,
-          familiarity: pairConversationCount(state, parent.id, candidate.id),
+          familiarity: pairFamiliarity(state, parent, candidate),
           distance: manhattanDistance(candidate.position, parent.position),
         }))
         .sort((a, b) =>
@@ -753,6 +794,8 @@ export function applySocialInteractions(state: WorldState): number {
         ...(adviceTarget === undefined ? {} : { adviceAccepted: true, adviceTarget }),
       },
     });
+    rememberSocialInteraction(speaker, listener.id, state.tick);
+    rememberSocialInteraction(listener, speaker.id, state.tick);
     engaged.add(speaker.id);
     engaged.add(listener.id);
     conversations += 1;

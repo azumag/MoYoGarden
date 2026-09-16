@@ -99,6 +99,12 @@ export interface AgentPregnancy {
   dueAtTick: number;
 }
 
+export interface AgentSocialMemory {
+  agentId: string;
+  familiarity: number;
+  lastInteractionTick: number;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -120,6 +126,9 @@ export interface Agent {
   parents?: [string, string];
   pregnancy?: AgentPregnancy;
   lastBirthTick?: number;
+  // Bounded low-level relationship memory survives event-log truncation while
+  // keeping old schemaVersion=1 residents readable when the field is absent.
+  socialMemory?: AgentSocialMemory[];
   settlementMigrationOriginRegionId?: string;
   task?: AgentTask;
 }

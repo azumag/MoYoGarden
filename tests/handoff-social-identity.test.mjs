@@ -19,6 +19,8 @@ test("handoff promotes recent social-history references with the moving agent id
   assert.ok(peer);
 
   const moverLocalId = mover.id;
+  mover.socialMemory = [{ agentId: peer.id, familiarity: 3, lastInteractionTick: source.tick }];
+  peer.socialMemory = [{ agentId: moverLocalId, familiarity: 3, lastInteractionTick: source.tick }];
   source.events = [
     {
       id: "conversation-outbound",
@@ -69,4 +71,14 @@ test("handoff promotes recent social-history references with the moving agent id
   assert.equal(inbound.data?.targetAgentId, promotedMoverId);
   assert.equal(unrelated.agentId, peer.id);
   assert.equal(unrelated.data?.targetAgentId, "someone-else");
+
+  const residentPeer = detached.value.snapshot.state.agents.find((entry) => entry.id === peer.id);
+  assert.ok(residentPeer);
+  assert.equal(residentPeer.socialMemory?.[0]?.agentId, promotedMoverId);
+  assert.equal(residentPeer.socialMemory?.[0]?.familiarity, 3);
+  assert.equal(
+    detached.value.agent.socialMemory?.[0]?.agentId,
+    peer.id,
+    "the moving BOT keeps the still-local peer identity; reciprocal memory will promote when that peer moves",
+  );
 });
