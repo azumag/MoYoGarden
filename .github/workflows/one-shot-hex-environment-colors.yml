@@ -21,12 +21,11 @@ jobs:
         with:
           node-version: "22"
       - name: Apply and validate
-        env:
-          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$HEAD_MESSAGE" != "chore: stage hex terrain environment colors" ]]; then
+          HEAD_MESSAGE="$(git log -1 --pretty=%s)"
+          if [[ "$HEAD_MESSAGE" != "fix: run hex terrain environment one-shot" ]]; then
             echo "Not the staging commit; nothing to do."
             exit 0
           fi
