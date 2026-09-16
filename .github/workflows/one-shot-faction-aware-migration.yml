@@ -23,6 +23,19 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Apply faction-aware migration patch
         run: python3 .github/scripts/apply-faction-aware-migration.py
+      - name: Complete faction occupancy wiring
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("src/settlement-migration.ts")
+          text = path.read_text()
+          old = '''      support: candidate.support,\n      factionStorageHeadroom: candidate.factionStorageHeadroom,\n    };\n'''
+          new = '''      support: candidate.support,\n      factionStorageHeadroom: candidate.factionStorageHeadroom,\n      factionOccupancy: candidate.factionOccupancy,\n    };\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one plan candidate match, got {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Validate
         shell: bash
         run: |
