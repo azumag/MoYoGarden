@@ -47,3 +47,15 @@ test("active hex terrain renderer consumes the shared environmental tint", async
   assert.match(source, /environmentalTerrainColor\(stateTile, tile\)/);
   assert.match(source, /const color = tileColor\(stateTile, tile\)/);
 });
+
+
+test("neighbor preview derives land tint from each chunk environment", async () => {
+  const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const start = source.indexOf("function buildNeighborPreview");
+  const end = source.indexOf("async function loadTerrainWindow", start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+  assert.match(source, /import \{ environmentalTerrainColor \} from "\.\/client\/terrain\.js"/);
+  assert.match(body, /const chunkStateTile = \(x, y\) =>/);
+  assert.match(body, /environmentalTerrainColor\(chunkStateTile, tile\)/);
+});
