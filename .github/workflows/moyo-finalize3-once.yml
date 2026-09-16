@@ -23,6 +23,14 @@ jobs:
           node-version: "22"
       - name: Apply bounded return-storage lease patch
         run: python3 .moyo-return-storage-fix.py
+      - name: Debug patched settlement path
+        shell: bash
+        run: |
+          set -euo pipefail
+          line=$(grep -n 'private async settleArrivalSourceClaim' src/autonomy-region.ts | cut -d: -f1)
+          sed -n "$((line-10)),$((line+90))p" src/autonomy-region.ts
+          line2=$(grep -n 'private async activeAutonomousSupplyClaims' src/autonomy-region.ts | cut -d: -f1)
+          sed -n "$((line2-5)),$((line2+55))p" src/autonomy-region.ts
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Typecheck, test, and build
