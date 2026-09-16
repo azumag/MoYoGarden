@@ -1,0 +1,12 @@
+stage=build
+
+added 40 packages in 8s
+
+> moyo-garden@0.3.11 build
+> npm run check && npm run build:web
+
+
+> moyo-garden@0.3.11 check
+> tsc -p tsconfig.json --noEmit
+
+src/agent-ownership.ts(286,50): error TS2304: Cannot find name 'targetState'.
