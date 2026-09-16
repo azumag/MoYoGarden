@@ -44,6 +44,210 @@ export interface AutonomousSettlementMigrationPlan {
   startedAtTick: number;
 }
 
+export interface SettlementFamilyFollowPlan {
+  agentId: string;
+  direction: HexGridDirection;
+  neighborRegionId: string;
+  targetRegionId: string;
+  boundaryTarget: GridPosition;
+}
+
+export interface SettlementFamilyRegistrationResult {
+  agentIds: string[];
+  candidateCount: number;
+}
+
+const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;
+const GLOBAL_AGENT_PREFIX = "agent-global:";
+
+function sourceResidentGlobalId(state: WorldState, agentId: string): string {
+  return agentId.startsWith(GLOBAL_AGENT_PREFIX)
+    ? agentId
+    : `${GLOBAL_AGENT_PREFIX}${state.regionId}:${agentId}`;
+}
+
+function sourceResidentMatchesReference(
+  state: WorldState,
+  resident: Agent,
+  referenceId: string | undefined,
+): boolean {
+  return referenceId !== undefined
+    && (resident.id === referenceId || sourceResidentGlobalId(state, resident.id) === referenceId);
+}
+
+function familyFollowPriority(agent: Agent): number {
+  if (agent.pregnancy !== undefined) return 0;
+  if (agent.lifeStage === "infant" || agent.lifeStage === "juvenile") return 2;
+  return 1;
+}
+
+export function registerSettlementFamilyFollowers(
+  state: WorldState,
+  pioneerId: string,
+  targetRegionId: string,
+  factionId: string,
+  pioneerPartnerId?: string,
+): SettlementFamilyRegistrationResult {
+  if (
+    regionAxialCoordinate(targetRegionId) === undefined
+    || sameSettlementRegion(state.regionId, targetRegionId)
+  ) {
+    return { agentIds: [], candidateCount: 0 };
+  }
+
+  const priorities = new Map<string, number>();
+  const add = (agent: Agent | undefined, priority: number): void => {
+    if (
+      agent === undefined
+      || agent.hp <= 0
+      || agent.factionId !== factionId
+      || sourceResidentMatchesReference(state, agent, pioneerId)
+    ) return;
+    const previous = priorities.get(agent.id);
+    if (previous === undefined || priority < previous) priorities.set(agent.id, priority);
+  };
+
+  for (const relative of state.agents) {
+    if (relative.factionId !== factionId || relative.hp <= 0) continue;
+    if (sourceResidentMatchesReference(state, relative, pioneerPartnerId)) add(relative, 0);
+    if (relative.pregnancy?.partnerId === pioneerId) add(relative, 0);
+    if (
+      (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
+      && relative.parents?.includes(pioneerId)
+    ) {
+      add(relative, 2);
+      const caregiverId = dependentCaregiverId(state, relative);
+      add(state.agents.find((agent) => agent.id === caregiverId), 0);
+      for (const parentId of relative.parents) {
+        if (parentId === pioneerId) continue;
+        add(state.agents.find((agent) =>
+          sourceResidentMatchesReference(state, agent, parentId)
+        ), 1);
+      }
+    }
+  }
+
+  const selected = [...priorities]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .slice(0, MAX_SETTLEMENT_FAMILY_FOLLOWERS)
+    .map(([agentId]) => agentId);
+  for (const agentId of selected) {
+    const agent = state.agents.find((entry) => entry.id === agentId);
+    if (agent !== undefined) agent.settlementFamilyTargetRegionId = targetRegionId;
+  }
+  return { agentIds: selected, candidateCount: priorities.size };
+}
+
+export function settlementFamilyAdmissionReady(state: WorldState, factionId: string): boolean {
+  const faction = getFaction(state, factionId);
+  if (faction === undefined) return false;
+  const activeStructures = state.structures.filter((structure) =>
+    structure.factionId === factionId && structure.status === "active"
+  );
+  if (!activeStructures.some((structure) => structure.type === "camp")) return false;
+  const storageHeadroom = activeStructures.reduce(
+    (sum, structure) => sum + Math.max(
+      0,
+      BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
+    ),
+    0,
+  );
+  if (storageHeadroom <= 0) return false;
+  return faction.resources.food > 0 || state.tiles.some((tile) =>
+    isHexGridCell(state, tile)
+    && tile.terrain !== "water"
+    && tile.resource?.kind === "food"
+    && tile.resource.amount > 0
+  );
+}
+
+export function hasSettlementFamilyFollow(state: WorldState): boolean {
+  return state.agents.some((agent) =>
+    agent.hp > 0
+    && agent.settlementFamilyTargetRegionId !== undefined
+    && !sameSettlementRegion(state.regionId, agent.settlementFamilyTargetRegionId)
+  );
+}
+
+export function planSettlementFamilyFollow(
+  state: WorldState,
+  halo: readonly HexHaloTile[],
+): SettlementFamilyFollowPlan | undefined {
+  const currentAxial = regionAxialCoordinate(state.regionId);
+  if (currentAxial === undefined) return undefined;
+  const crowdingByPosition = new Map<string, number>();
+  for (const occupant of state.agents) {
+    const key = positionKey(occupant.position);
+    crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
+  }
+
+  const followers = state.agents
+    .filter((agent) =>
+      agent.hp > 0
+      && agent.energy > 0
+      && agent.settlementFamilyTargetRegionId !== undefined
+      && !sameSettlementRegion(state.regionId, agent.settlementFamilyTargetRegionId)
+      && agent.task?.source !== "external"
+    )
+    .sort((a, b) => familyFollowPriority(a) - familyFollowPriority(b) || a.id.localeCompare(b.id));
+
+  for (const agent of followers) {
+    const targetRegionId = agent.settlementFamilyTargetRegionId;
+    if (targetRegionId === undefined) continue;
+    const targetAxial = regionAxialCoordinate(targetRegionId);
+    if (targetAxial === undefined) continue;
+    const currentDistance = hexDistance(currentAxial, targetAxial);
+    if (currentDistance <= 0) continue;
+    const paths = localPathScores(state, agent.position, crowdingByPosition);
+    const dependent = agent.lifeStage === "infant" || agent.lifeStage === "juvenile";
+    const energyBudget = Math.max(0, agent.energy - (dependent ? 0 : LOW_ENERGY_THRESHOLD));
+    let best: { entry: HexHaloTile; distance: number; crowding: number; remaining: number } | undefined;
+    for (const entry of halo) {
+      if (entry.tile.terrain === "water") continue;
+      const neighborAxial = regionAxialCoordinate(entry.neighborRegionId);
+      if (neighborAxial === undefined) continue;
+      const remaining = hexDistance(neighborAxial, targetAxial);
+      if (remaining >= currentDistance) continue;
+      const path = paths.get(positionKey(entry.sourcePosition));
+      if (path === undefined || path.distance > energyBudget) continue;
+      const candidate = {
+        entry,
+        distance: path.distance,
+        crowding: path.crowding,
+        remaining,
+      };
+      if (
+        best === undefined
+        || candidate.remaining < best.remaining
+        || (candidate.remaining === best.remaining && candidate.distance + candidate.crowding < best.distance + best.crowding)
+        || (
+          candidate.remaining === best.remaining
+          && candidate.distance + candidate.crowding === best.distance + best.crowding
+          && directionRank(candidate.entry.direction) < directionRank(best.entry.direction)
+        )
+        || (
+          candidate.remaining === best.remaining
+          && candidate.distance + candidate.crowding === best.distance + best.crowding
+          && directionRank(candidate.entry.direction) === directionRank(best.entry.direction)
+          && candidate.entry.neighborRegionId.localeCompare(best.entry.neighborRegionId) < 0
+        )
+      ) {
+        best = candidate;
+      }
+    }
+    if (best !== undefined) {
+      return {
+        agentId: agent.id,
+        direction: best.entry.direction,
+        neighborRegionId: best.entry.neighborRegionId,
+        targetRegionId,
+        boundaryTarget: { ...best.entry.sourcePosition },
+      };
+    }
+  }
+  return undefined;
+}
+
 interface SettlementNeighborSupport {
   passableCells: number;
   resourceSampleCells: number;

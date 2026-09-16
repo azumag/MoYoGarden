@@ -283,6 +283,9 @@ export function attachAgentOwnership(
   // IDs remain unchanged on all later handoffs.
   arrived.id = arrivedId;
   arrived.position = { ...targetPosition };
+  if (arrived.settlementFamilyTargetRegionId === state.regionId) {
+    delete arrived.settlementFamilyTargetRegionId;
+  }
   // Keep lineage, active pregnancy, and durable social references on the same
   // stable identity scheme even when callers attach a legacy snapshot without
   // first detaching it.

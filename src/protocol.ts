@@ -130,6 +130,10 @@ export interface Agent {
   // keeping old schemaVersion=1 residents readable when the field is absent.
   socialMemory?: AgentSocialMemory[];
   settlementMigrationOriginRegionId?: string;
+  // Optional bounded family-migration goal. It carries only a region identity,
+  // never a source-local coordinate or structure ID, so ownership handoff can
+  // safely preserve it across intermediate regions without a schema bump.
+  settlementFamilyTargetRegionId?: string;
   task?: AgentTask;
 }
 

@@ -141,6 +141,7 @@ function applyDependentCaregiverFollow(
     // Explicit commands remain authoritative. Dependent following is only a
     // low-level autonomous care behavior, not a replacement for the command API.
     if (commandedAgentIds.has(dependent.id) || dependent.task?.source === "external") continue;
+    if (dependent.settlementFamilyTargetRegionId !== undefined) continue;
 
     const caregiverId = dependentCaregiverId(state, dependent);
     const caregiver = caregiverId === undefined ? undefined : getAgent(state, caregiverId);

@@ -25,8 +25,12 @@ import {
 } from "./protocol.js";
 import { regionAxialCoordinate, regionCellTransition } from "./region-topology.js";
 import {
+  hasSettlementFamilyFollow,
   planAutonomousSettlementMigration,
+  planSettlementFamilyFollow,
   prepareSettlementMigrationKit,
+  registerSettlementFamilyFollowers,
+  settlementFamilyAdmissionReady,
   shouldScoutSettlementMigration,
   type AutonomousSettlementMigrationPlan,
 } from "./settlement-migration.js";
@@ -58,6 +62,7 @@ interface PendingAutonomousHandoff {
   desiredPosition?: GridPosition;
   returnToSourceStorage?: boolean;
   settlementMigration?: boolean;
+  settlementFamilyFollow?: boolean;
 }
 
 interface PendingAutonomousTravel {
@@ -134,6 +139,7 @@ const INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;
 const INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;
 const INTERNAL_STORAGE_RESERVE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/reserve`;
 const INTERNAL_STORAGE_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/release`;
+const INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}settlement/family/register`;
 const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
@@ -1226,6 +1232,138 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     });
   }
 
+  private async registerSettlementFamilyFollow(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+    }
+    if (
+      !isRecord(body)
+      || typeof body.pioneerId !== "string"
+      || typeof body.targetRegionId !== "string"
+      || typeof body.factionId !== "string"
+      || (body.pioneerPartnerId !== undefined && typeof body.pioneerPartnerId !== "string")
+      || regionAxialCoordinate(body.targetRegionId) === undefined
+    ) {
+      return new Response(JSON.stringify({ error: "invalid settlement family registration" }), { status: 400 });
+    }
+    const state = runtimeAccess(this).runtime.snapshot();
+    const result = registerSettlementFamilyFollowers(
+      state,
+      body.pioneerId,
+      body.targetRegionId,
+      body.factionId,
+      body.pioneerPartnerId,
+    );
+    if (result.agentIds.length > 0) this.replaceRuntimeState(state);
+    return new Response(JSON.stringify({
+      ok: true,
+      targetRegionId: body.targetRegionId,
+      registeredAgentIds: result.agentIds,
+      candidateCount: result.candidateCount,
+    }), { headers: { "content-type": "application/json; charset=utf-8" } });
+  }
+
+  private async notifySettledPioneers(state: WorldState): Promise<void> {
+    let dirty = false;
+    for (const pioneer of state.agents) {
+      const sourceRegionId = pioneer.settlementMigrationOriginRegionId;
+      if (sourceRegionId === undefined) continue;
+      const sourceAxial = regionAxialCoordinate(sourceRegionId);
+      const currentAxial = regionAxialCoordinate(state.regionId);
+      if (
+        sourceRegionId === state.regionId
+        || (
+          sourceAxial !== undefined
+          && currentAxial !== undefined
+          && sourceAxial.q === currentAxial.q
+          && sourceAxial.r === currentAxial.r
+        )
+      ) {
+        delete pioneer.settlementMigrationOriginRegionId;
+        dirty = true;
+        continue;
+      }
+      if (!settlementFamilyAdmissionReady(state, pioneer.factionId)) continue;
+      try {
+        const response = await this.autonomyStub(sourceRegionId).fetch(new Request(
+          `https://moyo.internal${INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-moyo-region-internal": sourceRegionId,
+            },
+            body: JSON.stringify({
+              pioneerId: pioneer.id,
+              targetRegionId: state.regionId,
+              factionId: pioneer.factionId,
+              ...(pioneer.pregnancy?.partnerId === undefined
+                ? {}
+                : { pioneerPartnerId: pioneer.pregnancy.partnerId }),
+            }),
+          },
+        ));
+        if (!response.ok) continue;
+        delete pioneer.settlementMigrationOriginRegionId;
+        pioneer.status = "frontier camp established; family route opened";
+        dirty = true;
+      } catch {
+        // Keep the origin marker and retry idempotently on the next Alarm.
+      }
+    }
+    if (dirty) this.replaceRuntimeState(state);
+  }
+
+  private async advanceSettlementFamilyFollow(
+    state: WorldState,
+    halo: readonly HexHaloTile[],
+  ): Promise<boolean> {
+    const plan = planSettlementFamilyFollow(state, halo);
+    if (plan === undefined) return false;
+    const agent = state.agents.find((entry) => entry.id === plan.agentId);
+    if (agent === undefined || agent.task?.source === "external") return false;
+    if (samePosition(agent.position, plan.boundaryTarget)) {
+      const step = HEX_GRID_DIRECTION_STEPS[plan.direction];
+      const desiredPosition = {
+        x: agent.position.x + step.x,
+        y: agent.position.y + step.y,
+      };
+      const transition = regionCellTransition(
+        state.regionId,
+        desiredPosition,
+        state.width,
+        state.height,
+      );
+      if (transition?.targetRegionId !== plan.neighborRegionId) return false;
+      if (agent.task?.source === "autonomy") delete agent.task;
+      agent.status = `following family toward ${plan.targetRegionId}`;
+      this.replaceRuntimeState(state);
+      const handoff: PendingAutonomousHandoff = {
+        transferId: `family:${state.regionId}:${agent.id}:${state.tick}:${plan.direction}`,
+        agentId: agent.id,
+        direction: plan.direction,
+        resource: undefined,
+        desiredPosition,
+        settlementFamilyFollow: true,
+      };
+      await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, handoff);
+      await this.attemptPendingHandoff(handoff);
+      return true;
+    }
+    agent.task = {
+      source: "autonomy",
+      issuedAtTick: state.tick,
+      type: "move",
+      target: { ...plan.boundaryTarget },
+    };
+    agent.status = `traveling to family in ${plan.targetRegionId}`;
+    this.replaceRuntimeState(state);
+    return true;
+  }
+
   private async ensureAutonomyAssigned(request: Request): Promise<Response | undefined> {
     const url = new URL(request.url);
     url.pathname = "/api/health";
@@ -1605,7 +1743,11 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       pending.settlementMigration === true &&
       agent?.task?.source === "autonomy" &&
       agent.task.type === "move";
-    if (failedResourceHandoff || failedSettlementMigration) {
+    const failedSettlementFamilyFollow =
+      pending.settlementFamilyFollow === true
+      && agent?.task?.source === "autonomy"
+      && agent.task.type === "move";
+    if (failedResourceHandoff || failedSettlementMigration || failedSettlementFamilyFollow) {
       delete agent.task;
       agent.status = `handoff ${pending.direction} rejected; replanning`;
       this.replaceRuntimeState(state);
@@ -1933,6 +2075,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       await this.attemptPendingHandoff(pending);
       return;
     }
+    await this.notifySettledPioneers(state);
     const activeTravels = await this.resumeAutonomousTravels(state);
     const migrationState = await this.resumeSettlementMigration(state);
     if (migrationState === "handoff") return;
@@ -1940,12 +2083,14 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const directions = autonomyHaloPlanningDirections(state);
     const scoutDue = shouldScoutAutonomyHalo(state);
     const migrationDue = migrationState === undefined && shouldScoutSettlementMigration(state);
-    const loadedDirections = (scoutDue && directions.length > 0) || migrationDue
+    const familyFollowDue = hasSettlementFamilyFollow(state);
+    const loadedDirections = (scoutDue && directions.length > 0) || migrationDue || familyFollowDue
       ? HEX_GRID_DIRECTIONS
       : directions;
     let halo: HexHaloTile[] = [];
     if (loadedDirections.length > 0) {
       halo = await this.materializeAutonomyHalo(state, loadedDirections);
+      if (familyFollowDue && await this.advanceSettlementFamilyFollow(state, halo)) return;
       const claims = await this.activeAutonomousSupplyClaims(state.tick);
       const plan = directions.length > 0
         ? planAutonomousHaloHandoff(state, halo, claims)
@@ -2043,6 +2188,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     }
     if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RELEASE_PATH) {
       return this.releaseDestinationStorage(request);
+    }
+    if (request.method === "POST" && url.pathname === INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH) {
+      return this.registerSettlementFamilyFollow(request);
     }
     if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {
       return this.registerArrivalClaim(request);
