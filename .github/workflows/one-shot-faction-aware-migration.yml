@@ -19,9 +19,8 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
       - name: Apply faction-aware migration patch
         run: python3 .github/scripts/apply-faction-aware-migration.py
       - name: Validate
