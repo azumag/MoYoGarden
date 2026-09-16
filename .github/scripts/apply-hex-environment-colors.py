@@ -45,9 +45,12 @@ text = text.replace(
     "export function environmentalTerrainColor(stateTile, tile)",
     1,
 )
-if text.count("localRelief(stateTile, tile)") != 2:
-    raise SystemExit(f"localRelief call count={text.count('localRelief(stateTile, tile)')}")
-text = text.replace("localRelief(stateTile, tile)", "environmentalRelief(stateTile, tile)")
+if text.count("localRelief(stateTile, tile)") != 1:
+    raise SystemExit(f"tile localRelief call count={text.count('localRelief(stateTile, tile)')}")
+text = text.replace("localRelief(stateTile, tile)", "environmentalRelief(stateTile, tile)", 1)
+if text.count("localRelief(stateTile, fallbackTile)") != 1:
+    raise SystemExit(f"fallback localRelief call count={text.count('localRelief(stateTile, fallbackTile)')}")
+text = text.replace("localRelief(stateTile, fallbackTile)", "environmentalRelief(stateTile, fallbackTile)", 1)
 terrain.write_text(text)
 
 hex_render = Path("public/client/hex-tile-rendering.js")
@@ -101,7 +104,7 @@ hex_render.write_text(text)
 test = Path("tests/hex-terrain-environment.test.mjs")
 if test.exists():
     raise SystemExit("hex terrain environment test already exists")
-test.write_text('''import assert from "node:assert/strict";
+test.write_text(r'''import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
