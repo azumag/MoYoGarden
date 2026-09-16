@@ -5,6 +5,8 @@ import {
   agentPathogenLoad,
   applyPathogenSteps,
   pathogenEdgeSnapshot,
+  pathogenHaloMaps,
+  pathogenHaloPressureMap,
   pathogenHaloReservoirMap,
 } from "../dist-ts/src/pathogen.js";
 
@@ -93,4 +95,49 @@ test("pathogen edge snapshot exports only contaminated boundary tiles", () => {
   }, "east");
 
   assert.deepEqual(snapshot.reservoirs, [{ position: boundary, burden: 0.7 }]);
+});
+
+test("combined pathogen halo materialization preserves pressure and reservoir semantics", () => {
+  const links = [
+    {
+      sourceRegionId: "garden-1",
+      sourcePosition: { x: 30, y: 11 },
+      direction: "east",
+      neighborRegionId: "garden-2",
+      neighborPosition: { x: 8, y: 11 },
+      neighborDirection: "west",
+    },
+    {
+      sourceRegionId: "garden-1",
+      sourcePosition: { x: 30, y: 11 },
+      direction: "northeast",
+      neighborRegionId: "hex-q1-r-1",
+      neighborPosition: { x: 18, y: 22 },
+      neighborDirection: "southwest",
+    },
+  ];
+  const edges = [
+    {
+      regionId: "garden-2",
+      direction: "west",
+      revision: 8,
+      tick: 60,
+      agents: [{ position: { x: 8, y: 11 }, pressure: 0.35 }],
+      reservoirs: [{ position: { x: 8, y: 11 }, burden: 0.4 }],
+    },
+    {
+      regionId: "hex-q1-r-1",
+      direction: "southwest",
+      revision: 3,
+      tick: 60,
+      agents: [{ position: { x: 18, y: 22 }, pressure: 0.5 }],
+      reservoirs: [{ position: { x: 18, y: 22 }, burden: 0.25 }],
+    },
+  ];
+
+  const combined = pathogenHaloMaps(links, edges);
+  assert.deepEqual(combined.pressure, pathogenHaloPressureMap(links, edges));
+  assert.deepEqual(combined.reservoir, pathogenHaloReservoirMap(links, edges));
+  assert.ok((combined.pressure.get("30,11") ?? 0) > 0.35);
+  assert.ok((combined.reservoir.get("30,11") ?? 0) > 0.4);
 });

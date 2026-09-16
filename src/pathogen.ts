@@ -458,41 +458,104 @@ export function pathogenEdgeSnapshot(
  * the existing depth-1 halo ownership links. The geometry/ownership contract is
  * therefore shared with water, vegetation and autonomous supply scouting.
  */
+interface MaterializedPathogenHaloMaps {
+  pressure: Map<string, number>;
+  reservoir: Map<string, number>;
+}
+
+function pathogenHaloRemoteKey(
+  regionId: string,
+  direction: HexGridDirection,
+  position: GridPosition,
+): string {
+  return `${regionId}:${direction}:${positionKey(position)}`;
+}
+
+function materializePathogenHaloMaps(
+  links: readonly HexHaloLink[],
+  edges: readonly PathogenEdgeSnapshot[],
+  environment: PathogenEnvironmentFrame | undefined,
+  includePressure: boolean,
+  includeReservoir: boolean,
+): MaterializedPathogenHaloMaps {
+  const pressureIndex = new Map<string, number>();
+  const reservoirIndex = new Map<string, number>();
+  for (const edge of edges) {
+    if (includePressure) {
+      for (const entry of edge.agents) {
+        pressureIndex.set(
+          pathogenHaloRemoteKey(edge.regionId, edge.direction, entry.position),
+          clamp01(entry.pressure),
+        );
+      }
+    }
+    if (includeReservoir) {
+      for (const entry of edge.reservoirs ?? []) {
+        reservoirIndex.set(
+          pathogenHaloRemoteKey(edge.regionId, edge.direction, entry.position),
+          clamp01(entry.burden),
+        );
+      }
+    }
+  }
+
+  const pressure = new Map<string, number>();
+  const reservoir = new Map<string, number>();
+  for (const link of links) {
+    const remoteKey = pathogenHaloRemoteKey(
+      link.neighborRegionId,
+      link.neighborDirection,
+      link.neighborPosition,
+    );
+    const localKey = positionKey(link.sourcePosition);
+    if (includePressure) {
+      const remotePressure = pressureIndex.get(remoteKey);
+      if (remotePressure !== undefined && remotePressure > 0) {
+        // Keep exact seam behavior aligned with ordinary local adjacency.
+        const gainRatio = pathogenAdjacentContactGain(
+          link.sourcePosition,
+          link.direction,
+          environment,
+        ) / PATHOGEN_ADJACENT_CONTACT_GAIN;
+        pressure.set(
+          localKey,
+          unionPressure(pressure.get(localKey) ?? 0, remotePressure * gainRatio),
+        );
+      }
+    }
+    if (includeReservoir) {
+      const burden = reservoirIndex.get(remoteKey);
+      if (burden !== undefined && burden > 0) {
+        reservoir.set(
+          localKey,
+          unionPressure(reservoir.get(localKey) ?? 0, burden),
+        );
+      }
+    }
+  }
+  return { pressure, reservoir };
+}
+
+/**
+ * Materialize both cross-seam carrier pressure and environmental burden
+ * in one pass. Runtime pathogen alarms need both maps together, so sharing
+ * the remote-key lookup and halo-link traversal avoids repeating the same
+ * geometry/string-index work on every cross-region pathogen step.
+ */
+export function pathogenHaloMaps(
+  links: readonly HexHaloLink[],
+  edges: readonly PathogenEdgeSnapshot[],
+  environment?: PathogenEnvironmentFrame,
+): MaterializedPathogenHaloMaps {
+  return materializePathogenHaloMaps(links, edges, environment, true, true);
+}
+
 export function pathogenHaloPressureMap(
   links: readonly HexHaloLink[],
   edges: readonly PathogenEdgeSnapshot[],
   environment?: PathogenEnvironmentFrame,
 ): Map<string, number> {
-  const index = new Map<string, number>();
-  for (const edge of edges) {
-    for (const entry of edge.agents) {
-      index.set(
-        `${edge.regionId}:${edge.direction}:${positionKey(entry.position)}`,
-        clamp01(entry.pressure),
-      );
-    }
-  }
-
-  const result = new Map<string, number>();
-  for (const link of links) {
-    const pressure = index.get(
-      `${link.neighborRegionId}:${link.neighborDirection}:${positionKey(link.neighborPosition)}`,
-    );
-    if (pressure === undefined || pressure <= 0) continue;
-    const key = positionKey(link.sourcePosition);
-    // Keep exact seam behavior aligned with ordinary local adjacency. The map
-    // still stores normalized infectious pressure; scaling by the ratio here
-    // lets applyPathogenSteps retain its existing adjacent-contact gain while
-    // shared-world wind attenuates non-upwind sources identically on both sides
-    // of a Durable Object boundary.
-    const gainRatio = pathogenAdjacentContactGain(
-      link.sourcePosition,
-      link.direction,
-      environment,
-    ) / PATHOGEN_ADJACENT_CONTACT_GAIN;
-    result.set(key, unionPressure(result.get(key) ?? 0, pressure * gainRatio));
-  }
-  return result;
+  return materializePathogenHaloMaps(links, edges, environment, true, false).pressure;
 }
 
 /**
@@ -504,26 +567,7 @@ export function pathogenHaloReservoirMap(
   links: readonly HexHaloLink[],
   edges: readonly PathogenEdgeSnapshot[],
 ): Map<string, number> {
-  const index = new Map<string, number>();
-  for (const edge of edges) {
-    for (const entry of edge.reservoirs ?? []) {
-      index.set(
-        `${edge.regionId}:${edge.direction}:${positionKey(entry.position)}`,
-        clamp01(entry.burden),
-      );
-    }
-  }
-
-  const result = new Map<string, number>();
-  for (const link of links) {
-    const burden = index.get(
-      `${link.neighborRegionId}:${link.neighborDirection}:${positionKey(link.neighborPosition)}`,
-    );
-    if (burden === undefined || burden <= 0) continue;
-    const key = positionKey(link.sourcePosition);
-    result.set(key, unionPressure(result.get(key) ?? 0, burden));
-  }
-  return result;
+  return materializePathogenHaloMaps(links, edges, undefined, false, true).reservoir;
 }
 
 function singlePathogenStep(

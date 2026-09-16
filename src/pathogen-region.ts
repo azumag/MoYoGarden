@@ -18,8 +18,7 @@ import {
   PATHOGEN_HALO_INTERVAL,
   PATHOGEN_LOCAL_INTERVAL,
   pathogenEdgeSnapshot,
-  pathogenHaloPressureMap,
-  pathogenHaloReservoirMap,
+  pathogenHaloMaps,
   pathogenStepCount,
   type PathogenEdgeSnapshot,
   type PathogenEnvironmentFrame,
@@ -354,10 +353,7 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
         ),
       )
     ).filter((value): value is PathogenEdgeSnapshot => value !== undefined);
-    return {
-      pressure: pathogenHaloPressureMap(links, edges, this.pathogenEnvironmentFrame(state)),
-      reservoir: pathogenHaloReservoirMap(links, edges),
-    };
+    return pathogenHaloMaps(links, edges, this.pathogenEnvironmentFrame(state));
   }
 
   override async fetch(request: Request): Promise<Response> {
