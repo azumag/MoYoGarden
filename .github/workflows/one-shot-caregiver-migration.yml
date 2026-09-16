@@ -82,41 +82,36 @@ jobs:
             raise SystemExit('settlement migration import anchor not found')
           text = text.replace(import_anchor, import_replacement, 1)
 
-          old = '''    if (
-              (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
-              && relative.parents?.includes(agent.id)
-            ) {
-              const alternateLivingParent = relative.parents.some((parentId) =>
-                parentId !== agent.id && livingSameFaction.has(parentId)
-              );
-              // Leaving a dependent with another living parent is disruptive but still
-              // safer than making the migration remove the child's only living parent.
-              cost += relative.lifeStage === "infant"
-                ? (alternateLivingParent ? 3 : 5)
-                : (alternateLivingParent ? 2 : 3);
-            }
+          caregiver_anchor = '''      const alternateLivingParent = relative.parents.some((parentId) =>
+            parentId !== agent.id && livingSameFaction.has(parentId)
+          );
+          // Leaving a dependent with another living parent is disruptive but still
+          // safer than making the migration remove the child's only living parent.
           '''
-          new = '''    if (
-              (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
-              && relative.parents?.includes(agent.id)
-            ) {
-              const alternateLivingParent = relative.parents.some((parentId) =>
-                parentId !== agent.id && livingSameFaction.has(parentId)
-              );
-              const activeCaregiver = dependentCaregiverId(state, relative) === agent.id;
-              // Migration should reflect the same low-level caregiver that pays the
-              // recurring demographic energy cost. When a co-parent remains, prefer
-              // moving the non-caregiver before the active caregiver; the sole living
-              // parent is still the most disruptive departure. This remains a soft
-              // preference so settlement expansion cannot deadlock on family state.
-              cost += relative.lifeStage === "infant"
-                ? (alternateLivingParent ? (activeCaregiver ? 4 : 2) : 5)
-                : (alternateLivingParent ? (activeCaregiver ? 2 : 1) : 3);
-            }
+          caregiver_replacement = '''      const alternateLivingParent = relative.parents.some((parentId) =>
+            parentId !== agent.id && livingSameFaction.has(parentId)
+          );
+          const activeCaregiver = dependentCaregiverId(state, relative) === agent.id;
+          // Migration should reflect the same low-level caregiver that pays the
+          // recurring demographic energy cost. When a co-parent remains, prefer
+          // moving the non-caregiver before the active caregiver; the sole living
+          // parent is still the most disruptive departure. This remains a soft
+          // preference so settlement expansion cannot deadlock on family state.
           '''
-          if old not in text:
-            raise SystemExit('family separation block not found')
-          migration.write_text(text.replace(old, new, 1))
+          if caregiver_anchor not in text:
+            raise SystemExit('family caregiver anchor not found')
+          text = text.replace(caregiver_anchor, caregiver_replacement, 1)
+          old_cost = '''      cost += relative.lifeStage === "infant"
+            ? (alternateLivingParent ? 3 : 5)
+            : (alternateLivingParent ? 2 : 3);
+          '''
+          new_cost = '''      cost += relative.lifeStage === "infant"
+            ? (alternateLivingParent ? (activeCaregiver ? 4 : 2) : 5)
+            : (alternateLivingParent ? (activeCaregiver ? 2 : 1) : 3);
+          '''
+          if old_cost not in text:
+            raise SystemExit('family separation cost not found')
+          migration.write_text(text.replace(old_cost, new_cost, 1))
 
           test_file = Path('tests/settlement-family-pioneer.test.mjs')
           text = test_file.read_text()
