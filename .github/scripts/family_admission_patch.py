@@ -59,7 +59,7 @@ a = sub_once(
 a = sub_once(
     a,
     r'(\s+\|\| \(body\.pioneerPartnerId !== undefined && typeof body\.pioneerPartnerId !== "string"\)\n)(\s+\|\| regionAxialCoordinate\(body\.targetRegionId\) === undefined)',
-    r"\1      || (body.maxFollowers !== undefined && (!Number.isInteger(body.maxFollowers) || body.maxFollowers < 0))\n\2",
+    r'\1      || (body.maxFollowers !== undefined && (typeof body.maxFollowers !== "number" || !Number.isInteger(body.maxFollowers) || body.maxFollowers < 0))\n\2',
     "family registration validation",
 )
 a = sub_once(
@@ -86,7 +86,7 @@ tests = Path("tests/settlement-family-follow.test.mjs")
 t = tests.read_text()
 t = sub_once(
     t,
-    r"(\s+registerSettlementFamilyFollowers,\n\s+settlementFamilyAdmissionReady,\n)(\s+\} from \"\.\./dist-ts/src/settlement-migration\.js\";)",
+    r"(\s+registerSettlementFamilyFollowers,\n\s+settlementFamilyAdmissionReady,\n)(\} from \"\.\./dist-ts/src/settlement-migration\.js\";)",
     r"\1  settlementFamilyHousingHeadroom,\n\2",
     "test import block",
 )
