@@ -150,15 +150,19 @@ function cloneMaterial(material) {
   return material?.clone?.() ?? material;
 }
 
-function cloneInstances(source, indexes, physicalOffset) {
+export function cloneNeighborPreviewInstances(source, indexes, physicalOffset, sharedGeometry) {
   if (!source?.isInstancedMesh || indexes.length === 0) return null;
+  const geometry = sharedGeometry ?? source.geometry.clone();
   const mesh = new THREE.InstancedMesh(
-    source.geometry.clone(),
+    geometry,
     cloneMaterial(source.material),
     indexes.length,
   );
   mesh.name = source.name;
-  mesh.castShadow = source.castShadow;
+  // Neighbor chunks are context terrain. Keeping them out of the shadow-map pass
+  // avoids multiplying shadow draw calls across the radius-1 hex window, while
+  // still letting the preview receive the center-region lighting/shadows.
+  mesh.castShadow = false;
   mesh.receiveShadow = source.receiveShadow;
   mesh.renderOrder = source.renderOrder;
   mesh.frustumCulled = source.frustumCulled;
@@ -227,6 +231,7 @@ function upgradeNeighborPreview(view, preview) {
   if (total === 0 || matched !== total) return false;
 
   const groups = [];
+  const sharedGeometryBySource = new Map();
   for (const { placement, sourceIndexes } of buckets.values()) {
     if (sourceIndexes.size === 0) continue;
     const group = new THREE.Group();
@@ -238,7 +243,12 @@ function upgradeNeighborPreview(view, preview) {
     group.userData.moyoHexOrigin = placement.hexOrigin;
 
     for (const [source, indexes] of sourceIndexes) {
-      const mesh = cloneInstances(source, indexes, placement.physicalOffset);
+      let sharedGeometry = sharedGeometryBySource.get(source);
+      if (!sharedGeometry) {
+        sharedGeometry = source.geometry.clone();
+        sharedGeometryBySource.set(source, sharedGeometry);
+      }
+      const mesh = cloneNeighborPreviewInstances(source, indexes, placement.physicalOffset, sharedGeometry);
       if (mesh) group.add(mesh);
     }
     applyHexFootprintClipping(
