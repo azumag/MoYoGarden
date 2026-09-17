@@ -5,10 +5,11 @@ import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";
 import {
   pathogenHaloEdgeRequests,
   pathogenHaloLinksForAgents,
+  shouldMaterializePathogenHalo,
 } from "../dist-ts/src/pathogen-region.js";
 
-function agent(id, position) {
-  return { id, position: { ...position } };
+function agent(id, position, hp = 100) {
+  return { id, position: { ...position }, hp };
 }
 
 test("pathogen halo fetch scope follows occupied boundary cells instead of all six seams", () => {
@@ -44,6 +45,39 @@ test("pathogen halo fetch scope follows occupied boundary cells instead of all s
     pathogenHaloLinksForAgents({ agents: [agent("interior", { x: 19, y: 11 })] }, allLinks),
     [],
     "interior-only populations must not produce cross-DO pathogen reads",
+  );
+});
+
+test("dead boundary agents do not keep pathogen halo neighbors awake", () => {
+  const extent = { width: 40, height: 24 };
+  const allLinks = buildDynamicHexHaloLinks(extent, "garden-1");
+  const boundary = hexGridBoundaryCells(extent, "east")[5];
+  assert.ok(boundary);
+
+  const deadOnly = { ...extent, agents: [agent("corpse", boundary, 0)] };
+  assert.deepEqual(
+    pathogenHaloLinksForAgents(deadOnly, allLinks),
+    [],
+    "a corpse-only seam must not issue pathogen edge reads",
+  );
+  assert.equal(
+    shouldMaterializePathogenHalo(deadOnly, 29, 30),
+    false,
+    "halo cadence should stay local when only dead agents occupy the boundary",
+  );
+
+  const mixed = {
+    ...extent,
+    agents: [agent("corpse", boundary, 0), agent("living", boundary, 100)],
+  };
+  assert.ok(
+    pathogenHaloLinksForAgents(mixed, allLinks).length > 0,
+    "a living boundary agent must still materialize the exact seam",
+  );
+  assert.equal(
+    shouldMaterializePathogenHalo(mixed, 29, 30),
+    true,
+    "a living boundary agent must still enable halo exposure on cadence",
   );
 });
 

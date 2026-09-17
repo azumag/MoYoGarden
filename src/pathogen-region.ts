@@ -209,6 +209,7 @@ export function shouldMaterializePathogenHalo(
   const center = hexGridCenter(state);
   const radius = hexGridRadius(state);
   return state.agents.some((agent) =>
+    agent.hp > 0 &&
     isHexGridCell(state, agent.position) &&
     hexGridDistance(agent.position, center) === radius
   );
@@ -218,17 +219,25 @@ export function shouldMaterializePathogenHalo(
  * Keep pathogen edge reads proportional to actual cross-seam contact.
  *
  * A full dynamic depth-1 halo can reference all six neighboring Durable Objects,
- * but pathogen pressure is consumed only by BOTs standing on the paired local
- * boundary cell. Filtering links before any neighbor fetch preserves every
- * possible exposure (including corner cells that legitimately map to multiple
- * neighbors) while avoiding unrelated DO wakeups for empty seams.
+ * but pathogen pressure/reservoir exposure is consumed only by living BOTs on
+ * the paired local boundary cell. Dead Agents neither transmit nor acquire new
+ * active exposure, so letting a corpse keep a seam occupied would wake neighbor
+ * DOs for work that cannot change epidemiological state. Filtering links before
+ * any neighbor fetch preserves every possible living exposure (including corner
+ * cells that legitimately map to multiple neighbors) while avoiding unrelated
+ * DO wakeups for empty or corpse-only seams.
  */
 export function pathogenHaloLinksForAgents(
   state: Pick<WorldState, "agents">,
   links: readonly HexHaloLink[],
 ): HexHaloLink[] {
   if (state.agents.length === 0 || links.length === 0) return [];
-  const occupied = new Set(state.agents.map((agent) => positionKey(agent.position)));
+  const occupied = new Set(
+    state.agents
+      .filter((agent) => agent.hp > 0)
+      .map((agent) => positionKey(agent.position)),
+  );
+  if (occupied.size === 0) return [];
   return links.filter((link) => occupied.has(positionKey(link.sourcePosition)));
 }
 
