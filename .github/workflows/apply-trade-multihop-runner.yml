@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   apply:
-    if: "${{ github.event.head_commit.message == 'chore: retry multi-hop trade routing' }}"
+    if: "${{ github.event.head_commit.message == 'chore: fix multi-hop trade typing' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -45,8 +45,13 @@ jobs:
           path = Path('src/autonomy-region.ts')
           text = path.read_text()
           text = text.replace(
-              '|| !Number.isInteger(updatedAtTick)\n              || !Number.isInteger(createdAtTick)',
-              '|| typeof updatedAtTick !== "number"\n              || !Number.isInteger(updatedAtTick)\n              || typeof createdAtTick !== "number"\n              || !Number.isInteger(createdAtTick)',
+              'const updatedAtTick = value.updatedAtTick;',
+              'const updatedAtTick = typeof value.updatedAtTick === "number" ? value.updatedAtTick : Number.NaN;',
+              1,
+          )
+          text = text.replace(
+              'const createdAtTick = value.envelope.createdAtTick;',
+              'const createdAtTick = typeof value.envelope.createdAtTick === "number" ? value.envelope.createdAtTick : Number.NaN;',
               1,
           )
           path.write_text(text)
