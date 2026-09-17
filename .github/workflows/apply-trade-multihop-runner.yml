@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   apply:
-    if: "${{ github.event.head_commit.message == 'chore: apply multi-hop trade routing' }}"
+    if: "${{ github.event.head_commit.message == 'chore: retry multi-hop trade routing' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -41,13 +41,40 @@ jobs:
           end = source.index("\n          PY", start)
           script = textwrap.dedent(source[start:end])
           exec(compile(script, '<staged-multihop-patch>', 'exec'))
+
+          path = Path('src/autonomy-region.ts')
+          text = path.read_text()
+          text = text.replace(
+              '|| !Number.isInteger(updatedAtTick)\n              || !Number.isInteger(createdAtTick)',
+              '|| typeof updatedAtTick !== "number"\n              || !Number.isInteger(updatedAtTick)\n              || typeof createdAtTick !== "number"\n              || !Number.isInteger(createdAtTick)',
+              1,
+          )
+          path.write_text(text)
+
+          path = Path('src/agent-ownership.ts')
+          text = path.read_text().replace('preserveStaleRoutedPromise', 'preserveRoutedPromise')
+          path.write_text(text)
           PY
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
       - name: Typecheck, test, and build
-        run: npm run build
+        id: build
+        shell: bash
+        run: |
+          set +e
+          npm run build 2>&1 | tee /tmp/moyo-build.log
+          status=${PIPESTATUS[0]}
+          if [[ "$status" -ne 0 ]]; then
+            tail -n 240 /tmp/moyo-build.log > .github/multihop-build-debug.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/multihop-build-debug.txt
+            git commit -m "chore: capture multi-hop build failure"
+            git push origin HEAD:main
+          fi
+          exit "$status"
 
       - name: Commit product change and remove staging helpers
         shell: bash
@@ -57,6 +84,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/apply-trade-multihop-improvement.yml
           git rm .github/workflows/apply-trade-multihop-runner.yml
+          git rm -f .github/multihop-build-debug.txt || true
           git add src/autonomy-region.ts src/protocol.ts src/agent-ownership.ts tests/autonomy-trade-neighbor-routing.test.mjs
           git commit -m "feat: route autonomous trades across hex relays"
           git push origin HEAD:main
