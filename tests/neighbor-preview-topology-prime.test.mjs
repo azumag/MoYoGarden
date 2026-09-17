@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import * as THREE from "three";
 
 const previewModule = await import("../public/client/hex-neighbor-preview.js");
 const appSource = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
@@ -26,6 +27,46 @@ test("neighbor topology retry delay is bounded exponential backoff", () => {
   assert.equal(previewModule.neighborTopologyRetryDelay(4), 8_000);
   assert.equal(previewModule.neighborTopologyRetryDelay(5), 15_000);
   assert.equal(previewModule.neighborTopologyRetryDelay(99), 15_000);
+});
+
+test("neighbor preview chunks reuse geometry while keeping clipping materials independent", () => {
+  const sourceGeometry = new THREE.BoxGeometry(1, 1, 1);
+  const sourceMaterial = new THREE.MeshStandardMaterial();
+  const source = new THREE.InstancedMesh(sourceGeometry, sourceMaterial, 2);
+  source.name = "neighbor-hex-land";
+  source.castShadow = true;
+  source.receiveShadow = true;
+  source.setMatrixAt(0, new THREE.Matrix4().makeTranslation(40, 0, 0));
+  source.setMatrixAt(1, new THREE.Matrix4().makeTranslation(80, 0, 0));
+
+  const sharedGeometry = sourceGeometry.clone();
+  const first = previewModule.cloneNeighborPreviewInstances(
+    source,
+    [0],
+    { x: 40, z: 0 },
+    sharedGeometry,
+  );
+  const second = previewModule.cloneNeighborPreviewInstances(
+    source,
+    [1],
+    { x: 80, z: 0 },
+    sharedGeometry,
+  );
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(first.geometry, sharedGeometry, "neighbor chunks should reuse one cloned geometry per source mesh");
+  assert.equal(second.geometry, sharedGeometry, "all chunks from the same source should share the cloned geometry");
+  assert.notEqual(first.material, sourceMaterial, "preview clipping must not mutate the source material");
+  assert.notEqual(first.material, second.material, "each chunk needs an independent material for clipping planes");
+  assert.equal(first.castShadow, false, "context terrain should not multiply shadow-map draw calls");
+  assert.equal(first.receiveShadow, true, "neighbor terrain should still receive scene shadows");
+
+  first.material.dispose();
+  second.material.dispose();
+  sharedGeometry.dispose();
+  sourceGeometry.dispose();
+  sourceMaterial.dispose();
 });
 
 test("failed or empty neighbor topology fetches back off while a new center can retry immediately", async (t) => {
