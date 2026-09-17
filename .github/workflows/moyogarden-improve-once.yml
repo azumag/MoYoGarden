@@ -93,107 +93,50 @@ jobs:
           tests = test_file.read_text()
           marker = 'test("corner pathogen halo preserves each ghost adjacency"'
           if marker not in tests:
-              addition = r'''
-
-test("corner pathogen halo preserves each ghost adjacency", () => {
-  const seamPosition = { x: 30, y: 11 };
-  const links = [
-    {
-      sourceRegionId: "garden-1",
-      sourcePosition: seamPosition,
-      direction: "east",
-      neighborRegionId: "garden-2",
-      neighborPosition: { x: 8, y: 11 },
-      neighborDirection: "west",
-    },
-    {
-      sourceRegionId: "garden-1",
-      sourcePosition: seamPosition,
-      direction: "northEast",
-      neighborRegionId: "hex-q1-r-1",
-      neighborPosition: { x: 18, y: 22 },
-      neighborDirection: "southWest",
-    },
-  ];
-  const pressureEdges = [
-    {
-      regionId: "garden-2",
-      direction: "west",
-      revision: 8,
-      tick: 60,
-      agents: [{ position: { x: 8, y: 11 }, pressure: 1 }],
-      reservoirs: [],
-    },
-    {
-      regionId: "hex-q1-r-1",
-      direction: "southWest",
-      revision: 3,
-      tick: 60,
-      agents: [{ position: { x: 18, y: 22 }, pressure: 1 }],
-      reservoirs: [],
-    },
-  ];
-
-  const localTarget = agent("local-target-corner", { x: 0, y: 0 });
-  applyPathogenSteps({
-    agents: [
-      localTarget,
-      { ...agent("east-carrier", { x: 1, y: 0 }), pathogenLoad: 1 },
-      { ...agent("northeast-carrier", { x: 1, y: -1 }), pathogenLoad: 1 },
-    ],
-    tiles: [],
-  }, 1);
-  const localPressureLoad = agentPathogenLoad(localTarget);
-
-  const pressureHalo = pathogenHaloMaps(links, pressureEdges);
-  const seamTarget = agent("seam-target-corner", seamPosition);
-  applyPathogenSteps(
-    { agents: [seamTarget], tiles: [] },
-    0,
-    undefined,
-    pressureHalo.pressure,
-    1,
-    new Map(),
-  );
-  assert.ok(
-    Math.abs(agentPathogenLoad(seamTarget) - localPressureLoad) < 1e-12,
-    `two remote carriers must equal two local adjacent carriers: seam=${agentPathogenLoad(seamTarget)} local=${localPressureLoad}`,
-  );
-
-  const reservoirEdges = pressureEdges.map((edge) => ({
-    ...edge,
-    agents: [],
-    reservoirs: [{ position: edge.agents[0].position, burden: 1 }],
-  }));
-  const singleReservoir = pathogenHaloReservoirMap([links[0]], [reservoirEdges[0]]);
-  const singleTarget = agent("single-reservoir-target", seamPosition);
-  applyPathogenSteps(
-    { agents: [singleTarget], tiles: [] },
-    0,
-    undefined,
-    new Map(),
-    1,
-    singleReservoir,
-  );
-  const singleReservoirLoad = agentPathogenLoad(singleTarget);
-
-  const cornerReservoir = pathogenHaloReservoirMap(links, reservoirEdges);
-  const cornerTarget = agent("corner-reservoir-target", seamPosition);
-  applyPathogenSteps(
-    { agents: [cornerTarget], tiles: [] },
-    0,
-    undefined,
-    new Map(),
-    1,
-    cornerReservoir,
-  );
-  const expectedCornerReservoirLoad = 1 - Math.pow(1 - singleReservoirLoad, 2);
-  assert.ok(
-    Math.abs(agentPathogenLoad(cornerTarget) - expectedCornerReservoirLoad) < 1e-12,
-    `two remote reservoirs must compose independently: corner=${agentPathogenLoad(cornerTarget)} expected=${expectedCornerReservoirLoad}`,
-  );
-});
-'''
+              addition = "\n".join([
+                  "",
+                  'test("corner pathogen halo preserves each ghost adjacency", () => {',
+                  '  const seamPosition = { x: 30, y: 11 };',
+                  '  const links = [',
+                  '    { sourceRegionId: "garden-1", sourcePosition: seamPosition, direction: "east", neighborRegionId: "garden-2", neighborPosition: { x: 8, y: 11 }, neighborDirection: "west" },',
+                  '    { sourceRegionId: "garden-1", sourcePosition: seamPosition, direction: "northEast", neighborRegionId: "hex-q1-r-1", neighborPosition: { x: 18, y: 22 }, neighborDirection: "southWest" },',
+                  '  ];',
+                  '  const pressureEdges = [',
+                  '    { regionId: "garden-2", direction: "west", revision: 8, tick: 60, agents: [{ position: { x: 8, y: 11 }, pressure: 1 }], reservoirs: [] },',
+                  '    { regionId: "hex-q1-r-1", direction: "southWest", revision: 3, tick: 60, agents: [{ position: { x: 18, y: 22 }, pressure: 1 }], reservoirs: [] },',
+                  '  ];',
+                  '',
+                  '  const localTarget = agent("local-target-corner", { x: 0, y: 0 });',
+                  '  applyPathogenSteps({ agents: [',
+                  '    localTarget,',
+                  '    { ...agent("east-carrier", { x: 1, y: 0 }), pathogenLoad: 1 },',
+                  '    { ...agent("northeast-carrier", { x: 1, y: -1 }), pathogenLoad: 1 },',
+                  '  ], tiles: [] }, 1);',
+                  '  const localPressureLoad = agentPathogenLoad(localTarget);',
+                  '  const pressureHalo = pathogenHaloMaps(links, pressureEdges);',
+                  '  const seamTarget = agent("seam-target-corner", seamPosition);',
+                  '  applyPathogenSteps({ agents: [seamTarget], tiles: [] }, 0, undefined, pressureHalo.pressure, 1, new Map());',
+                  '  assert.ok(',
+                  '    Math.abs(agentPathogenLoad(seamTarget) - localPressureLoad) < 1e-12,',
+                  '    `two remote carriers must equal two local adjacent carriers: seam=${agentPathogenLoad(seamTarget)} local=${localPressureLoad}`,',
+                  '  );',
+                  '',
+                  '  const reservoirEdges = pressureEdges.map((edge) => ({ ...edge, agents: [], reservoirs: [{ position: edge.agents[0].position, burden: 1 }] }));',
+                  '  const singleReservoir = pathogenHaloReservoirMap([links[0]], [reservoirEdges[0]]);',
+                  '  const singleTarget = agent("single-reservoir-target", seamPosition);',
+                  '  applyPathogenSteps({ agents: [singleTarget], tiles: [] }, 0, undefined, new Map(), 1, singleReservoir);',
+                  '  const singleReservoirLoad = agentPathogenLoad(singleTarget);',
+                  '  const cornerReservoir = pathogenHaloReservoirMap(links, reservoirEdges);',
+                  '  const cornerTarget = agent("corner-reservoir-target", seamPosition);',
+                  '  applyPathogenSteps({ agents: [cornerTarget], tiles: [] }, 0, undefined, new Map(), 1, cornerReservoir);',
+                  '  const expectedCornerReservoirLoad = 1 - Math.pow(1 - singleReservoirLoad, 2);',
+                  '  assert.ok(',
+                  '    Math.abs(agentPathogenLoad(cornerTarget) - expectedCornerReservoirLoad) < 1e-12,',
+                  '    `two remote reservoirs must compose independently: corner=${agentPathogenLoad(cornerTarget)} expected=${expectedCornerReservoirLoad}`,',
+                  '  );',
+                  '});',
+                  "",
+              ])
               test_file.write_text(tests + addition)
           PY
       - name: Install dependencies
