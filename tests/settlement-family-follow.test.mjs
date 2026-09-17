@@ -264,7 +264,23 @@ test("family admission uses camp resident headroom and follower registration res
     globalHandoffAgentId(partner.id, source.regionId),
     1,
   );
-  assert.deepEqual(limited.agentIds, ["partner"]);
-  assert.equal(partner.settlementFamilyTargetRegionId, "hex-q1-r0");
+  assert.deepEqual(
+    limited.agentIds,
+    [],
+    "one admission slot must not split an infant from its active caregiver",
+  );
+  assert.equal(partner.settlementFamilyTargetRegionId, undefined);
   assert.equal(child.settlementFamilyTargetRegionId, undefined);
+
+  const admittedTogether = registerSettlementFamilyFollowers(
+    source,
+    pioneerId,
+    "hex-q1-r0",
+    template.factionId,
+    globalHandoffAgentId(partner.id, source.regionId),
+    2,
+  );
+  assert.deepEqual(admittedTogether.agentIds, ["partner", "child"]);
+  assert.equal(partner.settlementFamilyTargetRegionId, "hex-q1-r0");
+  assert.equal(child.settlementFamilyTargetRegionId, "hex-q1-r0");
 });
