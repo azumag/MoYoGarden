@@ -1,0 +1,219 @@
+name: Trade route improvement once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/trade-route-improvement-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Patch one-hop trade routing
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"expected patch anchor missing: {path}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/protocol.ts",
+              '''export interface TradeTask extends AgentTaskBase {\n  type: "trade";\n  targetAgentId: string;\n  offer: Inventory;\n  request: Inventory;\n}\n''',
+              '''export interface TradeTask extends AgentTaskBase {\n  type: "trade";\n  targetAgentId: string;\n  offer: Inventory;\n  request: Inventory;\n  // Source-local routing hints for an autonomous cross-region trade. They are\n  // optional for persisted-state compatibility and are deliberately stripped\n  // by ownership handoff before the task is reconstructed in the next region.\n  routeRegionId?: string;\n  routeTarget?: GridPosition;\n}\n''',
+          )
+
+          replace_once(
+              "src/simulation.ts",
+              '''function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "trade" }>): void {\n  const target = getAgent(state, task.targetAgentId);\n  if (target === undefined) {\n    delete agent.task;\n    agent.status = "trade target disappeared";\n    return;\n  }\n  if (!samePosition(agent.position, target.position)) {\n''',
+              '''function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "trade" }>): void {\n  const target = getAgent(state, task.targetAgentId);\n  if (target === undefined) {\n    if (\n      task.source === "autonomy"\n      && task.targetAgentId.startsWith("agent-global:")\n      && task.routeTarget !== undefined\n    ) {\n      if (!samePosition(agent.position, task.routeTarget)) {\n        moveAgent(state, agent, task.routeTarget);\n      } else {\n        agent.status = `waiting to cross region for trade with ${task.targetAgentId}`;\n      }\n      return;\n    }\n    // A promoted world-global identity can temporarily be outside this Region\n    // // DO. Keep the promise alive for the autonomy layer to discover an\n    // // immediate neighboring owner instead of deleting it in the same tick\n    // // that ownership handoff promoted the counterparty reference.\n    if (task.source === "autonomy" && task.targetAgentId.startsWith("agent-global:")) {\n      agent.status = `locating trade counterparty ${task.targetAgentId}`;\n      return;\n    }\n    delete agent.task;\n    agent.status = "trade target disappeared";\n    return;\n  }\n  delete task.routeRegionId;\n  delete task.routeTarget;\n  if (!samePosition(agent.position, target.position)) {\n''',
+          )
+
+          replace_once(
+              "src/agent-ownership.ts",
+              '''  if (\n    agent.task?.source === "autonomy"\n    && agent.task.type === "trade"\n    && agent.task.targetAgentId === sourceLocalId\n  ) {\n    // The counterparty's ownership moved, but the resident trader remains in\n    // this Region DO. Keep the autonomous promise bound to the same physical\n    // BOT by promoting only its identity; route planning may decide later how\n    // to reach that global counterparty. External commands stay source-local.\n    agent.task = { ...agent.task, targetAgentId: promotedId };\n  }\n''',
+              '''  if (\n    agent.task?.source === "autonomy"\n    && agent.task.type === "trade"\n    && agent.task.targetAgentId === sourceLocalId\n  ) {\n    // The counterparty's ownership moved, but the resident trader remains in\n    // this Region DO. Keep the autonomous promise bound to the same physical\n    // BOT by promoting only its identity; source-local routing hints (if any)\n    // can no longer be trusted after the counterparty handoff.\n    const { routeRegionId: _routeRegionId, routeTarget: _routeTarget, ...trade } = agent.task;\n    agent.task = { ...trade, targetAgentId: promotedId };\n  }\n''',
+          )
+
+          replace_once(
+              "src/autonomy-region.ts",
+              '''import {\n  materializeHexHalo,\n  type HexHaloEdgeSnapshot,\n  type HexHaloTile,\n} from "./hex-halo.js";\n''',
+              '''import {\n  materializeHexHalo,\n  type HexHaloEdgeSnapshot,\n  type HexHaloLink,\n  type HexHaloTile,\n} from "./hex-halo.js";\n''',
+          )
+          replace_once(
+              "src/autonomy-region.ts",
+              '''  settlementMigration?: boolean;\n  settlementFamilyFollow?: boolean;\n}\n''',
+              '''  settlementMigration?: boolean;\n  settlementFamilyFollow?: boolean;\n  tradeTargetAgentId?: string;\n}\n''',
+          )
+          replace_once(
+              "src/autonomy-region.ts",
+              '''const INTERNAL_STORAGE_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/release`;\nconst INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}settlement/family/register`;\n''',
+              '''const INTERNAL_STORAGE_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/release`;\nconst INTERNAL_AGENT_LOOKUP_PATH = `${INTERNAL_AUTONOMY_PREFIX}agent/lookup`;\nconst INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}settlement/family/register`;\n''',
+          )
+
+          anchor = '''function remainingInventoryCapacity(agent: Agent): number {\n  return Math.max(0, agent.capacity - inventoryAmount(agent));\n}\n'''
+          addition = '''\nexport interface AutonomousTradeNeighborRoute {\n  direction: HexGridDirection;\n  neighborRegionId: string;\n  boundaryTarget: GridPosition;\n  desiredPosition: GridPosition;\n}\n\nexport function planAutonomousTradeNeighborRoute(\n  state: WorldState,\n  links: readonly HexHaloLink[],\n  agentId: string,\n  neighborRegionId: string,\n): AutonomousTradeNeighborRoute | undefined {\n  const agent = state.agents.find((entry) => entry.id === agentId);\n  if (\n    agent === undefined\n    || !agent.autonomy\n    || agent.task?.source !== "autonomy"\n    || agent.task.type !== "trade"\n  ) return undefined;\n\n  const scores = localTravelPathScores(state, agent.position);\n  const selected = links\n    .filter((link) => link.neighborRegionId === neighborRegionId && isPassable(state, link.sourcePosition))\n    .flatMap((link) => {\n      const score = scores.get(positionKey(link.sourcePosition));\n      return score === undefined ? [] : [{ link, score }];\n    })\n    .sort((a, b) =>\n      a.score.distance - b.score.distance\n      || a.score.crowding - b.score.crowding\n      || directionRank(a.link.direction) - directionRank(b.link.direction)\n      || a.link.sourcePosition.y - b.link.sourcePosition.y\n      || a.link.sourcePosition.x - b.link.sourcePosition.x\n    )[0];\n  if (selected === undefined) return undefined;\n  const step = HEX_GRID_DIRECTION_STEPS[selected.link.direction];\n  return {\n    direction: selected.link.direction,\n    neighborRegionId: selected.link.neighborRegionId,\n    boundaryTarget: { ...selected.link.sourcePosition },\n    desiredPosition: {\n      x: selected.link.sourcePosition.x + step.x,\n      y: selected.link.sourcePosition.y + step.y,\n    },\n  };\n}\n'''
+          replace_once("src/autonomy-region.ts", anchor, anchor + addition)
+
+          class_anchor = '''  private async resumeSettlementMigration(\n    state: WorldState,\n  ): Promise<"traveling" | "handoff" | undefined> {\n'''
+          class_addition = '''  private tradeRoutingLinks(state: WorldState): HexHaloLink[] {\n    return autonomyHaloLinksForActivity(\n      state,\n      configuredRegionIds(this.autonomyEnv),\n      state.regionId,\n      this.activityTier(),\n    );\n  }\n\n  private async neighborOwnsTradeCounterparty(\n    regionId: string,\n    agentId: string,\n  ): Promise<boolean | undefined> {\n    try {\n      const response = await this.autonomyStub(regionId).fetch(new Request(\n        `https://moyo.internal${INTERNAL_AGENT_LOOKUP_PATH}?agentId=${encodeURIComponent(agentId)}`,\n        { headers: { "x-moyo-region-internal": regionId } },\n      ));\n      if (!response.ok) return undefined;\n      const payload = await response.json() as unknown;\n      return isRecord(payload) && typeof payload.present === "boolean"\n        ? payload.present\n        : undefined;\n    } catch {\n      return undefined;\n    }\n  }\n\n  private async resumeOrPlanAutonomousTradeHandoff(state: WorldState): Promise<boolean> {\n    const agent = [...state.agents]\n      .sort((a, b) => a.id.localeCompare(b.id))\n      .find((entry) =>\n        entry.autonomy\n        && entry.task?.source === "autonomy"\n        && entry.task.type === "trade"\n        && entry.task.targetAgentId.startsWith("agent-global:")\n        && !state.agents.some((candidate) => candidate.id === entry.task?.targetAgentId)\n      );\n    if (agent === undefined || agent.task?.type !== "trade") return false;\n    const task = agent.task;\n    const links = this.tradeRoutingLinks(state);\n\n    let targetRegionId = task.routeRegionId;\n    if (targetRegionId === undefined) {\n      const neighbors = [...new Set(links.map((link) => link.neighborRegionId))].sort((a, b) => {\n        const aDirection = links.find((link) => link.neighborRegionId === a)?.direction;\n        const bDirection = links.find((link) => link.neighborRegionId === b)?.direction;\n        return directionRank(aDirection ?? "E") - directionRank(bDirection ?? "E") || a.localeCompare(b);\n      });\n      let lookupUnavailable = false;\n      for (const neighborRegionId of neighbors) {\n        const present = await this.neighborOwnsTradeCounterparty(\n          neighborRegionId,\n          task.targetAgentId,\n        );\n        if (present === true) {\n          targetRegionId = neighborRegionId;\n          break;\n        }\n        if (present === undefined) lookupUnavailable = true;\n      }\n      if (targetRegionId === undefined) {\n        agent.status = lookupUnavailable\n          ? `trade counterparty lookup unavailable; retrying ${task.targetAgentId}`\n          : `trade counterparty ${task.targetAgentId} is not in an immediate neighbor`;\n        this.replaceRuntimeState(state);\n        return true;\n      }\n    }\n\n    const route = planAutonomousTradeNeighborRoute(state, links, agent.id, targetRegionId);\n    if (route === undefined) {\n      delete task.routeRegionId;\n      delete task.routeTarget;\n      agent.status = `no passable route toward trade counterparty ${task.targetAgentId}`;\n      this.replaceRuntimeState(state);\n      return true;\n    }\n    task.routeRegionId = route.neighborRegionId;\n    task.routeTarget = { ...route.boundaryTarget };\n\n    if (!samePosition(agent.position, route.boundaryTarget)) {\n      agent.status = `traveling toward ${route.neighborRegionId} to trade with ${task.targetAgentId}`;\n      this.replaceRuntimeState(state);\n      return true;\n    }\n\n    const stillPresent = await this.neighborOwnsTradeCounterparty(\n      route.neighborRegionId,\n      task.targetAgentId,\n    );\n    if (stillPresent !== true) {\n      if (stillPresent === false) {\n        delete task.routeRegionId;\n        delete task.routeTarget;\n      }\n      agent.status = stillPresent === false\n        ? `trade counterparty ${task.targetAgentId} moved; replanning`\n        : `trade counterparty lookup unavailable at seam; waiting`;\n      this.replaceRuntimeState(state);\n      return true;\n    }\n\n    const pending: PendingAutonomousHandoff = {\n      transferId: `trade:${state.regionId}:${agent.id}:${task.issuedAtTick}:${route.direction}`,\n      agentId: agent.id,\n      direction: route.direction,\n      resource: undefined,\n      desiredPosition: { ...route.desiredPosition },\n      tradeTargetAgentId: task.targetAgentId,\n    };\n    await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pending);\n    await this.attemptPendingHandoff(pending);\n    return true;\n  }\n\n'''
+          replace_once("src/autonomy-region.ts", class_anchor, class_addition + class_anchor)
+
+          replace_once(
+              "src/autonomy-region.ts",
+              '''    await this.notifySettledPioneers(state);\n    const activeTravels = await this.resumeAutonomousTravels(state);\n''',
+              '''    await this.notifySettledPioneers(state);\n    if (await this.resumeOrPlanAutonomousTradeHandoff(state)) return;\n    const activeTravels = await this.resumeAutonomousTravels(state);\n''',
+          )
+
+          fetch_anchor = '''    if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RESERVE_PATH) {\n      return this.reserveDestinationStorage(request);\n    }\n'''
+          fetch_new = '''    if (request.method === "GET" && url.pathname === INTERNAL_AGENT_LOOKUP_PATH) {\n      const agentId = url.searchParams.get("agentId");\n      if (agentId === null || !agentId.startsWith("agent-global:")) {\n        return new Response(JSON.stringify({ error: "agentId must be a world-global agent ID" }), { status: 400 });\n      }\n      const state = runtimeAccess(this).runtime.snapshot();\n      return new Response(JSON.stringify({\n        agentId,\n        present: state.agents.some((agent) => agent.id === agentId),\n      }), { headers: { "content-type": "application/json" } });\n    }\n    if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RESERVE_PATH) {\n      return this.reserveDestinationStorage(request);\n    }\n'''
+          replace_once("src/autonomy-region.ts", fetch_anchor, fetch_new)
+
+          # A terminal handoff rejection should not leave a source-local route hint\n          # attached to the autonomous trade promise. Keep the global identity so\n          # the next alarm may discover another immediate neighbor.\n          replace_once(
+              "src/autonomy-region.ts",
+              '''    const failedSettlementFamilyFollow =\n      pending.settlementFamilyFollow === true\n      && agent?.task?.source === "autonomy"\n      && agent.task.type === "move";\n    if (failedResourceHandoff || failedSettlementMigration || failedSettlementFamilyFollow) {\n''',
+              '''    const failedSettlementFamilyFollow =\n      pending.settlementFamilyFollow === true\n      && agent?.task?.source === "autonomy"\n      && agent.task.type === "move";\n    const failedTradeHandoff =\n      pending.tradeTargetAgentId !== undefined\n      && agent?.task?.source === "autonomy"\n      && agent.task.type === "trade"\n      && agent.task.targetAgentId === pending.tradeTargetAgentId;\n    if (failedTradeHandoff && agent?.task?.type === "trade") {\n      delete agent.task.routeRegionId;\n      delete agent.task.routeTarget;\n      agent.status = `trade handoff ${pending.direction} rejected; rediscovering counterparty`;\n      this.replaceRuntimeState(state);\n    }\n    if (failedResourceHandoff || failedSettlementMigration || failedSettlementFamilyFollow) {\n''',
+          )
+
+          Path("tests/autonomy-trade-neighbor-routing.test.mjs").write_text(r'''import assert from "node:assert/strict";
+import test from "node:test";
+import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
+import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
+import { WorldRuntime } from "../dist-ts/src/runtime.js";
+
+class MemoryStorage {
+  constructor() { this.values = new Map(); this.alarm = null; }
+  async get(key) { return structuredClone(this.values.get(key)); }
+  async put(key, value) { this.values.set(key, structuredClone(value)); }
+  async getAlarm() { return this.alarm; }
+  async setAlarm(value) { this.alarm = value instanceof Date ? value.getTime() : value; }
+  async deleteAlarm() { this.alarm = null; }
+}
+class MemoryState {
+  constructor() { this.storage = new MemoryStorage(); this.sockets = []; this.ready = Promise.resolve(); }
+  blockConcurrencyWhile(callback) { const result = this.ready.then(callback); this.ready = result.catch(() => {}); return result; }
+  acceptWebSocket(socket) { this.sockets.push(socket); }
+  getWebSockets() { return [...this.sockets]; }
+}
+class MemoryNamespace {
+  constructor(env) { this.env = env; this.entries = new Map(); }
+  idFromName(name) { return name; }
+  get(id) {
+    let entry = this.entries.get(id);
+    if (!entry) {
+      const state = new MemoryState();
+      const object = new RegionDurableObject(state, this.env);
+      entry = { state, object };
+      this.entries.set(id, entry);
+    }
+    return { fetch: async (request) => { await entry.state.ready; return entry.object.fetch(request); } };
+  }
+}
+function environment() {
+  const env = {
+    WORLD_SEED: "737373",
+    REGION_IDS: "garden-1,garden-2,garden-3",
+    TICK_MS: "10000",
+    OPEN_COMMANDS: "false",
+    COMMAND_TOKEN: "command-secret",
+    ADMIN_TOKEN: "admin-secret",
+    ASSETS: { fetch: async () => new Response("not found", { status: 404 }) },
+  };
+  env.REGIONS = new MemoryNamespace(env);
+  return env;
+}
+async function assignRegion(env, regionId) {
+  await worker.fetch(new Request(`https://moyo.example/api/world/snapshot?region=${regionId}`), env);
+  const entry = env.REGIONS.entries.get(regionId);
+  assert.ok(entry);
+  await entry.state.ready;
+  return entry;
+}
+function makeActiveHexPassable(state) {
+  for (const tile of state.tiles) if (isHexGridCell(state, tile)) tile.terrain = "plain";
+}
+
+test("autonomous trade discovers an immediate neighboring owner and completes after handoff", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  const target = await assignRegion(env, "garden-2");
+  const sourceState = source.object.runtime.snapshot();
+  const targetState = target.object.runtime.snapshot();
+  makeActiveHexPassable(sourceState);
+  makeActiveHexPassable(targetState);
+  for (const candidate of sourceState.agents) candidate.autonomy = false;
+  for (const candidate of targetState.agents) candidate.autonomy = false;
+
+  const trader = sourceState.agents[0];
+  const counterparty = targetState.agents[0];
+  assert.ok(trader);
+  assert.ok(counterparty);
+  trader.autonomy = true;
+  trader.energy = 100;
+  trader.capacity = 12;
+  trader.inventory = { wood: 3, stone: 0, food: 0 };
+  counterparty.id = `agent-global:garden-2:${counterparty.id}`;
+  counterparty.factionId = trader.factionId;
+  counterparty.inventory = { wood: 0, stone: 3, food: 0 };
+  trader.task = {
+    source: "autonomy",
+    issuedAtTick: sourceState.tick,
+    type: "trade",
+    targetAgentId: counterparty.id,
+    offer: { wood: 1, stone: 0, food: 0 },
+    request: { wood: 0, stone: 1, food: 0 },
+  };
+  source.object.runtime = new WorldRuntime({ state: sourceState });
+  target.object.runtime = new WorldRuntime({ state: targetState });
+  await source.object.persist();
+  await target.object.persist();
+
+  let completed = false;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await source.object.alarm();
+    await target.object.alarm();
+    const currentTarget = target.object.runtime.snapshot();
+    const arrived = currentTarget.agents.find((entry) => entry.id === `agent-global:garden-1:${trader.id}`);
+    const remote = currentTarget.agents.find((entry) => entry.id === counterparty.id);
+    if (arrived?.inventory.stone === 1 && remote?.inventory.wood === 1) {
+      completed = true;
+      break;
+    }
+  }
+  assert.equal(completed, true, "one-hop counterparty discovery should lead to an atomic trade in the owning region");
+  assert.equal(
+    source.object.runtime.snapshot().agents.some((entry) => entry.id === trader.id),
+    false,
+    "source ownership must be detached after the cross-region trade handoff",
+  );
+});
+
+''')
+
+      - name: Build and test
+        run: npm run build
+      - name: Commit improvement
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/protocol.ts src/simulation.ts src/agent-ownership.ts src/autonomy-region.ts tests/autonomy-trade-neighbor-routing.test.mjs
+          git commit -m "feat: route autonomous trade to neighboring owners"
+          git push origin HEAD:main
