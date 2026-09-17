@@ -103,7 +103,10 @@ export function ensureHexNeighborTopology(centerRegionId) {
   const abortController = new AbortController();
   topologyRequestCenterRegionId = requestedCenter;
   topologyRequestAbortController = abortController;
-  topologyRequest = fetch(regionMetaUrl(requestedCenter, 2), {
+  // The preview only needs the center plus its immediate six neighbors. Asking
+  // for radius 2 materializes a 19-region topology payload even though the
+  // extra ring is never consumed by placement or stitching.
+  topologyRequest = fetch(regionMetaUrl(requestedCenter, 1), {
     cache: "no-store",
     signal: abortController.signal,
   })
