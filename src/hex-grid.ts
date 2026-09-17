@@ -87,7 +87,15 @@ function cellIndex(extent: HexGridExtent, position: HexGridPosition): number {
 function cachedHexGridCells(extent: HexGridExtent): HexGridCellCacheEntry {
   const key = hexGridCellCacheKey(extent);
   const cached = hexGridCellCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    // Treat the bounded map as an LRU rather than insertion-order FIFO. Tests,
+    // preview windows and compatibility tooling can touch many temporary
+    // extents; refreshing a hit keeps the production 40x24 footprint resident
+    // instead of evicting it just because it was inserted early.
+    hexGridCellCache.delete(key);
+    hexGridCellCache.set(key, cached);
+    return cached;
+  }
 
   const center = hexGridCenter(extent);
   const radius = hexGridRadius(extent);
@@ -222,7 +230,14 @@ function cachedHexGridBoundary(
 ): HexGridBoundaryCacheEntry {
   const key = hexGridBoundaryCacheKey(extent, direction);
   const cached = hexGridBoundaryCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    // Boundary geometry is even more frequently reused by six-direction halo
+    // reads and ownership handoff. Promote cache hits so transient alternate
+    // extents cannot churn out the hot production sides.
+    hexGridBoundaryCache.delete(key);
+    hexGridBoundaryCache.set(key, cached);
+    return cached;
+  }
 
   const step = HEX_GRID_DIRECTION_STEPS[direction];
   const active = cachedHexGridCells(extent);
