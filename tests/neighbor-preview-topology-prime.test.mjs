@@ -61,6 +61,8 @@ test("neighbor preview chunks reuse geometry while keeping clipping materials in
   assert.notEqual(first.material, second.material, "each chunk needs an independent material for clipping planes");
   assert.equal(first.castShadow, false, "context terrain should not multiply shadow-map draw calls");
   assert.equal(first.receiveShadow, true, "neighbor terrain should still receive scene shadows");
+  assert.equal(first.matrixAutoUpdate, false, "static preview meshes should not recompose local transforms every frame");
+  assert.equal(second.matrixAutoUpdate, false, "all cloned preview meshes should keep static local transforms");
 
   first.material.dispose();
   second.material.dispose();
