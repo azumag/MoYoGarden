@@ -141,3 +141,39 @@ test("combined pathogen halo materialization preserves pressure and reservoir se
   assert.ok((combined.pressure.get("30,11") ?? 0) > 0.35);
   assert.ok((combined.reservoir.get("30,11") ?? 0) > 0.4);
 });
+
+test("corner pathogen halo composes each ghost adjacency independently", () => {
+  const seamPosition = { x: 30, y: 11 };
+  const links = [
+    { sourceRegionId: "garden-1", sourcePosition: seamPosition, direction: "east", neighborRegionId: "garden-2", neighborPosition: { x: 8, y: 11 }, neighborDirection: "west" },
+    { sourceRegionId: "garden-1", sourcePosition: seamPosition, direction: "northEast", neighborRegionId: "hex-q1-r-1", neighborPosition: { x: 18, y: 22 }, neighborDirection: "southWest" },
+  ];
+  const pressureEdges = [
+    { regionId: "garden-2", direction: "west", revision: 8, tick: 60, agents: [{ position: { x: 8, y: 11 }, pressure: 1 }], reservoirs: [] },
+    { regionId: "hex-q1-r-1", direction: "southWest", revision: 3, tick: 60, agents: [{ position: { x: 18, y: 22 }, pressure: 1 }], reservoirs: [] },
+  ];
+  const pressureHalo = pathogenHaloMaps(links, pressureEdges);
+  const localPressureTarget = agent("local-pressure-target", { x: 0, y: 0 });
+  applyPathogenSteps({ agents: [
+    localPressureTarget,
+    { ...agent("east-carrier", { x: 1, y: 0 }), pathogenLoad: 1 },
+    { ...agent("northeast-carrier", { x: 1, y: -1 }), pathogenLoad: 1 },
+  ], tiles: [] }, 1);
+  const seamPressureTarget = agent("seam-pressure-target", seamPosition);
+  applyPathogenSteps({ agents: [seamPressureTarget], tiles: [] }, 0, undefined, pressureHalo.pressure, 1, new Map(), pressureHalo.pressureExposure, new Map());
+  assert.ok(
+    Math.abs(agentPathogenLoad(seamPressureTarget) - agentPathogenLoad(localPressureTarget)) < 1e-12,
+    "two carrier ghost cells at a macro-hex corner must equal two ordinary local adjacencies",
+  );
+
+  const reservoirEdges = pressureEdges.map((edge) => ({ ...edge, agents: [], reservoirs: [{ position: { ...edge.agents[0].position }, burden: 1 }] }));
+  const reservoirHalo = pathogenHaloMaps(links, reservoirEdges);
+  const localReservoirTarget = agent("local-reservoir-target", { x: 0, y: 0 });
+  applyPathogenSteps({ agents: [localReservoirTarget], tiles: [tile({ x: 1, y: 0 }, 1), tile({ x: 1, y: -1 }, 1)] }, 1);
+  const seamReservoirTarget = agent("seam-reservoir-target", seamPosition);
+  applyPathogenSteps({ agents: [seamReservoirTarget], tiles: [] }, 0, undefined, new Map(), 1, reservoirHalo.reservoir, new Map(), reservoirHalo.reservoirExposure);
+  assert.ok(
+    Math.abs(agentPathogenLoad(seamReservoirTarget) - agentPathogenLoad(localReservoirTarget)) < 1e-12,
+    "two reservoir ghost cells at a macro-hex corner must equal two ordinary local adjacencies",
+  );
+});

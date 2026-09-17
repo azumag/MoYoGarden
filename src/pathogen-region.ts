@@ -54,6 +54,8 @@ export interface PathogenHaloEdgeRequest {
 interface MaterializedPathogenHalo {
   pressure: Map<string, number>;
   reservoir: Map<string, number>;
+  pressureExposure: Map<string, number>;
+  reservoirExposure: Map<string, number>;
 }
 
 const INTERNAL_PATHOGEN_EDGE_PATH = "/api/internal/pathogen/edge";
@@ -352,7 +354,12 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
   private async materializePathogenHalo(state: WorldState): Promise<MaterializedPathogenHalo> {
     const links = pathogenHaloLinksForAgents(state, this.pathogenHaloLinks(state));
     if (links.length === 0) {
-      return { pressure: new Map(), reservoir: new Map() };
+      return {
+        pressure: new Map(),
+        reservoir: new Map(),
+        pressureExposure: new Map(),
+        reservoirExposure: new Map(),
+      };
     }
     const requests = pathogenHaloEdgeRequests(links);
     const edges = (
@@ -398,7 +405,12 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
     if (localSteps <= 0) return;
     const halo = shouldMaterializePathogenHalo(state, beforeTick, state.tick)
       ? await this.materializePathogenHalo(state)
-      : { pressure: new Map<string, number>(), reservoir: new Map<string, number>() };
+      : {
+        pressure: new Map<string, number>(),
+        reservoir: new Map<string, number>(),
+        pressureExposure: new Map<string, number>(),
+        reservoirExposure: new Map<string, number>(),
+      };
     const changed = applyPathogenTickRange(
       state,
       beforeTick,
@@ -406,6 +418,8 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
       this.pathogenEnvironmentFrame(state),
       halo.pressure,
       halo.reservoir,
+      halo.pressureExposure,
+      halo.reservoirExposure,
     );
     if (changed <= 0) return;
 

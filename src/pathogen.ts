@@ -465,8 +465,13 @@ export function pathogenEdgeSnapshot(
  * therefore shared with water, vegetation and autonomous supply scouting.
  */
 interface MaterializedPathogenHaloMaps {
+  // Preserve raw maps for helper compatibility while runtime also receives
+  // already-composed exposure. A macro-hex corner can touch two remote
+  // regions, so each ghost adjacency must apply its own gain before union.
   pressure: Map<string, number>;
   reservoir: Map<string, number>;
+  pressureExposure: Map<string, number>;
+  reservoirExposure: Map<string, number>;
 }
 
 function pathogenHaloRemoteKey(
@@ -507,6 +512,8 @@ function materializePathogenHaloMaps(
 
   const pressure = new Map<string, number>();
   const reservoir = new Map<string, number>();
+  const pressureExposure = new Map<string, number>();
+  const reservoirExposure = new Map<string, number>();
   for (const link of links) {
     const remoteKey = pathogenHaloRemoteKey(
       link.neighborRegionId,
@@ -517,15 +524,21 @@ function materializePathogenHaloMaps(
     if (includePressure) {
       const remotePressure = pressureIndex.get(remoteKey);
       if (remotePressure !== undefined && remotePressure > 0) {
-        // Keep exact seam behavior aligned with ordinary local adjacency.
-        const gainRatio = pathogenAdjacentContactGain(
+        // Preserve the historical raw-map value while composing true exposure
+        // independently for every ghost adjacency at macro-hex corners.
+        const gain = pathogenAdjacentContactGain(
           link.sourcePosition,
           link.direction,
           environment,
-        ) / PATHOGEN_ADJACENT_CONTACT_GAIN;
+        );
+        const gainRatio = gain / PATHOGEN_ADJACENT_CONTACT_GAIN;
         pressure.set(
           localKey,
           unionPressure(pressure.get(localKey) ?? 0, remotePressure * gainRatio),
+        );
+        pressureExposure.set(
+          localKey,
+          unionPressure(pressureExposure.get(localKey) ?? 0, remotePressure * gain),
         );
       }
     }
@@ -536,10 +549,17 @@ function materializePathogenHaloMaps(
           localKey,
           unionPressure(reservoir.get(localKey) ?? 0, burden),
         );
+        reservoirExposure.set(
+          localKey,
+          unionPressure(
+            reservoirExposure.get(localKey) ?? 0,
+            burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+          ),
+        );
       }
     }
   }
-  return { pressure, reservoir };
+  return { pressure, reservoir, pressureExposure, reservoirExposure };
 }
 
 /**
@@ -712,6 +732,8 @@ export function applyPathogenSteps(
   haloPressure: ReadonlyMap<string, number> = new Map(),
   haloSteps = 0,
   haloReservoir: ReadonlyMap<string, number> = new Map(),
+  haloPressureExposure?: ReadonlyMap<string, number>,
+  haloReservoirExposure?: ReadonlyMap<string, number>,
 ): number {
   const safeLocalSteps = Math.max(0, Math.min(64, Math.floor(localSteps)));
   const safeHaloSteps = Math.max(0, Math.min(16, Math.floor(haloSteps)));
@@ -720,18 +742,30 @@ export function applyPathogenSteps(
     changed += singlePathogenStep(state, environment);
   }
 
-  if (safeHaloSteps <= 0 || (haloPressure.size === 0 && haloReservoir.size === 0)) return changed;
+  if (
+    safeHaloSteps <= 0 ||
+    (
+      haloPressure.size === 0 &&
+      haloReservoir.size === 0 &&
+      (haloPressureExposure?.size ?? 0) === 0 &&
+      (haloReservoirExposure?.size ?? 0) === 0
+    )
+  ) return changed;
   for (const agent of state.agents) {
     // A living BOT sharing the same boundary cell may legitimately trigger the
     // edge fetch, but a co-located corpse still must not absorb that halo burden.
     if (agent.hp <= 0) continue;
-    const pressure = haloPressure.get(positionKey(agent.position)) ?? 0;
-    const reservoirBurden = haloReservoir.get(positionKey(agent.position)) ?? 0;
-    if (pressure <= 0 && reservoirBurden <= 0) continue;
-    const rawExposure = unionPressure(
-      pressure * PATHOGEN_ADJACENT_CONTACT_GAIN,
-      reservoirBurden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
-    );
+    const key = positionKey(agent.position);
+    const pressure = haloPressure.get(key) ?? 0;
+    const reservoirBurden = haloReservoir.get(key) ?? 0;
+    const carrierExposure = haloPressureExposure === undefined
+      ? pressure * PATHOGEN_ADJACENT_CONTACT_GAIN
+      : haloPressureExposure.get(key) ?? 0;
+    const environmentalExposure = haloReservoirExposure === undefined
+      ? reservoirBurden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN
+      : haloReservoirExposure.get(key) ?? 0;
+    if (carrierExposure <= 0 && environmentalExposure <= 0) continue;
+    const rawExposure = unionPressure(carrierExposure, environmentalExposure);
     const perExposure = clamp01(rawExposure * pathogenSusceptibility(agent));
     const combinedExposure = 1 - Math.pow(1 - perExposure, safeHaloSteps);
     const current = agentPathogenLoad(agent);
@@ -762,6 +796,8 @@ export function applyPathogenTickRange(
   environment?: PathogenEnvironmentFrame,
   haloPressure: ReadonlyMap<string, number> = new Map(),
   haloReservoir: ReadonlyMap<string, number> = new Map(),
+  haloPressureExposure?: ReadonlyMap<string, number>,
+  haloReservoirExposure?: ReadonlyMap<string, number>,
 ): number {
   const start = Math.floor(fromTick);
   const end = Math.floor(toTick);
@@ -801,6 +837,8 @@ export function applyPathogenTickRange(
         haloPressure,
         1,
         haloReservoir,
+        haloPressureExposure,
+        haloReservoirExposure,
       );
       haloRemaining -= 1;
       nextHalo += PATHOGEN_HALO_INTERVAL;
