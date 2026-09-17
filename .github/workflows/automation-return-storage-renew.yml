@@ -1,0 +1,44 @@
+name: Automation return-storage relay renewal
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply patch
+        run: python scripts/automation-return-storage-renew.py
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit validated improvement
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/automation-return-storage-renew.yml
+          rm scripts/automation-return-storage-renew.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/autonomy-region.ts tests/autonomy-material-return-relay.test.mjs .github/workflows/automation-return-storage-renew.yml scripts/automation-return-storage-renew.py
+          git commit -m 'sim: renew return storage leases during relay'
+          git push origin HEAD:main
