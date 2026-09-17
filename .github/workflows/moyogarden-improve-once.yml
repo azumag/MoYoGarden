@@ -26,118 +26,302 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
+          def replace_once(path, old, new):
+              text = path.read_text()
+              if old not in text:
+                  raise SystemExit(f"missing patch anchor in {path}: {old[:80]!r}")
+              path.write_text(text.replace(old, new, 1))
+
           pathogen = Path("src/pathogen.ts")
+          replace_once(pathogen,
+          '''interface MaterializedPathogenHaloMaps {
+            pressure: Map<string, number>;
+            reservoir: Map<string, number>;
+          }''',
+          '''interface MaterializedPathogenHaloMaps {
+            // Preserve the historical raw maps for focused helpers/tests while runtime
+            // also receives already-composed per-ghost-cell exposure. A macro-hex
+            // corner can touch two remote regions; applying the adjacent gain only
+            // after raw values are unioned would undercount those independent contacts.
+            pressure: Map<string, number>;
+            reservoir: Map<string, number>;
+            pressureExposure: Map<string, number>;
+            reservoirExposure: Map<string, number>;
+          }''')
+
+          replace_once(pathogen,
+          '''  const pressure = new Map<string, number>();
+            const reservoir = new Map<string, number>();
+            for (const link of links) {''',
+          '''  const pressure = new Map<string, number>();
+            const reservoir = new Map<string, number>();
+            const pressureExposure = new Map<string, number>();
+            const reservoirExposure = new Map<string, number>();
+            for (const link of links) {''')
+
+          replace_once(pathogen,
+          '''        // Keep exact seam behavior aligned with ordinary local adjacency.
+                  const gainRatio = pathogenAdjacentContactGain(
+                    link.sourcePosition,
+                    link.direction,
+                    environment,
+                  ) / PATHOGEN_ADJACENT_CONTACT_GAIN;
+                  pressure.set(
+                    localKey,
+                    unionPressure(pressure.get(localKey) ?? 0, remotePressure * gainRatio),
+                  );''',
+          '''        // Keep the historical raw-map contract for single-edge helpers, but
+                  // independently compose the real exposure from every ghost adjacency.
+                  const gain = pathogenAdjacentContactGain(
+                    link.sourcePosition,
+                    link.direction,
+                    environment,
+                  );
+                  const gainRatio = gain / PATHOGEN_ADJACENT_CONTACT_GAIN;
+                  pressure.set(
+                    localKey,
+                    unionPressure(pressure.get(localKey) ?? 0, remotePressure * gainRatio),
+                  );
+                  pressureExposure.set(
+                    localKey,
+                    unionPressure(pressureExposure.get(localKey) ?? 0, remotePressure * gain),
+                  );''')
+
+          replace_once(pathogen,
+          '''        reservoir.set(
+                    localKey,
+                    unionPressure(reservoir.get(localKey) ?? 0, burden),
+                  );''',
+          '''        reservoir.set(
+                    localKey,
+                    unionPressure(reservoir.get(localKey) ?? 0, burden),
+                  );
+                  reservoirExposure.set(
+                    localKey,
+                    unionPressure(
+                      reservoirExposure.get(localKey) ?? 0,
+                      burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+                    ),
+                  );''')
+
+          replace_once(pathogen,
+          '''  return { pressure, reservoir };
+          }''',
+          '''  return { pressure, reservoir, pressureExposure, reservoirExposure };
+          }''')
+
+          replace_once(pathogen,
+          '''  haloReservoir: ReadonlyMap<string, number> = new Map(),
+          ): number {''',
+          '''  haloReservoir: ReadonlyMap<string, number> = new Map(),
+            haloPressureExposure?: ReadonlyMap<string, number>,
+            haloReservoirExposure?: ReadonlyMap<string, number>,
+          ): number {''')
+
+          replace_once(pathogen,
+          '''  if (safeHaloSteps <= 0 || (haloPressure.size === 0 && haloReservoir.size === 0)) return changed;''',
+          '''  if (
+              safeHaloSteps <= 0 ||
+              (
+                haloPressure.size === 0 &&
+                haloReservoir.size === 0 &&
+                (haloPressureExposure?.size ?? 0) === 0 &&
+                (haloReservoirExposure?.size ?? 0) === 0
+              )
+            ) return changed;''')
+
+          replace_once(pathogen,
+          '''    const pressure = haloPressure.get(positionKey(agent.position)) ?? 0;
+              const reservoirBurden = haloReservoir.get(positionKey(agent.position)) ?? 0;
+              if (pressure <= 0 && reservoirBurden <= 0) continue;
+              const rawExposure = unionPressure(
+                pressure * PATHOGEN_ADJACENT_CONTACT_GAIN,
+                reservoirBurden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+              );''',
+          '''    const key = positionKey(agent.position);
+              const pressure = haloPressure.get(key) ?? 0;
+              const reservoirBurden = haloReservoir.get(key) ?? 0;
+              const carrierExposure = haloPressureExposure === undefined
+                ? pressure * PATHOGEN_ADJACENT_CONTACT_GAIN
+                : haloPressureExposure.get(key) ?? 0;
+              const environmentalExposure = haloReservoirExposure === undefined
+                ? reservoirBurden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN
+                : haloReservoirExposure.get(key) ?? 0;
+              if (carrierExposure <= 0 && environmentalExposure <= 0) continue;
+              const rawExposure = unionPressure(carrierExposure, environmentalExposure);''')
+
+          tick_marker = '''export function applyPathogenTickRange(
+            state: WorldState,'''
           text = pathogen.read_text()
-          function_start = text.index("function materializePathogenHaloMaps(")
-          start = text.index("  const pressure = new Map<string, number>();", function_start)
-          end_marker = "  return { pressure, reservoir };"
-          end = text.index(end_marker, start) + len(end_marker)
-          replacement = "\n".join([
-              "  // A macro-hex corner can legitimately touch two neighboring regions. Combine",
-              "  // each ghost cell after applying its own ordinary adjacent-cell gain; combining",
-              "  // raw pressures/burdens first and multiplying once would undercount corners.",
-              "  // Convert the accumulated exposure back to an equivalent single-neighbor value",
-              "  // because applyPathogenSteps() owns the final base gain. These equivalent values",
-              "  // may exceed 1 at corners, but multiplying by the base gain reconstructs a",
-              "  // bounded exposure exactly and keeps the existing map contract intact.",
-              "  const pressureExposure = new Map<string, number>();",
-              "  const reservoirExposure = new Map<string, number>();",
-              "  for (const link of links) {",
-              "    const remoteKey = pathogenHaloRemoteKey(",
-              "      link.neighborRegionId,",
-              "      link.neighborDirection,",
-              "      link.neighborPosition,",
-              "    );",
-              "    const localKey = positionKey(link.sourcePosition);",
-              "    if (includePressure) {",
-              "      const remotePressure = pressureIndex.get(remoteKey);",
-              "      if (remotePressure !== undefined && remotePressure > 0) {",
-              "        const gain = pathogenAdjacentContactGain(",
-              "          link.sourcePosition,",
-              "          link.direction,",
-              "          environment,",
-              "        );",
-              "        pressureExposure.set(",
-              "          localKey,",
-              "          unionPressure(pressureExposure.get(localKey) ?? 0, remotePressure * gain),",
-              "        );",
-              "      }",
-              "    }",
-              "    if (includeReservoir) {",
-              "      const burden = reservoirIndex.get(remoteKey);",
-              "      if (burden !== undefined && burden > 0) {",
-              "        reservoirExposure.set(",
-              "          localKey,",
-              "          unionPressure(",
-              "            reservoirExposure.get(localKey) ?? 0,",
-              "            burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,",
-              "          ),",
-              "        );",
-              "      }",
-              "    }",
-              "  }",
-              "",
-              "  const pressure = new Map<string, number>();",
-              "  for (const [key, exposure] of pressureExposure) {",
-              "    pressure.set(key, exposure / PATHOGEN_ADJACENT_CONTACT_GAIN);",
-              "  }",
-              "  const reservoir = new Map<string, number>();",
-              "  for (const [key, exposure] of reservoirExposure) {",
-              "    reservoir.set(key, exposure / PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN);",
-              "  }",
-              "  return { pressure, reservoir };",
-          ])
-          pathogen.write_text(text[:start] + replacement + text[end:])
+          tick_start = text.index(tick_marker)
+          suffix = text[tick_start:]
+          old = '''  haloPressure: ReadonlyMap<string, number> = new Map(),
+            haloReservoir: ReadonlyMap<string, number> = new Map(),
+          ): number {'''
+          new = '''  haloPressure: ReadonlyMap<string, number> = new Map(),
+            haloReservoir: ReadonlyMap<string, number> = new Map(),
+            haloPressureExposure?: ReadonlyMap<string, number>,
+            haloReservoirExposure?: ReadonlyMap<string, number>,
+          ): number {'''
+          if old not in suffix:
+              raise SystemExit("missing applyPathogenTickRange signature anchor")
+          suffix = suffix.replace(old, new, 1)
+          old_call = '''        haloReservoir,
+                );'''
+          new_call = '''        haloReservoir,
+                  haloPressureExposure,
+                  haloReservoirExposure,
+                );'''
+          if old_call not in suffix:
+              raise SystemExit("missing applyPathogenTickRange call anchor")
+          suffix = suffix.replace(old_call, new_call, 1)
+          pathogen.write_text(text[:tick_start] + suffix)
+
+          region = Path("src/pathogen-region.ts")
+          replace_once(region,
+          '''interface MaterializedPathogenHalo {
+            pressure: Map<string, number>;
+            reservoir: Map<string, number>;
+          }''',
+          '''interface MaterializedPathogenHalo {
+            pressure: Map<string, number>;
+            reservoir: Map<string, number>;
+            pressureExposure: Map<string, number>;
+            reservoirExposure: Map<string, number>;
+          }''')
+          replace_once(region,
+          '''      return { pressure: new Map(), reservoir: new Map() };''',
+          '''      return {
+                pressure: new Map(),
+                reservoir: new Map(),
+                pressureExposure: new Map(),
+                reservoirExposure: new Map(),
+              };''')
+          replace_once(region,
+          ''': { pressure: new Map<string, number>(), reservoir: new Map<string, number>() };''',
+          ''': {
+                pressure: new Map<string, number>(),
+                reservoir: new Map<string, number>(),
+                pressureExposure: new Map<string, number>(),
+                reservoirExposure: new Map<string, number>(),
+              };''')
+          replace_once(region,
+          '''      halo.pressure,
+                halo.reservoir,
+              );''',
+          '''      halo.pressure,
+                halo.reservoir,
+                halo.pressureExposure,
+                halo.reservoirExposure,
+              );''')
 
           test_file = Path("tests/pathogen-reservoir-halo.test.mjs")
           tests = test_file.read_text()
-          marker = 'test("corner pathogen halo preserves each ghost adjacency"'
+          marker = 'test("corner pathogen halo composes each ghost adjacency independently"'
           if marker not in tests:
-              addition = "\n".join([
-                  "",
-                  'test("corner pathogen halo preserves each ghost adjacency", () => {',
-                  '  const seamPosition = { x: 30, y: 11 };',
-                  '  const links = [',
-                  '    { sourceRegionId: "garden-1", sourcePosition: seamPosition, direction: "east", neighborRegionId: "garden-2", neighborPosition: { x: 8, y: 11 }, neighborDirection: "west" },',
-                  '    { sourceRegionId: "garden-1", sourcePosition: seamPosition, direction: "northEast", neighborRegionId: "hex-q1-r-1", neighborPosition: { x: 18, y: 22 }, neighborDirection: "southWest" },',
-                  '  ];',
-                  '  const pressureEdges = [',
-                  '    { regionId: "garden-2", direction: "west", revision: 8, tick: 60, agents: [{ position: { x: 8, y: 11 }, pressure: 1 }], reservoirs: [] },',
-                  '    { regionId: "hex-q1-r-1", direction: "southWest", revision: 3, tick: 60, agents: [{ position: { x: 18, y: 22 }, pressure: 1 }], reservoirs: [] },',
-                  '  ];',
-                  '',
-                  '  const localTarget = agent("local-target-corner", { x: 0, y: 0 });',
-                  '  applyPathogenSteps({ agents: [',
-                  '    localTarget,',
-                  '    { ...agent("east-carrier", { x: 1, y: 0 }), pathogenLoad: 1 },',
-                  '    { ...agent("northeast-carrier", { x: 1, y: -1 }), pathogenLoad: 1 },',
-                  '  ], tiles: [] }, 1);',
-                  '  const localPressureLoad = agentPathogenLoad(localTarget);',
-                  '  const pressureHalo = pathogenHaloMaps(links, pressureEdges);',
-                  '  const seamTarget = agent("seam-target-corner", seamPosition);',
-                  '  applyPathogenSteps({ agents: [seamTarget], tiles: [] }, 0, undefined, pressureHalo.pressure, 1, new Map());',
-                  '  assert.ok(',
-                  '    Math.abs(agentPathogenLoad(seamTarget) - localPressureLoad) < 1e-12,',
-                  '    `two remote carriers must equal two local adjacent carriers: seam=${agentPathogenLoad(seamTarget)} local=${localPressureLoad}`,',
-                  '  );',
-                  '',
-                  '  const reservoirEdges = pressureEdges.map((edge) => ({ ...edge, agents: [], reservoirs: [{ position: edge.agents[0].position, burden: 1 }] }));',
-                  '  const singleReservoir = pathogenHaloReservoirMap([links[0]], [reservoirEdges[0]]);',
-                  '  const singleTarget = agent("single-reservoir-target", seamPosition);',
-                  '  applyPathogenSteps({ agents: [singleTarget], tiles: [] }, 0, undefined, new Map(), 1, singleReservoir);',
-                  '  const singleReservoirLoad = agentPathogenLoad(singleTarget);',
-                  '  const cornerReservoir = pathogenHaloReservoirMap(links, reservoirEdges);',
-                  '  const cornerTarget = agent("corner-reservoir-target", seamPosition);',
-                  '  applyPathogenSteps({ agents: [cornerTarget], tiles: [] }, 0, undefined, new Map(), 1, cornerReservoir);',
-                  '  const expectedCornerReservoirLoad = 1 - Math.pow(1 - singleReservoirLoad, 2);',
-                  '  assert.ok(',
-                  '    Math.abs(agentPathogenLoad(cornerTarget) - expectedCornerReservoirLoad) < 1e-12,',
-                  '    `two remote reservoirs must compose independently: corner=${agentPathogenLoad(cornerTarget)} expected=${expectedCornerReservoirLoad}`,',
-                  '  );',
-                  '});',
-                  "",
-              ])
-              test_file.write_text(tests + addition)
+              tests += r'''
+
+test("corner pathogen halo composes each ghost adjacency independently", () => {
+  const seamPosition = { x: 30, y: 11 };
+  const links = [
+    {
+      sourceRegionId: "garden-1",
+      sourcePosition: seamPosition,
+      direction: "east",
+      neighborRegionId: "garden-2",
+      neighborPosition: { x: 8, y: 11 },
+      neighborDirection: "west",
+    },
+    {
+      sourceRegionId: "garden-1",
+      sourcePosition: seamPosition,
+      direction: "northEast",
+      neighborRegionId: "hex-q1-r-1",
+      neighborPosition: { x: 18, y: 22 },
+      neighborDirection: "southWest",
+    },
+  ];
+
+  const pressureEdges = [
+    {
+      regionId: "garden-2",
+      direction: "west",
+      revision: 8,
+      tick: 60,
+      agents: [{ position: { x: 8, y: 11 }, pressure: 1 }],
+      reservoirs: [],
+    },
+    {
+      regionId: "hex-q1-r-1",
+      direction: "southWest",
+      revision: 3,
+      tick: 60,
+      agents: [{ position: { x: 18, y: 22 }, pressure: 1 }],
+      reservoirs: [],
+    },
+  ];
+  const pressureHalo = pathogenHaloMaps(links, pressureEdges);
+
+  const localPressureTarget = agent("local-pressure-target", { x: 0, y: 0 });
+  applyPathogenSteps({
+    agents: [
+      localPressureTarget,
+      { ...agent("east-carrier", { x: 1, y: 0 }), pathogenLoad: 1 },
+      { ...agent("northeast-carrier", { x: 1, y: -1 }), pathogenLoad: 1 },
+    ],
+    tiles: [],
+  }, 1);
+
+  const seamPressureTarget = agent("seam-pressure-target", seamPosition);
+  applyPathogenSteps(
+    { agents: [seamPressureTarget], tiles: [] },
+    0,
+    undefined,
+    pressureHalo.pressure,
+    1,
+    new Map(),
+    pressureHalo.pressureExposure,
+    new Map(),
+  );
+  assert.ok(
+    Math.abs(agentPathogenLoad(seamPressureTarget) - agentPathogenLoad(localPressureTarget)) < 1e-12,
+    "two carrier ghost cells at a macro-hex corner must equal two ordinary local adjacencies",
+  );
+
+  const reservoirEdges = pressureEdges.map((edge) => ({
+    ...edge,
+    agents: [],
+    reservoirs: [{ position: { ...edge.agents[0].position }, burden: 1 }],
+  }));
+  const reservoirHalo = pathogenHaloMaps(links, reservoirEdges);
+
+  const localReservoirTarget = agent("local-reservoir-target", { x: 0, y: 0 });
+  applyPathogenSteps({
+    agents: [localReservoirTarget],
+    tiles: [
+      tile({ x: 1, y: 0 }, 1),
+      tile({ x: 1, y: -1 }, 1),
+    ],
+  }, 1);
+
+  const seamReservoirTarget = agent("seam-reservoir-target", seamPosition);
+  applyPathogenSteps(
+    { agents: [seamReservoirTarget], tiles: [] },
+    0,
+    undefined,
+    new Map(),
+    1,
+    reservoirHalo.reservoir,
+    new Map(),
+    reservoirHalo.reservoirExposure,
+  );
+  assert.ok(
+    Math.abs(agentPathogenLoad(seamReservoirTarget) - agentPathogenLoad(localReservoirTarget)) < 1e-12,
+    "two reservoir ghost cells at a macro-hex corner must equal two ordinary local adjacencies",
+  );
+});
+'''
+              test_file.write_text(tests)
           PY
       - name: Install dependencies
         run: npm ci
@@ -149,6 +333,6 @@ jobs:
           rm .github/workflows/moyogarden-improve-once.yml
           git config user.name "Tsubasa Azumagakito"
           git config user.email "azumag@users.noreply.github.com"
-          git add src/pathogen.ts tests/pathogen-reservoir-halo.test.mjs .github/workflows/moyogarden-improve-once.yml
+          git add src/pathogen.ts src/pathogen-region.ts tests/pathogen-reservoir-halo.test.mjs .github/workflows/moyogarden-improve-once.yml
           git commit -m "sim: preserve pathogen exposure at hex corners"
           git push origin HEAD:main
