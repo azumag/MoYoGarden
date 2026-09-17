@@ -23,6 +23,16 @@ test("seamless navigation bounds stale or hung region metadata reads", () => {
   assert.match(navigationSource, /error\?\.name !== "AbortError"/);
 });
 
+test("neighbor preview bounds stale or hung topology metadata reads", () => {
+  assert.match(previewSource, /TOPOLOGY_REQUEST_TIMEOUT_MS\s*=\s*8_000/);
+  assert.match(previewSource, /signal:\s*abortController\.signal/);
+  assert.match(previewSource, /requestTimedOut\s*=\s*true/);
+  assert.match(previewSource, /abortController\.abort\(\)/);
+  assert.match(previewSource, /error\?\.name === "AbortError" && !requestTimedOut/);
+  assert.match(previewSource, /noteTopologyRetryFailure\(requestedCenter\)/);
+  assert.match(previewSource, /clearTimeout\(timeout\)/);
+});
+
 test("seamless navigation backs off failed region metadata retries", () => {
   assert.match(navigationSource, /REGION_LAYOUT_RETRY_MIN_MS\s*=\s*1_000/);
   assert.match(navigationSource, /REGION_LAYOUT_RETRY_MAX_MS\s*=\s*15_000/);

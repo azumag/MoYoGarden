@@ -17,6 +17,7 @@ let topologyRetryCenterRegionId;
 let topologyRetryFailures = 0;
 let topologyRetryAfterMs = 0;
 
+const TOPOLOGY_REQUEST_TIMEOUT_MS = 8_000;
 const TOPOLOGY_RETRY_BASE_MS = 1_000;
 const TOPOLOGY_RETRY_MAX_MS = 15_000;
 
@@ -101,12 +102,14 @@ export function ensureHexNeighborTopology(centerRegionId) {
 
   const requestedCenter = centerRegionId;
   const abortController = new AbortController();
+  let requestTimedOut = false;
+  const timeout = setTimeout(() => {
+    requestTimedOut = true;
+    abortController.abort();
+  }, TOPOLOGY_REQUEST_TIMEOUT_MS);
   topologyRequestCenterRegionId = requestedCenter;
   topologyRequestAbortController = abortController;
-  // The preview only needs the center plus its immediate six neighbors. Asking
-  // for radius 2 materializes a 19-region topology payload even though the
-  // extra ring is never consumed by placement or stitching.
-  topologyRequest = fetch(regionMetaUrl(requestedCenter, 1), {
+  topologyRequest = fetch(regionMetaUrl(requestedCenter, 2), {
     cache: "no-store",
     signal: abortController.signal,
   })
@@ -129,7 +132,7 @@ export function ensureHexNeighborTopology(centerRegionId) {
       return topologyCenterRegionId === requestedCenter ? topologyRegions : [];
     })
     .catch((error) => {
-      if (error?.name === "AbortError") return [];
+      if (error?.name === "AbortError" && !requestTimedOut) return [];
       if (topologyRequestCenterRegionId === requestedCenter) {
         noteTopologyRetryFailure(requestedCenter);
       }
@@ -137,6 +140,7 @@ export function ensureHexNeighborTopology(centerRegionId) {
       return [];
     })
     .finally(() => {
+      clearTimeout(timeout);
       if (topologyRequestCenterRegionId === requestedCenter) {
         topologyRequest = undefined;
         topologyRequestCenterRegionId = undefined;
