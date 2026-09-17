@@ -5,6 +5,7 @@ import {
   applyPathogenSteps,
   tilePathogenReservoir,
 } from "../dist-ts/src/pathogen.js";
+import { hexGridNeighbors, isHexGridCell } from "../dist-ts/src/hex-grid.js";
 
 function agent(id, position, pathogenLoad = undefined, pathogenImmunity = undefined) {
   return {
@@ -81,5 +82,54 @@ test("climate cannot create a reservoir without a carrier and acquired immunity 
   assert.ok(
     agentPathogenLoad(immune) < agentPathogenLoad(naive),
     "the existing acquired-immunity rule should also reduce reservoir exposure",
+  );
+});
+
+
+test("inactive compatibility reservoir cells cannot expose active-hex boundary BOTs", () => {
+  const extent = { width: 40, height: 24 };
+  let boundary;
+  let compatibilityNeighbor;
+
+  outer: for (let y = 0; y < extent.height; y += 1) {
+    for (let x = 0; x < extent.width; x += 1) {
+      const position = { x, y };
+      if (!isHexGridCell(extent, position)) continue;
+      for (const neighbor of hexGridNeighbors(position)) {
+        if (
+          neighbor.x < 0 || neighbor.y < 0 ||
+          neighbor.x >= extent.width || neighbor.y >= extent.height ||
+          isHexGridCell(extent, neighbor)
+        ) continue;
+        boundary = position;
+        compatibilityNeighbor = neighbor;
+        break outer;
+      }
+    }
+  }
+
+  assert.ok(boundary, "fixture should find an active boundary cell");
+  assert.ok(compatibilityNeighbor, "fixture should find an in-envelope inactive neighbor");
+  const susceptible = agent("active-boundary-bot", boundary);
+  const activeTile = tile(boundary);
+  const hiddenReservoir = tile(compatibilityNeighbor, 1);
+  const state = {
+    ...extent,
+    regionId: "garden-1",
+    agents: [susceptible],
+    tiles: [activeTile, hiddenReservoir],
+  };
+
+  applyPathogenSteps(state, 1);
+
+  assert.equal(
+    agentPathogenLoad(susceptible),
+    0,
+    "40x24 compatibility cells outside the active hex must not be local reservoir exposure",
+  );
+  assert.equal(
+    tilePathogenReservoir(hiddenReservoir),
+    1,
+    "inactive compatibility storage should remain inert rather than entering pathogen dynamics",
   );
 });

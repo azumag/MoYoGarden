@@ -3,6 +3,7 @@ import {
   HEX_GRID_DIRECTION_STEPS,
   hexGridBoundaryCells,
   hexGridNeighbors,
+  isHexGridCell,
   oppositeHexGridDirection,
   type HexGridDirection,
 } from "./hex-grid.js";
@@ -574,7 +575,18 @@ function singlePathogenStep(
   state: WorldState,
   environment: PathogenEnvironmentFrame | undefined,
 ): number {
-  const tiles = state.tiles ?? [];
+  const allTiles = state.tiles ?? [];
+  // WorldState still persists the historical 40x24 compatibility envelope, but
+  // only the regular axial hex is simulation-owned terrain. Ignore compatibility
+  // cells here so a hidden reservoir cannot infect an active boundary BOT or
+  // advect back into the playable world. Partial unit fixtures without an extent
+  // retain their legacy behavior for focused pathogen math tests.
+  const hasHexExtent =
+    Number.isInteger(state.width) && state.width > 0 &&
+    Number.isInteger(state.height) && state.height > 0;
+  const tiles = hasHexExtent
+    ? allTiles.filter((tile) => isHexGridCell(state, tile))
+    : allTiles;
   const previousReservoir = pathogenReservoirIndex(tiles);
   const previousLoads = new Map(state.agents.map((agent) => [agent.id, agentPathogenLoad(agent)]));
   const previousImmunity = new Map(
