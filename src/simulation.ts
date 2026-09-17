@@ -1275,11 +1275,22 @@ function canTransfer(agent: Agent, inventory: Inventory): boolean {
 function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "trade" }>): void {
   const target = getAgent(state, task.targetAgentId);
   if (target === undefined) {
-    if (
+    const remoteTradeAlive =
       task.source === "autonomy"
       && task.targetAgentId.startsWith("agent-global:")
-      && state.tick - task.issuedAtTick <= AUTONOMOUS_REMOTE_TRADE_TTL
-    ) {
+      && state.tick - task.issuedAtTick <= AUTONOMOUS_REMOTE_TRADE_TTL;
+    if (remoteTradeAlive && task.routeTarget !== undefined) {
+      // Once the autonomy layer has located an immediate-neighbor owner, keep
+      // ordinary movement inside simulation. The hint is source-local and is
+      // revalidated at the seam before ownership handoff.
+      if (!samePosition(agent.position, task.routeTarget)) {
+        moveAgent(state, agent, task.routeTarget);
+      } else {
+        agent.status = `waiting to cross region for trade with ${task.targetAgentId}`;
+      }
+      return;
+    }
+    if (remoteTradeAlive) {
       // A counterparty can leave this Region DO between planning and execution.
       // Keep the world-global promise alive long enough for the cross-region
       // autonomy layer to discover its new owner instead of deleting it in the
@@ -1294,6 +1305,8 @@ function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, 
       : "trade target disappeared";
     return;
   }
+  delete task.routeRegionId;
+  delete task.routeTarget;
   if (!samePosition(agent.position, target.position)) {
     moveAgent(state, agent, target.position);
     return;

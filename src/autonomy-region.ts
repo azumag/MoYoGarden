@@ -1,6 +1,7 @@
 import {
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
+  type HexHaloLink,
   type HexHaloTile,
 } from "./hex-halo.js";
 import {
@@ -67,6 +68,7 @@ interface PendingAutonomousHandoff {
   returnToSourceStorage?: boolean;
   settlementMigration?: boolean;
   settlementFamilyFollow?: boolean;
+  tradeTargetAgentId?: string;
 }
 
 interface PendingAutonomousTravel {
@@ -154,6 +156,7 @@ const INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;
 const INTERNAL_CLAIM_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/release`;
 const INTERNAL_STORAGE_RESERVE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/reserve`;
 const INTERNAL_STORAGE_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/release`;
+const INTERNAL_AGENT_LOOKUP_PATH = `${INTERNAL_AUTONOMY_PREFIX}agent/lookup`;
 const INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}settlement/family/register`;
 const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
@@ -172,6 +175,9 @@ const RETURN_STORAGE_RESERVATION_TTL_MS = 6 * 60 * 60 * 1_000;
 // relays survive long warm/cold journeys without turning every tick into a cross-DO write.
 const RETURN_STORAGE_RENEW_INTERVAL_MS = 60 * 60 * 1_000;
 const SETTLEMENT_MIGRATION_TTL = 72;
+// Keep routing bounded to the same virtual-time window used by simulation's
+// promoted remote-trade promise. Discovery itself only fans out on scout cadence.
+const AUTONOMOUS_TRADE_DISCOVERY_TTL = 72;
 // Successful bounded catch-up batches can drain debt promptly without
 // putting dozens of full virtual ticks into one DO invocation. Failed
 // batches keep the normal tick retry to avoid a hot failure loop.
@@ -705,6 +711,57 @@ function localTravelPathScores(
 
 function remainingInventoryCapacity(agent: Agent): number {
   return Math.max(0, agent.capacity - inventoryAmount(agent));
+}
+
+export interface AutonomousTradeNeighborRoute {
+  direction: HexGridDirection;
+  neighborRegionId: string;
+  boundaryTarget: GridPosition;
+  desiredPosition: GridPosition;
+}
+
+export function planAutonomousTradeNeighborRoute(
+  state: WorldState,
+  links: readonly HexHaloLink[],
+  agentId: string,
+  neighborRegionId: string,
+): AutonomousTradeNeighborRoute | undefined {
+  const agent = state.agents.find((entry) => entry.id === agentId);
+  if (
+    agent === undefined
+    || !agent.autonomy
+    || agent.task?.source !== "autonomy"
+    || agent.task.type !== "trade"
+  ) return undefined;
+
+  const scores = localTravelPathScores(state, agent.position);
+  const selected = links
+    .filter((link) =>
+      link.neighborRegionId === neighborRegionId
+      && isPassable(state, link.sourcePosition)
+    )
+    .flatMap((link) => {
+      const score = scores.get(positionKey(link.sourcePosition));
+      return score === undefined ? [] : [{ link, score }];
+    })
+    .sort((a, b) =>
+      a.score.distance - b.score.distance
+      || a.score.crowding - b.score.crowding
+      || directionRank(a.link.direction) - directionRank(b.link.direction)
+      || a.link.sourcePosition.y - b.link.sourcePosition.y
+      || a.link.sourcePosition.x - b.link.sourcePosition.x
+    )[0];
+  if (selected === undefined) return undefined;
+  const step = HEX_GRID_DIRECTION_STEPS[selected.link.direction];
+  return {
+    direction: selected.link.direction,
+    neighborRegionId: selected.link.neighborRegionId,
+    boundaryTarget: { ...selected.link.sourcePosition },
+    desiredPosition: {
+      x: selected.link.sourcePosition.x + step.x,
+      y: selected.link.sourcePosition.y + step.y,
+    },
+  };
 }
 
 function haloSupplyKey(neighborRegionId: string): string {
@@ -2065,6 +2122,17 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       pending.settlementFamilyFollow === true
       && agent?.task?.source === "autonomy"
       && agent.task.type === "move";
+    const failedTradeHandoff =
+      pending.tradeTargetAgentId !== undefined
+      && agent?.task?.source === "autonomy"
+      && agent.task.type === "trade"
+      && agent.task.targetAgentId === pending.tradeTargetAgentId;
+    if (failedTradeHandoff && agent?.task?.type === "trade") {
+      delete agent.task.routeRegionId;
+      delete agent.task.routeTarget;
+      agent.status = `trade handoff ${pending.direction} rejected; rediscovering counterparty`;
+      this.replaceRuntimeState(state);
+    }
     if (failedResourceHandoff || failedSettlementMigration || failedSettlementFamilyFollow) {
       delete agent.task;
       agent.status = `handoff ${pending.direction} rejected; replanning`;
@@ -2322,6 +2390,151 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     return added.length;
   }
 
+  private tradeRoutingLinks(state: WorldState): HexHaloLink[] {
+    return autonomyHaloLinksForActivity(
+      state,
+      configuredRegionIds(this.autonomyEnv),
+      state.regionId,
+      this.activityTier(),
+    );
+  }
+
+  private async neighborOwnsTradeCounterparty(
+    regionId: string,
+    agentId: string,
+  ): Promise<boolean | undefined> {
+    try {
+      const response = await this.autonomyStub(regionId).fetch(new Request(
+        `https://moyo.internal${INTERNAL_AGENT_LOOKUP_PATH}?agentId=${encodeURIComponent(agentId)}`,
+        { headers: { "x-moyo-region-internal": regionId } },
+      ));
+      if (!response.ok) return undefined;
+      const payload = await response.json() as unknown;
+      return isRecord(payload) && typeof payload.present === "boolean"
+        ? payload.present
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async resumeOrPlanAutonomousTradeHandoff(state: WorldState): Promise<boolean> {
+    const agent = [...state.agents]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .find((entry) => {
+        const task = entry.task;
+        return entry.autonomy
+          && task?.source === "autonomy"
+          && task.type === "trade"
+          && task.targetAgentId.startsWith("agent-global:")
+          && state.tick - task.issuedAtTick <= AUTONOMOUS_TRADE_DISCOVERY_TTL
+          && !state.agents.some((candidate) => candidate.id === task.targetAgentId);
+      });
+    const task = agent?.task;
+    if (
+      agent === undefined
+      || task?.source !== "autonomy"
+      || task.type !== "trade"
+    ) return false;
+
+    // Do not wake up to six neighbor DOs on every simulation tick. Once a route
+    // has been learned, local movement can continue every tick without fan-out.
+    if (task.routeRegionId === undefined && state.tick % AUTONOMOUS_SCOUT_INTERVAL !== 0) {
+      return false;
+    }
+
+    const links = this.tradeRoutingLinks(state);
+    let targetRegionId = task.routeRegionId;
+    if (targetRegionId === undefined) {
+      const directionByRegion = new Map<string, HexGridDirection>();
+      for (const link of links) {
+        if (!directionByRegion.has(link.neighborRegionId)) {
+          directionByRegion.set(link.neighborRegionId, link.direction);
+        }
+      }
+      const neighbors = [...directionByRegion.entries()].sort((a, b) =>
+        directionRank(a[1]) - directionRank(b[1]) || a[0].localeCompare(b[0])
+      );
+      const lookup = await Promise.all(neighbors.map(async ([neighborRegionId]) => ({
+        neighborRegionId,
+        present: await this.neighborOwnsTradeCounterparty(
+          neighborRegionId,
+          task.targetAgentId,
+        ),
+      })));
+      targetRegionId = lookup.find((entry) => entry.present === true)?.neighborRegionId;
+      if (targetRegionId === undefined) {
+        agent.status = lookup.some((entry) => entry.present === undefined)
+          ? `trade counterparty lookup unavailable; retrying ${task.targetAgentId}`
+          : `trade counterparty ${task.targetAgentId} is not in an immediate neighbor`;
+        this.replaceRuntimeState(state);
+        return true;
+      }
+    }
+
+    const route = planAutonomousTradeNeighborRoute(state, links, agent.id, targetRegionId);
+    if (route === undefined) {
+      delete task.routeRegionId;
+      delete task.routeTarget;
+      agent.status = `no passable route toward trade counterparty ${task.targetAgentId}`;
+      this.replaceRuntimeState(state);
+      return true;
+    }
+    task.routeRegionId = route.neighborRegionId;
+    task.routeTarget = { ...route.boundaryTarget };
+
+    if (!samePosition(agent.position, route.boundaryTarget)) {
+      agent.status = `traveling toward ${route.neighborRegionId} to trade with ${task.targetAgentId}`;
+      this.replaceRuntimeState(state);
+      return true;
+    }
+
+    const transition = regionCellTransition(
+      state.regionId,
+      route.desiredPosition,
+      state.width,
+      state.height,
+    );
+    if (transition?.targetRegionId !== route.neighborRegionId) {
+      delete task.routeRegionId;
+      delete task.routeTarget;
+      agent.status = `trade route to ${task.targetAgentId} changed; replanning`;
+      this.replaceRuntimeState(state);
+      return true;
+    }
+
+    // The counterparty can move again while the trader walks to the seam. Verify
+    // ownership immediately before detach so a stale hint never sends the trader
+    // into a region that no longer owns the promised partner.
+    const stillPresent = await this.neighborOwnsTradeCounterparty(
+      route.neighborRegionId,
+      task.targetAgentId,
+    );
+    if (stillPresent !== true) {
+      if (stillPresent === false) {
+        delete task.routeRegionId;
+        delete task.routeTarget;
+      }
+      agent.status = stillPresent === false
+        ? `trade counterparty ${task.targetAgentId} moved; replanning`
+        : `trade counterparty lookup unavailable at seam; waiting`;
+      this.replaceRuntimeState(state);
+      return true;
+    }
+
+    const pending: PendingAutonomousHandoff = {
+      transferId: `trade:${state.regionId}:${agent.id}:${task.issuedAtTick}:${route.direction}`,
+      agentId: agent.id,
+      direction: route.direction,
+      resource: undefined,
+      desiredPosition: { ...route.desiredPosition },
+      tradeTargetAgentId: task.targetAgentId,
+    };
+    await this.autonomyState.storage.put(AUTONOMOUS_HANDOFF_KEY, pending);
+    await this.attemptPendingHandoff(pending);
+    return true;
+  }
+
   private async resumeSettlementMigration(
     state: WorldState,
   ): Promise<"traveling" | "handoff" | undefined> {
@@ -2424,6 +2637,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       return;
     }
     await this.notifySettledPioneers(state);
+    if (await this.resumeOrPlanAutonomousTradeHandoff(state)) return;
     const activeTravels = await this.resumeAutonomousTravels(state);
     const migrationState = await this.resumeSettlementMigration(state);
     if (migrationState === "handoff") return;
@@ -2531,6 +2745,17 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const url = new URL(request.url);
     const assignmentError = await this.ensureAutonomyAssigned(request);
     if (assignmentError !== undefined) return assignmentError;
+    if (request.method === "GET" && url.pathname === INTERNAL_AGENT_LOOKUP_PATH) {
+      const agentId = url.searchParams.get("agentId");
+      if (agentId === null || agentId.length > 192 || !agentId.startsWith("agent-global:")) {
+        return new Response(JSON.stringify({ error: "agentId must be a world-global agent ID" }), { status: 400 });
+      }
+      const state = runtimeAccess(this).runtime.snapshot();
+      return new Response(JSON.stringify({
+        agentId,
+        present: state.agents.some((entry) => entry.id === agentId),
+      }), { headers: { "content-type": "application/json; charset=utf-8" } });
+    }
     if (request.method === "POST" && url.pathname === INTERNAL_STORAGE_RESERVE_PATH) {
       return this.reserveDestinationStorage(request);
     }

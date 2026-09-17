@@ -86,6 +86,11 @@ export interface TradeTask extends AgentTaskBase {
   targetAgentId: string;
   offer: Inventory;
   request: Inventory;
+  // Source-local hints used only while an autonomous trader approaches a known
+  // neighboring owner. They are optional for persisted-state compatibility and
+  // are stripped/re-resolved whenever ownership crosses a region boundary.
+  routeRegionId?: string;
+  routeTarget?: GridPosition;
 }
 
 export type AgentTask = MoveTask | GatherTask | BuildTask | DepositTask | TradeTask;

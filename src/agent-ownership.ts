@@ -206,8 +206,9 @@ function rewriteResidentFamilyReference(
     // this Region DO. Keep the autonomous promise bound to the same physical
     // BOT by promoting only its identity; route planning may decide later how
     // to reach that global counterparty. External commands stay source-local.
+    const { routeRegionId: _routeRegionId, routeTarget: _routeTarget, ...trade } = agent.task;
     agent.task = {
-      ...agent.task,
+      ...trade,
       targetAgentId: promotedId,
       // Start a fresh bounded discovery window at the ownership change rather
       // than inheriting however long the local trade was already in progress.
