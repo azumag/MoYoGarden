@@ -196,6 +196,17 @@ function rewriteResidentFamilyReference(
   if (agent.pregnancy?.partnerId === sourceLocalId) {
     agent.pregnancy = { ...agent.pregnancy, partnerId: promotedId };
   }
+  if (
+    agent.task?.source === "autonomy"
+    && agent.task.type === "trade"
+    && agent.task.targetAgentId === sourceLocalId
+  ) {
+    // The counterparty's ownership moved, but the resident trader remains in
+    // this Region DO. Keep the autonomous promise bound to the same physical
+    // BOT by promoting only its identity; route planning may decide later how
+    // to reach that global counterparty. External commands stay source-local.
+    agent.task = { ...agent.task, targetAgentId: promotedId };
+  }
   if (agent.socialMemory !== undefined) {
     agent.socialMemory = agent.socialMemory.map((memory) =>
       memory.agentId === sourceLocalId
