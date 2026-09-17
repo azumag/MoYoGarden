@@ -23,7 +23,9 @@ jobs:
           node-version: "22"
 
       - name: Apply patch
-        run: python scripts/automation-return-storage-renew.py
+        run: |
+          python scripts/automation-return-storage-renew.py
+          python scripts/automation-return-storage-renew-testfix.py
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -37,8 +39,9 @@ jobs:
           set -euo pipefail
           rm .github/workflows/automation-return-storage-renew.yml
           rm scripts/automation-return-storage-renew.py
+          rm scripts/automation-return-storage-renew-testfix.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/autonomy-region.ts tests/autonomy-material-return-relay.test.mjs .github/workflows/automation-return-storage-renew.yml scripts/automation-return-storage-renew.py
+          git add src/autonomy-region.ts tests/autonomy-material-return-relay.test.mjs .github/workflows/automation-return-storage-renew.yml scripts/automation-return-storage-renew.py scripts/automation-return-storage-renew-testfix.py
           git commit -m 'sim: renew return storage leases during relay'
           git push origin HEAD:main
