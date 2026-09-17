@@ -99,16 +99,32 @@ function arrivalTaskAfterHandoff(
   if (
     task.type === "trade"
     && task.targetAgentId.startsWith(GLOBAL_AGENT_PREFIX)
-    && targetState.agents.some((entry) => entry.id === task.targetAgentId)
   ) {
-    return {
-      source: "autonomy",
-      issuedAtTick: targetTick,
-      type: "trade",
-      targetAgentId: task.targetAgentId,
-      offer: { ...task.offer },
-      request: { ...task.request },
-    };
+    const targetPresent = targetState.agents.some((entry) => entry.id === task.targetAgentId);
+    const retryBudget = task.handoffRetryBudget ?? 1;
+    // The owner is rechecked immediately before detach, but it can move again
+    // before target attach commits. Only a task carrying a source-local route
+    // hint is known to have passed that seam preflight. Preserve one such stale
+    // arrival so the existing bounded discovery can reacquire the global ID.
+    // Unrouted/legacy tasks keep the old fail-closed behavior, and a second
+    // stale arrival drops the promise instead of chasing indefinitely.
+    const preserveStaleRoutedPromise =
+      !targetPresent
+      && task.routeRegionId !== undefined
+      && retryBudget > 0;
+    if (targetPresent || preserveStaleRoutedPromise) {
+      return {
+        source: "autonomy",
+        issuedAtTick: targetTick,
+        type: "trade",
+        targetAgentId: task.targetAgentId,
+        offer: { ...task.offer },
+        request: { ...task.request },
+        ...(preserveStaleRoutedPromise
+          ? { handoffRetryBudget: retryBudget - 1 }
+          : {}),
+      };
+    }
   }
   if (
     task.type === "move"
@@ -206,7 +222,12 @@ function rewriteResidentFamilyReference(
     // this Region DO. Keep the autonomous promise bound to the same physical
     // BOT by promoting only its identity; route planning may decide later how
     // to reach that global counterparty. External commands stay source-local.
-    const { routeRegionId: _routeRegionId, routeTarget: _routeTarget, ...trade } = agent.task;
+    const {
+      routeRegionId: _routeRegionId,
+      routeTarget: _routeTarget,
+      handoffRetryBudget: _handoffRetryBudget,
+      ...trade
+    } = agent.task;
     agent.task = {
       ...trade,
       targetAgentId: promotedId,
