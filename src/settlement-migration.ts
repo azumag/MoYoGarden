@@ -154,14 +154,15 @@ export function settlementFamilyHousingHeadroom(state: WorldState, factionId: st
   return Math.max(0, activeCamps * RESIDENT_CAPACITY_PER_CAMP - residents);
 }
 
-export function settlementFamilyAdmissionReady(state: WorldState, factionId: string): boolean {
+export function settlementFamilyAdmissionHeadroom(state: WorldState, factionId: string): number {
   const faction = getFaction(state, factionId);
-  if (faction === undefined) return false;
+  if (faction === undefined) return 0;
   const activeStructures = state.structures.filter((structure) =>
     structure.factionId === factionId && structure.status === "active"
   );
-  if (!activeStructures.some((structure) => structure.type === "camp")) return false;
-  if (settlementFamilyHousingHeadroom(state, factionId) <= 0) return false;
+  if (!activeStructures.some((structure) => structure.type === "camp")) return 0;
+  const housingHeadroom = settlementFamilyHousingHeadroom(state, factionId);
+  if (housingHeadroom <= 0) return 0;
   const storageHeadroom = activeStructures.reduce(
     (sum, structure) => sum + Math.max(
       0,
@@ -169,14 +170,34 @@ export function settlementFamilyAdmissionReady(state: WorldState, factionId: str
     ),
     0,
   );
-  if (storageHeadroom <= 0) return false;
-  const storedFoodAvailable = activeStructures.some((structure) => structure.storage.food > 0);
-  return faction.resources.food > 0 || storedFoodAvailable || state.tiles.some((tile) =>
-    isHexGridCell(state, tile)
-    && tile.terrain !== "water"
-    && tile.resource?.kind === "food"
-    && tile.resource.amount > 0
+  if (storageHeadroom <= 0) return 0;
+
+  const storedFood = activeStructures.reduce(
+    (sum, structure) => sum + Math.max(0, structure.storage.food),
+    0,
   );
+  const ledgerFood = Math.max(0, faction.resources.food);
+  // The faction ledger and structure inventories can describe the same
+  // stock, especially across rolling persisted states, so never add them.
+  // Live food deposits are physically separate support that settlers can
+  // harvest after arrival and therefore can extend the bounded headroom.
+  const liveFood = state.tiles.reduce((sum, tile) =>
+    sum + (
+      isHexGridCell(state, tile)
+      && tile.terrain !== "water"
+      && tile.resource?.kind === "food"
+      && tile.resource.amount > 0
+        ? tile.resource.amount
+        : 0
+    ),
+    0,
+  );
+  const foodSupport = Math.max(ledgerFood, storedFood) + liveFood;
+  return Math.max(0, Math.min(housingHeadroom, Math.floor(foodSupport)));
+}
+
+export function settlementFamilyAdmissionReady(state: WorldState, factionId: string): boolean {
+  return settlementFamilyAdmissionHeadroom(state, factionId) > 0;
 }
 
 export function hasSettlementFamilyFollow(state: WorldState): boolean {

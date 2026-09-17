@@ -6,6 +6,7 @@ import {
   hasSettlementFamilyFollow,
   planSettlementFamilyFollow,
   registerSettlementFamilyFollowers,
+  settlementFamilyAdmissionHeadroom,
   settlementFamilyAdmissionReady,
   settlementFamilyHousingHeadroom,
 } from "../dist-ts/src/settlement-migration.js";
@@ -88,6 +89,47 @@ test("family admission requires a camp, storage headroom, and usable food suppor
   assert.ok(foodTile);
   foodTile.resource = { kind: "food", amount: 3, maxAmount: 3 };
   assert.equal(settlementFamilyAdmissionReady(state, faction.id), true);
+});
+
+test("family admission headroom is bounded by physical food support", () => {
+  const state = createInitialWorld({ seed: 260924, width: 40, height: 24, regionId: "hex-q1-r0" });
+  clearHex(state);
+  const faction = state.factions[0];
+  assert.ok(faction);
+  const residentTemplate = baseAgent(state);
+  state.structures = [{
+    id: "frontier-camp",
+    factionId: faction.id,
+    type: "camp",
+    position: { x: 19, y: 11 },
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 1 },
+  }];
+  faction.resources = { wood: 0, stone: 0, food: 1 };
+  state.agents = Array.from({ length: 4 }, (_, index) => ({
+    ...structuredClone(residentTemplate),
+    id: `resident-${index}`,
+    factionId: faction.id,
+    hp: 100,
+  }));
+
+  assert.equal(settlementFamilyHousingHeadroom(state, faction.id), 2);
+  assert.equal(
+    settlementFamilyAdmissionHeadroom(state, faction.id),
+    1,
+    "one physical food unit must not authorize two family followers",
+  );
+
+  const foodTile = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
+  assert.ok(foodTile);
+  foodTile.resource = { kind: "food", amount: 3, maxAmount: 3 };
+  assert.equal(
+    settlementFamilyAdmissionHeadroom(state, faction.id),
+    2,
+    "additional live food may fill the remaining housing headroom",
+  );
 });
 
 test("family follow chooses a neighboring region that strictly approaches the final target", () => {

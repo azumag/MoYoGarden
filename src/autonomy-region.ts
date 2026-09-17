@@ -30,8 +30,7 @@ import {
   planSettlementFamilyFollow,
   prepareSettlementMigrationKit,
   registerSettlementFamilyFollowers,
-  settlementFamilyAdmissionReady,
-  settlementFamilyHousingHeadroom,
+  settlementFamilyAdmissionHeadroom,
   shouldScoutSettlementMigration,
   type AutonomousSettlementMigrationPlan,
 } from "./settlement-migration.js";
@@ -1479,9 +1478,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         dirty = true;
         continue;
       }
-      const familyHousingHeadroom = settlementFamilyHousingHeadroom(state, pioneer.factionId);
+      const familyAdmissionHeadroom = settlementFamilyAdmissionHeadroom(state, pioneer.factionId);
 
-      if (familyHousingHeadroom <= 0 || !settlementFamilyAdmissionReady(state, pioneer.factionId)) continue;
+      if (familyAdmissionHeadroom <= 0) continue;
       try {
         const response = await this.autonomyStub(sourceRegionId).fetch(new Request(
           `https://moyo.internal${INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH}`,
@@ -1495,7 +1494,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
               pioneerId: pioneer.id,
               targetRegionId: state.regionId,
               factionId: pioneer.factionId,
-              maxFollowers: familyHousingHeadroom,
+              maxFollowers: familyAdmissionHeadroom,
               ...(pioneer.pregnancy?.partnerId === undefined
                 ? {}
                 : { pioneerPartnerId: pioneer.pregnancy.partnerId }),
