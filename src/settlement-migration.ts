@@ -170,7 +170,8 @@ export function settlementFamilyAdmissionReady(state: WorldState, factionId: str
     0,
   );
   if (storageHeadroom <= 0) return false;
-  return faction.resources.food > 0 || state.tiles.some((tile) =>
+  const storedFoodAvailable = activeStructures.some((structure) => structure.storage.food > 0);
+  return faction.resources.food > 0 || storedFoodAvailable || state.tiles.some((tile) =>
     isHexGridCell(state, tile)
     && tile.terrain !== "water"
     && tile.resource?.kind === "food"

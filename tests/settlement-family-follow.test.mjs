@@ -77,6 +77,13 @@ test("family admission requires a camp, storage headroom, and usable food suppor
   }];
   faction.resources = { wood: 0, stone: 0, food: 0 };
   assert.equal(settlementFamilyAdmissionReady(state, faction.id), false);
+  state.structures[0].storage.food = 2;
+  assert.equal(
+    settlementFamilyAdmissionReady(state, faction.id),
+    true,
+    "food already stored in an active faction structure should support family admission",
+  );
+  state.structures[0].storage.food = 0;
   const foodTile = state.tiles.find((tile) => isHexGridCell(state, tile) && tile.terrain !== "water");
   assert.ok(foodTile);
   foodTile.resource = { kind: "food", amount: 3, maxAmount: 3 };
