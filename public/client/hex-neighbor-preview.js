@@ -182,6 +182,11 @@ export function cloneNeighborPreviewInstances(source, indexes, physicalOffset, s
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   mesh.computeBoundingSphere();
+  // Chunk transforms never change after construction; all per-tile placement
+  // lives in instanceMatrix and region movement happens on ancestor roots. Avoid
+  // recomposing an identity local matrix for every preview mesh on every frame.
+  mesh.updateMatrix();
+  mesh.matrixAutoUpdate = false;
   return mesh;
 }
 
