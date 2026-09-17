@@ -1,0 +1,66 @@
+name: Apply dead pathogen carrier guard
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Patch pathogen carrier lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('src/pathogen.ts')
+          text = source.read_text()
+          old = '''export function agentPathogenPressure(agent: Agent): number {\n  const load = agentPathogenLoad(agent);\n  if (load <= PATHOGEN_INFECTIOUS_THRESHOLD) return 0;'''
+          new = '''export function agentPathogenPressure(agent: Agent): number {\n  // Direct contact and active shedding require a living host. Keep any tile\n  // reservoir already left behind by the carrier; corpse/environmental\n  // persistence, if modeled later, must be an explicit low-level reservoir path\n  // rather than a dead Agent continuing to breathe across local or halo contact.\n  if (agent.hp <= 0) return 0;\n  const load = agentPathogenLoad(agent);\n  if (load <= PATHOGEN_INFECTIOUS_THRESHOLD) return 0;'''
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected agentPathogenPressure anchor count: {text.count(old)}')
+          source.write_text(text.replace(old, new, 1))
+
+          test_file = Path('tests/pathogen-reservoir.test.mjs')
+          test_text = test_file.read_text()
+          marker = 'dead carriers stop active contact transmission and environmental shedding'
+          if marker in test_text:
+              raise SystemExit('regression test already exists')
+          test_text += '''\n\ntest("dead carriers stop active contact transmission and environmental shedding", () => {\n  const position = { x: 6, y: 6 };\n  const carrier = agent("dead-carrier", position, 1);\n  carrier.hp = 0;\n  const susceptible = agent("susceptible", position);\n  const cell = tile(position);\n  const state = { agents: [carrier, susceptible], tiles: [cell] };\n\n  applyPathogenSteps(state, 1);\n\n  assert.equal(\n    agentPathogenLoad(susceptible),\n    0,\n    "a dead Agent must not remain an active same-cell transmission source",\n  );\n  assert.equal(\n    tilePathogenReservoir(cell),\n    0,\n    "a dead Agent must not create new environmental reservoir burden",\n  );\n});\n'''
+          test_file.write_text(test_text)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit verified product change
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/pathogen-dead-carrier-guard.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pathogen.ts tests/pathogen-reservoir.test.mjs .github/workflows/pathogen-dead-carrier-guard.yml
+          git commit -m "sim: stop dead agents transmitting pathogens"
+          git push origin HEAD:main
