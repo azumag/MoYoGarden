@@ -1,0 +1,78 @@
+name: Apply active-hex pathogen guard
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore: stage active-hex pathogen guard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Patch pathogen active-hex causality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('src/pathogen.ts')
+          text = source.read_text()
+          import_old = '''  hexGridBoundaryCells,\n  hexGridNeighbors,\n  oppositeHexGridDirection,'''
+          import_new = '''  hexGridBoundaryCells,\n  hexGridNeighbors,\n  isHexGridCell,\n  oppositeHexGridDirection,'''
+          if text.count(import_old) != 1:
+              raise SystemExit(f'unexpected pathogen hex-grid import shape: {text.count(import_old)}')
+          text = text.replace(import_old, import_new, 1)
+
+          tiles_old = '''function singlePathogenStep(\n  state: WorldState,\n  environment: PathogenEnvironmentFrame | undefined,\n): number {\n  const tiles = state.tiles ?? [];'''
+          tiles_new = '''function singlePathogenStep(\n  state: WorldState,\n  environment: PathogenEnvironmentFrame | undefined,\n): number {\n  const allTiles = state.tiles ?? [];\n  // WorldState still persists the historical 40x24 compatibility envelope, but\n  // only the regular axial hex is simulation-owned terrain. Ignore compatibility\n  // cells here so a hidden reservoir cannot infect an active boundary BOT or\n  // advect back into the playable world. Partial unit fixtures without an extent\n  // retain their legacy behavior for focused pathogen math tests.\n  const hasHexExtent =\n    Number.isInteger(state.width) && state.width > 0 &&\n    Number.isInteger(state.height) && state.height > 0;\n  const tiles = hasHexExtent\n    ? allTiles.filter((tile) => isHexGridCell(state, tile))\n    : allTiles;'''
+          if text.count(tiles_old) != 1:
+              raise SystemExit(f'unexpected singlePathogenStep tile setup: {text.count(tiles_old)}')
+          source.write_text(text.replace(tiles_old, tiles_new, 1))
+
+          test_file = Path('tests/pathogen-reservoir.test.mjs')
+          test_text = test_file.read_text()
+          import_anchor = '''} from "../dist-ts/src/pathogen.js";\n\nfunction agent'''
+          import_replacement = '''} from "../dist-ts/src/pathogen.js";\nimport { hexGridNeighbors, isHexGridCell } from "../dist-ts/src/hex-grid.js";\n\nfunction agent'''
+          if test_text.count(import_anchor) != 1:
+              raise SystemExit(f'unexpected pathogen reservoir test import shape: {test_text.count(import_anchor)}')
+          test_text = test_text.replace(import_anchor, import_replacement, 1)
+
+          marker = 'inactive compatibility reservoir cells cannot expose active-hex boundary BOTs'
+          if marker in test_text:
+              raise SystemExit('regression test already exists')
+          test_text += '''\n\ntest("inactive compatibility reservoir cells cannot expose active-hex boundary BOTs", () => {\n  const extent = { width: 40, height: 24 };\n  let boundary;\n  let compatibilityNeighbor;\n\n  outer: for (let y = 0; y < extent.height; y += 1) {\n    for (let x = 0; x < extent.width; x += 1) {\n      const position = { x, y };\n      if (!isHexGridCell(extent, position)) continue;\n      for (const neighbor of hexGridNeighbors(position)) {\n        if (\n          neighbor.x < 0 || neighbor.y < 0 ||\n          neighbor.x >= extent.width || neighbor.y >= extent.height ||\n          isHexGridCell(extent, neighbor)\n        ) continue;\n        boundary = position;\n        compatibilityNeighbor = neighbor;\n        break outer;\n      }\n    }\n  }\n\n  assert.ok(boundary, "fixture should find an active boundary cell");\n  assert.ok(compatibilityNeighbor, "fixture should find an in-envelope inactive neighbor");\n  const susceptible = agent("active-boundary-bot", boundary);\n  const activeTile = tile(boundary);\n  const hiddenReservoir = tile(compatibilityNeighbor, 1);\n  const state = {\n    ...extent,\n    regionId: "garden-1",\n    agents: [susceptible],\n    tiles: [activeTile, hiddenReservoir],\n  };\n\n  applyPathogenSteps(state, 1);\n\n  assert.equal(\n    agentPathogenLoad(susceptible),\n    0,\n    "40x24 compatibility cells outside the active hex must not be local reservoir exposure",\n  );\n  assert.equal(\n    tilePathogenReservoir(hiddenReservoir),\n    1,\n    "inactive compatibility storage should remain inert rather than entering pathogen dynamics",\n  );\n});\n'''
+          test_file.write_text(test_text)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit verified product change
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/active-hex-pathogen-guard.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pathogen.ts tests/pathogen-reservoir.test.mjs .github/workflows/active-hex-pathogen-guard.yml
+          git commit -m "sim: keep pathogen reservoirs inside active hex"
+          git push origin HEAD:main
