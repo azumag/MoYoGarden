@@ -20,7 +20,7 @@ test("detaching a counterparty promotes a resident autonomous trade target", () 
 
   trader.task = {
     source: "autonomy",
-    issuedAtTick: state.tick,
+    issuedAtTick: state.tick - 100,
     type: "trade",
     targetAgentId: moving.id,
     offer: { wood: 1, stone: 0, food: 0 },
@@ -41,7 +41,12 @@ test("detaching a counterparty promotes a resident autonomous trade target", () 
   );
   assert.deepEqual(resident.task.offer, originalTask.offer);
   assert.deepEqual(resident.task.request, originalTask.request);
-  assert.equal(resident.task.issuedAtTick, originalTask.issuedAtTick);
+  assert.equal(
+    resident.task.issuedAtTick,
+    state.tick,
+    "promoting the counterparty should open a fresh bounded remote-discovery window",
+  );
+  assert.notEqual(resident.task.issuedAtTick, originalTask.issuedAtTick);
 });
 
 test("detaching a counterparty does not retarget an external trade task", () => {

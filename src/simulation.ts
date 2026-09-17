@@ -56,6 +56,7 @@ const GATHER_CROWDING_THRESHOLD = 3;
 const GATHER_CROWDED_AMOUNT = 1;
 const DEPOSIT_CROWDING_THRESHOLD = 3;
 const DEPOSIT_CROWDED_THROUGHPUT = 3;
+const AUTONOMOUS_REMOTE_TRADE_TTL = 72;
 const WATER_MOISTURE_OFFSETS = (() => {
   const offsets: { dx: number; dy: number; influence: number }[] = [];
   for (let dy = -WATER_MOISTURE_RADIUS; dy <= WATER_MOISTURE_RADIUS; dy += 1) {
@@ -1274,8 +1275,23 @@ function canTransfer(agent: Agent, inventory: Inventory): boolean {
 function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "trade" }>): void {
   const target = getAgent(state, task.targetAgentId);
   if (target === undefined) {
+    if (
+      task.source === "autonomy"
+      && task.targetAgentId.startsWith("agent-global:")
+      && state.tick - task.issuedAtTick <= AUTONOMOUS_REMOTE_TRADE_TTL
+    ) {
+      // A counterparty can leave this Region DO between planning and execution.
+      // Keep the world-global promise alive long enough for the cross-region
+      // autonomy layer to discover its new owner instead of deleting it in the
+      // same tick as ownership handoff. The bounded virtual-tick TTL prevents a
+      // permanently vanished counterparty from pinning the trader forever.
+      agent.status = `locating trade counterparty ${task.targetAgentId}`;
+      return;
+    }
     delete agent.task;
-    agent.status = "trade target disappeared";
+    agent.status = task.source === "autonomy" && task.targetAgentId.startsWith("agent-global:")
+      ? "remote trade target lookup expired"
+      : "trade target disappeared";
     return;
   }
   if (!samePosition(agent.position, target.position)) {

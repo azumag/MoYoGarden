@@ -186,6 +186,7 @@ function rewriteResidentFamilyReference(
   agent: Agent,
   sourceLocalId: string,
   promotedId: string,
+  currentTick: number,
 ): void {
   if (sourceLocalId === promotedId) return;
   if (agent.parents !== undefined) {
@@ -205,7 +206,13 @@ function rewriteResidentFamilyReference(
     // this Region DO. Keep the autonomous promise bound to the same physical
     // BOT by promoting only its identity; route planning may decide later how
     // to reach that global counterparty. External commands stay source-local.
-    agent.task = { ...agent.task, targetAgentId: promotedId };
+    agent.task = {
+      ...agent.task,
+      targetAgentId: promotedId,
+      // Start a fresh bounded discovery window at the ownership change rather
+      // than inheriting however long the local trade was already in progress.
+      issuedAtTick: currentTick,
+    };
   }
   if (agent.socialMemory !== undefined) {
     agent.socialMemory = agent.socialMemory.map((memory) =>
@@ -245,7 +252,7 @@ export function detachAgentOwnership(
   snapshot.state.agents = snapshot.state.agents.filter((entry) => entry.id !== agentId);
   const promotedId = globalHandoffAgentId(agent.id, state.regionId);
   for (const resident of snapshot.state.agents) {
-    rewriteResidentFamilyReference(resident, agent.id, promotedId);
+    rewriteResidentFamilyReference(resident, agent.id, promotedId, snapshot.state.tick);
   }
   // Recent events remain a rolling-deploy compatibility memory, while the
   // bounded per-agent socialMemory above is the durable low-level relationship
