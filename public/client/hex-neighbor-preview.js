@@ -12,6 +12,36 @@ let topologyRegions = [];
 let topologyCenterRegionId;
 let topologyRequest;
 let topologyRequestCenterRegionId;
+let topologyRetryCenterRegionId;
+let topologyRetryFailures = 0;
+let topologyRetryAfterMs = 0;
+
+const TOPOLOGY_RETRY_BASE_MS = 1_000;
+const TOPOLOGY_RETRY_MAX_MS = 15_000;
+
+export function neighborTopologyRetryDelay(failureCount) {
+  const failures = Number.isFinite(failureCount)
+    ? Math.max(1, Math.floor(failureCount))
+    : 1;
+  return Math.min(
+    TOPOLOGY_RETRY_MAX_MS,
+    TOPOLOGY_RETRY_BASE_MS * (2 ** Math.min(4, failures - 1)),
+  );
+}
+
+function resetTopologyRetry(centerRegionId) {
+  topologyRetryCenterRegionId = centerRegionId;
+  topologyRetryFailures = 0;
+  topologyRetryAfterMs = 0;
+}
+
+function noteTopologyRetryFailure(centerRegionId) {
+  if (topologyRetryCenterRegionId !== centerRegionId) {
+    resetTopologyRetry(centerRegionId);
+  }
+  topologyRetryFailures += 1;
+  topologyRetryAfterMs = Date.now() + neighborTopologyRetryDelay(topologyRetryFailures);
+}
 
 function finiteWindowOrigin(value) {
   return value && Number.isFinite(value.x) && Number.isFinite(value.y);
@@ -38,6 +68,7 @@ export function primeHexNeighborTopology(payload, centerRegionId) {
   topologyCenterRegionId = centerRegionId;
   topologyRequest = undefined;
   topologyRequestCenterRegionId = undefined;
+  resetTopologyRetry(centerRegionId);
   return regions;
 }
 
@@ -45,12 +76,18 @@ globalThis.addEventListener?.("moyo:neighbor-topology", (event) => {
   primeHexNeighborTopology(event?.detail?.payload, event?.detail?.centerRegionId);
 });
 
-function ensureTopology(centerRegionId) {
+export function ensureHexNeighborTopology(centerRegionId) {
   if (!centerRegionId || location.protocol === "file:") return Promise.resolve([]);
   if (topologyCenterRegionId === centerRegionId && topologyRegions.length > 0) {
     return Promise.resolve(topologyRegions);
   }
   if (topologyRequest && topologyRequestCenterRegionId === centerRegionId) return topologyRequest;
+
+  if (topologyRetryCenterRegionId !== centerRegionId) {
+    resetTopologyRetry(centerRegionId);
+  } else if (Date.now() < topologyRetryAfterMs) {
+    return Promise.resolve([]);
+  }
 
   const requestedCenter = centerRegionId;
   topologyRequestCenterRegionId = requestedCenter;
@@ -59,13 +96,24 @@ function ensureTopology(centerRegionId) {
       if (!response.ok) throw new Error(`meta HTTP ${response.status}`);
       const meta = await response.json();
       const regions = meta?.world?.regionTopology?.regions;
-      if (topologyRequestCenterRegionId === requestedCenter && Array.isArray(regions)) {
+      if (
+        !Array.isArray(regions)
+        || regions.length === 0
+        || !regions.some((entry) => entry?.id === requestedCenter)
+      ) {
+        throw new Error("meta topology missing requested center");
+      }
+      if (topologyRequestCenterRegionId === requestedCenter) {
         topologyRegions = regions;
         topologyCenterRegionId = requestedCenter;
+        resetTopologyRetry(requestedCenter);
       }
       return topologyCenterRegionId === requestedCenter ? topologyRegions : [];
     })
     .catch((error) => {
+      if (topologyRequestCenterRegionId === requestedCenter) {
+        noteTopologyRetryFailure(requestedCenter);
+      }
       console.debug("MoYoGarden hex neighbor topology unavailable", error);
       return [];
     })
@@ -207,7 +255,7 @@ WorldView.prototype.markShadowsDirty = function markShadowsDirtyWithHexNeighborP
       // Preserve the instanced source meshes until topology arrives; otherwise
       // the legacy seamless extension may weld them into one rectangular mesh.
       preview.userData.moyoTerrainStitched = true;
-      void ensureTopology(centerRegionId).then(() => {
+      void ensureHexNeighborTopology(centerRegionId).then(() => {
         if (preview.parent !== this.worldRoot || preview.userData.moyoHexChunked) return;
         if (this.state?.regionId !== centerRegionId) return;
         if (upgradeNeighborPreview(this, preview)) baseMarkShadowsDirty.call(this);
