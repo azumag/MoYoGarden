@@ -65,6 +65,43 @@ test("failed or empty neighbor topology fetches back off while a new center can 
   assert.equal(fetchCalls, 3, "an empty topology is unusable and should enter the same bounded backoff");
 });
 
+test("moving centers aborts a stale topology metadata fetch", async (t) => {
+  const hadLocation = Object.prototype.hasOwnProperty.call(globalThis, "location");
+  const originalLocation = globalThis.location;
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (hadLocation) globalThis.location = originalLocation;
+    else delete globalThis.location;
+  });
+
+  globalThis.location = { protocol: "https:" };
+  const signals = [];
+  let fetchCalls = 0;
+  globalThis.fetch = (_url, init = {}) => {
+    fetchCalls += 1;
+    signals.push(init.signal);
+    if (fetchCalls === 1) {
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      });
+    }
+    return Promise.resolve(new Response("unavailable", { status: 503 }));
+  };
+
+  const staleRequest = previewModule.ensureHexNeighborTopology("hex-q6-r6");
+  assert.equal(fetchCalls, 1);
+  const currentRequest = previewModule.ensureHexNeighborTopology("hex-q5-r5");
+  assert.equal(fetchCalls, 2);
+  assert.equal(signals[0]?.aborted, true, "the previous radius-2 metadata request should be cancelled after handoff");
+  assert.deepEqual(await staleRequest, []);
+  assert.deepEqual(await currentRequest, []);
+});
+
 test("neighbor preview primes loaded topology before reconstruction", () => {
   const start = appSource.indexOf("function buildNeighborPreview");
   const end = appSource.indexOf("async function loadTerrainWindow", start);
