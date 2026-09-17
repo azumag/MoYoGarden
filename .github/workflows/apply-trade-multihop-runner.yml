@@ -1,0 +1,62 @@
+name: Apply multi-hop trade routing runner
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moyo-apply-trade-multihop-runner
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: "${{ github.event.head_commit.message == 'chore: apply multi-hop trade routing' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Execute staged patch script
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          source = Path('.github/workflows/apply-trade-multihop-improvement.yml').read_text()
+          marker = "python3 <<'PY'\n"
+          start = source.index(marker) + len(marker)
+          end = source.index("\n          PY", start)
+          script = textwrap.dedent(source[start:end])
+          exec(compile(script, '<staged-multihop-patch>', 'exec'))
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit product change and remove staging helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-trade-multihop-improvement.yml
+          git rm .github/workflows/apply-trade-multihop-runner.yml
+          git add src/autonomy-region.ts src/protocol.ts src/agent-ownership.ts tests/autonomy-trade-neighbor-routing.test.mjs
+          git commit -m "feat: route autonomous trades across hex relays"
+          git push origin HEAD:main
