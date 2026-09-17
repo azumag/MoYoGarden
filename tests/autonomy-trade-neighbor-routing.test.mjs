@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
-import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
+import { hexGridBoundaryCells, isHexGridCell } from "../dist-ts/src/hex-grid.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 
 class MemoryStorage {
@@ -63,6 +63,35 @@ function makeActiveHexPassable(state) {
   for (const tile of state.tiles) if (isHexGridCell(state, tile)) tile.terrain = "plain";
 }
 
+async function placeExistingAgentOnBoundary(entry, agentId, direction) {
+  const state = entry.object.runtime.snapshot();
+  const agent = state.agents.find((candidate) => candidate.id === agentId);
+  assert.ok(agent);
+  const cell = hexGridBoundaryCells(state, direction)[11];
+  assert.ok(cell);
+  const tile = state.tiles[cell.y * state.width + cell.x];
+  assert.ok(tile);
+  tile.terrain = "plain";
+  agent.position = { ...cell };
+  entry.object.runtime = new WorldRuntime({ state });
+  await entry.object.persist();
+}
+
+async function adminHandoff(entry, regionId, transferId, agentId, direction) {
+  const response = await entry.object.fetch(new Request("http://localhost/api/admin/handoff", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-moyo-region-internal": regionId,
+    },
+    body: JSON.stringify({ transferId, agentId, direction }),
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(body.phase, "committed");
+  return body;
+}
+
 test("autonomous trade discovers an immediate neighboring owner and completes after handoff", async () => {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
@@ -115,5 +144,105 @@ test("autonomous trade discovers an immediate neighboring owner and completes af
     source.object.runtime.snapshot().agents.some((entry) => entry.id === trader.id),
     false,
     "source ownership must detach after the cross-region trade handoff",
+  );
+});
+
+
+test("autonomous trade follows committed owner journals across multiple hex regions", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  const relay = await assignRegion(env, "garden-2");
+  const target = await assignRegion(env, "hex-q2-r0");
+  const sourceState = source.object.runtime.snapshot();
+  const relayState = relay.object.runtime.snapshot();
+  const targetState = target.object.runtime.snapshot();
+  makeActiveHexPassable(sourceState);
+  makeActiveHexPassable(relayState);
+  makeActiveHexPassable(targetState);
+  for (const candidate of sourceState.agents) candidate.autonomy = false;
+  for (const candidate of relayState.agents) candidate.autonomy = false;
+  for (const candidate of targetState.agents) candidate.autonomy = false;
+
+  const trader = sourceState.agents[0];
+  const counterparty = sourceState.agents[1];
+  assert.ok(trader);
+  assert.ok(counterparty);
+  trader.autonomy = true;
+  trader.energy = 100;
+  trader.capacity = 12;
+  trader.inventory = { wood: 3, stone: 0, food: 0 };
+  counterparty.autonomy = false;
+  counterparty.factionId = trader.factionId;
+  counterparty.inventory = { wood: 0, stone: 3, food: 0 };
+  delete counterparty.task;
+  trader.task = {
+    source: "autonomy",
+    issuedAtTick: sourceState.tick,
+    type: "trade",
+    targetAgentId: counterparty.id,
+    offer: { wood: 1, stone: 0, food: 0 },
+    request: { wood: 0, stone: 1, food: 0 },
+  };
+  source.object.runtime = new WorldRuntime({ state: sourceState });
+  relay.object.runtime = new WorldRuntime({ state: relayState });
+  target.object.runtime = new WorldRuntime({ state: targetState });
+  await source.object.persist();
+  await relay.object.persist();
+  await target.object.persist();
+
+  await placeExistingAgentOnBoundary(source, counterparty.id, "east");
+  const first = await adminHandoff(
+    source,
+    "garden-1",
+    "counterparty-hop-1",
+    counterparty.id,
+    "east",
+  );
+  const globalCounterpartyId = first.agentId;
+  assert.equal(typeof globalCounterpartyId, "string");
+  assert.equal(first.toRegionId, "garden-2");
+
+  await placeExistingAgentOnBoundary(relay, globalCounterpartyId, "east");
+  const second = await adminHandoff(
+    relay,
+    "garden-2",
+    "counterparty-hop-2",
+    globalCounterpartyId,
+    "east",
+  );
+  assert.equal(second.toRegionId, "hex-q2-r0");
+  assert.equal(second.agentId, globalCounterpartyId);
+
+  const promotedTrader = source.object.runtime.snapshot().agents.find(
+    (candidate) => candidate.id === trader.id,
+  );
+  assert.equal(promotedTrader?.task?.type, "trade");
+  assert.equal(promotedTrader?.task?.targetAgentId, globalCounterpartyId);
+
+  let completed = false;
+  const globalTraderId = `agent-global:garden-1:${trader.id}`;
+  for (let attempt = 0; attempt < 260; attempt += 1) {
+    await source.object.alarm();
+    await relay.object.alarm();
+    await target.object.alarm();
+    const currentTarget = target.object.runtime.snapshot();
+    const arrived = currentTarget.agents.find((entry) => entry.id === globalTraderId);
+    const remote = currentTarget.agents.find((entry) => entry.id === globalCounterpartyId);
+    if (arrived?.inventory.stone === 1 && remote?.inventory.wood === 1) {
+      completed = true;
+      break;
+    }
+  }
+
+  assert.equal(completed, true, "journal forwarding should carry the trade across the relay region");
+  assert.equal(
+    source.object.runtime.snapshot().agents.some((entry) => entry.id === trader.id),
+    false,
+    "source ownership must detach once the multi-hop route starts",
+  );
+  assert.equal(
+    relay.object.runtime.snapshot().agents.some((entry) => entry.id === globalTraderId),
+    false,
+    "relay ownership must detach after forwarding the trader to the current owner",
   );
 });

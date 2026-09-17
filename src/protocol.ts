@@ -91,9 +91,10 @@ export interface TradeTask extends AgentTaskBase {
   // are stripped/re-resolved whenever ownership crosses a region boundary.
   routeRegionId?: string;
   routeTarget?: GridPosition;
-  // Bounded allowance for one stale-owner relay after the seam preflight. This
-  // is only attached after a routed handoff loses its counterparty between the
-  // final owner check and target attach, so old persisted tasks keep old rules.
+  // Bounded allowance for routed handoffs whose immediate destination is not
+  // the final counterparty owner. Multi-hop routes set this explicitly and each
+  // target-absent attach decrements it. Direct one-hop trades still get the
+  // legacy single stale-owner retry when this optional field is absent.
   handoffRetryBudget?: number;
 }
 

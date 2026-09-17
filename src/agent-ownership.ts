@@ -102,17 +102,16 @@ function arrivalTaskAfterHandoff(
   ) {
     const targetPresent = targetState.agents.some((entry) => entry.id === task.targetAgentId);
     const retryBudget = task.handoffRetryBudget ?? 1;
-    // The owner is rechecked immediately before detach, but it can move again
-    // before target attach commits. Only a task carrying a source-local route
-    // hint is known to have passed that seam preflight. Preserve one such stale
-    // arrival so the existing bounded discovery can reacquire the global ID.
-    // Unrouted/legacy tasks keep the old fail-closed behavior, and a second
-    // stale arrival drops the promise instead of chasing indefinitely.
-    const preserveStaleRoutedPromise =
+    // The owner is rechecked immediately before detach, but the immediate
+    // destination can intentionally be a relay on a bounded multi-hop route, or
+    // the owner can move again before target attach commits. A routed task may
+    // therefore survive target absence only while its explicit/default budget
+    // remains. Unrouted legacy tasks keep the old fail-closed behavior.
+    const preserveRoutedPromise =
       !targetPresent
       && task.routeRegionId !== undefined
       && retryBudget > 0;
-    if (targetPresent || preserveStaleRoutedPromise) {
+    if (targetPresent || preserveRoutedPromise) {
       return {
         source: "autonomy",
         issuedAtTick: targetTick,
@@ -120,7 +119,7 @@ function arrivalTaskAfterHandoff(
         targetAgentId: task.targetAgentId,
         offer: { ...task.offer },
         request: { ...task.request },
-        ...(preserveStaleRoutedPromise
+        ...(preserveRoutedPromise
           ? { handoffRetryBudget: retryBudget - 1 }
           : {}),
       };
