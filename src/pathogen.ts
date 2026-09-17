@@ -614,8 +614,14 @@ function singlePathogenStep(
     const current = previousLoads.get(agent.id) ?? 0;
     const currentImmunity = previousImmunity.get(agent.id) ?? 0;
     const climatePersistence = pathogenClimatePersistence(agent.position, environment);
-    const directContact = localContactExposure(contactIndex, agent, environment);
-    const environmentalExposure = localReservoirExposure(previousReservoir, agent.position);
+    // Death is a single epidemiological gate: a corpse can retain/decay burden
+    // already present in persistent state, but it cannot acquire fresh burden from
+    // nearby hosts or contaminated ground after hp reaches zero.
+    const isAlive = agent.hp > 0;
+    const directContact = isAlive ? localContactExposure(contactIndex, agent, environment) : 0;
+    const environmentalExposure = isAlive
+      ? localReservoirExposure(previousReservoir, agent.position)
+      : 0;
     const contact = unionPressure(directContact, environmentalExposure) *
       clamp01(1 - currentImmunity * PATHOGEN_IMMUNITY_MAX_EFFECT);
     // Climate controls survival/clearance of existing burden rather than acting
@@ -655,7 +661,7 @@ function singlePathogenStep(
       changed += 1;
     }
 
-    if (next >= PATHOGEN_SYMPTOM_THRESHOLD && agent.energy > 0) {
+    if (isAlive && next >= PATHOGEN_SYMPTOM_THRESHOLD && agent.energy > 0) {
       agent.energy = Math.max(0, agent.energy - PATHOGEN_SYMPTOM_ENERGY_COST);
       changed += 1;
     }
@@ -696,7 +702,8 @@ function singlePathogenStep(
  * persistence of existing burden; it cannot create infection without a carrier.
  * Recovery is also coupled conservatively to the existing energy reserve. Prior
  * infectious burden builds bounded, slowly waning protection that reduces direct,
- * environmental and halo exposure.
+ * environmental and halo exposure. Dead Agents neither shed nor acquire new
+ * contact/reservoir burden; any burden already present only decays.
  */
 export function applyPathogenSteps(
   state: WorldState,
@@ -715,6 +722,9 @@ export function applyPathogenSteps(
 
   if (safeHaloSteps <= 0 || (haloPressure.size === 0 && haloReservoir.size === 0)) return changed;
   for (const agent of state.agents) {
+    // A living BOT sharing the same boundary cell may legitimately trigger the
+    // edge fetch, but a co-located corpse still must not absorb that halo burden.
+    if (agent.hp <= 0) continue;
     const pressure = haloPressure.get(positionKey(agent.position)) ?? 0;
     const reservoirBurden = haloReservoir.get(positionKey(agent.position)) ?? 0;
     if (pressure <= 0 && reservoirBurden <= 0) continue;
