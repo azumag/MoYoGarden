@@ -120,6 +120,9 @@ interface AutonomousArrivalClaim {
   gatheredAmount?: number;
   settledAmount?: number;
   returnToSourceStorage?: boolean;
+  // Wall-clock time of the last confirmed source-side return-storage lease refresh.
+  // Optional so arrival claims persisted by older deployments remain valid.
+  returnStorageLeaseRenewedAtMs?: number;
   // Destination-local admitted capacity; optional for rolling compatibility.
   destinationStorageReserved?: boolean;
 }
@@ -165,6 +168,10 @@ const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
 // relay regions. Keep the promised return sink alive on wall time as well, but
 // bound crash leakage so abandoned cargo cannot reserve capacity forever.
 const RETURN_STORAGE_RESERVATION_TTL_MS = 6 * 60 * 60 * 1_000;
+// A courier carrying promised return cargo periodically refreshes the source-side
+// lease. This is deliberately much slower than simulation ticks, so multi-hop
+// relays survive long warm/cold journeys without turning every tick into a cross-DO write.
+const RETURN_STORAGE_RENEW_INTERVAL_MS = 60 * 60 * 1_000;
 const SETTLEMENT_MIGRATION_TTL = 72;
 // Successful bounded catch-up batches can drain debt promptly without
 // putting dozens of full virtual ticks into one DO invocation. Failed
@@ -316,6 +323,11 @@ function isAutonomousArrivalClaim(value: unknown): value is AutonomousArrivalCla
       && value.settledAmount >= 0
     ))
     && (value.returnToSourceStorage === undefined || typeof value.returnToSourceStorage === "boolean")
+    && (value.returnStorageLeaseRenewedAtMs === undefined || (
+      typeof value.returnStorageLeaseRenewedAtMs === "number"
+      && Number.isFinite(value.returnStorageLeaseRenewedAtMs)
+      && value.returnStorageLeaseRenewedAtMs > 0
+    ))
     && (value.destinationStorageReserved === undefined || typeof value.destinationStorageReserved === "boolean");
 }
 
@@ -1611,6 +1623,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       gatheredAmount: existing?.gatheredAmount ?? 0,
       settledAmount: existing?.settledAmount ?? 0,
       returnToSourceStorage: existing?.returnToSourceStorage ?? body.returnToSourceStorage === true,
+      ...(existing?.returnStorageLeaseRenewedAtMs === undefined
+        ? {}
+        : { returnStorageLeaseRenewedAtMs: existing.returnStorageLeaseRenewedAtMs }),
       destinationStorageReserved: existing?.destinationStorageReserved ?? destinationStorageReserved,
     };
     await this.autonomyState.storage.put(
@@ -1651,6 +1666,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         claimId: body.claimId,
         settledAmount: body.settledAmount,
         remainingAmount: 0,
+        returnStorageReserved: false,
       }), {
         headers: { "content-type": "application/json; charset=utf-8" },
       });
@@ -1663,6 +1679,14 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     const keepReturnStorageReservation =
       claim.returnToSourceStorage === true
       && (claim.returnStorageAmount ?? claim.amount) > 0;
+    const nowMs = Date.now();
+    const shouldRenewReturnStorageLease =
+      keepReturnStorageReservation
+      && (
+        claim.returnStorageLeaseExpiresAtMs === undefined
+        || claim.returnStorageLeaseExpiresAtMs
+          <= nowMs + RETURN_STORAGE_RESERVATION_TTL_MS - RETURN_STORAGE_RENEW_INTERVAL_MS
+      );
     const next = remainingAmount > 0 || keepReturnStorageReservation
       ? claims.map((entry) => entry.claimId === claim.claimId
         ? {
@@ -1672,7 +1696,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
             ...(keepReturnStorageReservation
               ? {
                   returnStorageAmount: claim.returnStorageAmount ?? claim.amount,
-                  returnStorageLeaseExpiresAtMs: Date.now() + RETURN_STORAGE_RESERVATION_TTL_MS,
+                  returnStorageLeaseExpiresAtMs: shouldRenewReturnStorageLease
+                    ? nowMs + RETURN_STORAGE_RESERVATION_TTL_MS
+                    : claim.returnStorageLeaseExpiresAtMs,
                   expiresAtTick: Math.max(claim.expiresAtTick, tick + AUTONOMOUS_SUPPLY_CLAIM_TTL),
                 }
               : {}),
@@ -1685,6 +1711,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       claimId: claim.claimId,
       settledAmount,
       remainingAmount,
+      returnStorageReserved: keepReturnStorageReservation,
     }), {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
@@ -1765,6 +1792,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         : 0;
       const gatheredAmount = (claim.gatheredAmount ?? 0) + gatheredThisTick;
       let settledAmount = Math.min(claim.settledAmount ?? 0, gatheredAmount);
+      let returnStorageLeaseRenewedAtMs = claim.returnStorageLeaseRenewedAtMs;
       let reservationExhausted = false;
       if (gatheredThisTick > 0) dirty = true;
 
@@ -1783,6 +1811,9 @@ export class RegionDurableObject extends HaloRegionDurableObject {
           ));
           if (response.ok) {
             settledAmount = gatheredAmount;
+            if (claim.returnToSourceStorage === true) {
+              returnStorageLeaseRenewedAtMs = Date.now();
+            }
             dirty = true;
             try {
               const payload = await response.json() as unknown;
@@ -1805,7 +1836,43 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         ...claim,
         gatheredAmount,
         settledAmount,
+        ...(returnStorageLeaseRenewedAtMs === undefined
+          ? {}
+          : { returnStorageLeaseRenewedAtMs }),
       };
+      const returnCargoOutstanding =
+        updatedClaim.returnToSourceStorage === true
+        && agent !== undefined
+        && agent.inventory[updatedClaim.resource] > 0;
+      const now = Date.now();
+      if (
+        returnCargoOutstanding
+        && now - (updatedClaim.returnStorageLeaseRenewedAtMs ?? 0) >= RETURN_STORAGE_RENEW_INTERVAL_MS
+      ) {
+        try {
+          const response = await this.autonomyStub(updatedClaim.sourceRegionId).fetch(new Request(
+            `https://moyo.internal${INTERNAL_CLAIM_SETTLE_PATH}`,
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-moyo-region-internal": updatedClaim.sourceRegionId,
+              },
+              body: JSON.stringify({ claimId: updatedClaim.claimId, settledAmount }),
+            },
+          ));
+          if (response.ok) {
+            const payload = await response.json() as unknown;
+            if (isRecord(payload) && payload.returnStorageReserved === true) {
+              updatedClaim.returnStorageLeaseRenewedAtMs = now;
+              dirty = true;
+            }
+          }
+        } catch {
+          // Keep the arrival claim and physical cargo. The existing bounded source
+          // lease remains the crash-safe fallback and the next cadence retries.
+        }
+      }
       const stillGathering =
         agent?.autonomy === true &&
         agent.task?.source === "autonomy" &&
@@ -1890,11 +1957,6 @@ export class RegionDurableObject extends HaloRegionDurableObject {
 
       // Gathering settles supply ownership, not the physical sink. Keep
       // source storage promised until cargo actually leaves the courier.
-      const returnCargoOutstanding =
-        updatedClaim.returnToSourceStorage === true
-        && gatheredAmount > 0
-        && agent !== undefined
-        && agent.inventory[updatedClaim.resource] > 0;
       if (returnCargoOutstanding) {
         keep.push(updatedClaim);
         continue;

@@ -115,6 +115,80 @@ test("blocked relay keeps its ultimate return claim instead of orphaning cargo",
   assert.equal(afterCourier?.inventory.wood, 4);
 });
 
+
+test("multi-hop return cargo refreshes its source storage lease while relaying", async () => {
+  const env = environment();
+  const relay = await assignRegion(env, "garden-2");
+  const origin = await assignRegion(env, "hex-q2-r0");
+
+  const relayState = relay.object.runtime.snapshot();
+  relayState.structures = [];
+  makeActiveHexPassable(relayState);
+  for (const candidate of relayState.agents) candidate.autonomy = false;
+  const courier = relayState.agents[0];
+  assert.ok(courier);
+  courier.autonomy = true;
+  courier.position = hexGridCenter(relayState);
+  courier.inventory = { wood: 4, stone: 0, food: 0 };
+  courier.task = { source: "autonomy", issuedAtTick: relayState.tick, type: "deposit" };
+  relay.object.runtime = new WorldRuntime({ state: relayState });
+  await relay.object.persist();
+
+  const originState = origin.object.runtime.snapshot();
+  for (const candidate of originState.agents) candidate.autonomy = false;
+  origin.object.runtime = new WorldRuntime({ state: originState });
+  await origin.object.persist();
+
+  const initialLease = Date.now() + 60_000;
+  await origin.state.storage.put(SUPPLY_CLAIMS_KEY, [{
+    claimId: "relay-renew-return",
+    agentId: undefined,
+    resource: "wood",
+    direction: "west",
+    neighborRegionId: "garden-2",
+    amount: 0,
+    settledAmount: 4,
+    expiresAtTick: originState.tick + 100,
+    sourceFactionId: courier.factionId,
+    returnToSourceStorage: true,
+    returnStorageAmount: 4,
+    returnStorageLeaseExpiresAtMs: initialLease,
+  }]);
+  await relay.state.storage.put(ARRIVAL_CLAIMS_KEY, [{
+    claimId: "relay-renew-return",
+    sourceRegionId: "hex-q2-r0",
+    agentId: courier.id,
+    resource: "wood",
+    registeredAtTick: relayState.tick,
+    gatheredAmount: 4,
+    settledAmount: 4,
+    returnToSourceStorage: true,
+  }]);
+
+  await relay.object.alarm();
+
+  const sourceClaims = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  const renewed = sourceClaims?.find((entry) => entry.claimId === "relay-renew-return");
+  assert.ok(renewed, "physical cargo in a relay should retain its promised source sink");
+  assert.ok(
+    renewed.returnStorageLeaseExpiresAtMs > initialLease,
+    "relay progress should refresh the bounded source-side wall-clock lease",
+  );
+  const relayClaims = await relay.state.storage.get(ARRIVAL_CLAIMS_KEY);
+  const tracked = relayClaims?.find((entry) => entry.claimId === "relay-renew-return");
+  assert.ok(Number.isFinite(tracked?.returnStorageLeaseRenewedAtMs));
+
+  const leaseAfterFirstAlarm = renewed.returnStorageLeaseExpiresAtMs;
+  await relay.object.alarm();
+  const throttledClaims = await origin.state.storage.get(SUPPLY_CLAIMS_KEY);
+  const throttled = throttledClaims?.find((entry) => entry.claimId === "relay-renew-return");
+  assert.equal(
+    throttled?.returnStorageLeaseExpiresAtMs,
+    leaseAfterFirstAlarm,
+    "the one-hour renewal cadence should avoid a cross-DO storage write every simulation tick",
+  );
+});
+
 test("wall-clock return-storage lease survives source tick skew and still expires crash-safely", async () => {
   const env = environment();
   const origin = await assignRegion(env, "hex-q2-r0");
