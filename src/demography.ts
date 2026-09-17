@@ -22,6 +22,7 @@ const POPULATION_PREGNANCY_HUNGER_ENERGY_COST = 6;
 const POPULATION_DEPENDENT_ENERGY_RECOVERY = 6;
 const POPULATION_DEPENDENT_HUNGER_ENERGY_COST = 8;
 const POPULATION_CAREGIVER_ENERGY_COST = 2;
+const GLOBAL_AGENT_PREFIX = "agent-global:";
 
 function demographicHash(value: string): number {
   let hash = 2166136261;
@@ -57,6 +58,19 @@ function consumeStoredFood(state: WorldState, factionId: string, amount: number)
   return true;
 }
 
+function lineageReferenceMatchesAgent(
+  state: WorldState,
+  candidateId: string,
+  referenceId: string,
+): boolean {
+  if (candidateId === referenceId) return true;
+  const canonical = (agentId: string): string =>
+    agentId.startsWith(GLOBAL_AGENT_PREFIX)
+      ? agentId
+      : `${GLOBAL_AGENT_PREFIX}${state.regionId}:${agentId}`;
+  return canonical(candidateId) === canonical(referenceId);
+}
+
 export function dependentCaregiverId(
   state: WorldState,
   dependent: Agent,
@@ -64,7 +78,7 @@ export function dependentCaregiverId(
   const candidates = (dependent.parents ?? [])
     .flatMap((parentId) => {
       const parent = state.agents.find((candidate) =>
-        candidate.id === parentId &&
+        lineageReferenceMatchesAgent(state, candidate.id, parentId) &&
         candidate.factionId === dependent.factionId &&
         candidate.hp > 0
       );

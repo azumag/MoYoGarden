@@ -56,3 +56,21 @@ test("dead and cross-faction parents cannot become active caregivers", () => {
 
   assert.equal(dependentCaregiverId(state, child), living.id);
 });
+
+test("promoted lineage references reconnect to a local parent in their origin region", () => {
+  const parent = adult("parent-local", 10, 10, 70);
+  const child = dependent([
+    `agent-global:garden-1:${parent.id}`,
+    "agent-global:garden-2:missing-parent",
+  ]);
+  const reunited = { regionId: "garden-1", agents: [parent, child] };
+
+  assert.equal(dependentCaregiverId(reunited, child), parent.id);
+
+  const foreignRegion = { regionId: "garden-2", agents: [parent, child] };
+  assert.equal(
+    dependentCaregiverId(foreignRegion, child),
+    undefined,
+    "a reused local id in another region must not satisfy the globally promoted parent reference",
+  );
+});
