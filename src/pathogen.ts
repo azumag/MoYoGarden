@@ -742,3 +742,70 @@ export function applyPathogenSteps(
   }
   return changed;
 }
+
+/**
+ * Replay pathogen cadence boundaries in chronological order across a virtual
+ * catch-up range. A normal real-time tick that reaches both cadence boundaries
+ * runs local progression before halo exposure; catch-up must preserve that same
+ * ordering instead of applying every local recovery first and all halo exposure
+ * afterwards.
+ *
+ * The remote halo snapshot is intentionally still one bounded observation for
+ * the alarm batch. This function only fixes temporal ordering of that observation
+ * relative to local recovery/shedding, without inventing historical neighbor
+ * state or changing persisted schema.
+ */
+export function applyPathogenTickRange(
+  state: WorldState,
+  fromTick: number,
+  toTick: number,
+  environment?: PathogenEnvironmentFrame,
+  haloPressure: ReadonlyMap<string, number> = new Map(),
+  haloReservoir: ReadonlyMap<string, number> = new Map(),
+): number {
+  const start = Math.floor(fromTick);
+  const end = Math.floor(toTick);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+
+  let localRemaining = Math.min(
+    64,
+    pathogenStepCount(start, end, PATHOGEN_LOCAL_INTERVAL),
+  );
+  let haloRemaining = Math.min(
+    16,
+    pathogenStepCount(start, end, PATHOGEN_HALO_INTERVAL),
+  );
+  let nextLocal = (Math.floor(start / PATHOGEN_LOCAL_INTERVAL) + 1) *
+    PATHOGEN_LOCAL_INTERVAL;
+  let nextHalo = (Math.floor(start / PATHOGEN_HALO_INTERVAL) + 1) *
+    PATHOGEN_HALO_INTERVAL;
+  let changed = 0;
+
+  while (localRemaining > 0 || haloRemaining > 0) {
+    const boundary = Math.min(
+      localRemaining > 0 ? nextLocal : Number.POSITIVE_INFINITY,
+      haloRemaining > 0 ? nextHalo : Number.POSITIVE_INFINITY,
+    );
+    if (!Number.isFinite(boundary) || boundary > end) break;
+
+    if (localRemaining > 0 && nextLocal === boundary) {
+      changed += applyPathogenSteps(state, 1, environment);
+      localRemaining -= 1;
+      nextLocal += PATHOGEN_LOCAL_INTERVAL;
+    }
+    if (haloRemaining > 0 && nextHalo === boundary) {
+      changed += applyPathogenSteps(
+        state,
+        0,
+        environment,
+        haloPressure,
+        1,
+        haloReservoir,
+      );
+      haloRemaining -= 1;
+      nextHalo += PATHOGEN_HALO_INTERVAL;
+    }
+  }
+  return changed;
+}
+

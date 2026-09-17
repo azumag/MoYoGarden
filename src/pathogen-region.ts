@@ -14,7 +14,7 @@ import {
 } from "./hex-grid.js";
 import {
   agentPathogenLoad,
-  applyPathogenSteps,
+  applyPathogenTickRange,
   PATHOGEN_HALO_INTERVAL,
   PATHOGEN_LOCAL_INTERVAL,
   pathogenEdgeSnapshot,
@@ -396,16 +396,15 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
     const state = access.runtime.snapshot();
     const localSteps = pathogenStepCount(beforeTick, state.tick, PATHOGEN_LOCAL_INTERVAL);
     if (localSteps <= 0) return;
-    const haloSteps = pathogenStepCount(beforeTick, state.tick, PATHOGEN_HALO_INTERVAL);
     const halo = shouldMaterializePathogenHalo(state, beforeTick, state.tick)
       ? await this.materializePathogenHalo(state)
       : { pressure: new Map<string, number>(), reservoir: new Map<string, number>() };
-    const changed = applyPathogenSteps(
+    const changed = applyPathogenTickRange(
       state,
-      localSteps,
+      beforeTick,
+      state.tick,
       this.pathogenEnvironmentFrame(state),
       halo.pressure,
-      haloSteps,
       halo.reservoir,
     );
     if (changed <= 0) return;
