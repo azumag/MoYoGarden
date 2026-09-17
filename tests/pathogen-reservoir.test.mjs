@@ -133,3 +133,26 @@ test("inactive compatibility reservoir cells cannot expose active-hex boundary B
     "inactive compatibility storage should remain inert rather than entering pathogen dynamics",
   );
 });
+
+
+test("dead carriers stop active contact transmission and environmental shedding", () => {
+  const position = { x: 6, y: 6 };
+  const carrier = agent("dead-carrier", position, 1);
+  carrier.hp = 0;
+  const susceptible = agent("susceptible", position);
+  const cell = tile(position);
+  const state = { agents: [carrier, susceptible], tiles: [cell] };
+
+  applyPathogenSteps(state, 1);
+
+  assert.equal(
+    agentPathogenLoad(susceptible),
+    0,
+    "a dead Agent must not remain an active same-cell transmission source",
+  );
+  assert.equal(
+    tilePathogenReservoir(cell),
+    0,
+    "a dead Agent must not create new environmental reservoir burden",
+  );
+});

@@ -127,6 +127,11 @@ export function pathogenRecoveryRate(agent: Pick<Agent, "energy">): number {
  * transmission still exists.
  */
 export function agentPathogenPressure(agent: Agent): number {
+  // Direct contact and active shedding require a living host. Keep any tile
+  // reservoir already left behind by the carrier; corpse/environmental
+  // persistence, if modeled later, must be an explicit low-level reservoir path
+  // rather than a dead Agent continuing to breathe across local or halo contact.
+  if (agent.hp <= 0) return 0;
   const load = agentPathogenLoad(agent);
   if (load <= PATHOGEN_INFECTIOUS_THRESHOLD) return 0;
   return clamp01(
