@@ -12,6 +12,7 @@ let topologyRegions = [];
 let topologyCenterRegionId;
 let topologyRequest;
 let topologyRequestCenterRegionId;
+let topologyRequestAbortController;
 let topologyRetryCenterRegionId;
 let topologyRetryFailures = 0;
 let topologyRetryAfterMs = 0;
@@ -43,6 +44,13 @@ function noteTopologyRetryFailure(centerRegionId) {
   topologyRetryAfterMs = Date.now() + neighborTopologyRetryDelay(topologyRetryFailures);
 }
 
+function cancelTopologyRequest() {
+  topologyRequestAbortController?.abort();
+  topologyRequest = undefined;
+  topologyRequestCenterRegionId = undefined;
+  topologyRequestAbortController = undefined;
+}
+
 function finiteWindowOrigin(value) {
   return value && Number.isFinite(value.x) && Number.isFinite(value.y);
 }
@@ -64,10 +72,9 @@ export function primeHexNeighborTopology(payload, centerRegionId) {
     }];
   });
   if (!regions.some((entry) => entry.id === centerRegionId)) return [];
+  cancelTopologyRequest();
   topologyRegions = regions;
   topologyCenterRegionId = centerRegionId;
-  topologyRequest = undefined;
-  topologyRequestCenterRegionId = undefined;
   resetTopologyRetry(centerRegionId);
   return regions;
 }
@@ -82,6 +89,9 @@ export function ensureHexNeighborTopology(centerRegionId) {
     return Promise.resolve(topologyRegions);
   }
   if (topologyRequest && topologyRequestCenterRegionId === centerRegionId) return topologyRequest;
+  if (topologyRequest && topologyRequestCenterRegionId !== centerRegionId) {
+    cancelTopologyRequest();
+  }
 
   if (topologyRetryCenterRegionId !== centerRegionId) {
     resetTopologyRetry(centerRegionId);
@@ -90,8 +100,13 @@ export function ensureHexNeighborTopology(centerRegionId) {
   }
 
   const requestedCenter = centerRegionId;
+  const abortController = new AbortController();
   topologyRequestCenterRegionId = requestedCenter;
-  topologyRequest = fetch(regionMetaUrl(requestedCenter, 2), { cache: "no-store" })
+  topologyRequestAbortController = abortController;
+  topologyRequest = fetch(regionMetaUrl(requestedCenter, 2), {
+    cache: "no-store",
+    signal: abortController.signal,
+  })
     .then(async (response) => {
       if (!response.ok) throw new Error(`meta HTTP ${response.status}`);
       const meta = await response.json();
@@ -111,6 +126,7 @@ export function ensureHexNeighborTopology(centerRegionId) {
       return topologyCenterRegionId === requestedCenter ? topologyRegions : [];
     })
     .catch((error) => {
+      if (error?.name === "AbortError") return [];
       if (topologyRequestCenterRegionId === requestedCenter) {
         noteTopologyRetryFailure(requestedCenter);
       }
@@ -121,6 +137,9 @@ export function ensureHexNeighborTopology(centerRegionId) {
       if (topologyRequestCenterRegionId === requestedCenter) {
         topologyRequest = undefined;
         topologyRequestCenterRegionId = undefined;
+        if (topologyRequestAbortController === abortController) {
+          topologyRequestAbortController = undefined;
+        }
       }
     });
   return topologyRequest;
