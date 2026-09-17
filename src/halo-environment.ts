@@ -452,6 +452,7 @@ function haloDrainageInflowMapFromLookup(
   }>();
 
   for (const ghost of lookup.values()) {
+    if (!isHexGridCell(state, ghost.sourcePosition)) continue;
     if (ghost.tile.terrain === "water" || ghost.tile.flowTo !== undefined) continue;
     const cornerOwner = usesExactGlobalHaloAdjacency(
       state.regionId,
@@ -559,7 +560,11 @@ function haloCatchmentContributionMapFromLookup(
     a.x - b.x
   );
   for (const tile of ordered) {
-    if (tile.terrain === "water" || tile.flowTo === undefined) continue;
+    if (
+      !isHexGridCell(state, tile) ||
+      tile.terrain === "water" ||
+      tile.flowTo === undefined
+    ) continue;
     const sourceContribution = contribution.get(positionKey(tile)) ?? 0;
     if (sourceContribution <= 0) continue;
     const sourceElevation = tileElevation(tile);
@@ -568,6 +573,7 @@ function haloCatchmentContributionMapFromLookup(
     if (
       sourceElevation === undefined ||
       target === undefined ||
+      !isHexGridCell(state, target) ||
       target.terrain === "water" ||
       targetElevation === undefined ||
       sourceElevation - targetElevation <= HALO_HYDROLOGY_EPSILON
@@ -611,7 +617,9 @@ function surfaceMoistureWithHaloLookup(
     for (let dx = -WATER_MOISTURE_RADIUS; dx <= WATER_MOISTURE_RADIUS; dx += 1) {
       const distance = hexGridDistance({ x: 0, y: 0 }, { x: dx, y: dy });
       if (distance === 0 || distance > WATER_MOISTURE_RADIUS) continue;
-      const neighbor = getTile(state, { x: position.x + dx, y: position.y + dy });
+      const neighborPosition = { x: position.x + dx, y: position.y + dy };
+      if (!isHexGridCell(state, neighborPosition)) continue;
+      const neighbor = getTile(state, neighborPosition);
       if (neighbor?.terrain !== "water") continue;
       waterInfluence = Math.max(
         waterInfluence,
