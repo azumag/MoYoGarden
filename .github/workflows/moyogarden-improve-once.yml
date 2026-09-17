@@ -26,184 +26,148 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          pathogen = Path('src/pathogen.ts')
+          pathogen = Path("src/pathogen.ts")
           text = pathogen.read_text()
-          old = """  const pressure = new Map<string, number>();
-            const reservoir = new Map<string, number>();
-            for (const link of links) {
-              const remoteKey = pathogenHaloRemoteKey(
-                link.neighborRegionId,
-                link.neighborDirection,
-                link.neighborPosition,
-              );
-              const localKey = positionKey(link.sourcePosition);
-              if (includePressure) {
-                const remotePressure = pressureIndex.get(remoteKey);
-                if (remotePressure !== undefined && remotePressure > 0) {
-                  // Keep exact seam behavior aligned with ordinary local adjacency.
-                  const gainRatio = pathogenAdjacentContactGain(
-                    link.sourcePosition,
-                    link.direction,
-                    environment,
-                  ) / PATHOGEN_ADJACENT_CONTACT_GAIN;
-                  pressure.set(
-                    localKey,
-                    unionPressure(pressure.get(localKey) ?? 0, remotePressure * gainRatio),
-                  );
-                }
-              }
-              if (includeReservoir) {
-                const burden = reservoirIndex.get(remoteKey);
-                if (burden !== undefined && burden > 0) {
-                  reservoir.set(
-                    localKey,
-                    unionPressure(reservoir.get(localKey) ?? 0, burden),
-                  );
-                }
-              }
-            }
-            return { pressure, reservoir };
-          """
-          new = """  // A macro-hex corner can legitimately touch two neighboring regions. Combine
-            // each ghost cell after applying its own ordinary adjacent-cell gain; combining
-            // raw pressures/burdens first and multiplying once would undercount corners.
-            // Convert the accumulated exposure back to an equivalent single-neighbor value
-            // because applyPathogenSteps() owns the final base gain. These equivalent values
-            // may exceed 1 at corners, but multiplying by the base gain reconstructs a
-            // bounded exposure exactly and keeps the existing public map contract intact.
-            const pressureExposure = new Map<string, number>();
-            const reservoirExposure = new Map<string, number>();
-            for (const link of links) {
-              const remoteKey = pathogenHaloRemoteKey(
-                link.neighborRegionId,
-                link.neighborDirection,
-                link.neighborPosition,
-              );
-              const localKey = positionKey(link.sourcePosition);
-              if (includePressure) {
-                const remotePressure = pressureIndex.get(remoteKey);
-                if (remotePressure !== undefined && remotePressure > 0) {
-                  const gain = pathogenAdjacentContactGain(
-                    link.sourcePosition,
-                    link.direction,
-                    environment,
-                  );
-                  pressureExposure.set(
-                    localKey,
-                    unionPressure(
-                      pressureExposure.get(localKey) ?? 0,
-                      remotePressure * gain,
-                    ),
-                  );
-                }
-              }
-              if (includeReservoir) {
-                const burden = reservoirIndex.get(remoteKey);
-                if (burden !== undefined && burden > 0) {
-                  reservoirExposure.set(
-                    localKey,
-                    unionPressure(
-                      reservoirExposure.get(localKey) ?? 0,
-                      burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
-                    ),
-                  );
-                }
-              }
-            }
+          function_start = text.index("function materializePathogenHaloMaps(")
+          start = text.index("  const pressure = new Map<string, number>();", function_start)
+          end_marker = "  return { pressure, reservoir };"
+          end = text.index(end_marker, start) + len(end_marker)
+          replacement = "\n".join([
+              "  // A macro-hex corner can legitimately touch two neighboring regions. Combine",
+              "  // each ghost cell after applying its own ordinary adjacent-cell gain; combining",
+              "  // raw pressures/burdens first and multiplying once would undercount corners.",
+              "  // Convert the accumulated exposure back to an equivalent single-neighbor value",
+              "  // because applyPathogenSteps() owns the final base gain. These equivalent values",
+              "  // may exceed 1 at corners, but multiplying by the base gain reconstructs a",
+              "  // bounded exposure exactly and keeps the existing map contract intact.",
+              "  const pressureExposure = new Map<string, number>();",
+              "  const reservoirExposure = new Map<string, number>();",
+              "  for (const link of links) {",
+              "    const remoteKey = pathogenHaloRemoteKey(",
+              "      link.neighborRegionId,",
+              "      link.neighborDirection,",
+              "      link.neighborPosition,",
+              "    );",
+              "    const localKey = positionKey(link.sourcePosition);",
+              "    if (includePressure) {",
+              "      const remotePressure = pressureIndex.get(remoteKey);",
+              "      if (remotePressure !== undefined && remotePressure > 0) {",
+              "        const gain = pathogenAdjacentContactGain(",
+              "          link.sourcePosition,",
+              "          link.direction,",
+              "          environment,",
+              "        );",
+              "        pressureExposure.set(",
+              "          localKey,",
+              "          unionPressure(",
+              "            pressureExposure.get(localKey) ?? 0,",
+              "            remotePressure * gain,",
+              "          ),",
+              "        );",
+              "      }",
+              "    }",
+              "    if (includeReservoir) {",
+              "      const burden = reservoirIndex.get(remoteKey);",
+              "      if (burden !== undefined && burden > 0) {",
+              "        reservoirExposure.set(",
+              "          localKey,",
+              "          unionPressure(",
+              "            reservoirExposure.get(localKey) ?? 0,",
+              "            burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,",
+              "          ),",
+              "        );",
+              "      }",
+              "    }",
+              "  }",
+              "",
+              "  const pressure = new Map<string, number>();",
+              "  for (const [key, exposure] of pressureExposure) {",
+              "    pressure.set(key, exposure / PATHOGEN_ADJACENT_CONTACT_GAIN);",
+              "  }",
+              "  const reservoir = new Map<string, number>();",
+              "  for (const [key, exposure] of reservoirExposure) {",
+              "    reservoir.set(key, exposure / PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN);",
+              "  }",
+              "  return { pressure, reservoir };",
+          ])
+          pathogen.write_text(text[:start] + replacement + text[end:])
 
-            const pressure = new Map<string, number>();
-            for (const [key, exposure] of pressureExposure) {
-              pressure.set(key, exposure / PATHOGEN_ADJACENT_CONTACT_GAIN);
-            }
-            const reservoir = new Map<string, number>();
-            for (const [key, exposure] of reservoirExposure) {
-              reservoir.set(key, exposure / PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN);
-            }
-            return { pressure, reservoir };
-          """
-          # YAML block indentation adds ten spaces to every embedded source line.
-          old = '\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines())
-          new = '\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())
-          if old not in text:
-              raise SystemExit('pathogen halo materialization block not found')
-          pathogen.write_text(text.replace(old, new, 1))
-
-          test_file = Path('tests/pathogen-reservoir-halo.test.mjs')
+          test_file = Path("tests/pathogen-reservoir-halo.test.mjs")
           tests = test_file.read_text()
           marker = 'test("corner pathogen halo composes every ghost adjacency like local hex contact"'
           if marker not in tests:
-              addition = """
-
-          test("corner pathogen halo composes every ghost adjacency like local hex contact", () => {
-            const localTarget = agent("local-target-corner", { x: 0, y: 0 });
-            const eastCarrier = { ...agent("east-carrier", { x: 1, y: 0 }), pathogenLoad: 1 };
-            const northEastCarrier = { ...agent("northeast-carrier", { x: 1, y: -1 }), pathogenLoad: 1 };
-            applyPathogenSteps({
-              agents: [localTarget, eastCarrier, northEastCarrier],
-              tiles: [
-                tile({ x: 1, y: 0 }, 1),
-                tile({ x: 1, y: -1 }, 1),
-              ],
-            }, 1);
-            const localLoad = agentPathogenLoad(localTarget);
-
-            const seamPosition = { x: 30, y: 11 };
-            const links = [
-              {
-                sourceRegionId: "garden-1",
-                sourcePosition: seamPosition,
-                direction: "east",
-                neighborRegionId: "garden-2",
-                neighborPosition: { x: 8, y: 11 },
-                neighborDirection: "west",
-              },
-              {
-                sourceRegionId: "garden-1",
-                sourcePosition: seamPosition,
-                direction: "northEast",
-                neighborRegionId: "hex-q1-r-1",
-                neighborPosition: { x: 18, y: 22 },
-                neighborDirection: "southWest",
-              },
-            ];
-            const edges = [
-              {
-                regionId: "garden-2",
-                direction: "west",
-                revision: 8,
-                tick: 60,
-                agents: [{ position: { x: 8, y: 11 }, pressure: 1 }],
-                reservoirs: [{ position: { x: 8, y: 11 }, burden: 1 }],
-              },
-              {
-                regionId: "hex-q1-r-1",
-                direction: "southWest",
-                revision: 3,
-                tick: 60,
-                agents: [{ position: { x: 18, y: 22 }, pressure: 1 }],
-                reservoirs: [{ position: { x: 18, y: 22 }, burden: 1 }],
-              },
-            ];
-            const halo = pathogenHaloMaps(links, edges);
-            const seamTarget = agent("seam-target-corner", seamPosition);
-            applyPathogenSteps(
-              { agents: [seamTarget], tiles: [] },
-              0,
-              undefined,
-              halo.pressure,
-              1,
-              halo.reservoir,
-            );
-
-            assert.ok(localLoad > 0);
-            assert.ok(
-              Math.abs(agentPathogenLoad(seamTarget) - localLoad) < 1e-12,
-              "two ghost-cell adjacencies at a macro-hex corner must equal two ordinary local adjacencies",
-            );
-          });
-          """
-              addition = '\n'.join(line[10:] if line.startswith('          ') else line for line in addition.splitlines())
-              test_file.write_text(tests + addition + '\n')
+              addition = "\n".join([
+                  "",
+                  "test(\"corner pathogen halo composes every ghost adjacency like local hex contact\", () => {",
+                  "  const localTarget = agent(\"local-target-corner\", { x: 0, y: 0 });",
+                  "  const eastCarrier = { ...agent(\"east-carrier\", { x: 1, y: 0 }), pathogenLoad: 1 };",
+                  "  const northEastCarrier = { ...agent(\"northeast-carrier\", { x: 1, y: -1 }), pathogenLoad: 1 };",
+                  "  applyPathogenSteps({",
+                  "    agents: [localTarget, eastCarrier, northEastCarrier],",
+                  "    tiles: [",
+                  "      tile({ x: 1, y: 0 }, 1),",
+                  "      tile({ x: 1, y: -1 }, 1),",
+                  "    ],",
+                  "  }, 1);",
+                  "  const localLoad = agentPathogenLoad(localTarget);",
+                  "",
+                  "  const seamPosition = { x: 30, y: 11 };",
+                  "  const links = [",
+                  "    {",
+                  "      sourceRegionId: \"garden-1\",",
+                  "      sourcePosition: seamPosition,",
+                  "      direction: \"east\",",
+                  "      neighborRegionId: \"garden-2\",",
+                  "      neighborPosition: { x: 8, y: 11 },",
+                  "      neighborDirection: \"west\",",
+                  "    },",
+                  "    {",
+                  "      sourceRegionId: \"garden-1\",",
+                  "      sourcePosition: seamPosition,",
+                  "      direction: \"northEast\",",
+                  "      neighborRegionId: \"hex-q1-r-1\",",
+                  "      neighborPosition: { x: 18, y: 22 },",
+                  "      neighborDirection: \"southWest\",",
+                  "    },",
+                  "  ];",
+                  "  const edges = [",
+                  "    {",
+                  "      regionId: \"garden-2\",",
+                  "      direction: \"west\",",
+                  "      revision: 8,",
+                  "      tick: 60,",
+                  "      agents: [{ position: { x: 8, y: 11 }, pressure: 1 }],",
+                  "      reservoirs: [{ position: { x: 8, y: 11 }, burden: 1 }],",
+                  "    },",
+                  "    {",
+                  "      regionId: \"hex-q1-r-1\",",
+                  "      direction: \"southWest\",",
+                  "      revision: 3,",
+                  "      tick: 60,",
+                  "      agents: [{ position: { x: 18, y: 22 }, pressure: 1 }],",
+                  "      reservoirs: [{ position: { x: 18, y: 22 }, burden: 1 }],",
+                  "    },",
+                  "  ];",
+                  "  const halo = pathogenHaloMaps(links, edges);",
+                  "  const seamTarget = agent(\"seam-target-corner\", seamPosition);",
+                  "  applyPathogenSteps(",
+                  "    { agents: [seamTarget], tiles: [] },",
+                  "    0,",
+                  "    undefined,",
+                  "    halo.pressure,",
+                  "    1,",
+                  "    halo.reservoir,",
+                  "  );",
+                  "",
+                  "  assert.ok(localLoad > 0);",
+                  "  assert.ok(",
+                  "    Math.abs(agentPathogenLoad(seamTarget) - localLoad) < 1e-12,",
+                  "    \"two ghost-cell adjacencies at a macro-hex corner must equal two ordinary local adjacencies\",",
+                  "  );",
+                  "});",
+                  "",
+              ])
+              test_file.write_text(tests + addition)
           PY
       - name: Install dependencies
         run: npm ci
