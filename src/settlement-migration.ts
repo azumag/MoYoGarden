@@ -97,6 +97,7 @@ export function registerSettlementFamilyFollowers(
   }
 
   const priorities = new Map<string, number>();
+  const requiredFollowerLinks = new Map<string, Set<string>>();
   const add = (agent: Agent | undefined, priority: number): void => {
     if (
       agent === undefined
@@ -106,6 +107,21 @@ export function registerSettlementFamilyFollowers(
     ) return;
     const previous = priorities.get(agent.id);
     if (previous === undefined || priority < previous) priorities.set(agent.id, priority);
+  };
+  const linkFollowers = (leftId: string, rightId: string): void => {
+    if (leftId === rightId || !priorities.has(leftId) || !priorities.has(rightId)) return;
+    let left = requiredFollowerLinks.get(leftId);
+    if (left === undefined) {
+      left = new Set<string>();
+      requiredFollowerLinks.set(leftId, left);
+    }
+    let right = requiredFollowerLinks.get(rightId);
+    if (right === undefined) {
+      right = new Set<string>();
+      requiredFollowerLinks.set(rightId, right);
+    }
+    left.add(rightId);
+    right.add(leftId);
   };
 
   for (const relative of state.agents) {
@@ -118,7 +134,9 @@ export function registerSettlementFamilyFollowers(
     ) {
       add(relative, 2);
       const caregiverId = dependentCaregiverId(state, relative);
-      add(state.agents.find((agent) => agent.id === caregiverId), 0);
+      const caregiver = state.agents.find((agent) => agent.id === caregiverId);
+      add(caregiver, 0);
+      if (caregiver !== undefined) linkFollowers(relative.id, caregiver.id);
       for (const parentId of relative.parents) {
         if (parentId === pioneerId) continue;
         add(state.agents.find((agent) =>
@@ -131,10 +149,38 @@ export function registerSettlementFamilyFollowers(
   const followerLimit = Number.isFinite(maxFollowers)
     ? Math.max(0, Math.min(MAX_SETTLEMENT_FAMILY_FOLLOWERS, Math.floor(maxFollowers)))
     : MAX_SETTLEMENT_FAMILY_FOLLOWERS;
-  const selected = [...priorities]
-    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
-    .slice(0, followerLimit)
-    .map(([agentId]) => agentId);
+  const ordered = [...priorities]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+  const selected: string[] = [];
+  const visited = new Set<string>();
+  for (const [agentId] of ordered) {
+    if (visited.has(agentId)) continue;
+    const component: string[] = [];
+    const queue = [agentId];
+    visited.add(agentId);
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const current = queue[cursor];
+      if (current === undefined) continue;
+      component.push(current);
+      const linked = [...(requiredFollowerLinks.get(current) ?? [])]
+        .sort((a, b) => a.localeCompare(b));
+      for (const linkedId of linked) {
+        if (visited.has(linkedId)) continue;
+        visited.add(linkedId);
+        queue.push(linkedId);
+      }
+    }
+    component.sort((a, b) =>
+      (priorities.get(a) ?? Number.MAX_SAFE_INTEGER)
+        - (priorities.get(b) ?? Number.MAX_SAFE_INTEGER)
+      || a.localeCompare(b)
+    );
+    // A dependent and the source-side caregiver that currently pays its care
+    // cost are one admission unit. If the destination cannot admit the whole
+    // unit, wait for more headroom instead of splitting the care relationship.
+    if (selected.length + component.length > followerLimit) continue;
+    selected.push(...component);
+  }
   for (const agentId of selected) {
     const agent = state.agents.find((entry) => entry.id === agentId);
     if (agent !== undefined) agent.settlementFamilyTargetRegionId = targetRegionId;
@@ -823,14 +869,8 @@ function compareSettlementSupport(
     || compareResourceCapacityDensity(a, b, "stone")
     || compareAveragePathogenReservoir(a, b)
     || compareAverageErosionPressure(a, b)
-    // Settlement pressure should spill toward underused land when durable
-    // ecological support and hazards are otherwise comparable. Use the bounded
-    // whole-region summary rather than a single boundary-cell occupancy sample.
     || comparePopulationDensity(a, b)
     || compareCampDensity(a, b)
-    // When camp density ties, treat the rest of the active settlement footprint
-    // as low-level evidence that a frontier is already developed. This reuses
-    // the bounded halo summary without fetching remote structure identities.
     || compareStructureDensity(a, b)
     || compareResourceAmountDensity(a, b, "food")
     || compareResourceAmountDensity(a, b, "wood")
@@ -841,12 +881,6 @@ function compareSettlementSupport(
 }
 
 function settlementRouteCost(candidate: SettlementSeamCandidate): number {
-  // General movement already minimizes cumulative crowding among equally short
-  // paths. Settlement migration additionally chooses between different seam
-  // targets, so price each occupied hex encountered on that target's shortest
-  // path as one extra step of travel effort. This lets population pressure spill
-  // through a nearby quiet seam instead of always choosing a geometrically closer
-  // but jammed exit, while destination support remains the primary criterion.
   return candidate.distance + candidate.pathCrowding;
 }
 
@@ -871,10 +905,6 @@ function compareFactionOccupancy(
   b: SettlementFactionOccupancy | undefined,
 ): number {
   if (a === undefined || b === undefined) return 0;
-  // Whole-region population density is already compared as ecological pressure.
-  // When that total pressure ties, prefer fewer foreign residents and then an
-  // existing same-faction foothold. This is only a soft tie-break: richer/safer
-  // land still wins, and rolling summaries without composition remain neutral.
   return a.foreign - b.foreign
     || Number(b.own > 0) - Number(a.own > 0);
 }
@@ -902,8 +932,6 @@ function haloRegionFactionOccupancy(
         || previousEntries.length !== entries.length
         || previousEntries.some(([id, count]) => counts[id] !== count)
       ) {
-        // Independent edge reads can straddle a remote tick. Mixed population
-        // composition is not coherent, so leave this preference neutral.
         return undefined;
       }
       continue;
@@ -913,8 +941,6 @@ function haloRegionFactionOccupancy(
   if (observation === undefined) return undefined;
   const own = observation.counts[factionId];
   const summarized = Object.values(observation.counts).reduce((sum, count) => sum + count, 0);
-  // Absence means zero only when the bounded summary is complete. Otherwise the
-  // faction may simply have fallen below the top-N export cutoff.
   if (own === undefined && summarized !== observation.occupants) return undefined;
   const ownCount = own ?? 0;
   return { own: ownCount, foreign: Math.max(0, observation.occupants - ownCount) };
@@ -946,9 +972,6 @@ function compareSettlementSeamCandidate(
   return (
     compareSettlementSupport(a.support, b.support)
     || compareFactionOccupancy(a.factionOccupancy, b.factionOccupancy)
-    // Only after ecological support and existing development tie, prefer a
-    // frontier where this faction has usable logistics capacity. Missing
-    // rolling metadata stays neutral; known-full storage is worse than unknown.
     || compareSettlementStorageHeadroom(a.factionStorageHeadroom, b.factionStorageHeadroom)
     || settlementRouteCost(a) - settlementRouteCost(b)
     || a.distance - b.distance
@@ -968,21 +991,12 @@ function compareSettlementPlanCandidate(
   return (
     compareSettlementSupport(a.support, b.support)
     || compareFactionOccupancy(a.factionOccupancy, b.factionOccupancy)
-    // Only after ecological support and existing development tie, prefer a
-    // frontier where this faction has usable logistics capacity. Missing
-    // rolling metadata stays neutral; known-full storage is worse than unknown.
     || compareSettlementStorageHeadroom(a.factionStorageHeadroom, b.factionStorageHeadroom)
     || settlementRouteCost(a) - settlementRouteCost(b)
     || a.distance - b.distance
     || a.pathCrowding - b.pathCrowding
     || a.crowding - b.crowding
-    // When route and destination are otherwise equivalent, prefer a pioneer
-    // whose departure disrupts fewer dependent family relationships. This is
-    // a soft preference rather than a blockade, so a family-attached builder
-    // can still found the frontier when no safer candidate exists.
     || a.familySeparationCost - b.familySeparationCost
-    // Equivalent family impact then uses the larger remaining energy reserve
-    // before falling back to stable agent ID order.
     || b.agent.energy - a.agent.energy
     || a.agent.id.localeCompare(b.agent.id)
     || directionRank(a.entry.direction) - directionRank(b.entry.direction)
@@ -1021,9 +1035,6 @@ function localPathScores(
         continue;
       }
       scores.set(key, candidate);
-      // Keep each endpoint on a shortest route, selecting the least crowded one
-      // among equal-length paths. The seam comparator may then choose a slightly
-      // farther endpoint when its total travel effort is lower.
       queue.push(next);
     }
   }
@@ -1094,9 +1105,6 @@ export function prepareSettlementMigrationKit(state: WorldState, agentId: string
     && structure.type === "camp"
     && (structure.status === "active" || structure.status === "building")
   );
-  // Starting from an established settlement defines a fresh route origin. A
-  // camp-less transit region keeps the existing origin so the pioneer can make
-  // bounded monotonic progress across several handoffs without a visited log.
   if (hasLocalCamp || agent.settlementMigrationOriginRegionId === undefined) {
     agent.settlementMigrationOriginRegionId = state.regionId;
   }
@@ -1148,8 +1156,6 @@ function familySeparationCost(state: WorldState, agent: Agent): number {
     && agent.pregnancy.dueAtTick > state.tick
     && livingSameFaction.has(agent.pregnancy.partnerId)
   ) {
-    // Pregnancy itself travels with the gestational parent. Count separation
-    // only when the living partner would actually remain in this region.
     cost += 4;
   }
   for (const relative of state.agents) {
@@ -1168,11 +1174,6 @@ function familySeparationCost(state: WorldState, agent: Agent): number {
         parentId !== agent.id && livingSameFaction.has(parentId)
       );
       const activeCaregiver = dependentCaregiverId(state, relative) === agent.id;
-      // Migration should reflect the same low-level caregiver that pays the
-      // recurring demographic energy cost. When a co-parent remains, prefer
-      // moving the non-caregiver before the active caregiver; the sole living
-      // parent is still the most disruptive departure. This remains a soft
-      // preference so settlement expansion cannot deadlock on family state.
       cost += relative.lifeStage === "infant"
         ? (alternateLivingParent ? (activeCaregiver ? 4 : 2) : 5)
         : (alternateLivingParent ? (activeCaregiver ? 2 : 1) : 3);
@@ -1295,11 +1296,6 @@ export function planAutonomousSettlementMigration(
           )
         )
       ) {
-        // The immediate previous-region wedge prevents reversals and the shortest
-        // triangular loop. Once a persisted migration origin is available, every
-        // further hop must also increase axial distance from that origin. This
-        // bounded O(1) memory prevents longer same-ring circulation without deep
-        // neighbor reads or an unbounded visited-region history.
         continue;
       }
       const targetKey = positionKey(entry.sourcePosition);
