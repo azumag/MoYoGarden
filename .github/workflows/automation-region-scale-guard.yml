@@ -32,14 +32,16 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
           from textwrap import dedent
+          import re
 
           worker = Path("src/worker.ts")
           text = worker.read_text()
-          old = '''  if (requested !== undefined && requested !== "" && parseAxialRegionId(requested) !== undefined) {
-            return requested;
-          }
-          '''
-          new = '''  if (requested !== undefined && requested !== "" && parseAxialRegionId(requested) !== undefined) {
+          pattern = re.compile(
+              r'  if \(requested !== undefined && requested !== "" && parseAxialRegionId\(requested\) !== undefined\) \{\n'
+              r'    return requested;\n'
+              r'  \}'
+          )
+          replacement = '''  if (requested !== undefined && requested !== "" && parseAxialRegionId(requested) !== undefined) {
             // Canonical ids are intentionally sparse/list-free, but the shared global
             // cell frame still has to fit inside JavaScript safe integers. Reject an
             // unprojectable public coordinate as an unavailable region instead of
@@ -50,11 +52,11 @@ jobs:
               return undefined;
             }
             return requested;
-          }
-          '''
-          if old not in text:
-              raise SystemExit("resolveRegion canonical anchor not found")
-          worker.write_text(text.replace(old, new, 1))
+          }'''
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"resolveRegion canonical anchor matches={count}")
+          worker.write_text(text)
 
           Path("tests/region-scale-budget.test.mjs").write_text(dedent(r'''
           import assert from "node:assert/strict";
