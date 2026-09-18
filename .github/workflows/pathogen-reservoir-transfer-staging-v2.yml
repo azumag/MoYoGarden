@@ -1,0 +1,257 @@
+name: Restage pathogen reservoir ownership transfer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/pathogen-reservoir-transfer-staging-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply and verify cross-DO pathogen reservoir transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk '/^          set -euo pipefail$/{flag=1} flag{print} /^          PY$/{exit}' \
+            .github/workflows/pathogen-reservoir-transfer-staging.yml | sed 's/^          //' > /tmp/apply-original.sh
+          bash /tmp/apply-original.sh
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/pathogen-region.ts")
+          text = path.read_text()
+
+          old = '''    const access = runtimeAccess(this);
+              const result = await this.pathogenState.storage.transaction(async (txn) => {
+                const stored = await txn.get<StoredPathogenRegion>("region");
+                if (stored === undefined || stored.state.regionId !== state.regionId) {
+                  return { changed: false as const, state: undefined as WorldState | undefined };
+                }
+                const records = await txn.get<OutgoingPathogenReservoirTransfer[]>(
+                  OUTGOING_PATHOGEN_RESERVOIR_KEY,
+                ) ?? [];
+                const occupiedRoutes = new Set(records.map((record) => record.routeKey));
+                const nextState = structuredClone(stored.state);
+                let changed = false;
+
+                for (const candidate of candidates) {
+                  if (occupiedRoutes.has(candidate.routeKey)) continue;
+                  const tile = nextState.tiles.find((entry) => samePosition(entry, candidate.sourcePosition));
+                  if (tile === undefined || !isHexGridCell(nextState, tile)) continue;
+                  const current = tilePathogenReservoir(tile);
+                  const amount = Math.min(current, candidate.burden);
+                  if (amount <= PATHOGEN_RESERVOIR_TRANSFER_EPSILON) continue;
+                  const target = tile as typeof tile & { pathogenReservoir?: number };
+                  const remaining = Math.max(0, current - amount);
+                  if (remaining <= PATHOGEN_RESERVOIR_TRANSFER_EPSILON) {
+                    delete target.pathogenReservoir;
+                  } else {
+                    target.pathogenReservoir = remaining;
+                  }
+                  records.push({ ...candidate, burden: amount });
+                  occupiedRoutes.add(candidate.routeKey);
+                  changed = true;
+                }
+
+                if (!changed) return { changed: false as const, state: undefined as WorldState | undefined };
+                stored.state = nextState;
+                await txn.put("region", stored);
+                await txn.put(OUTGOING_PATHOGEN_RESERVOIR_KEY, records);
+                return { changed: true as const, state: nextState };
+              });
+          '''
+          new = '''    const access = runtimeAccess(this);
+              const storage = this.pathogenState.storage;
+              const result = await (async () => {
+                // Durable Object KV input gates serialize the read/modify/write sequence.
+                // Starting both writes before awaiting either lets the runtime coalesce
+                // them into one atomic implicit transaction.
+                const stored = await storage.get<StoredPathogenRegion>("region");
+                if (stored === undefined || stored.state.regionId !== state.regionId) {
+                  return { changed: false as const, state: undefined as WorldState | undefined };
+                }
+                const records = await storage.get<OutgoingPathogenReservoirTransfer[]>(
+                  OUTGOING_PATHOGEN_RESERVOIR_KEY,
+                ) ?? [];
+                const occupiedRoutes = new Set(records.map((record) => record.routeKey));
+                const nextState = structuredClone(stored.state);
+                let changed = false;
+
+                for (const candidate of candidates) {
+                  if (occupiedRoutes.has(candidate.routeKey)) continue;
+                  const tile = nextState.tiles.find((entry) => samePosition(entry, candidate.sourcePosition));
+                  if (tile === undefined || !isHexGridCell(nextState, tile)) continue;
+                  const current = tilePathogenReservoir(tile);
+                  const amount = Math.min(current, candidate.burden);
+                  if (amount <= PATHOGEN_RESERVOIR_TRANSFER_EPSILON) continue;
+                  const target = tile as typeof tile & { pathogenReservoir?: number };
+                  const remaining = Math.max(0, current - amount);
+                  if (remaining <= PATHOGEN_RESERVOIR_TRANSFER_EPSILON) {
+                    delete target.pathogenReservoir;
+                  } else {
+                    target.pathogenReservoir = remaining;
+                  }
+                  records.push({ ...candidate, burden: amount });
+                  occupiedRoutes.add(candidate.routeKey);
+                  changed = true;
+                }
+
+                if (!changed) return { changed: false as const, state: undefined as WorldState | undefined };
+                stored.state = nextState;
+                const regionWrite = storage.put("region", stored);
+                const journalWrite = storage.put(OUTGOING_PATHOGEN_RESERVOIR_KEY, records);
+                await Promise.all([regionWrite, journalWrite]);
+                return { changed: true as const, state: nextState };
+              })();
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"reserve transaction anchor count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old = '''    let accepted = false;
+              await this.pathogenState.storage.transaction(async (txn) => {
+                const routes = await txn.get<IncomingPathogenReservoirRoute[]>(
+                  INCOMING_PATHOGEN_RESERVOIR_KEY,
+                ) ?? [];
+                const existing = routes.find((route) => route.routeKey === transfer.routeKey);
+                if (existing !== undefined) {
+                  if (transfer.createdAtTick <= existing.lastAcceptedTick) return;
+                  existing.lastAcceptedTick = transfer.createdAtTick;
+                  existing.pendingBurden += transfer.burden;
+                } else {
+                  routes.push({
+                    routeKey: transfer.routeKey,
+                    fromRegionId: transfer.fromRegionId,
+                    sourcePosition: { ...transfer.sourcePosition },
+                    targetPosition: { ...transfer.targetPosition },
+                    lastAcceptedTick: transfer.createdAtTick,
+                    pendingBurden: transfer.burden,
+                  });
+                }
+                accepted = true;
+                await txn.put(INCOMING_PATHOGEN_RESERVOIR_KEY, routes);
+              });
+          '''
+          new = '''    let accepted = false;
+              const routes = await this.pathogenState.storage.get<IncomingPathogenReservoirRoute[]>(
+                INCOMING_PATHOGEN_RESERVOIR_KEY,
+              ) ?? [];
+              const existing = routes.find((route) => route.routeKey === transfer.routeKey);
+              if (existing !== undefined) {
+                if (transfer.createdAtTick > existing.lastAcceptedTick) {
+                  existing.lastAcceptedTick = transfer.createdAtTick;
+                  existing.pendingBurden += transfer.burden;
+                  accepted = true;
+                }
+              } else {
+                routes.push({
+                  routeKey: transfer.routeKey,
+                  fromRegionId: transfer.fromRegionId,
+                  sourcePosition: { ...transfer.sourcePosition },
+                  targetPosition: { ...transfer.targetPosition },
+                  lastAcceptedTick: transfer.createdAtTick,
+                  pendingBurden: transfer.burden,
+                });
+                accepted = true;
+              }
+              if (accepted) {
+                await this.pathogenState.storage.put(INCOMING_PATHOGEN_RESERVOIR_KEY, routes);
+              }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"accept transaction anchor count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old = '''    const access = runtimeAccess(this);
+              const result = await this.pathogenState.storage.transaction(async (txn) => {
+                const stored = await txn.get<StoredPathogenRegion>("region");
+                const routes = await txn.get<IncomingPathogenReservoirRoute[]>(
+                  INCOMING_PATHOGEN_RESERVOIR_KEY,
+                ) ?? [];
+                if (stored === undefined) {
+                  return { changed: false as const, state: undefined as WorldState | undefined };
+                }
+                const nextState = structuredClone(stored.state);
+                let changed = false;
+                for (const route of [...routes].sort((a, b) => a.routeKey.localeCompare(b.routeKey))) {
+                  if (route.pendingBurden <= 0) continue;
+                  const tile = nextState.tiles.find((entry) => samePosition(entry, route.targetPosition));
+                  if (tile === undefined || !isHexGridCell(nextState, tile)) continue;
+                  const current = tilePathogenReservoir(tile);
+                  const accepted = Math.min(Math.max(0, 1 - current), route.pendingBurden);
+                  if (accepted <= 0) continue;
+                  (tile as typeof tile & { pathogenReservoir?: number }).pathogenReservoir = current + accepted;
+                  route.pendingBurden = Math.max(0, route.pendingBurden - accepted);
+                  changed = true;
+                }
+                if (!changed) {
+                  return { changed: false as const, state: undefined as WorldState | undefined };
+                }
+                stored.state = nextState;
+                await txn.put("region", stored);
+                await txn.put(INCOMING_PATHOGEN_RESERVOIR_KEY, routes);
+                return { changed: true as const, state: nextState };
+              });
+          '''
+          new = '''    const access = runtimeAccess(this);
+              const storage = this.pathogenState.storage;
+              const result = await (async () => {
+                const stored = await storage.get<StoredPathogenRegion>("region");
+                const routes = await storage.get<IncomingPathogenReservoirRoute[]>(
+                  INCOMING_PATHOGEN_RESERVOIR_KEY,
+                ) ?? [];
+                if (stored === undefined) {
+                  return { changed: false as const, state: undefined as WorldState | undefined };
+                }
+                const nextState = structuredClone(stored.state);
+                let changed = false;
+                for (const route of [...routes].sort((a, b) => a.routeKey.localeCompare(b.routeKey))) {
+                  if (route.pendingBurden <= 0) continue;
+                  const tile = nextState.tiles.find((entry) => samePosition(entry, route.targetPosition));
+                  if (tile === undefined || !isHexGridCell(nextState, tile)) continue;
+                  const current = tilePathogenReservoir(tile);
+                  const accepted = Math.min(Math.max(0, 1 - current), route.pendingBurden);
+                  if (accepted <= 0) continue;
+                  (tile as typeof tile & { pathogenReservoir?: number }).pathogenReservoir = current + accepted;
+                  route.pendingBurden = Math.max(0, route.pendingBurden - accepted);
+                  changed = true;
+                }
+                if (!changed) {
+                  return { changed: false as const, state: undefined as WorldState | undefined };
+                }
+                stored.state = nextState;
+                const regionWrite = storage.put("region", stored);
+                const inboxWrite = storage.put(INCOMING_PATHOGEN_RESERVOIR_KEY, routes);
+                await Promise.all([regionWrite, inboxWrite]);
+                return { changed: true as const, state: nextState };
+              })();
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"drain transaction anchor count={text.count(old)}")
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+          npm install --no-audit --no-fund
+          npm run build
+          git diff --check
+          rm .github/workflows/pathogen-reservoir-transfer-staging.yml
+          rm .github/workflows/pathogen-reservoir-transfer-staging-v2.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pathogen.ts src/pathogen-region.ts tests/pathogen-reservoir-transfer-do.test.mjs .github/workflows/pathogen-reservoir-transfer-staging.yml .github/workflows/pathogen-reservoir-transfer-staging-v2.yml
+          git commit -m "sim: conserve pathogen reservoir across region seams"
+          git push origin HEAD:main
