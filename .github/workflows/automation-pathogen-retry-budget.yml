@@ -52,4 +52,6 @@ jobs:
           git add -A
           git diff --cached --check
           git commit -m "perf: bound pathogen reservoir retry fan-out"
+          git fetch origin main
+          git rebase origin/main
           git push origin HEAD:main
