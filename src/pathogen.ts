@@ -67,6 +67,7 @@ const PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN =
 const PATHOGEN_RESERVOIR_BASE_CLEARANCE_RATE = 0.18;
 const PATHOGEN_RESERVOIR_CLIMATE_PERSISTENCE_GAIN = 0.55;
 const PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN = 0.08;
+const PATHOGEN_RESERVOIR_WIND_TRANSPORT_GAIN = 0.03;
 export const PATHOGEN_INFECTIOUS_THRESHOLD = 0.12;
 const PATHOGEN_SYMPTOM_THRESHOLD = 0.65;
 const PATHOGEN_SYMPTOM_ENERGY_COST = 1;
@@ -202,14 +203,15 @@ function pathogenReservoirIndex(tiles: readonly Tile[]): Map<string, number> {
 }
 
 /**
- * Move a small, bounded share of existing environmental burden along the local
- * hydrology graph before clearance/shedding are applied.
+ * Move small, bounded shares of existing environmental burden along the local
+ * hydrology graph and the shared six-direction wind field before clearance and
+ * shedding are applied.
  *
- * `flowTo` and `drainage` are already derived from the six-neighbor elevation
- * field, so this couples infection ecology to the same low-level water routing
- * without inventing a river/pathogen category. Only targets owned by this local
- * state are eligible: cross-DO flow ownership is still a separate Issue #3 step,
- * and an unresolved boundary outlet must not teleport contamination or mutate a
+ * `flowTo` / `drainage` and `sampleWorldWind` are both derived from low-level
+ * continuous world state, so contamination moves without inventing a top-down
+ * disease event. Only targets owned by this local state are eligible: cross-DO
+ * flow/wind ownership is still a separate Issue #3 transaction step, and an
+ * unresolved boundary outlet or gust must not teleport contamination or mutate a
  * neighbor.
  *
  * All transfer requests are planned from the immutable pre-step reservoir. When
@@ -223,26 +225,58 @@ function pathogenReservoirIndex(tiles: readonly Tile[]): Map<string, number> {
 function advectPathogenReservoirs(
   tilesByPosition: ReadonlyMap<string, Tile>,
   previousReservoir: ReadonlyMap<string, number>,
+  environment: PathogenEnvironmentFrame | undefined,
 ): Map<string, number> {
   const requests: Array<{ sourceKey: string; targetKey: string; amount: number }> = [];
   const requestedByTarget = new Map<string, number>();
+  const requestTransfer = (sourceKey: string, targetKey: string, amount: number): void => {
+    if (
+      sourceKey === targetKey ||
+      !tilesByPosition.has(targetKey) ||
+      amount <= PATHOGEN_EPSILON
+    ) {
+      return;
+    }
+    requests.push({ sourceKey, targetKey, amount });
+    requestedByTarget.set(targetKey, (requestedByTarget.get(targetKey) ?? 0) + amount);
+  };
 
   for (const [sourceKey, current] of previousReservoir) {
     if (current <= PATHOGEN_EPSILON) continue;
     const tile = tilesByPosition.get(sourceKey);
-    const targetPosition = tile?.flowTo;
-    if (tile === undefined || targetPosition === undefined) continue;
-    const targetKey = positionKey(targetPosition);
-    if (targetKey === sourceKey || !tilesByPosition.has(targetKey)) continue;
-    const drainage = Number.isFinite(tile.drainage ?? Number.NaN)
-      ? clamp01(tile.drainage ?? 0)
-      : 0;
-    if (drainage <= 0) continue;
+    if (tile === undefined) continue;
 
-    const amount = current * drainage * PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN;
-    if (amount <= PATHOGEN_EPSILON) continue;
-    requests.push({ sourceKey, targetKey, amount });
-    requestedByTarget.set(targetKey, (requestedByTarget.get(targetKey) ?? 0) + amount);
+    const targetPosition = tile.flowTo;
+    if (targetPosition !== undefined) {
+      const drainage = Number.isFinite(tile.drainage ?? Number.NaN)
+        ? clamp01(tile.drainage ?? 0)
+        : 0;
+      if (drainage > 0) {
+        requestTransfer(
+          sourceKey,
+          positionKey(targetPosition),
+          current * drainage * PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN,
+        );
+      }
+    }
+
+    // Airborne environmental burden follows the same deterministic
+    // six-direction wind field used by contact transmission. Keep this
+    // local-only until cross-DO reservoir ownership has an idempotent
+    // transaction: a boundary gust must not duplicate or teleport mass.
+    if (environment !== undefined) {
+      const wind = sampleWorldWind(
+        environment.worldSeed,
+        environment.originX + tile.x,
+        environment.originY + tile.y,
+      );
+      const step = HEX_GRID_DIRECTION_STEPS[wind.direction];
+      requestTransfer(
+        sourceKey,
+        positionKey({ x: tile.x + step.x, y: tile.y + step.y }),
+        current * wind.strength * PATHOGEN_RESERVOIR_WIND_TRANSPORT_GAIN,
+      );
+    }
   }
 
   const acceptedScaleByTarget = new Map<string, number>();
@@ -306,7 +340,11 @@ function advancePathogenReservoirs(
   if (tiles.length === 0) return 0;
 
   const tilesByPosition = new Map(tiles.map((tile) => [positionKey(tile), tile]));
-  const advectedReservoir = advectPathogenReservoirs(tilesByPosition, previousReservoir);
+  const advectedReservoir = advectPathogenReservoirs(
+    tilesByPosition,
+    previousReservoir,
+    environment,
+  );
   const shedding = new Map<string, number>();
   for (const source of previousAgents) {
     const pressure = agentPathogenPressure(source);
