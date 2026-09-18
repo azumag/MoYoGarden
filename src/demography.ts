@@ -131,11 +131,27 @@ function lineageReferenceMatchesAgent(
   return canonical(candidateId) === canonical(referenceId);
 }
 
+function socialFamiliarityBetween(
+  state: WorldState,
+  left: Agent,
+  right: Agent,
+): number {
+  const familiarityFrom = (source: Agent, target: Agent): number =>
+    (source.socialMemory ?? []).reduce((best, entry) => {
+      if (!lineageReferenceMatchesAgent(state, target.id, entry.agentId)) return best;
+      const familiarity = Number.isFinite(entry.familiarity)
+        ? Math.max(0, entry.familiarity)
+        : 0;
+      return Math.max(best, familiarity);
+    }, 0);
+  return Math.max(familiarityFrom(left, right), familiarityFrom(right, left));
+}
+
 export function dependentCaregiverId(
   state: WorldState,
   dependent: Agent,
 ): string | undefined {
-  const candidates = (dependent.parents ?? [])
+  const parents = (dependent.parents ?? [])
     .flatMap((parentId) => {
       const parent = state.agents.find((candidate) =>
         lineageReferenceMatchesAgent(state, candidate.id, parentId) &&
@@ -150,7 +166,33 @@ export function dependentCaregiverId(
       b.energy - a.energy ||
       a.id.localeCompare(b.id)
     );
-  return candidates[0]?.id;
+  if (parents[0] !== undefined) return parents[0].id;
+
+  // When no living parent currently owns this region, allow an existing
+  // relationship to provide care instead of assigning a magical stranger.
+  // This is deliberately a fallback: a living local parent always remains
+  // authoritative, and strangers with zero familiarity never qualify.
+  const guardians = state.agents
+    .filter((candidate) =>
+      candidate.id !== dependent.id &&
+      candidate.factionId === dependent.factionId &&
+      candidate.hp > 0 &&
+      candidate.lifeStage !== "infant" &&
+      candidate.lifeStage !== "juvenile"
+    )
+    .map((candidate) => ({
+      candidate,
+      familiarity: socialFamiliarityBetween(state, candidate, dependent),
+    }))
+    .filter(({ familiarity }) => familiarity > 0)
+    .sort((a, b) =>
+      b.familiarity - a.familiarity ||
+      hexGridDistance(a.candidate.position, dependent.position) -
+        hexGridDistance(b.candidate.position, dependent.position) ||
+      b.candidate.energy - a.candidate.energy ||
+      a.candidate.id.localeCompare(b.candidate.id)
+    );
+  return guardians[0]?.candidate.id;
 }
 
 function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {

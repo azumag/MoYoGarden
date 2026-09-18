@@ -74,3 +74,41 @@ test("promoted lineage references reconnect to a local parent in their origin re
     "a reused local id in another region must not satisfy the globally promoted parent reference",
   );
 });
+
+
+test("orphaned dependents choose a familiar adult instead of a nearer stranger", () => {
+  const trusted = adult("trusted-guardian", 4, 4, 45);
+  trusted.socialMemory = [{ agentId: "child", familiarity: 5, lastInteractionTick: 30 }];
+  const stranger = adult("near-stranger", 10, 11, 100);
+  const child = dependent(["missing-parent-a", "missing-parent-b"]);
+  const state = { regionId: "garden-1", agents: [trusted, stranger, child] };
+
+  assert.equal(dependentCaregiverId(state, child), trusted.id);
+});
+
+test("living parents remain authoritative over stronger social guardians", () => {
+  const parent = adult("living-parent", 2, 2, 10);
+  const guardian = adult("familiar-guardian", 10, 11, 100);
+  guardian.socialMemory = [{ agentId: "child", familiarity: 32, lastInteractionTick: 40 }];
+  const child = dependent([parent.id, "missing-parent"]);
+  const state = { regionId: "garden-1", agents: [parent, guardian, child] };
+
+  assert.equal(dependentCaregiverId(state, child), parent.id);
+});
+
+test("social caregiver fallback requires a living same-faction adult relationship", () => {
+  const dead = adult("dead-friend", 10, 10, 100);
+  dead.hp = 0;
+  dead.socialMemory = [{ agentId: "child", familiarity: 12, lastInteractionTick: 20 }];
+  const juvenile = adult("juvenile-friend", 10, 10, 100);
+  juvenile.lifeStage = "juvenile";
+  juvenile.socialMemory = [{ agentId: "child", familiarity: 12, lastInteractionTick: 20 }];
+  const outsider = adult("outsider-friend", 10, 10, 100);
+  outsider.factionId = "visitors";
+  outsider.socialMemory = [{ agentId: "child", familiarity: 12, lastInteractionTick: 20 }];
+  const stranger = adult("unfamiliar-adult", 10, 10, 100);
+  const child = dependent(["missing-a", "missing-b"]);
+  const state = { regionId: "garden-1", agents: [dead, juvenile, outsider, stranger, child] };
+
+  assert.equal(dependentCaregiverId(state, child), undefined);
+});
