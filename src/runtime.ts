@@ -59,7 +59,6 @@ const POPULATION_GESTATION_TICKS = POPULATION_REPRODUCTION_INTERVAL;
 const POPULATION_INFANCY_TICKS = POPULATION_REPRODUCTION_INTERVAL;
 const POPULATION_MATURITY_TICKS = POPULATION_REPRODUCTION_INTERVAL * 3;
 const POPULATION_POSTPARTUM_COOLDOWN_TICKS = POPULATION_REPRODUCTION_INTERVAL;
-const POPULATION_FOOD_BUFFER_PER_AGENT = 4;
 const POPULATION_BIRTH_FOOD_COST = 6;
 const POPULATION_HEALTH_THRESHOLD = 70;
 const POPULATION_ENERGY_THRESHOLD = 35;
@@ -485,11 +484,6 @@ function planConceptions(state: WorldState): void {
     if (population.length < 2) continue;
     const pregnancies = population.filter((agent) => agent.pregnancy !== undefined).length;
     if (population.length + pregnancies >= settlementResidentCapacity(state, faction.id)) continue;
-
-    const foodNeeded = population.length * POPULATION_FOOD_BUFFER_PER_AGENT + POPULATION_BIRTH_FOOD_COST;
-    const storedFood = activeFactionStructures(state, faction.id)
-      .reduce((sum, structure) => sum + structure.storage.food, 0);
-    if (faction.resources.food < foodNeeded || storedFood < POPULATION_BIRTH_FOOD_COST) continue;
 
     const healthyAdults = population.filter((agent) =>
       isAdultForReproduction(agent, state.tick) &&

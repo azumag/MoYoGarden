@@ -270,6 +270,52 @@ test("prolonged starvation can reduce a faction's population", () => {
   assert.equal(second.agents.length, initialPopulation - 1);
 });
 
+
+test("conception is not directly gated by settlement food stock", () => {
+  const state = createInitialWorld({ seed: 2030 });
+  const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);
+  const members = state.agents.filter((agent) => agent.factionId === faction.id);
+  assert.ok(members.length >= 2);
+  const parent = members[0]; assert.ok(parent);
+  const partner = members[1]; assert.ok(partner);
+
+  faction.resources.food = 0;
+  for (const structure of state.structures) {
+    if (structure.factionId === faction.id) structure.storage.food = 0;
+  }
+  const extraCamps = Math.ceil((members.length + 1) / 6) + 1;
+  for (let index = 0; index < extraCamps; index += 1) {
+    state.structures.push({
+      id: `food-independent-conception-camp-${index}`,
+      factionId: faction.id,
+      type: "camp",
+      position: { ...parent.position },
+      status: "active",
+      progress: 6,
+      requiredProgress: 6,
+      storage: { wood: 0, stone: 0, food: 0 },
+    });
+  }
+  for (const member of members) {
+    member.hp = 100;
+    member.energy = 100;
+    member.autonomy = false;
+    member.reproductiveRole = member.id === parent.id ? "gestational" : "partner";
+    delete member.pregnancy;
+    delete member.lastBirthTick;
+    delete member.socialMemory;
+    delete member.task;
+  }
+  parent.socialMemory = [{ agentId: partner.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.socialMemory = [{ agentId: parent.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.position = { ...parent.position };
+  state.tick = 8_639;
+
+  const conceived = new WorldRuntime({ state }).tick().state;
+  const conceivedParent = conceived.agents.find((entry) => entry.id === parent.id); assert.ok(conceivedParent);
+  assert.equal(conceivedParent.pregnancy?.partnerId, partner.id);
+});
+
 test("population growth requires conception, gestation, and biological parentage", () => {
   const state = createInitialWorld({ seed: 2029 });
   const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);
