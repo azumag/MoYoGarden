@@ -623,7 +623,8 @@ export class RegionDurableObject {
     }
 
     if (request.method === "GET" && path === "/api/world/snapshot") {
-      return json(this.runtime.snapshot());
+      const state = this.runtime.snapshot();
+      return json(url.searchParams.get("terrain") === "1" ? terrainPreviewState(state) : state);
     }
     if (request.method === "GET" && path === "/api/factions") {
       return json(this.runtime.snapshot().factions);
@@ -836,6 +837,7 @@ export default {
         const snapshotUrl = new URL(request.url);
         snapshotUrl.pathname = "/api/world/snapshot";
         snapshotUrl.search = "";
+        if (terrainOnly) snapshotUrl.searchParams.set("terrain", "1");
         const response = await stub.fetch(new Request(snapshotUrl, { method: "GET", headers }));
         if (!response.ok) {
           return {
