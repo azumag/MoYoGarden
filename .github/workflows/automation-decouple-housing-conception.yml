@@ -34,6 +34,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           python3 - <<'PY'
           from pathlib import Path
+          import re
+          import textwrap
 
           runtime_path = Path("src/runtime.ts")
           runtime = runtime_path.read_text()
@@ -50,22 +52,20 @@ jobs:
           }
 
           '''
-          import textwrap
           helper = textwrap.dedent(helper)
           if runtime.count(helper) != 1:
               raise SystemExit("settlementResidentCapacity helper anchor mismatch")
           runtime = runtime.replace(helper, '', 1)
 
-          capacity_gate = '''    const pregnancies = population.filter((agent) => agent.pregnancy !== undefined).length;
-            if (population.length + pregnancies >= settlementResidentCapacity(state, faction.id)) continue;
-
-          '''
-          capacity_gate = textwrap.dedent(capacity_gate)
-          # Preserve the function's existing four-space indentation after dedent.
-          capacity_gate = ''.join(('    ' + line if line.strip() else line) for line in capacity_gate.splitlines(True))
-          if runtime.count(capacity_gate) != 1:
-              raise SystemExit("conception housing gate anchor mismatch")
-          runtime = runtime.replace(capacity_gate, '', 1)
+          runtime, gate_count = re.subn(
+              r'    const pregnancies = population\.filter\(\(agent\) => agent\.pregnancy !== undefined\)\.length;\n'
+              r'    if \(population\.length \+ pregnancies >= settlementResidentCapacity\(state, faction\.id\)\) continue;\n\n',
+              '',
+              runtime,
+              count=1,
+          )
+          if gate_count != 1:
+              raise SystemExit(f"conception housing gate replacement count={gate_count}")
           runtime_path.write_text(runtime)
 
           tests_path = Path("tests/simulation.test.mjs")
