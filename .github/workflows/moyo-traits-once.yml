@@ -1,0 +1,109 @@
+name: MoYoGarden one-shot demographic traits
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-traits-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - name: Apply bounded heritable traits
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/protocol.ts",
+              'export type ReproductiveRole = "gestational" | "partner";\n\nexport interface AgentPregnancy {\n  partnerId: string;\n  conceivedAtTick: number;\n  dueAtTick: number;\n}\n',
+              '''export type ReproductiveRole = "gestational" | "partner";\n\nexport interface AgentHeritableTraits {\n  // Multipliers stay close to 1 so inheritance can shape long-term population\n  // differences without overwhelming food, role, or settlement constraints.\n  vitality: number;\n  carryingCapacity: number;\n}\n\nexport interface AgentPregnancy {\n  partnerId: string;\n  conceivedAtTick: number;\n  dueAtTick: number;\n  // Snapshot the partner side of inheritance at conception so a later region\n  // handoff or death cannot erase biological causality before birth.\n  partnerTraits?: AgentHeritableTraits;\n}\n'''
+          )
+          replace_once(
+              "src/protocol.ts",
+              '  reproductiveRole?: ReproductiveRole;\n  parents?: [string, string];\n',
+              '''  reproductiveRole?: ReproductiveRole;\n  // Optional for schemaVersion=1 compatibility. Founders without the field use\n  // neutral 1.0 multipliers; lineage-born agents receive bounded inherited values.\n  heritableTraits?: AgentHeritableTraits;\n  parents?: [string, string];\n'''
+          )
+
+          replace_once(
+              "src/demography.ts",
+              'import type { Agent, WorldEvent, WorldState } from "./protocol.js";',
+              'import type { Agent, AgentHeritableTraits, WorldEvent, WorldState } from "./protocol.js";'
+          )
+          replace_once(
+              "src/demography.ts",
+              'const GLOBAL_AGENT_PREFIX = "agent-global:";\n',
+              '''const GLOBAL_AGENT_PREFIX = "agent-global:";\nexport const POPULATION_TRAIT_MIN = 0.9;\nexport const POPULATION_TRAIT_MAX = 1.1;\nexport const POPULATION_TRAIT_MUTATION_MAX = 0.02;\n'''
+          )
+          replace_once(
+              "src/demography.ts",
+              '''export function naturalLifespanTicks(agentId: string): number {\n  const extraDays = demographicHash(agentId) % (POPULATION_LIFESPAN_VARIATION_DAYS + 1);\n  return POPULATION_MIN_LIFESPAN_TICKS + extraDays * POPULATION_DAY_TICKS;\n}\n''',
+              '''function boundedTrait(value: number | undefined): number {\n  const finite = typeof value === "number" && Number.isFinite(value) ? value : 1;\n  return Math.max(POPULATION_TRAIT_MIN, Math.min(POPULATION_TRAIT_MAX, finite));\n}\n\nfunction roundedTrait(value: number): number {\n  return Math.round(boundedTrait(value) * 10_000) / 10_000;\n}\n\nfunction traitMutation(childId: string, trait: keyof AgentHeritableTraits): number {\n  const unit = (demographicHash(`${childId}:${trait}`) % 2_001) / 1_000 - 1;\n  return unit * POPULATION_TRAIT_MUTATION_MAX;\n}\n\nexport function normalizedHeritableTraits(\n  agent: Pick<Agent, "heritableTraits"> | undefined,\n): AgentHeritableTraits {\n  return {\n    vitality: roundedTrait(agent?.heritableTraits?.vitality ?? 1),\n    carryingCapacity: roundedTrait(agent?.heritableTraits?.carryingCapacity ?? 1),\n  };\n}\n\nexport function inheritHeritableTraits(\n  gestationalParent: Pick<Agent, "heritableTraits">,\n  partnerTraits: AgentHeritableTraits | undefined,\n  childId: string,\n): AgentHeritableTraits {\n  const first = normalizedHeritableTraits(gestationalParent);\n  const second = {\n    vitality: roundedTrait(partnerTraits?.vitality ?? 1),\n    carryingCapacity: roundedTrait(partnerTraits?.carryingCapacity ?? 1),\n  };\n  return {\n    vitality: roundedTrait(\n      (first.vitality + second.vitality) / 2 + traitMutation(childId, "vitality"),\n    ),\n    carryingCapacity: roundedTrait(\n      (first.carryingCapacity + second.carryingCapacity) / 2 +\n        traitMutation(childId, "carryingCapacity"),\n    ),\n  };\n}\n\nexport function adultCapacityForTraits(\n  baseCapacity: number,\n  agent: Pick<Agent, "heritableTraits">,\n): number {\n  const traits = normalizedHeritableTraits(agent);\n  return Math.max(1, Math.round(baseCapacity * traits.carryingCapacity));\n}\n\nexport function naturalLifespanTicks(agentId: string, vitality = 1): number {\n  const extraDays = demographicHash(agentId) % (POPULATION_LIFESPAN_VARIATION_DAYS + 1);\n  const baseline = POPULATION_MIN_LIFESPAN_TICKS + extraDays * POPULATION_DAY_TICKS;\n  return Math.round(baseline * boundedTrait(vitality));\n}\n'''
+          )
+          replace_once(
+              "src/demography.ts",
+              '    if (age >= naturalLifespanTicks(agent.id)) continue;',
+              '    if (age >= naturalLifespanTicks(agent.id, agent.heritableTraits?.vitality)) continue;'
+          )
+
+          replace_once(
+              "src/runtime.ts",
+              'import { applyPopulationAging, dependentCaregiverId } from "./demography.js";',
+              '''import {\n  adultCapacityForTraits,\n  applyPopulationAging,\n  dependentCaregiverId,\n  inheritHeritableTraits,\n  normalizedHeritableTraits,\n} from "./demography.js";'''
+          )
+          replace_once(
+              "src/runtime.ts",
+              '      agent.capacity = role === "builder" ? 32 : 24;',
+              '      agent.capacity = adultCapacityForTraits(role === "builder" ? 32 : 24, agent);'
+          )
+          replace_once(
+              "src/runtime.ts",
+              '    const nourished = consumeStoredFood(state, parent.factionId, POPULATION_BIRTH_FOOD_COST);\n\n    state.agents.push({',
+              '''    const nourished = consumeStoredFood(state, parent.factionId, POPULATION_BIRTH_FOOD_COST);\n    const partner = getAgent(state, pregnancy.partnerId);\n    const partnerTraits = pregnancy.partnerTraits ??\n      (partner === undefined ? undefined : normalizedHeritableTraits(partner));\n\n    state.agents.push({'''
+          )
+          replace_once(
+              "src/runtime.ts",
+              '      reproductiveRole: demographicHash(childId) % 2 === 0 ? "gestational" : "partner",\n      parents: [parent.id, pregnancy.partnerId],',
+              '''      reproductiveRole: demographicHash(childId) % 2 === 0 ? "gestational" : "partner",\n      heritableTraits: inheritHeritableTraits(parent, partnerTraits, childId),\n      parents: [parent.id, pregnancy.partnerId],'''
+          )
+          replace_once(
+              "src/runtime.ts",
+              '''      parent.pregnancy = {\n        partnerId: partner.id,\n        conceivedAtTick: state.tick,\n        dueAtTick: state.tick + POPULATION_GESTATION_TICKS,\n      };''',
+              '''      parent.pregnancy = {\n        partnerId: partner.id,\n        conceivedAtTick: state.tick,\n        dueAtTick: state.tick + POPULATION_GESTATION_TICKS,\n        partnerTraits: normalizedHeritableTraits(partner),\n      };'''
+          )
+
+          Path("tests/population-traits.test.mjs").write_text(r'''import assert from "node:assert/strict";\nimport test from "node:test";\nimport {\n  adultCapacityForTraits,\n  inheritHeritableTraits,\n  naturalLifespanTicks,\n  POPULATION_TRAIT_MAX,\n  POPULATION_TRAIT_MIN,\n} from "../dist-ts/src/demography.js";\nimport { WorldRuntime } from "../dist-ts/src/runtime.js";\nimport { createInitialWorld } from "../dist-ts/src/world.js";\n\ntest("heritable traits mix both parents with deterministic bounded mutation", () => {\n  const parent = { heritableTraits: { vitality: 1.1, carryingCapacity: 1.08 } };\n  const partnerTraits = { vitality: 0.96, carryingCapacity: 0.94 };\n  const first = inheritHeritableTraits(parent, partnerTraits, "trait-child-a");\n  const repeated = inheritHeritableTraits(parent, partnerTraits, "trait-child-a");\n\n  assert.deepEqual(first, repeated);\n  assert.ok(first.vitality >= POPULATION_TRAIT_MIN && first.vitality <= POPULATION_TRAIT_MAX);\n  assert.ok(first.carryingCapacity >= POPULATION_TRAIT_MIN && first.carryingCapacity <= POPULATION_TRAIT_MAX);\n  assert.ok(Math.abs(first.vitality - 1.03) <= 0.0201);\n  assert.ok(Math.abs(first.carryingCapacity - 1.01) <= 0.0201);\n});\n\ntest("vitality and carrying capacity affect lifespan and adult hauling capacity", () => {\n  const baseline = naturalLifespanTicks("trait-lifespan");\n  assert.ok(naturalLifespanTicks("trait-lifespan", 0.9) < baseline);\n  assert.ok(naturalLifespanTicks("trait-lifespan", 1.1) > baseline);\n  assert.equal(\n    adultCapacityForTraits(24, { heritableTraits: { vitality: 1, carryingCapacity: 1.1 } }),\n    26,\n  );\n  assert.equal(adultCapacityForTraits(24, {}), 24);\n});\n\ntest("conception snapshots partner traits and birth inherits them after gestation", () => {\n  const state = createInitialWorld({ seed: 6041 });\n  const faction = state.factions.find((entry) => entry.id === "ember");\n  assert.ok(faction);\n  const templates = state.agents.filter((agent) => agent.factionId === faction.id);\n  assert.ok(templates.length >= 2);\n\n  const parent = structuredClone(templates[0]);\n  const partner = structuredClone(templates[1]);\n  assert.ok(parent);\n  assert.ok(partner);\n  parent.id = "trait-parent";\n  partner.id = "trait-partner";\n  parent.position = { ...templates[0].position };\n  partner.position = { ...parent.position };\n  parent.hp = partner.hp = 100;\n  parent.energy = partner.energy = 100;\n  parent.autonomy = partner.autonomy = false;\n  parent.reproductiveRole = "gestational";\n  partner.reproductiveRole = "partner";\n  parent.heritableTraits = { vitality: 1.1, carryingCapacity: 1.08 };\n  partner.heritableTraits = { vitality: 0.96, carryingCapacity: 0.94 };\n  parent.socialMemory = [{ agentId: partner.id, familiarity: 4, lastInteractionTick: 1 }];\n  partner.socialMemory = [{ agentId: parent.id, familiarity: 4, lastInteractionTick: 1 }];\n  delete parent.pregnancy;\n  delete partner.pregnancy;\n  delete parent.lastBirthTick;\n  delete partner.lastBirthTick;\n  delete parent.task;\n  delete partner.task;\n\n  state.agents = state.agents.filter((agent) => agent.factionId !== faction.id);\n  state.agents.push(parent, partner);\n  state.structures = state.structures.filter((structure) => structure.factionId !== faction.id);\n  state.structures.push({\n    id: "trait-family-camp",\n    factionId: faction.id,\n    type: "camp",\n    position: { ...parent.position },\n    status: "active",\n    progress: 6,\n    requiredProgress: 6,\n    storage: { wood: 0, stone: 0, food: 100 },\n  });\n  faction.resources.food = 100;\n  state.tick = 8_639;\n\n  const conceived = new WorldRuntime({ state }).tick().state;\n  const gestationalParent = conceived.agents.find((agent) => agent.id === parent.id);\n  assert.ok(gestationalParent?.pregnancy);\n  assert.deepEqual(gestationalParent.pregnancy.partnerTraits, partner.heritableTraits);\n\n  const childId = `agent-${faction.id}-birth-${gestationalParent.pregnancy.dueAtTick}-3`;\n  const expectedTraits = inheritHeritableTraits(\n    gestationalParent,\n    gestationalParent.pregnancy.partnerTraits,\n    childId,\n  );\n  conceived.tick = gestationalParent.pregnancy.dueAtTick - 1;\n  const born = new WorldRuntime({ state: conceived }).tick().state;\n  const newborn = born.agents.find((agent) => agent.id === childId);\n  assert.ok(newborn);\n  assert.deepEqual(newborn.heritableTraits, expectedTraits);\n  assert.deepEqual(newborn.parents, [parent.id, partner.id]);\n});\n''')
+          PY
+      - name: Typecheck, test, and build
+        run: npm run build
+      - name: Commit verified improvement
+        shell: bash
+        run: |
+          rm .github/workflows/moyo-traits-once.yml
+          git config user.name "Tsubasa Azumagakito"
+          git config user.email "azumag@users.noreply.github.com"
+          git add src/protocol.ts src/demography.ts src/runtime.ts tests/population-traits.test.mjs .github/workflows/moyo-traits-once.yml
+          git diff --cached --check
+          git commit -m "sim: inherit bounded demographic traits"
+          git push origin HEAD:main
