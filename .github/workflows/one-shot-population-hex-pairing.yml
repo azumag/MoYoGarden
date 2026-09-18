@@ -1,0 +1,66 @@
+name: One-shot population hex pairing fix
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Add regression test
+        run: python .github/scripts/apply-population-hex-pairing.py test
+
+      - name: Confirm regression is red on old implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build:ts
+          set +e
+          node --test --test-concurrency=1 tests/population-hex-pairing.test.mjs
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then
+            echo "::error::Expected the axial NE/SW radius regression to fail before the fix."
+            exit 1
+          fi
+          echo "Regression reproduced on the old Manhattan-distance pairing logic."
+
+      - name: Apply hex-distance pairing fix
+        run: python .github/scripts/apply-population-hex-pairing.py fix
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Commit verified fix and remove one-shot files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/one-shot-population-hex-pairing.yml
+          git rm .github/scripts/apply-population-hex-pairing.py
+          git add src/runtime.ts tests/population-hex-pairing.test.mjs
+          git diff --cached --check
+          git commit -m 'fix: use hex distance for reproductive pairing'
+          git push origin HEAD:main
