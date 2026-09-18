@@ -72,6 +72,32 @@ const MAX_IDLE_TICK_MS = 3_600_000;
 // preserving the exact per-tick simulation chain.
 const MAX_VIRTUAL_CATCH_UP_TICKS = 12;
 const TERRAIN_FRAME_VERSION = 1;
+// Cloudflare Workers allow at most six outgoing connections to wait for
+// response headers concurrently. Keep larger region windows from issuing
+// 19/37/61 Durable Object snapshot requests in one simultaneous burst.
+const REGION_WINDOW_SNAPSHOT_CONCURRENCY = 6;
+
+async function mapWithConcurrency<T, U>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T, index: number) => Promise<U>,
+): Promise<U[]> {
+  if (values.length === 0) return [];
+  const limit = Math.max(1, Math.min(values.length, Math.floor(concurrency)));
+  const results = new Array<U>(values.length);
+  let nextIndex = 0;
+
+  const run = async (): Promise<void> => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await operation(values[index] as T, index);
+    }
+  };
+
+  await Promise.all(Array.from({ length: limit }, () => run()));
+  return results;
+}
 
 export function regionTickDelayMs(tickMs: number, active: boolean): number {
   if (active) return tickMs;
@@ -834,7 +860,10 @@ export default {
       const entries = parseAxialRegionId(regionId) !== undefined
         ? sparseCanonicalRegionWindow(regionId, radius)
         : sparseRegionWindow(allowedRegions(env), regionId, radius);
-      const chunks = await Promise.all(entries.map(async (entry) => {
+      const chunks = await mapWithConcurrency(
+        entries,
+        REGION_WINDOW_SNAPSHOT_CONCURRENCY,
+        async (entry) => {
         const stub = env.REGIONS.get(env.REGIONS.idFromName(entry.id));
         const headers = new Headers(request.headers);
         headers.set("x-moyo-region-internal", entry.id);
@@ -864,7 +893,8 @@ export default {
             ? terrainPreviewState(await response.json() as WorldState)
             : await response.json(),
         };
-      }));
+        },
+      );
       return json({
         coordinateSpace: "global-grid",
         centerRegion: regionId,
