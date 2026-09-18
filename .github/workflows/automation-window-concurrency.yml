@@ -38,9 +38,7 @@ jobs:
           worker_path = Path("src/worker.ts")
           worker = worker_path.read_text()
 
-          constant_anchor = '''const MAX_VIRTUAL_CATCH_UP_TICKS = 12;
-          const TERRAIN_FRAME_VERSION = 1;
-          '''
+          constant_anchor = "const MAX_VIRTUAL_CATCH_UP_TICKS = 12;\nconst TERRAIN_FRAME_VERSION = 1;\n"
           constant_replacement = '''const MAX_VIRTUAL_CATCH_UP_TICKS = 12;
           const TERRAIN_FRAME_VERSION = 1;
           // Cloudflare Workers allow at most six outgoing connections to wait for
@@ -74,26 +72,14 @@ jobs:
               raise SystemExit("window concurrency constant anchor mismatch")
           worker = worker.replace(constant_anchor, constant_replacement, 1)
 
-          start_anchor = '''      const chunks = await Promise.all(entries.map(async (entry) => {
-          '''
-          start_replacement = '''      const chunks = await mapWithConcurrency(
-            entries,
-            REGION_WINDOW_SNAPSHOT_CONCURRENCY,
-            async (entry) => {
-          '''
+          start_anchor = "      const chunks = await Promise.all(entries.map(async (entry) => {\n"
+          start_replacement = "      const chunks = await mapWithConcurrency(\n        entries,\n        REGION_WINDOW_SNAPSHOT_CONCURRENCY,\n        async (entry) => {\n"
           if worker.count(start_anchor) != 1:
               raise SystemExit("window Promise.all anchor mismatch")
           worker = worker.replace(start_anchor, start_replacement, 1)
 
-          end_anchor = '''        };
-          }));
-          return json({
-          '''
-          end_replacement = '''        };
-            },
-          );
-          return json({
-          '''
+          end_anchor = "      }));\n      return json({\n"
+          end_replacement = "        },\n      );\n      return json({\n"
           if worker.count(end_anchor) != 1:
               raise SystemExit("window Promise.all closing anchor mismatch")
           worker = worker.replace(end_anchor, end_replacement, 1)
