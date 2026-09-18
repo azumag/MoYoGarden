@@ -26,6 +26,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('src/pathogen-region.ts')
           text = path.read_text()
@@ -40,7 +41,7 @@ jobs:
               raise SystemExit('pathogen import anchor not found')
           text = text.replace(old, new, 1)
 
-          anchor = '''export class RegionDurableObject extends AutonomyRegionDurableObject {'''
+          anchor = 'export class RegionDurableObject extends AutonomyRegionDurableObject {'
           helper = '''export function pathogenHaloLinksForActivity(
             state: Pick<WorldState, "width" | "height">,
             regionIds: readonly string[],
@@ -55,30 +56,23 @@ jobs:
               raise SystemExit('pathogen class anchor not found')
           text = text.replace(anchor, helper + anchor, 1)
 
-          old_method = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
-            // Regions that already participate in the shared global axial cell frame use
-            // exact six-direction ownership at every activity tier. Historical IDs with
-            // no global identity retain the configured compatibility halo.
-            if (regionGlobalCellOrigin(state.regionId, state.width, state.height) !== undefined) {
-              return buildDynamicHexHaloLinks(state, state.regionId);
-            }
-            return buildConfiguredHexHaloLinks(
-              state,
-              configuredRegionIds(this.pathogenEnv),
-              state.regionId,
-            );
-          }'''
-          new_method = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
+          pattern = re.compile(
+              r'  private pathogenHaloLinks\(state: WorldState\): HexHaloLink\[\] \{.*?\n  \}\n\n  private async fetchNeighborPathogenEdge',
+              re.S,
+          )
+          replacement = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
             return pathogenHaloLinksForActivity(
               state,
               configuredRegionIds(this.pathogenEnv),
               state.regionId,
               this.activityTier(),
             );
-          }'''
-          if old_method not in text:
-              raise SystemExit('pathogen halo method anchor not found')
-          text = text.replace(old_method, new_method, 1)
+          }
+
+          private async fetchNeighborPathogenEdge'''
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'pathogen halo method replacement count={count}')
           path.write_text(text)
 
           test_path = Path('tests/pathogen-halo-scope.test.mjs')
