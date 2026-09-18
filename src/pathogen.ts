@@ -637,10 +637,42 @@ export function pathogenHaloReservoirMap(
   return materializePathogenHaloMaps(links, edges, undefined, false, true).reservoir;
 }
 
+/**
+ * A clean region cannot spontaneously create pathogen state: local
+ * progression only transforms existing host burden/immunity or an
+ * existing environmental reservoir. Cross-region halo exposure is
+ * applied after local progression, so skipping the local hot path here
+ * still allows a neighbor to introduce infection on the same cadence.
+ *
+ * Treat an explicitly stored zero as activity for one pass so legacy or
+ * partially-written optional fields are cleaned by the normal mutation
+ * path instead of becoming permanent inert state. Compatibility-envelope
+ * tiles outside the active axial hex are deliberately ignored for the
+ * same reason as singlePathogenStep itself.
+ */
+export function pathogenStateIsQuiescent(
+  state: Pick<WorldState, "agents" | "tiles" | "width" | "height">,
+): boolean {
+  const hasAgentState = state.agents.some((agent) => {
+    const pathogen = agent as PathogenAgent;
+    return pathogen.pathogenLoad !== undefined || pathogen.pathogenImmunity !== undefined;
+  });
+  if (hasAgentState) return false;
+
+  const hasHexExtent =
+    Number.isInteger(state.width) && state.width > 0 &&
+    Number.isInteger(state.height) && state.height > 0;
+  return !(state.tiles ?? []).some((tile) => {
+    if (hasHexExtent && !isHexGridCell(state, tile)) return false;
+    return (tile as PathogenTile).pathogenReservoir !== undefined;
+  });
+}
+
 function singlePathogenStep(
   state: WorldState,
   environment: PathogenEnvironmentFrame | undefined,
 ): number {
+  if (pathogenStateIsQuiescent(state)) return 0;
   const allTiles = state.tiles ?? [];
   // WorldState still persists the historical 40x24 compatibility envelope, but
   // only the regular axial hex is simulation-owned terrain. Ignore compatibility
