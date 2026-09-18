@@ -77,8 +77,10 @@ test("food scarcity is reflected in pregnant and dependent energy without invent
 
   assert.equal(faction.resources.food, 0);
   assert.equal(parent.energy, 72);
+  assert.equal(parent.hp, 99);
   assert.equal(parent.status, "pregnant; food insecure");
   assert.equal(child.energy, 42);
+  assert.equal(child.hp, 99);
   assert.equal(child.status, "infant; food insecure");
 });
 

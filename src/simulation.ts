@@ -23,6 +23,7 @@ import {
   type WorldEvent,
   type WorldState,
 } from "./protocol.js";
+import { demographicWorkRecoveryReasons } from "./demography.js";
 import { createRandom } from "./prng.js";
 import {
   activeFactionStructures,
@@ -1398,8 +1399,20 @@ export function simulate(
 
   const receipts = commands.map((command) => applyCommand(state, command, config));
 
+  const demographicRecovery = demographicWorkRecoveryReasons(state);
   const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
   for (const agent of agents) {
+    const recoveryReason = demographicRecovery.get(agent.id);
+    if (recoveryReason !== undefined) {
+      // Preserve the existing autonomous task as intent, but spend this tick
+      // recovering instead of moving/gathering/building/trading. Once energy is
+      // above the demographic reserve threshold the same task can resume.
+      agent.energy = Math.min(100, agent.energy + 1);
+      agent.status = recoveryReason === "pregnancy"
+        ? "resting during pregnancy"
+        : "resting after dependent care";
+      continue;
+    }
     if (agent.task === undefined && agent.autonomy) {
       const plannedTask = autonomyTask(state, agent);
       if (plannedTask !== undefined) agent.task = plannedTask;

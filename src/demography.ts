@@ -22,6 +22,8 @@ const POPULATION_PREGNANCY_HUNGER_ENERGY_COST = 6;
 const POPULATION_DEPENDENT_ENERGY_RECOVERY = 6;
 const POPULATION_DEPENDENT_HUNGER_ENERGY_COST = 8;
 const POPULATION_CAREGIVER_ENERGY_COST = 2;
+const POPULATION_FOOD_INSECURITY_HEALTH_COST = 1;
+export const POPULATION_CARE_WORK_RECOVERY_ENERGY = 35;
 const POPULATION_RELATIONSHIP_MEMORY_LIMIT = 8;
 const POPULATION_RELATIONSHIP_FAMILIARITY_MAX = 32;
 const GLOBAL_AGENT_PREFIX = "agent-global:";
@@ -156,6 +158,54 @@ function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefi
   return caregiverId === undefined
     ? undefined
     : state.agents.find((candidate) => candidate.id === caregiverId);
+}
+
+export type DemographicWorkRecoveryReason = "pregnancy" | "dependent-care";
+
+/**
+ * Derive temporary work recovery from existing low-level demographic state.
+ *
+ * Pregnancy and dependent care already consume food and energy on the compressed
+ * demographic cadence. Once that accumulated energy pressure reaches the same
+ * reserve used to gate conception, autonomous work yields to recovery until the
+ * agent has rebuilt a small reserve. Explicit external commands remain
+ * authoritative, and no new persisted cooldown/state field is needed.
+ */
+export function demographicWorkRecoveryReasons(
+  state: WorldState,
+): Map<string, DemographicWorkRecoveryReason> {
+  const reasons = new Map<string, DemographicWorkRecoveryReason>();
+  const eligible = (agent: Agent): boolean =>
+    agent.autonomy &&
+    agent.hp > 0 &&
+    agent.energy <= POPULATION_CARE_WORK_RECOVERY_ENERGY &&
+    agent.task?.source !== "external";
+
+  for (const agent of state.agents) {
+    if (
+      eligible(agent) &&
+      agent.pregnancy !== undefined &&
+      agent.pregnancy.dueAtTick > state.tick
+    ) {
+      reasons.set(agent.id, "pregnancy");
+    }
+  }
+
+  for (const dependent of state.agents) {
+    if (
+      dependent.hp <= 0 ||
+      (dependent.lifeStage !== "infant" && dependent.lifeStage !== "juvenile")
+    ) {
+      continue;
+    }
+    const caregiverId = dependentCaregiverId(state, dependent);
+    if (caregiverId === undefined || reasons.has(caregiverId)) continue;
+    const caregiver = state.agents.find((candidate) => candidate.id === caregiverId);
+    if (caregiver !== undefined && eligible(caregiver)) {
+      reasons.set(caregiverId, "dependent-care");
+    }
+  }
+  return reasons;
 }
 
 function constructionStructureId(event: WorldEvent): string | undefined {
@@ -298,6 +348,9 @@ export function applyPopulationMaintenance(state: WorldState): void {
         ),
       );
       if (!nourished) {
+        if (agent.hp > 1) {
+          agent.hp = Math.max(1, agent.hp - POPULATION_FOOD_INSECURITY_HEALTH_COST);
+        }
         agent.status = agent.lifeStage === "elder"
           ? "elder; pregnant; food insecure"
           : "pregnant; food insecure";
@@ -334,6 +387,12 @@ export function applyPopulationMaintenance(state: WorldState): void {
         0,
         dependent.energy - POPULATION_DEPENDENT_HUNGER_ENERGY_COST,
       );
+      if (dependent.hp > 1) {
+        dependent.hp = Math.max(
+          1,
+          dependent.hp - POPULATION_FOOD_INSECURITY_HEALTH_COST,
+        );
+      }
       dependent.status = `${dependent.lifeStage}; food insecure`;
     }
 
