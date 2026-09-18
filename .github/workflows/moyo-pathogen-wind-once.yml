@@ -1,0 +1,287 @@
+name: MoYoGarden pathogen wind improvement
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-pathogen-wind-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Patch pathogen wind transport and regression tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/pathogen.ts')
+          text = path.read_text()
+
+          constant = 'const PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN = 0.08;\n'
+          assert text.count(constant) == 1
+          text = text.replace(
+              constant,
+              constant + 'const PATHOGEN_RESERVOIR_WIND_TRANSPORT_GAIN = 0.03;\n',
+          )
+
+          start = text.index('function advectPathogenReservoirs(')
+          end = text.index('\nfunction localReservoirExposure(', start)
+          old_block = text[start:end]
+          assert 'PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN' in old_block
+          assert 'sampleWorldWind' not in old_block
+
+          new_block = '''function advectPathogenReservoirs(
+            tilesByPosition: ReadonlyMap<string, Tile>,
+            previousReservoir: ReadonlyMap<string, number>,
+            environment: PathogenEnvironmentFrame | undefined,
+          ): Map<string, number> {
+            const requests: Array<{ sourceKey: string; targetKey: string; amount: number }> = [];
+            const requestedByTarget = new Map<string, number>();
+            const requestTransfer = (sourceKey: string, targetKey: string, amount: number): void => {
+              if (
+                sourceKey === targetKey ||
+                !tilesByPosition.has(targetKey) ||
+                amount <= PATHOGEN_EPSILON
+              ) {
+                return;
+              }
+              requests.push({ sourceKey, targetKey, amount });
+              requestedByTarget.set(targetKey, (requestedByTarget.get(targetKey) ?? 0) + amount);
+            };
+
+            for (const [sourceKey, current] of previousReservoir) {
+              if (current <= PATHOGEN_EPSILON) continue;
+              const tile = tilesByPosition.get(sourceKey);
+              if (tile === undefined) continue;
+
+              const targetPosition = tile.flowTo;
+              if (targetPosition !== undefined) {
+                const drainage = Number.isFinite(tile.drainage ?? Number.NaN)
+                  ? clamp01(tile.drainage ?? 0)
+                  : 0;
+                if (drainage > 0) {
+                  requestTransfer(
+                    sourceKey,
+                    positionKey(targetPosition),
+                    current * drainage * PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN,
+                  );
+                }
+              }
+
+              // Airborne environmental burden follows the same deterministic
+              // six-direction wind field used by contact transmission. Keep this
+              // local-only until cross-DO reservoir ownership has an idempotent
+              // transaction: a boundary gust must not duplicate or teleport mass.
+              if (environment !== undefined) {
+                const wind = sampleWorldWind(
+                  environment.worldSeed,
+                  environment.originX + tile.x,
+                  environment.originY + tile.y,
+                );
+                const step = HEX_GRID_DIRECTION_STEPS[wind.direction];
+                requestTransfer(
+                  sourceKey,
+                  positionKey({ x: tile.x + step.x, y: tile.y + step.y }),
+                  current * wind.strength * PATHOGEN_RESERVOIR_WIND_TRANSPORT_GAIN,
+                );
+              }
+            }
+
+            const acceptedScaleByTarget = new Map<string, number>();
+            for (const [targetKey, requested] of requestedByTarget) {
+              const targetCurrent = previousReservoir.get(targetKey) ?? 0;
+              const capacity = Math.max(0, 1 - targetCurrent);
+              acceptedScaleByTarget.set(
+                targetKey,
+                requested > 0 ? Math.min(1, capacity / requested) : 0,
+              );
+            }
+
+            const outbound = new Map<string, number>();
+            const inbound = new Map<string, number>();
+            for (const request of requests) {
+              const transferred = request.amount * (acceptedScaleByTarget.get(request.targetKey) ?? 0);
+              if (transferred <= PATHOGEN_EPSILON) continue;
+              outbound.set(request.sourceKey, (outbound.get(request.sourceKey) ?? 0) + transferred);
+              inbound.set(request.targetKey, (inbound.get(request.targetKey) ?? 0) + transferred);
+            }
+
+            const advected = new Map(previousReservoir);
+            const changedKeys = new Set([...outbound.keys(), ...inbound.keys()]);
+            for (const key of changedKeys) {
+              advected.set(
+                key,
+                (previousReservoir.get(key) ?? 0) - (outbound.get(key) ?? 0) + (inbound.get(key) ?? 0),
+              );
+            }
+            return advected;
+          }
+          '''
+          text = text[:start] + new_block + text[end:]
+
+          call = 'const advectedReservoir = advectPathogenReservoirs(tilesByPosition, previousReservoir);'
+          assert text.count(call) == 1
+          text = text.replace(
+              call,
+              'const advectedReservoir = advectPathogenReservoirs(\n    tilesByPosition,\n    previousReservoir,\n    environment,\n  );',
+          )
+
+          old_doc = ''' * Move a small, bounded share of existing environmental burden along the local
+ * hydrology graph before clearance/shedding are applied.
+ *
+ * `flowTo` and `drainage` are already derived from the six-neighbor elevation
+ * field, so this couples infection ecology to the same low-level water routing
+ * without inventing a river/pathogen category. Only targets owned by this local
+ * state are eligible: cross-DO flow ownership is still a separate Issue #3 step,
+ * and an unresolved boundary outlet must not teleport contamination or mutate a
+ * neighbor.
+'''
+          new_doc = ''' * Move small, bounded shares of existing environmental burden along the local
+ * hydrology graph and the shared six-direction wind field before clearance and
+ * shedding are applied.
+ *
+ * `flowTo` / `drainage` and `sampleWorldWind` are both derived from low-level
+ * continuous world state, so contamination moves without inventing a top-down
+ * disease event. Only targets owned by this local state are eligible: cross-DO
+ * flow/wind ownership is still a separate Issue #3 transaction step, and an
+ * unresolved boundary outlet or gust must not teleport contamination or mutate a
+ * neighbor.
+'''
+          assert text.count(old_doc) == 1
+          text = text.replace(old_doc, new_doc)
+          path.write_text(text)
+
+          Path('tests/pathogen-wind-transport.test.mjs').write_text('''import assert from "node:assert/strict";
+          import test from "node:test";
+          import {
+            HEX_GRID_DIRECTION_STEPS,
+            hexGridNeighbors,
+            isHexGridCell,
+          } from "../dist-ts/src/hex-grid.js";
+          import { applyPathogenSteps, tilePathogenReservoir } from "../dist-ts/src/pathogen.js";
+          import { sampleWorldWind } from "../dist-ts/src/world-scale.js";
+          import { createInitialWorld } from "../dist-ts/src/world.js";
+
+          function cleanReservoirState() {
+            const state = createInitialWorld({ seed: 260918, width: 40, height: 24 });
+            state.agents = [];
+            for (const tile of state.tiles) {
+              delete tile.pathogenReservoir;
+              delete tile.flowTo;
+              tile.drainage = 0;
+            }
+            return state;
+          }
+
+          const environment = { worldSeed: 424242, originX: 0, originY: 0 };
+
+          test("shared-world wind carries environmental pathogen burden one local hex downwind", () => {
+            const state = cleanReservoirState();
+            const control = structuredClone(state);
+            const source = state.tiles.find((tile) => tile.x === 19 && tile.y === 11);
+            const controlSource = control.tiles.find((tile) => tile.x === 19 && tile.y === 11);
+            assert.ok(source);
+            assert.ok(controlSource);
+            source.pathogenReservoir = 1;
+            controlSource.pathogenReservoir = 1;
+
+            const wind = sampleWorldWind(
+              environment.worldSeed,
+              environment.originX + source.x,
+              environment.originY + source.y,
+            );
+            const step = HEX_GRID_DIRECTION_STEPS[wind.direction];
+            const targetPosition = { x: source.x + step.x, y: source.y + step.y };
+            const target = state.tiles.find(
+              (tile) => tile.x === targetPosition.x && tile.y === targetPosition.y,
+            );
+            assert.ok(target);
+            assert.equal(isHexGridCell(state, target), true);
+
+            applyPathogenSteps(state, 1, environment);
+            applyPathogenSteps(control, 1);
+
+            assert.ok(
+              tilePathogenReservoir(target) > 0,
+              "wind should move some existing environmental burden downwind",
+            );
+            const controlTarget = control.tiles.find(
+              (tile) => tile.x === targetPosition.x && tile.y === targetPosition.y,
+            );
+            assert.ok(controlTarget);
+            assert.equal(
+              tilePathogenReservoir(controlTarget),
+              0,
+              "without the shared environment frame there is no wind transport",
+            );
+
+            const otherNeighbors = hexGridNeighbors(source).filter(
+              (position) => position.x !== targetPosition.x || position.y !== targetPosition.y,
+            );
+            for (const position of otherNeighbors) {
+              const tile = state.tiles.find((entry) => entry.x === position.x && entry.y === position.y);
+              assert.ok(tile);
+              assert.equal(
+                tilePathogenReservoir(tile),
+                0,
+                "a single pathogen step must follow only the sampled downwind edge",
+              );
+            }
+
+            const total = state.tiles.reduce((sum, tile) => sum + tilePathogenReservoir(tile), 0);
+            assert.ok(total > 0 && total < 1, "clearance may remove burden but wind must not create it");
+          });
+
+          test("wind transport fails soft at an unresolved macro-hex boundary", () => {
+            const state = cleanReservoirState();
+            const source = state.tiles.find((tile) => {
+              if (!isHexGridCell(state, tile)) return false;
+              const wind = sampleWorldWind(
+                environment.worldSeed,
+                environment.originX + tile.x,
+                environment.originY + tile.y,
+              );
+              const step = HEX_GRID_DIRECTION_STEPS[wind.direction];
+              return !isHexGridCell(state, { x: tile.x + step.x, y: tile.y + step.y });
+            });
+            assert.ok(source, "fixture should find a boundary cell whose wind points outside the active hex");
+            source.pathogenReservoir = 1;
+
+            applyPathogenSteps(state, 1, environment);
+
+            const contaminated = state.tiles.filter(
+              (tile) => isHexGridCell(state, tile) && tilePathogenReservoir(tile) > 0,
+            );
+            assert.deepEqual(
+              contaminated.map((tile) => [tile.x, tile.y]),
+              [[source.x, source.y]],
+              "unowned downwind cells must not receive copied reservoir burden",
+            );
+            assert.ok(tilePathogenReservoir(source) > 0);
+          });
+          '''.replace(/^          /gm, ''))
+          PY
+      - name: Typecheck, test, and build
+        run: npm run build
+      - name: Commit verified improvement and remove one-shot workflow
+        shell: bash
+        run: |
+          rm .github/workflows/moyo-pathogen-wind-once.yml
+          git config user.name "Tsubasa Azumagakito"
+          git config user.email "azumag@users.noreply.github.com"
+          git add src/pathogen.ts tests/pathogen-wind-transport.test.mjs .github/workflows/moyo-pathogen-wind-once.yml
+          git commit -m "sim: carry pathogen reservoir with shared wind"
+          git push origin HEAD:main
