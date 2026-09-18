@@ -272,7 +272,7 @@ jobs:
             );
             assert.ok(tilePathogenReservoir(source) > 0);
           });
-          '''.replace(/^          /gm, ''))
+          ''')
           PY
       - name: Typecheck, test, and build
         run: npm run build
