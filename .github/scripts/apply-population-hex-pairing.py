@@ -2,24 +2,15 @@ from pathlib import Path
 import sys
 
 runtime_path = Path("src/runtime.ts")
-test_path = Path("tests/population-hex-pairing.test.mjs")
+test_path = Path("tests/population-relationship-gate.test.mjs")
 
 TEST = r'''import assert from "node:assert/strict";
 import test from "node:test";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
-const RADIUS_TWO_DIRECTIONS = [
-  { x: 2, y: 0, name: "E" },
-  { x: 2, y: -2, name: "NE" },
-  { x: 0, y: -2, name: "NW" },
-  { x: -2, y: 0, name: "W" },
-  { x: -2, y: 2, name: "SW" },
-  { x: 0, y: 2, name: "SE" },
-];
-
-function conceptionState(delta) {
-  const state = createInitialWorld({ seed: 2042 });
+test("conception requires an established social relationship instead of proximity alone", () => {
+  const state = createInitialWorld({ seed: 26091801 });
   const faction = state.factions.find((entry) => entry.id === "ember");
   assert.ok(faction);
   const templates = state.agents.filter((agent) => agent.factionId === faction.id);
@@ -29,15 +20,15 @@ function conceptionState(delta) {
     if (tile.terrain === "water") tile.terrain = "plain";
   }
 
-  const center = { x: 19, y: 11 };
+  const position = { x: 19, y: 11 };
   const parent = structuredClone(templates[0]);
   const partner = structuredClone(templates[1]);
   assert.ok(parent);
   assert.ok(partner);
 
-  parent.id = "hex-pair-parent";
-  parent.name = "Hex Parent";
-  parent.position = { ...center };
+  parent.id = "relationship-parent";
+  parent.name = "Relationship Parent";
+  parent.position = { ...position };
   parent.hp = 100;
   parent.energy = 100;
   parent.autonomy = false;
@@ -47,11 +38,12 @@ function conceptionState(delta) {
   delete parent.parents;
   delete parent.pregnancy;
   delete parent.lastBirthTick;
+  delete parent.socialMemory;
   delete parent.task;
 
-  partner.id = "hex-pair-partner";
-  partner.name = "Hex Partner";
-  partner.position = { x: center.x + delta.x, y: center.y + delta.y };
+  partner.id = "relationship-partner";
+  partner.name = "Relationship Partner";
+  partner.position = { ...position };
   partner.hp = 100;
   partner.energy = 100;
   partner.autonomy = false;
@@ -61,44 +53,46 @@ function conceptionState(delta) {
   delete partner.parents;
   delete partner.pregnancy;
   delete partner.lastBirthTick;
+  delete partner.socialMemory;
   delete partner.task;
 
-  state.agents = state.agents.filter((agent) => agent.factionId !== faction.id);
-  state.agents.push(parent, partner);
+  state.agents = [parent, partner];
+  state.events = [];
   state.structures = state.structures.filter((structure) => structure.factionId !== faction.id);
   state.structures.push({
-    id: "hex-pair-camp",
+    id: "relationship-camp",
     factionId: faction.id,
     type: "camp",
-    position: { ...center },
+    position: { ...position },
     status: "active",
     progress: 6,
     requiredProgress: 6,
     storage: { wood: 0, stone: 0, food: 100 },
   });
   faction.resources.food = 100;
+
+  // At the first reproduction boundary these healthy adults are co-located but
+  // have never interacted. Demography runs before social interactions, so mere
+  // proximity must not create a pregnancy; the same tick then gives them a real
+  // conversation and reciprocal social memory.
   state.tick = 8_639;
-  return state;
-}
+  const first = new WorldRuntime({ state }).tick().state;
+  const firstParent = first.agents.find((agent) => agent.id === parent.id);
+  const firstPartner = first.agents.find((agent) => agent.id === partner.id);
+  assert.ok(firstParent);
+  assert.ok(firstPartner);
+  assert.equal(firstParent.pregnancy, undefined);
+  assert.ok(firstParent.socialMemory?.some((entry) => entry.agentId === partner.id && entry.familiarity > 0));
+  assert.ok(firstPartner.socialMemory?.some((entry) => entry.agentId === parent.id && entry.familiarity > 0));
 
-test("conception radius treats all six axial directions equally", () => {
-  for (const delta of RADIUS_TWO_DIRECTIONS) {
-    const next = new WorldRuntime({ state: conceptionState(delta) }).tick().state;
-    const parent = next.agents.find((agent) => agent.id === "hex-pair-parent");
-    assert.ok(parent, delta.name);
-    assert.equal(
-      parent.pregnancy?.partnerId,
-      "hex-pair-partner",
-      `${delta.name} at hex distance 2 should remain inside the reproductive radius`,
-    );
-  }
-});
-
-test("conception radius still excludes a partner three hexes away", () => {
-  const next = new WorldRuntime({ state: conceptionState({ x: 3, y: -3 }) }).tick().state;
-  const parent = next.agents.find((agent) => agent.id === "hex-pair-parent");
-  assert.ok(parent);
-  assert.equal(parent.pregnancy, undefined);
+  // Once the low-level relationship exists, the next reproduction boundary can
+  // use it. No scripted couple or top-down family event is introduced.
+  first.tick = 17_279;
+  const second = new WorldRuntime({ state: first }).tick().state;
+  const secondParent = second.agents.find((agent) => agent.id === parent.id);
+  assert.ok(secondParent);
+  assert.equal(secondParent.pregnancy?.partnerId, partner.id);
+  assert.equal(secondParent.pregnancy?.conceivedAtTick, 17_280);
 });
 '''
 
@@ -111,16 +105,29 @@ def write_test() -> None:
 
 def apply_fix() -> None:
     text = runtime_path.read_text()
-    old_filter = "          manhattanDistance(candidate.position, parent.position) <= POPULATION_PARENT_RADIUS\n"
-    new_filter = "          hexGridDistance(candidate.position, parent.position) <= POPULATION_PARENT_RADIUS\n"
-    old_rank = "          distance: manhattanDistance(candidate.position, parent.position),\n"
-    new_rank = "          distance: hexGridDistance(candidate.position, parent.position),\n"
-    if text.count(old_filter) != 1:
-        raise SystemExit("expected exactly one reproductive radius Manhattan-distance anchor")
-    if text.count(old_rank) != 1:
-        raise SystemExit("expected exactly one reproductive ranking Manhattan-distance anchor")
-    text = text.replace(old_filter, new_filter, 1).replace(old_rank, new_rank, 1)
-    runtime_path.write_text(text)
+    old = '''        .map((candidate) => ({
+          candidate,
+          familiarity: pairFamiliarity(state, parent, candidate),
+          distance: manhattanDistance(candidate.position, parent.position),
+        }))
+        .sort((a, b) =>
+'''
+    new = '''        .map((candidate) => ({
+          candidate,
+          familiarity: pairFamiliarity(state, parent, candidate),
+          distance: manhattanDistance(candidate.position, parent.position),
+        }))
+        // Proximity is necessary but no longer sufficient for conception. A
+        // pair must have at least one persisted social interaction first; the
+        // ordinary conversation loop creates reciprocal socialMemory, while
+        // retained conversation events remain a compatibility fallback for
+        // saves that predate socialMemory.
+        .filter(({ familiarity }) => familiarity > 0)
+        .sort((a, b) =>
+'''
+    if text.count(old) != 1:
+        raise SystemExit("expected exactly one conception candidate ranking anchor")
+    runtime_path.write_text(text.replace(old, new, 1))
 
 
 if len(sys.argv) != 2 or sys.argv[1] not in {"test", "fix"}:
