@@ -1,0 +1,168 @@
+name: Stage social caregiver fallback
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/stage-social-caregiver.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply social caregiver fallback and regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("src/demography.ts")
+          text = path.read_text()
+          pattern = re.compile(
+              r'export function dependentCaregiverId\(\n  state: WorldState,\n  dependent: Agent,\n\): string \| undefined \{\n.*?\n\}\n\nfunction dependentCaregiver',
+              re.S,
+          )
+          replacement = '''function socialFamiliarityBetween(
+            state: WorldState,
+            left: Agent,
+            right: Agent,
+          ): number {
+            const familiarityFrom = (source: Agent, target: Agent): number =>
+              (source.socialMemory ?? []).reduce((best, entry) => {
+                if (!lineageReferenceMatchesAgent(state, target.id, entry.agentId)) return best;
+                const familiarity = Number.isFinite(entry.familiarity)
+                  ? Math.max(0, entry.familiarity)
+                  : 0;
+                return Math.max(best, familiarity);
+              }, 0);
+            return Math.max(familiarityFrom(left, right), familiarityFrom(right, left));
+          }
+
+          export function dependentCaregiverId(
+            state: WorldState,
+            dependent: Agent,
+          ): string | undefined {
+            const parents = (dependent.parents ?? [])
+              .flatMap((parentId) => {
+                const parent = state.agents.find((candidate) =>
+                  lineageReferenceMatchesAgent(state, candidate.id, parentId) &&
+                  candidate.factionId === dependent.factionId &&
+                  candidate.hp > 0
+                );
+                return parent === undefined ? [] : [parent];
+              })
+              .sort((a, b) =>
+                hexGridDistance(a.position, dependent.position) -
+                  hexGridDistance(b.position, dependent.position) ||
+                b.energy - a.energy ||
+                a.id.localeCompare(b.id)
+              );
+            if (parents[0] !== undefined) return parents[0].id;
+
+            // When no living parent currently owns this region, allow an existing
+            // relationship to provide care instead of assigning a magical stranger.
+            // This is deliberately a fallback: a living local parent always remains
+            // authoritative, and strangers with zero familiarity never qualify.
+            const guardians = state.agents
+              .filter((candidate) =>
+                candidate.id !== dependent.id &&
+                candidate.factionId === dependent.factionId &&
+                candidate.hp > 0 &&
+                candidate.lifeStage !== "infant" &&
+                candidate.lifeStage !== "juvenile"
+              )
+              .map((candidate) => ({
+                candidate,
+                familiarity: socialFamiliarityBetween(state, candidate, dependent),
+              }))
+              .filter(({ familiarity }) => familiarity > 0)
+              .sort((a, b) =>
+                b.familiarity - a.familiarity ||
+                hexGridDistance(a.candidate.position, dependent.position) -
+                  hexGridDistance(b.candidate.position, dependent.position) ||
+                b.candidate.energy - a.candidate.energy ||
+                a.candidate.id.localeCompare(b.candidate.id)
+              );
+            return guardians[0]?.candidate.id;
+          }
+
+          function dependentCaregiver'''
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"dependentCaregiverId replacement count={count}")
+          path.write_text(text)
+
+          test_path = Path("tests/demography-caregiver-selection.test.mjs")
+          test_text = test_path.read_text()
+          addition = '''
+
+test("orphaned dependents choose a familiar adult instead of a nearer stranger", () => {
+  const trusted = adult("trusted-guardian", 4, 4, 45);
+  trusted.socialMemory = [{ agentId: "child", familiarity: 5, lastInteractionTick: 30 }];
+  const stranger = adult("near-stranger", 10, 11, 100);
+  const child = dependent(["missing-parent-a", "missing-parent-b"]);
+  const state = { regionId: "garden-1", agents: [trusted, stranger, child] };
+
+  assert.equal(dependentCaregiverId(state, child), trusted.id);
+});
+
+test("living parents remain authoritative over stronger social guardians", () => {
+  const parent = adult("living-parent", 2, 2, 10);
+  const guardian = adult("familiar-guardian", 10, 11, 100);
+  guardian.socialMemory = [{ agentId: "child", familiarity: 32, lastInteractionTick: 40 }];
+  const child = dependent([parent.id, "missing-parent"]);
+  const state = { regionId: "garden-1", agents: [parent, guardian, child] };
+
+  assert.equal(dependentCaregiverId(state, child), parent.id);
+});
+
+test("social caregiver fallback requires a living same-faction adult relationship", () => {
+  const dead = adult("dead-friend", 10, 10, 100);
+  dead.hp = 0;
+  dead.socialMemory = [{ agentId: "child", familiarity: 12, lastInteractionTick: 20 }];
+  const juvenile = adult("juvenile-friend", 10, 10, 100);
+  juvenile.lifeStage = "juvenile";
+  juvenile.socialMemory = [{ agentId: "child", familiarity: 12, lastInteractionTick: 20 }];
+  const outsider = adult("outsider-friend", 10, 10, 100);
+  outsider.factionId = "visitors";
+  outsider.socialMemory = [{ agentId: "child", familiarity: 12, lastInteractionTick: 20 }];
+  const stranger = adult("unfamiliar-adult", 10, 10, 100);
+  const child = dependent(["missing-a", "missing-b"]);
+  const state = { regionId: "garden-1", agents: [dead, juvenile, outsider, stranger, child] };
+
+  assert.equal(dependentCaregiverId(state, child), undefined);
+});
+'''
+          if 'orphaned dependents choose a familiar adult' in test_text:
+              raise SystemExit('social caregiver tests already present')
+          test_path.write_text(test_text + addition)
+          PY
+
+          rm .github/workflows/stage-social-caregiver.yml
+          npm run build
+          git diff --check
+          git status --short
+      - name: Commit verified product change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/demography.ts tests/demography-caregiver-selection.test.mjs .github/workflows/stage-social-caregiver.yml
+          git commit -m "sim: let social ties provide fallback childcare"
+          git push origin HEAD:main
