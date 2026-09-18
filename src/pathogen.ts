@@ -37,6 +37,12 @@ export interface PathogenEdgeSnapshot {
   reservoirs?: PathogenEdgeReservoir[];
 }
 
+export interface PathogenReservoirOutboundIntent {
+  sourcePosition: GridPosition;
+  desiredPosition: GridPosition;
+  burden: number;
+}
+
 type PathogenAgent = Agent & {
   pathogenLoad?: number;
   pathogenImmunity?: number;
@@ -202,16 +208,101 @@ function pathogenReservoirIndex(tiles: readonly Tile[]): Map<string, number> {
 }
 
 /**
+ * Plan the share of environmental pathogen burden whose hydrology or wind
+ * destination is owned by an adjacent macro-region.
+ *
+ * Local advection intentionally ignores these destinations because another
+ * Durable Object owns the target cell. The region layer journals and debits
+ * these intents before sending them, so a failed cross-DO request cannot
+ * duplicate or destroy reservoir mass. Intents are derived only from already
+ * persisted low-level flow/wind state; no disease event is synthesized here.
+ */
+export function pathogenReservoirOutboundIntents(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  environment: PathogenEnvironmentFrame | undefined,
+): PathogenReservoirOutboundIntent[] {
+  if (
+    !Number.isInteger(state.width) || state.width <= 0 ||
+    !Number.isInteger(state.height) || state.height <= 0
+  ) return [];
+
+  const grouped = new Map<string, PathogenReservoirOutboundIntent>();
+  const request = (
+    sourcePosition: GridPosition,
+    desiredPosition: GridPosition,
+    burden: number,
+  ): void => {
+    if (
+      !Number.isFinite(burden) || burden <= PATHOGEN_EPSILON ||
+      isHexGridCell(state, desiredPosition)
+    ) return;
+    const key = `${positionKey(sourcePosition)}>${positionKey(desiredPosition)}`;
+    const current = grouped.get(key);
+    if (current === undefined) {
+      grouped.set(key, {
+        sourcePosition: { x: sourcePosition.x, y: sourcePosition.y },
+        desiredPosition: { x: desiredPosition.x, y: desiredPosition.y },
+        burden,
+      });
+    } else {
+      current.burden += burden;
+    }
+  };
+
+  for (const tile of state.tiles) {
+    if (!isHexGridCell(state, tile)) continue;
+    const current = tilePathogenReservoir(tile);
+    if (current <= PATHOGEN_EPSILON) continue;
+
+    if (tile.flowTo !== undefined && !isHexGridCell(state, tile.flowTo)) {
+      const drainage = Number.isFinite(tile.drainage ?? Number.NaN)
+        ? clamp01(tile.drainage ?? 0)
+        : 0;
+      if (drainage > 0) {
+        request(
+          tile,
+          tile.flowTo,
+          current * drainage * PATHOGEN_RESERVOIR_RUNOFF_TRANSPORT_GAIN,
+        );
+      }
+    }
+
+    if (environment !== undefined) {
+      const wind = sampleWorldWind(
+        environment.worldSeed,
+        environment.originX + tile.x,
+        environment.originY + tile.y,
+      );
+      const step = HEX_GRID_DIRECTION_STEPS[wind.direction];
+      request(
+        tile,
+        { x: tile.x + step.x, y: tile.y + step.y },
+        current * wind.strength * PATHOGEN_RESERVOIR_WIND_TRANSPORT_GAIN,
+      );
+    }
+  }
+
+  return [...grouped.values()]
+    .map((intent) => ({ ...intent, burden: Math.min(1, intent.burden) }))
+    .sort((a, b) =>
+      a.sourcePosition.y - b.sourcePosition.y ||
+      a.sourcePosition.x - b.sourcePosition.x ||
+      a.desiredPosition.y - b.desiredPosition.y ||
+      a.desiredPosition.x - b.desiredPosition.x
+    );
+}
+
+/**
  * Move small, bounded shares of existing environmental burden along the local
  * hydrology graph and the shared six-direction wind field before clearance and
  * shedding are applied.
  *
  * `flowTo` / `drainage` and `sampleWorldWind` are both derived from low-level
  * continuous world state, so contamination moves without inventing a top-down
- * disease event. Only targets owned by this local state are eligible: cross-DO
- * flow/wind ownership is still a separate Issue #3 transaction step, and an
- * unresolved boundary outlet or gust must not teleport contamination or mutate a
- * neighbor.
+ * disease event. Only targets owned by this local state are applied here. Cross-DO
+ * destinations are emitted by `pathogenReservoirOutboundIntents` and moved by
+ * the region-level crash-safe ownership journal, so this local pass never
+ * teleports contamination or mutates a neighboring Durable Object.
  *
  * All transfer requests are planned from the immutable pre-step reservoir. When
  * several upstream cells converge on a nearly full downstream cell, they share

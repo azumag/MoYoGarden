@@ -13,9 +13,14 @@ interface DurableObjectNamespace<T = unknown> {
   get(id: DurableObjectId): DurableObjectStub;
 }
 
-interface DurableObjectStorage {
+interface DurableObjectStorageTransaction {
   get<T = unknown>(key: string): Promise<T | undefined>;
   put<T = unknown>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<boolean>;
+}
+
+interface DurableObjectStorage extends DurableObjectStorageTransaction {
+  transaction<T>(callback: (txn: DurableObjectStorageTransaction) => Promise<T>): Promise<T>;
   getAlarm(): Promise<number | null>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
