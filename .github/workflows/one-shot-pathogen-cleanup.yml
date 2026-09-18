@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: apply pathogen cleanup fix'
+    if: ${{ github.event.head_commit.message == 'chore: retry pathogen cleanup fix' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -25,25 +25,29 @@ jobs:
           node-version: '22'
 
       - name: Apply regression fix
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
 
           source = Path('src/pathogen.ts')
           text = source.read_text()
           old = '  const keys = new Set([...advectedReservoir.keys(), ...shedding.keys()]);\n'
           new = '''  const keys = new Set([...advectedReservoir.keys(), ...shedding.keys()]);
-  // Keep explicitly persisted zero-valued reservoirs in the mutation pass once
-  // so the optional field can be deleted. pathogenReservoirIndex intentionally
-  // omits zero burden from the hot index, but quiescent detection treats an
-  // explicit field as cleanup work; without this bridge a stored zero would
-  // survive forever and permanently defeat the quiescent fast path.
-  for (const tile of tiles) {
-    if ((tile as PathogenTile).pathogenReservoir !== undefined) {
-      keys.add(positionKey(tile));
-    }
-  }
+          // Keep explicitly persisted zero-valued reservoirs in the mutation pass once
+          // so the optional field can be deleted. pathogenReservoirIndex intentionally
+          // omits zero burden from the hot index, but quiescent detection treats an
+          // explicit field as cleanup work; without this bridge a stored zero would
+          // survive forever and permanently defeat the quiescent fast path.
+          for (const tile of tiles) {
+            if ((tile as PathogenTile).pathogenReservoir !== undefined) {
+              keys.add(positionKey(tile));
+            }
+          }
 '''
+          # The indentation above includes the workflow's Python source indentation;
+          # normalize it to the TypeScript block indentation before replacement.
+          new = new.replace('\n          //', '\n  //').replace('\n          for ', '\n  for ').replace('\n            if ', '\n    if ').replace('\n              keys', '\n      keys').replace('\n            }', '\n    }').replace('\n          }', '\n  }')
           if old not in text:
               raise SystemExit('pathogen source anchor not found')
           source.write_text(text.replace(old, new, 1))
@@ -51,32 +55,36 @@ jobs:
           test = Path('tests/pathogen-quiescent-fast-path.test.mjs')
           text = test.read_text()
           old = '''  assert.equal(
-    pathogenStateIsQuiescent(state),
-    false,
-    "an explicitly stored active reservoir gets one normal pass so it can be cleaned",
-  );
-  delete active.pathogenReservoir;
+            pathogenStateIsQuiescent(state),
+            false,
+            "an explicitly stored active reservoir gets one normal pass so it can be cleaned",
+          );
+          delete active.pathogenReservoir;
 
-  target.pathogenLoad = 0;
+          target.pathogenLoad = 0;
 '''
+          # Normalize heredoc indentation for the fixture text.
+          old = old.replace('\n            pathogen', '\n    pathogen').replace('\n            false', '\n    false').replace('\n            "an', '\n    "an').replace('\n          );', '\n  );').replace('\n          delete', '\n  delete').replace('\n          target', '\n  target')
           new = '''  assert.equal(
-    pathogenStateIsQuiescent(state),
-    false,
-    "an explicitly stored active reservoir gets one normal pass so it can be cleaned",
-  );
-  assert.ok(applyPathogenSteps(state, 1) > 0);
-  assert.equal(
-    active.pathogenReservoir,
-    undefined,
-    "the cleanup pass must delete an explicit zero reservoir instead of leaving the region hot",
-  );
-  assert.equal(pathogenStateIsQuiescent(state), true);
+            pathogenStateIsQuiescent(state),
+            false,
+            "an explicitly stored active reservoir gets one normal pass so it can be cleaned",
+          );
+          assert.ok(applyPathogenSteps(state, 1) > 0);
+          assert.equal(
+            active.pathogenReservoir,
+            undefined,
+            "the cleanup pass must delete an explicit zero reservoir instead of leaving the region hot",
+          );
+          assert.equal(pathogenStateIsQuiescent(state), true);
 
-  target.pathogenLoad = 0;
+          target.pathogenLoad = 0;
 '''
+          new = new.replace('\n            pathogen', '\n    pathogen').replace('\n            false', '\n    false').replace('\n            "an', '\n    "an').replace('\n            active', '\n    active').replace('\n            undefined', '\n    undefined').replace('\n            "the', '\n    "the').replace('\n          );', '\n  );').replace('\n          assert', '\n  assert').replace('\n          target', '\n  target')
           if old not in text:
               raise SystemExit('pathogen test anchor not found')
           test.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
