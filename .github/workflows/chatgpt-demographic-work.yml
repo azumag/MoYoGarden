@@ -11,178 +11,29 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Apply demographic work and health patch
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          demography = Path('src/demography.ts')
-          text = demography.read_text()
-          old = '''const POPULATION_CAREGIVER_ENERGY_COST = 2;\nconst POPULATION_RELATIONSHIP_MEMORY_LIMIT = 8;'''
-          new = '''const POPULATION_CAREGIVER_ENERGY_COST = 2;\nconst POPULATION_FOOD_INSECURITY_HEALTH_COST = 1;\nexport const POPULATION_CARE_WORK_RECOVERY_ENERGY = 35;\nconst POPULATION_RELATIONSHIP_MEMORY_LIMIT = 8;'''
-          assert old in text
-          text = text.replace(old, new, 1)
-
-          marker = '''function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefined {\n  const caregiverId = dependentCaregiverId(state, dependent);\n  return caregiverId === undefined\n    ? undefined\n    : state.agents.find((candidate) => candidate.id === caregiverId);\n}\n'''
-          addition = marker + '''\nexport type DemographicWorkRecoveryReason = "pregnancy" | "dependent-care";\n\n/**\n * Derive temporary work recovery from existing low-level demographic state.\n *\n * Pregnancy and dependent care already consume food and energy on the compressed\n * demographic cadence. Once that accumulated energy pressure reaches the same\n * reserve used to gate conception, autonomous work yields to recovery until the\n * agent has rebuilt a small reserve. Explicit external commands remain\n * authoritative, and no new persisted cooldown/state field is needed.\n */\nexport function demographicWorkRecoveryReasons(\n  state: WorldState,\n): Map<string, DemographicWorkRecoveryReason> {\n  const reasons = new Map<string, DemographicWorkRecoveryReason>();\n  const eligible = (agent: Agent): boolean =>\n    agent.autonomy &&\n    agent.hp > 0 &&\n    agent.energy <= POPULATION_CARE_WORK_RECOVERY_ENERGY &&\n    agent.task?.source !== "external";\n\n  for (const agent of state.agents) {\n    if (\n      eligible(agent) &&\n      agent.pregnancy !== undefined &&\n      agent.pregnancy.dueAtTick > state.tick\n    ) {\n      reasons.set(agent.id, "pregnancy");\n    }\n  }\n\n  for (const dependent of state.agents) {\n    if (\n      dependent.hp <= 0 ||\n      (dependent.lifeStage !== "infant" && dependent.lifeStage !== "juvenile")\n    ) {\n      continue;\n    }\n    const caregiverId = dependentCaregiverId(state, dependent);\n    if (caregiverId === undefined || reasons.has(caregiverId)) continue;\n    const caregiver = state.agents.find((candidate) => candidate.id === caregiverId);\n    if (caregiver !== undefined && eligible(caregiver)) {\n      reasons.set(caregiverId, "dependent-care");\n    }\n  }\n  return reasons;\n}\n'''
-          assert marker in text
-          text = text.replace(marker, addition, 1)
-
-          old = '''      if (!nourished) {\n        agent.status = agent.lifeStage === "elder"\n          ? "elder; pregnant; food insecure"\n          : "pregnant; food insecure";\n      }'''
-          new = '''      if (!nourished) {\n        if (agent.hp > 1) {\n          agent.hp = Math.max(1, agent.hp - POPULATION_FOOD_INSECURITY_HEALTH_COST);\n        }\n        agent.status = agent.lifeStage === "elder"\n          ? "elder; pregnant; food insecure"\n          : "pregnant; food insecure";\n      }'''
-          assert old in text
-          text = text.replace(old, new, 1)
-
-          old = '''    } else {\n      dependent.energy = Math.max(\n        0,\n        dependent.energy - POPULATION_DEPENDENT_HUNGER_ENERGY_COST,\n      );\n      dependent.status = `${dependent.lifeStage}; food insecure`;\n    }'''
-          new = '''    } else {\n      dependent.energy = Math.max(\n        0,\n        dependent.energy - POPULATION_DEPENDENT_HUNGER_ENERGY_COST,\n      );\n      if (dependent.hp > 1) {\n        dependent.hp = Math.max(\n          1,\n          dependent.hp - POPULATION_FOOD_INSECURITY_HEALTH_COST,\n        );\n      }\n      dependent.status = `${dependent.lifeStage}; food insecure`;\n    }'''
-          assert old in text
-          text = text.replace(old, new, 1)
-          demography.write_text(text)
-
-          simulation = Path('src/simulation.ts')
-          text = simulation.read_text()
-          old = '''import { createRandom } from "./prng.js";\nimport {'''
-          new = '''import { demographicWorkRecoveryReasons } from "./demography.js";\nimport { createRandom } from "./prng.js";\nimport {'''
-          assert old in text
-          text = text.replace(old, new, 1)
-
-          old = '''  const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));\n  for (const agent of agents) {\n    if (agent.task === undefined && agent.autonomy) {\n      const plannedTask = autonomyTask(state, agent);\n      if (plannedTask !== undefined) agent.task = plannedTask;\n    }\n    executeTask(state, agent);\n  }'''
-          new = '''  const demographicRecovery = demographicWorkRecoveryReasons(state);\n  const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));\n  for (const agent of agents) {\n    const recoveryReason = demographicRecovery.get(agent.id);\n    if (recoveryReason !== undefined) {\n      // Preserve the existing autonomous task as intent, but spend this tick\n      // recovering instead of moving/gathering/building/trading. Once energy is\n      // above the demographic reserve threshold the same task can resume.\n      agent.energy = Math.min(100, agent.energy + 1);\n      agent.status = recoveryReason === "pregnancy"\n        ? "resting during pregnancy"\n        : "resting after dependent care";\n      continue;\n    }\n    if (agent.task === undefined && agent.autonomy) {\n      const plannedTask = autonomyTask(state, agent);\n      if (plannedTask !== undefined) agent.task = plannedTask;\n    }\n    executeTask(state, agent);\n  }'''
-          assert old in text
-          text = text.replace(old, new, 1)
-          simulation.write_text(text)
-
-          maintenance = Path('tests/population-maintenance.test.mjs')
-          text = maintenance.read_text()
-          old = '''  assert.equal(parent.energy, 72);\n  assert.equal(parent.status, "pregnant; food insecure");\n  assert.equal(child.energy, 42);\n  assert.equal(child.status, "infant; food insecure");'''
-          new = '''  assert.equal(parent.energy, 72);\n  assert.equal(parent.hp, 99);\n  assert.equal(parent.status, "pregnant; food insecure");\n  assert.equal(child.energy, 42);\n  assert.equal(child.hp, 99);\n  assert.equal(child.status, "infant; food insecure");'''
-          assert old in text
-          text = text.replace(old, new, 1)
-          maintenance.write_text(text)
-
-          Path('tests/population-work-availability.test.mjs').write_text(r'''import assert from "node:assert/strict";
-import test from "node:test";
-import { demographicWorkRecoveryReasons, POPULATION_CARE_WORK_RECOVERY_ENERGY } from "../dist-ts/src/demography.js";
-import { emptyInventory } from "../dist-ts/src/protocol.js";
-import { simulate } from "../dist-ts/src/simulation.js";
-import { createInitialWorld } from "../dist-ts/src/world.js";
-
-function fixture() {
-  const state = createInitialWorld({ seed: 9411, width: 40, height: 24, regionId: "garden-1" });
-  for (const agent of state.agents) {
-    agent.autonomy = false;
-    delete agent.task;
-    delete agent.pregnancy;
-  }
-  const parent = state.agents[0];
-  const partner = state.agents[1];
-  assert.ok(parent);
-  assert.ok(partner);
-  parent.autonomy = true;
-  parent.energy = POPULATION_CARE_WORK_RECOVERY_ENERGY;
-  parent.lifeStage = "adult";
-  parent.task = {
-    source: "autonomy",
-    issuedAtTick: state.tick,
-    type: "move",
-    target: { ...parent.position },
-  };
-  return { state, parent, partner };
-}
-
-test("low-energy pregnancy yields autonomous work to recovery without losing intent", () => {
-  const { state, parent, partner } = fixture();
-  parent.pregnancy = {
-    partnerId: partner.id,
-    conceivedAtTick: state.tick,
-    dueAtTick: state.tick + 100,
-  };
-
-  const reasons = demographicWorkRecoveryReasons(state);
-  assert.equal(reasons.get(parent.id), "pregnancy");
-
-  const result = simulate(state).state;
-  const after = result.agents.find((agent) => agent.id === parent.id);
-  assert.ok(after);
-  assert.equal(after.energy, POPULATION_CARE_WORK_RECOVERY_ENERGY + 1);
-  assert.equal(after.status, "resting during pregnancy");
-  assert.equal(after.task?.type, "move");
-  assert.deepEqual(after.position, parent.position);
-});
-
-test("low-energy caregiver recovery derives from an actual dependent relationship", () => {
-  const { state, parent, partner } = fixture();
-  const child = {
-    ...structuredClone(partner),
-    id: "agent-dependent-care-test",
-    name: "Dependent",
-    position: { ...parent.position },
-    hp: 100,
-    energy: 50,
-    capacity: 1,
-    inventory: emptyInventory(),
-    autonomy: false,
-    goal: "Grow with parental care",
-    status: "infant; dependent on parents",
-    birthTick: state.tick,
-    lifeStage: "infant",
-    parents: [parent.id, partner.id],
-  };
-  delete child.task;
-  delete child.pregnancy;
-  state.agents.push(child);
-
-  const reasons = demographicWorkRecoveryReasons(state);
-  assert.equal(reasons.get(parent.id), "dependent-care");
-
-  const result = simulate(state).state;
-  const after = result.agents.find((agent) => agent.id === parent.id);
-  assert.ok(after);
-  assert.equal(after.energy, POPULATION_CARE_WORK_RECOVERY_ENERGY + 1);
-  assert.equal(after.status, "resting after dependent care");
-  assert.equal(after.task?.type, "move");
-});
-
-test("explicit external work remains authoritative during demographic recovery", () => {
-  const { state, parent, partner } = fixture();
-  parent.pregnancy = {
-    partnerId: partner.id,
-    conceivedAtTick: state.tick,
-    dueAtTick: state.tick + 100,
-  };
-  parent.task = {
-    source: "external",
-    issuedAtTick: state.tick,
-    expiresAtTick: state.tick + 10,
-    type: "move",
-    target: { ...parent.position },
-  };
-
-  assert.equal(demographicWorkRecoveryReasons(state).has(parent.id), false);
-  const result = simulate(state).state;
-  const after = result.agents.find((agent) => agent.id === parent.id);
-  assert.ok(after);
-  assert.notEqual(after.status, "resting during pregnancy");
-});
-''')
-          PY
-      - name: Build and test
+          node-version: "22"
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Apply patch
+        run: python3 scripts/chatgpt-demographic-work.py
+      - name: Typecheck, test, and build
         run: npm run build
       - name: Commit product change
         run: |
           git config user.name "chatgpt-codex-connector[bot]"
           git config user.email "chatgpt-codex-connector[bot]@users.noreply.github.com"
           rm .github/workflows/chatgpt-demographic-work.yml
-          git add src/demography.ts src/simulation.ts tests/population-maintenance.test.mjs tests/population-work-availability.test.mjs .github/workflows/chatgpt-demographic-work.yml
+          rm scripts/chatgpt-demographic-work.py
+          git add src/demography.ts src/simulation.ts tests/population-maintenance.test.mjs tests/population-work-availability.test.mjs .github/workflows/chatgpt-demographic-work.yml scripts/chatgpt-demographic-work.py
           git commit -m "sim: let care pressure reduce work availability"
           git push origin HEAD:main
