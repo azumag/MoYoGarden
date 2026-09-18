@@ -1,5 +1,5 @@
 import { hexGridDistance } from "./hex-grid.js";
-import type { Agent, WorldState } from "./protocol.js";
+import type { Agent, WorldEvent, WorldState } from "./protocol.js";
 import { activeFactionStructures, getFaction } from "./world.js";
 
 // Demographic time is intentionally compressed to keep biological causality visible
@@ -22,6 +22,8 @@ const POPULATION_PREGNANCY_HUNGER_ENERGY_COST = 6;
 const POPULATION_DEPENDENT_ENERGY_RECOVERY = 6;
 const POPULATION_DEPENDENT_HUNGER_ENERGY_COST = 8;
 const POPULATION_CAREGIVER_ENERGY_COST = 2;
+const POPULATION_RELATIONSHIP_MEMORY_LIMIT = 8;
+const POPULATION_RELATIONSHIP_FAMILIARITY_MAX = 32;
 const GLOBAL_AGENT_PREFIX = "agent-global:";
 
 function demographicHash(value: string): number {
@@ -98,6 +100,115 @@ function dependentCaregiver(state: WorldState, dependent: Agent): Agent | undefi
   return caregiverId === undefined
     ? undefined
     : state.agents.find((candidate) => candidate.id === caregiverId);
+}
+
+function constructionStructureId(event: WorldEvent): string | undefined {
+  if (
+    event.kind !== "construction_started" &&
+    event.kind !== "construction_progress" &&
+    event.kind !== "construction_completed"
+  ) {
+    return undefined;
+  }
+  const structureId = event.data?.structureId;
+  return typeof structureId === "string" && structureId.length > 0
+    ? structureId
+    : undefined;
+}
+
+function rememberCollaborator(agent: Agent, otherId: string, tick: number): boolean {
+  if (agent.id === otherId) return false;
+  const memory = (agent.socialMemory ?? []).map((entry) => ({ ...entry }));
+  const existing = memory.find((entry) => entry.agentId === otherId);
+  if (
+    existing !== undefined &&
+    Number.isFinite(existing.lastInteractionTick) &&
+    existing.lastInteractionTick >= tick
+  ) {
+    return false;
+  }
+
+  if (existing === undefined) {
+    memory.push({ agentId: otherId, familiarity: 1, lastInteractionTick: tick });
+  } else {
+    const familiarity = Number.isFinite(existing.familiarity)
+      ? Math.max(0, existing.familiarity)
+      : 0;
+    existing.familiarity = Math.min(
+      POPULATION_RELATIONSHIP_FAMILIARITY_MAX,
+      familiarity + 1,
+    );
+    existing.lastInteractionTick = tick;
+  }
+  memory.sort((a, b) =>
+    b.familiarity - a.familiarity ||
+    b.lastInteractionTick - a.lastInteractionTick ||
+    a.agentId.localeCompare(b.agentId)
+  );
+  agent.socialMemory = memory.slice(0, POPULATION_RELATIONSHIP_MEMORY_LIMIT);
+  return true;
+}
+
+/**
+ * Convert retained shared-construction history into the same bounded relationship
+ * memory used by ordinary conversations. This keeps pair formation bottom-up:
+ * agents can become familiar because they repeatedly worked on the same physical
+ * structure, not only because a periodic conversation happened to fire nearby.
+ *
+ * Event history is only a compatibility/evidence source. Once a pair has absorbed
+ * the newest shared-work tick, lastInteractionTick makes subsequent ticks
+ * idempotent even while those events remain in the bounded event log.
+ */
+export function applyConstructionCollaborationFamiliarity(state: WorldState): number {
+  const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
+  const participantsByStructure = new Map<string, Map<string, number>>();
+
+  for (const event of state.events) {
+    if (event.tick > state.tick || event.agentId === undefined) continue;
+    if (!agentsById.has(event.agentId)) continue;
+    const structureId = constructionStructureId(event);
+    if (structureId === undefined) continue;
+    const participants = participantsByStructure.get(structureId) ?? new Map<string, number>();
+    participants.set(
+      event.agentId,
+      Math.max(participants.get(event.agentId) ?? Number.NEGATIVE_INFINITY, event.tick),
+    );
+    participantsByStructure.set(structureId, participants);
+  }
+
+  let updatedPairs = 0;
+  for (const participants of participantsByStructure.values()) {
+    const entries = [...participants.entries()].sort(([firstId], [secondId]) =>
+      firstId.localeCompare(secondId)
+    );
+    for (let firstIndex = 0; firstIndex < entries.length; firstIndex += 1) {
+      const firstEntry = entries[firstIndex];
+      if (firstEntry === undefined) continue;
+      const [firstId, firstTick] = firstEntry;
+      const first = agentsById.get(firstId);
+      if (first === undefined || first.hp <= 0) continue;
+
+      for (let secondIndex = firstIndex + 1; secondIndex < entries.length; secondIndex += 1) {
+        const secondEntry = entries[secondIndex];
+        if (secondEntry === undefined) continue;
+        const [secondId, secondTick] = secondEntry;
+        const second = agentsById.get(secondId);
+        if (
+          second === undefined ||
+          second.hp <= 0 ||
+          second.factionId !== first.factionId
+        ) {
+          continue;
+        }
+
+        const collaborationTick = Math.max(firstTick, secondTick);
+        const firstUpdated = rememberCollaborator(first, second.id, collaborationTick);
+        const secondUpdated = rememberCollaborator(second, first.id, collaborationTick);
+        if (firstUpdated || secondUpdated) updatedPairs += 1;
+      }
+    }
+  }
+  return updatedPairs;
 }
 
 /**
@@ -200,5 +311,6 @@ export function applyPopulationAging(state: WorldState): void {
     survivors.push(agent);
   }
   state.agents = survivors;
+  applyConstructionCollaborationFamiliarity(state);
   applyPopulationMaintenance(state);
 }
