@@ -32,30 +32,30 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           pathogen_path = Path("src/pathogen.ts")
           source = pathogen_path.read_text()
+          if "pathogenAdjacentReservoirExposureGain" in source:
+              raise SystemExit("product change is already present")
+
+          old_import = '  hexGridBoundaryCells,\n  hexGridNeighbors,\n  isHexGridCell,'
+          if old_import not in source:
+              raise SystemExit("hexGridNeighbors import anchor missing")
           source = source.replace(
-              '  hexGridBoundaryCells,\n  hexGridNeighbors,\n  isHexGridCell,',
+              old_import,
               '  hexGridBoundaryCells,\n  isHexGridCell,',
+              1,
           )
 
-          old_local = '''function localReservoirExposure(
-            reservoir: ReadonlyMap<string, number>,
-            position: GridPosition,
-          ): number {
-            let exposure = (reservoir.get(positionKey(position)) ?? 0) * PATHOGEN_RESERVOIR_EXPOSURE_GAIN;
-            for (const neighbor of hexGridNeighbors(position)) {
-              const burden = reservoir.get(positionKey(neighbor)) ?? 0;
-              exposure = unionPressure(
-                exposure,
-                burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
-              );
-            }
-            return exposure;
-          }
-          '''
-          new_local = '''function localReservoirExposure(
+          local_pattern = re.compile(
+              r'function localReservoirExposure\(\n'
+              r'  reservoir: ReadonlyMap<string, number>,\n'
+              r'  position: GridPosition,\n'
+              r'\): number \{\n.*?\n\}',
+              re.S,
+          )
+          local_replacement = '''function localReservoirExposure(
             reservoir: ReadonlyMap<string, number>,
             position: GridPosition,
             environment: PathogenEnvironmentFrame | undefined,
@@ -73,11 +73,10 @@ jobs:
               );
             }
             return exposure;
-          }
-          '''
-          if old_local not in source:
-              raise SystemExit("local reservoir exposure anchor missing")
-          source = source.replace(old_local, new_local, 1)
+          }'''
+          source, count = local_pattern.subn(local_replacement, source, count=1)
+          if count != 1:
+              raise SystemExit(f"local reservoir exposure replacement count={count}")
 
           contact_anchor = '''export function pathogenAdjacentContactGain(
             position: GridPosition,
@@ -96,15 +95,14 @@ jobs:
               (1 - wind.strength * PATHOGEN_NON_UPWIND_CONTACT_REDUCTION);
           }
           '''
+          if contact_anchor not in source:
+              raise SystemExit("adjacent contact gain anchor missing")
           helper = contact_anchor + '''
           /**
-           * Apply the same shared-world airflow factor to environmental burden
-           * crossing one adjacent hex as to a living carrier on that hex.
-           *
-           * The base reservoir coefficient remains distinct from direct contact;
-           * only the directional attenuation is shared. With no environment frame
-           * this is exactly the historical adjacent-reservoir gain, preserving old
-           * saves and focused fixtures that do not model global wind.
+           * Environmental reservoir exposure shares the same low-level wind
+           * directionality as adjacent carrier exposure while retaining its own
+           * weaker coefficient. Missing world-frame context preserves the legacy
+           * direction-neutral value exactly.
            */
           export function pathogenAdjacentReservoirExposureGain(
             position: GridPosition,
@@ -116,66 +114,44 @@ jobs:
               (contactGain / PATHOGEN_ADJACENT_CONTACT_GAIN);
           }
           '''
-          if contact_anchor not in source:
-              raise SystemExit("adjacent contact gain anchor missing")
           source = source.replace(contact_anchor, helper, 1)
 
-          old_halo = '''        reservoirExposure.set(
-                  localKey,
-                  unionPressure(
-                    reservoirExposure.get(localKey) ?? 0,
-                    burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
-                  ),
-                );'''
-          new_halo = '''        reservoirExposure.set(
-                  localKey,
-                  unionPressure(
-                    reservoirExposure.get(localKey) ?? 0,
-                    burden * pathogenAdjacentReservoirExposureGain(
-                      link.sourcePosition,
-                      link.direction,
-                      environment,
-                    ),
-                  ),
-                );'''
-          if old_halo not in source:
-              raise SystemExit("halo reservoir exposure anchor missing")
-          source = source.replace(old_halo, new_halo, 1)
+          old_halo_line = '            burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,'
+          if source.count(old_halo_line) != 1:
+              raise SystemExit(f"halo reservoir gain line count={source.count(old_halo_line)}")
+          source = source.replace(
+              old_halo_line,
+              '''            burden * pathogenAdjacentReservoirExposureGain(
+                        link.sourcePosition,
+                        link.direction,
+                        environment,
+                      ),''',
+              1,
+          )
 
           old_call = '      ? localReservoirExposure(previousReservoir, agent.position)\n      : 0;'
-          new_call = '      ? localReservoirExposure(previousReservoir, agent.position, environment)\n      : 0;'
           if old_call not in source:
               raise SystemExit("local reservoir call anchor missing")
-          source = source.replace(old_call, new_call, 1)
-
-          old_doc = ''' * Environmental reservoir exposure follows the same hex
-           * geometry: same-cell burden is strongest, immediate six-neighbor burden is
-           * weaker, and a ghost-cell burden across a DO seam uses that exact adjacent
-           * strength without copying or mutating the remote tile. Existing local `flowTo`
-          '''
-          new_doc = ''' * Environmental reservoir exposure follows the same hex
-           * geometry: same-cell burden is strongest, immediate six-neighbor burden is
-           * weaker, and adjacent burden uses the same shared-world wind attenuation
-           * inside a region and across a DO seam without copying or mutating the remote
-           * tile. Existing local `flowTo`
-          '''
-          if old_doc not in source:
-              raise SystemExit("pathogen documentation anchor missing")
-          source = source.replace(old_doc, new_doc, 1)
+          source = source.replace(
+              old_call,
+              '      ? localReservoirExposure(previousReservoir, agent.position, environment)\n      : 0;',
+              1,
+          )
           pathogen_path.write_text(source)
 
           test_path = Path("tests/pathogen-reservoir-halo.test.mjs")
           test_source = test_path.read_text()
-          old_import = 'import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";'
-          new_import = '''import {
+          old_test_import = 'import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";'
+          new_test_import = '''import {
             HEX_GRID_DIRECTIONS,
             HEX_GRID_DIRECTION_STEPS,
             hexGridBoundaryCells,
             oppositeHexGridDirection,
           } from "../dist-ts/src/hex-grid.js";'''
-          if old_import not in test_source:
+          if old_test_import not in test_source:
               raise SystemExit("test hex-grid import anchor missing")
-          test_source = test_source.replace(old_import, new_import, 1)
+          test_source = test_source.replace(old_test_import, new_test_import, 1)
+
           pathogen_import_end = '} from "../dist-ts/src/pathogen.js";\n'
           if pathogen_import_end not in test_source:
               raise SystemExit("test pathogen import anchor missing")
@@ -286,6 +262,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/pathogen.ts tests/pathogen-reservoir-halo.test.mjs
-          git diff --cached --exit-code && { echo "expected product diff is empty" >&2; exit 1; } || true
+          git diff --cached --quiet && { echo "expected product diff is empty" >&2; exit 1; }
           git commit -m "sim: let shared wind shape reservoir exposure"
           git push origin HEAD:main
