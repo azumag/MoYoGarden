@@ -1,0 +1,313 @@
+name: Stage environmental population capacity
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-population-capacity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply environmental carrying capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          support = '''import { isHexGridCell } from "./hex-grid.js";
+          import type { WorldState } from "./protocol.js";
+
+          // Resource maxAmount is already the durable, environment-shaped carrying
+          // capacity used by settlement scouting. Translate that low-level renewable
+          // food potential into a coarse resident support ceiling instead of letting
+          // camps create population capacity without an ecological counterpart.
+          export const POPULATION_RENEWABLE_FOOD_CAPACITY_PER_RESIDENT = 24;
+
+          export function localRenewableFoodCapacity(
+            state: Pick<WorldState, "width" | "height" | "tiles">,
+          ): number {
+            return state.tiles.reduce((sum, tile) => {
+              if (!isHexGridCell(state, tile) || tile.terrain === "water") return sum;
+              const resource = tile.resource;
+              if (
+                resource?.kind !== "food" ||
+                !Number.isFinite(resource.maxAmount) ||
+                resource.maxAmount <= 0
+              ) {
+                return sum;
+              }
+              return sum + resource.maxAmount;
+            }, 0);
+          }
+
+          export function localPopulationCarryingCapacity(
+            state: Pick<WorldState, "width" | "height" | "tiles">,
+          ): number {
+            return Math.max(
+              0,
+              Math.floor(
+                localRenewableFoodCapacity(state) /
+                  POPULATION_RENEWABLE_FOOD_CAPACITY_PER_RESIDENT,
+              ),
+            );
+          }
+          '''
+          # Dedent the source produced inside this YAML/Python indentation.
+          import textwrap
+          Path("src/population-support.ts").write_text(textwrap.dedent(support).lstrip())
+
+          runtime_path = Path("src/runtime.ts")
+          runtime = runtime_path.read_text()
+          import_anchor = 'import { hexGridDistance } from "./hex-grid.js";\n'
+          import_replacement = import_anchor + 'import { localPopulationCarryingCapacity } from "./population-support.js";\n'
+          if runtime.count(import_anchor) != 1:
+              raise SystemExit("runtime population-support import anchor mismatch")
+          runtime = runtime.replace(import_anchor, import_replacement, 1)
+
+          conception_anchor = '''function planConceptions(state: WorldState): void {
+            if (state.tick === 0 || state.tick % POPULATION_REPRODUCTION_INTERVAL !== 0) return;
+
+            for (const faction of [...state.factions].sort((a, b) => a.id.localeCompare(b.id))) {'''
+          conception_replacement = '''function planConceptions(state: WorldState): void {
+            if (state.tick === 0 || state.tick % POPULATION_REPRODUCTION_INTERVAL !== 0) return;
+
+            // Housing is only one constraint. A settlement must also fit inside the
+            // renewable food potential of the whole region. Existing pregnancies
+            // remain causal and always reach birth; this gate only prevents creating
+            // new conceptions after the projected population reaches ecological K.
+            const ecologicalCapacity = localPopulationCarryingCapacity(state);
+            const projectedRegionalPopulation = (): number =>
+              state.agents.filter((agent) => agent.hp > 0).length +
+              state.agents.filter((agent) => agent.hp > 0 && agent.pregnancy !== undefined).length;
+            if (projectedRegionalPopulation() >= ecologicalCapacity) return;
+
+            for (const faction of [...state.factions].sort((a, b) => a.id.localeCompare(b.id))) {
+              if (projectedRegionalPopulation() >= ecologicalCapacity) break;'''
+          if runtime.count(conception_anchor) != 1:
+              raise SystemExit("planConceptions anchor mismatch")
+          runtime = runtime.replace(conception_anchor, conception_replacement, 1)
+          runtime_path.write_text(runtime)
+
+          migration_path = Path("src/settlement-migration.ts")
+          migration = migration_path.read_text()
+          migration_import_anchor = 'import { dependentCaregiverId } from "./demography.js";\n'
+          migration_import_replacement = (
+              migration_import_anchor +
+              'import { localPopulationCarryingCapacity } from "./population-support.js";\n'
+          )
+          if migration.count(migration_import_anchor) != 1:
+              raise SystemExit("settlement migration import anchor mismatch")
+          migration = migration.replace(migration_import_anchor, migration_import_replacement, 1)
+
+          pressure_pattern = re.compile(
+              r'export function settlementMigrationPressure\(state: WorldState, factionId: string\): boolean \{.*?\n\}\n\nfunction campKitDeficit',
+              re.S,
+          )
+          pressure_replacement = '''export function settlementMigrationPressure(state: WorldState, factionId: string): boolean {
+            const camps = activeCamps(state, factionId);
+            if (camps.length === 0) return false;
+
+            // Ecological crowding is regional because factions draw from the same
+            // renewable forage landscape. Once the living population reaches that
+            // support, prefer an existing cross-region settlement escape path over
+            // manufacturing another local housing slot. This does not kill or evict
+            // anyone; it only turns excess demographic pressure into migration.
+            const ecologicalCapacity = localPopulationCarryingCapacity(state);
+            const livingRegionalPopulation = state.agents.filter((agent) => agent.hp > 0).length;
+            if (livingRegionalPopulation >= ecologicalCapacity) return true;
+
+            if (state.structures.some((structure) =>
+              structure.factionId === factionId
+              && structure.type === "camp"
+              && structure.status === "building"
+            )) return false;
+            const population = state.agents.filter((agent) => agent.factionId === factionId).length;
+            if (population < camps.length * RESIDENT_CAPACITY_PER_CAMP) return false;
+            return !hasLocalSpacedCampSite(state, factionId);
+          }
+
+          function campKitDeficit'''
+          migration, count = pressure_pattern.subn(pressure_replacement, migration, count=1)
+          if count != 1:
+              raise SystemExit(f"settlementMigrationPressure replacement count={count}")
+          migration_path.write_text(migration)
+
+          test = '''import assert from "node:assert/strict";
+          import test from "node:test";
+          import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
+          import {
+            localPopulationCarryingCapacity,
+            localRenewableFoodCapacity,
+            POPULATION_RENEWABLE_FOOD_CAPACITY_PER_RESIDENT,
+          } from "../dist-ts/src/population-support.js";
+          import { WorldRuntime } from "../dist-ts/src/runtime.js";
+          import { settlementMigrationPressure } from "../dist-ts/src/settlement-migration.js";
+          import { createInitialWorld } from "../dist-ts/src/world.js";
+
+          function foodTiles(state) {
+            return state.tiles.filter((tile) =>
+              isHexGridCell(state, tile) &&
+              tile.terrain !== "water" &&
+              tile.resource?.kind === "food"
+            );
+          }
+
+          test("environmental population capacity follows durable renewable food potential", () => {
+            const state = createInitialWorld({ seed: 260919, width: 40, height: 24 });
+            const foods = foodTiles(state);
+            assert.ok(foods.length > 0);
+            for (const tile of foods) {
+              tile.resource.amount = 0;
+              tile.resource.maxAmount = 0;
+            }
+            assert.equal(localRenewableFoodCapacity(state), 0);
+            assert.equal(localPopulationCarryingCapacity(state), 0);
+
+            foods[0].resource.maxAmount = POPULATION_RENEWABLE_FOOD_CAPACITY_PER_RESIDENT * 5 + 23;
+            assert.equal(localPopulationCarryingCapacity(state), 5);
+            foods[0].resource.amount = foods[0].resource.maxAmount;
+            assert.equal(
+              localPopulationCarryingCapacity(state),
+              5,
+              "temporary food stock must not change the durable ecological ceiling",
+            );
+          });
+
+          test("renewable food capacity gates new conceptions even when camps and stores are abundant", () => {
+            const state = createInitialWorld({ seed: 260920, width: 40, height: 24 });
+            const faction = state.factions[0];
+            assert.ok(faction);
+            const members = state.agents.filter((agent) => agent.factionId === faction.id);
+            assert.ok(members.length >= 2);
+            const parent = members[0];
+            const partner = members[1];
+            assert.ok(parent && partner);
+            parent.reproductiveRole = "gestational";
+            partner.reproductiveRole = "partner";
+            parent.hp = partner.hp = 100;
+            parent.energy = partner.energy = 100;
+            parent.socialMemory = [{ agentId: partner.id, familiarity: 8, lastInteractionTick: 1 }];
+            partner.socialMemory = [{ agentId: parent.id, familiarity: 8, lastInteractionTick: 1 }];
+            parent.position = { ...partner.position };
+            delete parent.pregnancy;
+            delete parent.lastBirthTick;
+
+            for (const tile of foodTiles(state)) {
+              tile.resource.amount = 0;
+              tile.resource.maxAmount = 0;
+            }
+            const camp = state.structures.find((structure) =>
+              structure.factionId === faction.id && structure.type === "camp"
+            );
+            assert.ok(camp);
+            camp.status = "active";
+            camp.storage.food = 500;
+            faction.resources.food = 500;
+            // Add spare housing so ecology, not resident slots, is the blocking cause.
+            for (let index = 0; index < 3; index += 1) {
+              state.structures.push({
+                ...structuredClone(camp),
+                id: `ecology-spare-camp-${index}`,
+                position: { ...camp.position },
+                storage: { wood: 0, stone: 0, food: index === 0 ? 500 : 0 },
+              });
+            }
+            state.tick = 8_639;
+            const blocked = new WorldRuntime({ state }).tick().state;
+            assert.equal(
+              blocked.agents.some((agent) => agent.pregnancy !== undefined),
+              false,
+              "stored food and extra camps must not create population support from nothing",
+            );
+
+            const restoredFood = foodTiles(blocked)[0];
+            assert.ok(restoredFood);
+            restoredFood.resource.maxAmount = POPULATION_RENEWABLE_FOOD_CAPACITY_PER_RESIDENT * 20;
+            blocked.tick = 17_279;
+            const conceived = new WorldRuntime({ state: blocked }).tick().state;
+            assert.equal(
+              conceived.agents.some((agent) => agent.pregnancy !== undefined),
+              true,
+              "renewable habitat support should reopen conception once other low-level constraints pass",
+            );
+          });
+
+          test("ecological saturation becomes settlement migration pressure before local housing is exhausted", () => {
+            const state = createInitialWorld({ seed: 260921, width: 40, height: 24 });
+            const faction = state.factions[0];
+            assert.ok(faction);
+            const camp = state.structures.find((structure) =>
+              structure.factionId === faction.id && structure.type === "camp" && structure.status === "active"
+            );
+            assert.ok(camp);
+            for (const tile of foodTiles(state)) {
+              tile.resource.amount = 0;
+              tile.resource.maxAmount = 0;
+            }
+            assert.equal(settlementMigrationPressure(state, faction.id), true);
+
+            const food = state.tiles.find((tile) =>
+              isHexGridCell(state, tile) && tile.terrain !== "water"
+            );
+            assert.ok(food);
+            food.resource = {
+              kind: "food",
+              amount: 0,
+              maxAmount: POPULATION_RENEWABLE_FOOD_CAPACITY_PER_RESIDENT * 100,
+            };
+            assert.equal(
+              settlementMigrationPressure(state, faction.id),
+              false,
+              "ample renewable support should leave ordinary housing pressure authoritative",
+            );
+          });
+          '''
+          Path("tests/population-environment-capacity.test.mjs").write_text(
+              textwrap.dedent(test).lstrip()
+          )
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        run: |
+          set -euo pipefail
+          npm run build
+          git diff --check
+
+      - name: Commit improvement and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          rm .github/workflows/automation-population-capacity.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "sim: bound population by renewable food support"
+          git push origin HEAD:main
