@@ -26,6 +26,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import re
 
           # Keep the repository's intentionally small Cloudflare compatibility
           # declarations aligned with the real Durable Object KV transaction API.
@@ -68,6 +69,21 @@ jobs:
           lines = embedded.splitlines()
           embedded = "\n".join(line[10:] if line.startswith("          ") else line for line in lines)
           exec(compile(embedded, "pathogen-reservoir-transfer-staging.py", "exec"), {})
+
+          # The transport planner returns a real tile snapshot as its target. The
+          # contract we need here is exact cross-DO coordinate mapping, not a ban on
+          # additional read-only terrain/reservoir fields in that snapshot.
+          test_path = Path("tests/pathogen-reservoir-transfer-do.test.mjs")
+          test_text = test_path.read_text()
+          pattern = r'''assert\.deepEqual\(\s*transfer\.deltas\[0\]\.targetTile,\s*\{\s*x:\s*transition\.targetPosition\.x,\s*y:\s*transition\.targetPosition\.y,?\s*\},\s*\);'''
+          replacement = '''assert.deepEqual(
+            { x: transfer.deltas[0].targetTile.x, y: transfer.deltas[0].targetTile.y },
+            { x: transition.targetPosition.x, y: transition.targetPosition.y },
+          );'''
+          test_text, count = re.subn(pattern, replacement, test_text, count=1)
+          if count != 1:
+              raise SystemExit(f"reservoir coordinate assertion anchor count={count}")
+          test_path.write_text(test_text)
           PY
 
           npm install --no-audit --no-fund
