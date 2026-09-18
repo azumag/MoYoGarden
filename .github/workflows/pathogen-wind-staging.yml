@@ -161,9 +161,7 @@ jobs:
               1,
           )
 
-          regression = r'''
-
-          test("shared world wind shapes reservoir exposure identically across a region seam", () => {
+          regression = r'''test("shared world wind shapes reservoir exposure identically across a region seam", () => {
             const environment = { worldSeed: 424242, originX: 0, originY: 0 };
             let targetPosition;
             let wind;
@@ -239,11 +237,10 @@ jobs:
               Math.abs(agentPathogenLoad(seamTarget) - upwindLoad) < 1e-12,
               "a DO seam must not change wind-shaped adjacent reservoir exposure",
             );
-          });
-          '''
+          });'''
           if 'shared world wind shapes reservoir exposure identically across a region seam' in test_source:
               raise SystemExit("regression test already present")
-          test_path.write_text(test_source.rstrip() + regression + "\n")
+          test_path.write_text(test_source.rstrip() + "\n\n" + regression.strip() + "\n")
           PY
 
       - name: Install dependencies
@@ -260,7 +257,10 @@ jobs:
           from pathlib import Path
           for name in ("src/pathogen.ts", "tests/pathogen-reservoir-halo.test.mjs"):
               path = Path(name)
-              path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
+              lines = [line.rstrip() for line in path.read_text().splitlines()]
+              while lines and lines[-1] == "":
+                  lines.pop()
+              path.write_text("\n".join(lines) + "\n")
           PY
 
       - name: Check diff
