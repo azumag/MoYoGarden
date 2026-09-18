@@ -385,15 +385,18 @@ function advancePathogenReservoirs(
 type PathogenContactIndex = ReadonlyMap<string, readonly Agent[]>;
 
 /**
- * Bucket the immutable pre-step population by logical hex. Pathogen contact is
- * local by definition (same cell or one of six neighbors), so scanning every BOT
- * for every target needlessly turns a contact step into O(N²) work as population
- * grows. The index keeps the exact same contact geometry while making the common
- * sparse case proportional to population plus the agents in seven nearby cells.
+ * Bucket infectious pre-step sources by logical hex. Pathogen contact is local
+ * by definition (same cell or one of six neighbors), so scanning every BOT for
+ * every target needlessly turns a contact step into O(N²) work as population
+ * grows. Healthy, latent and dead agents contribute zero source pressure and are
+ * therefore omitted from the source index; they still remain targets in the main
+ * pathogen loop. This preserves contact geometry while keeping crowded healthy
+ * settlements from paying per-target scans over epidemiologically inert agents.
  */
 function buildPathogenContactIndex(agents: readonly Agent[]): PathogenContactIndex {
   const mutable = new Map<string, Agent[]>();
   for (const agent of agents) {
+    if (agentPathogenPressure(agent) <= PATHOGEN_EPSILON) continue;
     const key = positionKey(agent.position);
     const bucket = mutable.get(key);
     if (bucket === undefined) {
