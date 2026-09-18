@@ -62,6 +62,19 @@ test("auto quality also trims common 2x-DPR touch phones", () => {
   });
 });
 
+test("auto quality trims narrow touch devices even when DPR is below the high-DPR threshold", () => {
+  withDevice({ width: 820, pixelRatio: 1, touchPoints: 5, memory: 8, cores: 8 }, () => {
+    const quality = resolveQualityProfile();
+    assert.equal(quality.id, "balanced");
+    assert.equal(quality.pixelRatioCap, 1.1);
+    assert.equal(quality.antialias, false);
+    assert.equal(quality.shadowSize, 512);
+    assert.equal(quality.environmentSize, 32);
+    assert.equal(quality.detailDensity, 0.48);
+    assert.equal(quality.lodScale, 0.74);
+  });
+});
+
 test("auto quality trims wide 2x-DPR touch tablets in landscape", () => {
   withDevice({ width: 1366, pixelRatio: 2, touchPoints: 5 }, () => {
     const quality = resolveQualityProfile();
