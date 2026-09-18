@@ -89,11 +89,11 @@ jobs:
 
           old = '  agentAutonomy: $("#agent-autonomy"),\n  agentStatus: $("#agent-status"),\n'
           new = '''  agentAutonomy: $("#agent-autonomy"),
-            agentAge: $("#agent-age"),
-            agentLifeStage: $("#agent-life-stage"),
-            agentParents: $("#agent-parents"),
-            agentPregnancy: $("#agent-pregnancy"),
-            agentStatus: $("#agent-status"),
+          agentAge: $("#agent-age"),
+          agentLifeStage: $("#agent-life-stage"),
+          agentParents: $("#agent-parents"),
+          agentPregnancy: $("#agent-pregnancy"),
+          agentStatus: $("#agent-status"),
           '''
           if old not in text:
               raise SystemExit('app ui anchor not found')
@@ -112,17 +112,17 @@ jobs:
           text = text.replace(old, new, 1)
 
           old = '''  ui.agentHp.textContent = String(agent.hp);
-            ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
-            ui.agentStatus.textContent = agent.status;
+          ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
+          ui.agentStatus.textContent = agent.status;
           '''
           new = '''  ui.agentHp.textContent = String(agent.hp);
-            ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
-            const demography = agentDemography(agent, state);
-            ui.agentAge.textContent = demography.age;
-            ui.agentLifeStage.textContent = demography.lifeStage;
-            ui.agentParents.textContent = demography.parents;
-            ui.agentPregnancy.textContent = demography.pregnancy;
-            ui.agentStatus.textContent = agent.status;
+          ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
+          const demography = agentDemography(agent, state);
+          ui.agentAge.textContent = demography.age;
+          ui.agentLifeStage.textContent = demography.lifeStage;
+          ui.agentParents.textContent = demography.parents;
+          ui.agentPregnancy.textContent = demography.pregnancy;
+          ui.agentStatus.textContent = agent.status;
           '''
           if old not in text:
               raise SystemExit('agent detail anchor not found')
@@ -132,28 +132,19 @@ jobs:
           html = Path('public/index.html')
           text = html.read_text()
           old = '''              <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
-                          <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
-                        </dl>
-          '''
+              <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>'''
           new = '''              <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
-                          <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
-                          <div><dt>年齢</dt><dd id="agent-age">—</dd></div>
-                          <div><dt>life stage</dt><dd id="agent-life-stage">—</dd></div>
-                          <div><dt>親</dt><dd id="agent-parents">—</dd></div>
-                          <div><dt>妊娠</dt><dd id="agent-pregnancy">—</dd></div>
-                        </dl>
-          '''
+              <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
+              <div><dt>年齢</dt><dd id="agent-age">—</dd></div>
+              <div><dt>life stage</dt><dd id="agent-life-stage">—</dd></div>
+              <div><dt>親</dt><dd id="agent-parents">—</dd></div>
+              <div><dt>妊娠</dt><dd id="agent-pregnancy">—</dd></div>'''
           if old not in text:
               raise SystemExit('agent html anchor not found')
           text = text.replace(old, new, 1)
 
-          old = '''            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>
-                    </dl>
-          '''
-          new = '''            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>
-                    <div title="既存個体は成人として扱い、出生したBOTは保存されたlife stageを集計します。"><dt>人口構成</dt><dd id="observation-population">—</dd></div>
-                  </dl>
-          '''
+          old = '            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>'
+          new = old + '\n            <div title="既存個体は成人として扱い、出生したBOTは保存されたlife stageを集計します。"><dt>人口構成</dt><dd id="observation-population">—</dd></div>'
           if old not in text:
               raise SystemExit('population html anchor not found')
           text = text.replace(old, new, 1)
@@ -200,10 +191,7 @@ jobs:
           });
 
           test("population composition treats schema-v1 founders as adults and reports pregnancy separately", () => {
-            assert.equal(
-              populationComposition(state),
-              "乳児 1 · 若年 1 · 成人 2 · 高齢 1 · 妊娠 1",
-            );
+            assert.equal(populationComposition(state), "乳児 1 · 若年 1 · 成人 2 · 高齢 1 · 妊娠 1");
           });
 
           test("browser DOM keeps demographic observability wired to stable ids", async () => {
