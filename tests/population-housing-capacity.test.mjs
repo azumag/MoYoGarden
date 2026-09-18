@@ -32,6 +32,19 @@ test("housing capacity gates conception and birth follows a completed gestation"
     state.agents.push(template);
   }
 
+  // This test is about housing capacity, not relationship formation. Give each
+  // prospective pair a small persisted relationship so conception is otherwise
+  // eligible once capacity exists.
+  const householdMembers = state.agents.filter((agent) => agent.factionId === faction.id);
+  for (let index = 0; index < householdMembers.length; index += 2) {
+    const parent = householdMembers[index];
+    const partner = householdMembers[index + 1];
+    assert.ok(parent);
+    assert.ok(partner);
+    parent.socialMemory = [{ agentId: partner.id, familiarity: 3, lastInteractionTick: 1 }];
+    partner.socialMemory = [{ agentId: parent.id, familiarity: 3, lastInteractionTick: 1 }];
+  }
+
   state.structures = state.structures.filter((structure) => structure.factionId !== faction.id);
   state.structures.push({
     id: "housing-camp-a",

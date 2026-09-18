@@ -505,6 +505,12 @@ function planConceptions(state: WorldState): void {
           familiarity: pairFamiliarity(state, parent, candidate),
           distance: manhattanDistance(candidate.position, parent.position),
         }))
+        // Proximity is necessary but no longer sufficient for conception. A
+        // pair must have at least one persisted social interaction first; the
+        // ordinary conversation loop creates reciprocal socialMemory, while
+        // retained conversation events remain a compatibility fallback for
+        // saves that predate socialMemory.
+        .filter(({ familiarity }) => familiarity > 0)
         .sort((a, b) =>
           b.familiarity - a.familiarity ||
           a.distance - b.distance ||

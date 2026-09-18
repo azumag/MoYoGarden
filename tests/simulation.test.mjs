@@ -297,8 +297,11 @@ test("population growth requires conception, gestation, and biological parentage
     member.reproductiveRole = member.id === parent.id ? "gestational" : "partner";
     delete member.pregnancy;
     delete member.lastBirthTick;
+    delete member.socialMemory;
     delete member.task;
   }
+  parent.socialMemory = [{ agentId: partner.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.socialMemory = [{ agentId: parent.id, familiarity: 3, lastInteractionTick: 1 }];
   partner.position = { ...parent.position };
   state.tick = 8_639;
 
