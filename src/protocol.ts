@@ -103,10 +103,20 @@ export type AgentTask = MoveTask | GatherTask | BuildTask | DepositTask | TradeT
 export type AgentLifeStage = "infant" | "juvenile" | "adult" | "elder";
 export type ReproductiveRole = "gestational" | "partner";
 
+export interface AgentHeritableTraits {
+  // Multipliers stay close to 1 so inheritance can shape long-term population
+  // differences without overwhelming food, role, or settlement constraints.
+  vitality: number;
+  carryingCapacity: number;
+}
+
 export interface AgentPregnancy {
   partnerId: string;
   conceivedAtTick: number;
   dueAtTick: number;
+  // Snapshot the partner side of inheritance at conception so a later region
+  // handoff or death cannot erase biological causality before birth.
+  partnerTraits?: AgentHeritableTraits;
 }
 
 export interface AgentSocialMemory {
@@ -133,6 +143,9 @@ export interface Agent {
   birthTick?: number;
   lifeStage?: AgentLifeStage;
   reproductiveRole?: ReproductiveRole;
+  // Optional for schemaVersion=1 compatibility. Founders without the field use
+  // neutral 1.0 multipliers; lineage-born agents receive bounded inherited values.
+  heritableTraits?: AgentHeritableTraits;
   parents?: [string, string];
   pregnancy?: AgentPregnancy;
   lastBirthTick?: number;

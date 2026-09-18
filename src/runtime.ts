@@ -15,7 +15,13 @@ import {
   type WorldCommand,
   type WorldState,
 } from "./protocol.js";
-import { applyPopulationAging, dependentCaregiverId } from "./demography.js";
+import {
+  adultCapacityForTraits,
+  applyPopulationAging,
+  dependentCaregiverId,
+  inheritHeritableTraits,
+  normalizedHeritableTraits,
+} from "./demography.js";
 import { hexGridDistance } from "./hex-grid.js";
 import { simulate } from "./simulation.js";
 import { ensureWorldExtent } from "./world-scale.js";
@@ -406,7 +412,7 @@ function applyLifeStageTransitions(state: WorldState): void {
       const role = populationRole(state, agent.factionId);
       agent.lifeStage = "adult";
       agent.role = role;
-      agent.capacity = role === "builder" ? 32 : 24;
+      agent.capacity = adultCapacityForTraits(role === "builder" ? 32 : 24, agent);
       agent.autonomy = true;
       agent.goal = populationGoal(role);
       if (agent.task?.source === "autonomy") delete agent.task;
@@ -440,6 +446,9 @@ function birthDuePregnancies(state: WorldState): void {
     const childId = `agent-${parent.factionId}-birth-${state.tick}-${generation}`;
     const prefix = faction.name.split(/\s+/)[0] || faction.id;
     const nourished = consumeStoredFood(state, parent.factionId, POPULATION_BIRTH_FOOD_COST);
+    const partner = getAgent(state, pregnancy.partnerId);
+    const partnerTraits = pregnancy.partnerTraits ??
+      (partner === undefined ? undefined : normalizedHeritableTraits(partner));
 
     state.agents.push({
       id: childId,
@@ -457,6 +466,7 @@ function birthDuePregnancies(state: WorldState): void {
       birthTick: state.tick,
       lifeStage: "infant",
       reproductiveRole: demographicHash(childId) % 2 === 0 ? "gestational" : "partner",
+      heritableTraits: inheritHeritableTraits(parent, partnerTraits, childId),
       parents: [parent.id, pregnancy.partnerId],
     });
     delete parent.pregnancy;
@@ -522,6 +532,7 @@ function planConceptions(state: WorldState): void {
         partnerId: partner.id,
         conceivedAtTick: state.tick,
         dueAtTick: state.tick + POPULATION_GESTATION_TICKS,
+        partnerTraits: normalizedHeritableTraits(partner),
       };
       parent.reproductiveRole ??= "gestational";
       partner.reproductiveRole ??= "partner";

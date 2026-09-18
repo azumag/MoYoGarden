@@ -1,5 +1,5 @@
 import { hexGridDistance } from "./hex-grid.js";
-import type { Agent, WorldEvent, WorldState } from "./protocol.js";
+import type { Agent, AgentHeritableTraits, WorldEvent, WorldState } from "./protocol.js";
 import { activeFactionStructures, getFaction } from "./world.js";
 
 // Demographic time is intentionally compressed to keep biological causality visible
@@ -25,6 +25,9 @@ const POPULATION_CAREGIVER_ENERGY_COST = 2;
 const POPULATION_RELATIONSHIP_MEMORY_LIMIT = 8;
 const POPULATION_RELATIONSHIP_FAMILIARITY_MAX = 32;
 const GLOBAL_AGENT_PREFIX = "agent-global:";
+export const POPULATION_TRAIT_MIN = 0.9;
+export const POPULATION_TRAIT_MAX = 1.1;
+export const POPULATION_TRAIT_MUTATION_MAX = 0.02;
 
 function demographicHash(value: string): number {
   let hash = 2166136261;
@@ -35,9 +38,62 @@ function demographicHash(value: string): number {
   return hash >>> 0;
 }
 
-export function naturalLifespanTicks(agentId: string): number {
+function boundedTrait(value: number | undefined): number {
+  const finite = typeof value === "number" && Number.isFinite(value) ? value : 1;
+  return Math.max(POPULATION_TRAIT_MIN, Math.min(POPULATION_TRAIT_MAX, finite));
+}
+
+function roundedTrait(value: number): number {
+  return Math.round(boundedTrait(value) * 10_000) / 10_000;
+}
+
+function traitMutation(childId: string, trait: keyof AgentHeritableTraits): number {
+  const unit = (demographicHash(`${childId}:${trait}`) % 2_001) / 1_000 - 1;
+  return unit * POPULATION_TRAIT_MUTATION_MAX;
+}
+
+export function normalizedHeritableTraits(
+  agent: Pick<Agent, "heritableTraits"> | undefined,
+): AgentHeritableTraits {
+  return {
+    vitality: roundedTrait(agent?.heritableTraits?.vitality ?? 1),
+    carryingCapacity: roundedTrait(agent?.heritableTraits?.carryingCapacity ?? 1),
+  };
+}
+
+export function inheritHeritableTraits(
+  gestationalParent: Pick<Agent, "heritableTraits">,
+  partnerTraits: AgentHeritableTraits | undefined,
+  childId: string,
+): AgentHeritableTraits {
+  const first = normalizedHeritableTraits(gestationalParent);
+  const second = {
+    vitality: roundedTrait(partnerTraits?.vitality ?? 1),
+    carryingCapacity: roundedTrait(partnerTraits?.carryingCapacity ?? 1),
+  };
+  return {
+    vitality: roundedTrait(
+      (first.vitality + second.vitality) / 2 + traitMutation(childId, "vitality"),
+    ),
+    carryingCapacity: roundedTrait(
+      (first.carryingCapacity + second.carryingCapacity) / 2 +
+        traitMutation(childId, "carryingCapacity"),
+    ),
+  };
+}
+
+export function adultCapacityForTraits(
+  baseCapacity: number,
+  agent: Pick<Agent, "heritableTraits">,
+): number {
+  const traits = normalizedHeritableTraits(agent);
+  return Math.max(1, Math.round(baseCapacity * traits.carryingCapacity));
+}
+
+export function naturalLifespanTicks(agentId: string, vitality = 1): number {
   const extraDays = demographicHash(agentId) % (POPULATION_LIFESPAN_VARIATION_DAYS + 1);
-  return POPULATION_MIN_LIFESPAN_TICKS + extraDays * POPULATION_DAY_TICKS;
+  const baseline = POPULATION_MIN_LIFESPAN_TICKS + extraDays * POPULATION_DAY_TICKS;
+  return Math.round(baseline * boundedTrait(vitality));
 }
 
 function consumeStoredFood(state: WorldState, factionId: string, amount: number): boolean {
@@ -299,7 +355,7 @@ export function applyPopulationAging(state: WorldState): void {
     }
 
     const age = Math.max(0, state.tick - agent.birthTick);
-    if (age >= naturalLifespanTicks(agent.id)) continue;
+    if (age >= naturalLifespanTicks(agent.id, agent.heritableTraits?.vitality)) continue;
 
     if (age >= POPULATION_ELDER_AGE_TICKS && agent.lifeStage !== "elder") {
       agent.lifeStage = "elder";
