@@ -63,7 +63,6 @@ const POPULATION_BIRTH_FOOD_COST = 6;
 const POPULATION_HEALTH_THRESHOLD = 70;
 const POPULATION_ENERGY_THRESHOLD = 35;
 const POPULATION_PARENT_RADIUS = 2;
-const POPULATION_RESIDENT_CAPACITY_PER_CAMP = 6;
 const POPULATION_DEPENDENT_CARE_RADIUS = 1;
 const SOCIAL_INTERVAL = 12;
 const SOCIAL_RADIUS = 2;
@@ -289,12 +288,6 @@ function consumeStoredFood(state: WorldState, factionId: string, amount: number)
   return true;
 }
 
-function settlementResidentCapacity(state: WorldState, factionId: string): number {
-  return activeFactionStructures(state, factionId)
-    .filter((structure) => structure.type === "camp")
-    .length * POPULATION_RESIDENT_CAPACITY_PER_CAMP;
-}
-
 function populationRole(state: WorldState, factionId: string): AgentRole {
   const agents = state.agents.filter((agent) => agent.factionId === factionId);
   if (!agents.some((agent) => agent.role === "builder")) return "builder";
@@ -482,9 +475,6 @@ function planConceptions(state: WorldState): void {
       .filter((agent) => agent.factionId === faction.id)
       .sort((a, b) => a.id.localeCompare(b.id));
     if (population.length < 2) continue;
-    const pregnancies = population.filter((agent) => agent.pregnancy !== undefined).length;
-    if (population.length + pregnancies >= settlementResidentCapacity(state, faction.id)) continue;
-
     const healthyAdults = population.filter((agent) =>
       isAdultForReproduction(agent, state.tick) &&
       agent.hp >= POPULATION_HEALTH_THRESHOLD &&

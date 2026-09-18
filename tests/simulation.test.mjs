@@ -316,6 +316,82 @@ test("conception is not directly gated by settlement food stock", () => {
   assert.equal(conceivedParent.pregnancy?.partnerId, partner.id);
 });
 
+test("conception is not directly gated by settlement resident capacity", () => {
+  const state = createInitialWorld({ seed: 2031 });
+  const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);
+  const members = state.agents.filter((agent) => agent.factionId === faction.id);
+  assert.ok(members.length >= 2);
+  const parent = members[0]; assert.ok(parent);
+  const partner = members[1]; assert.ok(partner);
+
+  // Make housing exactly full while keeping the biological pair healthy.
+  // Housing pressure should drive camp expansion / migration elsewhere in
+  // the simulation, not act as a direct fertility switch.
+  state.structures = state.structures.filter((structure) =>
+    structure.factionId !== faction.id || structure.type !== "camp"
+  );
+  const targetPopulation = Math.ceil(members.length / 6) * 6;
+  const campCount = targetPopulation / 6;
+  const occupied = new Set(state.structures.map((structure) =>
+    `${structure.position.x},${structure.position.y}`
+  ));
+  const campSites = state.tiles
+    .filter((tile) => tile.terrain !== "water" && !occupied.has(`${tile.x},${tile.y}`))
+    .slice(0, campCount);
+  assert.equal(campSites.length, campCount);
+  for (let index = 0; index < campCount; index += 1) {
+    const site = campSites[index]; assert.ok(site);
+    state.structures.push({
+      id: `housing-full-camp-${index}`,
+      factionId: faction.id,
+      type: "camp",
+      position: { x: site.x, y: site.y },
+      status: "active",
+      progress: 6,
+      requiredProgress: 6,
+      storage: { wood: 0, stone: 0, food: 100 },
+    });
+  }
+  faction.resources.food = 100;
+
+  for (const member of members) {
+    member.hp = 100;
+    member.energy = 100;
+    member.autonomy = false;
+    member.reproductiveRole = member.id === parent.id ? "gestational" : "partner";
+    delete member.pregnancy;
+    delete member.lastBirthTick;
+    delete member.socialMemory;
+    delete member.task;
+  }
+  for (let index = members.length; index < targetPopulation; index += 1) {
+    const resident = structuredClone(partner);
+    resident.id = `housing-full-resident-${index}`;
+    resident.name = `Housing Resident ${index}`;
+    resident.hp = 100;
+    resident.energy = 100;
+    resident.autonomy = false;
+    resident.reproductiveRole = "partner";
+    resident.socialMemory = [];
+    delete resident.pregnancy;
+    delete resident.lastBirthTick;
+    delete resident.task;
+    state.agents.push(resident);
+  }
+  parent.socialMemory = [{ agentId: partner.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.socialMemory = [{ agentId: parent.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.position = { ...parent.position };
+  assert.equal(
+    state.agents.filter((agent) => agent.factionId === faction.id).length,
+    campCount * 6,
+  );
+  state.tick = 8_639;
+
+  const conceived = new WorldRuntime({ state }).tick().state;
+  const conceivedParent = conceived.agents.find((entry) => entry.id === parent.id); assert.ok(conceivedParent);
+  assert.equal(conceivedParent.pregnancy?.partnerId, partner.id);
+});
+
 test("population growth requires conception, gestation, and biological parentage", () => {
   const state = createInitialWorld({ seed: 2029 });
   const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);

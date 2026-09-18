@@ -3,16 +3,12 @@ import test from "node:test";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
-test("housing capacity gates conception and birth follows a completed gestation", () => {
+test("housing saturation does not directly gate conception or birth", () => {
   const state = createInitialWorld({ seed: 2030 });
   const faction = state.factions.find((entry) => entry.id === "ember");
   assert.ok(faction);
   const templates = state.agents.filter((agent) => agent.factionId === faction.id);
   assert.ok(templates.length >= 2);
-
-  for (const tile of state.tiles) {
-    if (tile.terrain === "water") tile.terrain = "plain";
-  }
 
   const campPosition = { ...templates[0].position };
   state.agents = state.agents.filter((agent) => agent.factionId !== faction.id);
@@ -32,9 +28,6 @@ test("housing capacity gates conception and birth follows a completed gestation"
     state.agents.push(template);
   }
 
-  // This test is about housing capacity, not relationship formation. Give each
-  // prospective pair a small persisted relationship so conception is otherwise
-  // eligible once capacity exists.
   const householdMembers = state.agents.filter((agent) => agent.factionId === faction.id);
   for (let index = 0; index < householdMembers.length; index += 2) {
     const parent = householdMembers[index];
@@ -59,27 +52,7 @@ test("housing capacity gates conception and birth follows a completed gestation"
   faction.resources.food = 100;
   state.tick = 8_639;
 
-  const blocked = new WorldRuntime({ state }).tick().state;
-  assert.equal(blocked.agents.filter((agent) => agent.factionId === faction.id).length, 6);
-  assert.equal(blocked.agents.some((agent) => agent.factionId === faction.id && agent.pregnancy !== undefined), false);
-
-  const secondCampPosition = blocked.tiles.find((tile) =>
-    tile.terrain !== "water" && (tile.x !== campPosition.x || tile.y !== campPosition.y)
-  );
-  assert.ok(secondCampPosition);
-  blocked.structures.push({
-    id: "housing-camp-b",
-    factionId: faction.id,
-    type: "camp",
-    position: { x: secondCampPosition.x, y: secondCampPosition.y },
-    status: "active",
-    progress: 6,
-    requiredProgress: 6,
-    storage: { wood: 0, stone: 0, food: 0 },
-  });
-  blocked.tick = 17_279;
-
-  const conceived = new WorldRuntime({ state: blocked }).tick().state;
+  const conceived = new WorldRuntime({ state }).tick().state;
   const gestationalParent = conceived.agents.find(
     (agent) => agent.factionId === faction.id && agent.pregnancy !== undefined,
   );
@@ -87,13 +60,13 @@ test("housing capacity gates conception and birth follows a completed gestation"
   const partnerId = gestationalParent.pregnancy?.partnerId;
   assert.ok(partnerId);
   assert.equal(conceived.agents.filter((agent) => agent.factionId === faction.id).length, 6);
-  assert.equal(gestationalParent.pregnancy?.conceivedAtTick, 17_280);
-  assert.equal(gestationalParent.pregnancy?.dueAtTick, 25_920);
+  assert.equal(gestationalParent.pregnancy?.conceivedAtTick, 8_640);
+  assert.equal(gestationalParent.pregnancy?.dueAtTick, 17_280);
   assert.equal(conceived.factions.find((entry) => entry.id === faction.id)?.resources.food, 100);
 
-  conceived.tick = 25_919;
+  conceived.tick = 17_279;
   const born = new WorldRuntime({ state: conceived }).tick().state;
-  const newborn = born.agents.find((agent) => agent.factionId === faction.id && agent.birthTick === 25_920);
+  const newborn = born.agents.find((agent) => agent.factionId === faction.id && agent.birthTick === 17_280);
   assert.ok(newborn);
   assert.equal(born.agents.filter((agent) => agent.factionId === faction.id).length, 7);
   assert.equal(newborn.lifeStage, "infant");
