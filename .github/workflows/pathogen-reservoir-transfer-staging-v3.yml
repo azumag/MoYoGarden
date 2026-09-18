@@ -27,8 +27,6 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          # Keep the repository's intentionally small Cloudflare compatibility
-          # declarations aligned with the real Durable Object KV transaction API.
           dts_path = Path("src/cloudflare.d.ts")
           dts = dts_path.read_text()
           old = '''interface DurableObjectStorage {
@@ -65,25 +63,17 @@ jobs:
           embedded = "\n".join(line[10:] if line.startswith("          ") else line for line in lines)
           exec(compile(embedded, "pathogen-reservoir-transfer-staging.py", "exec"), {})
 
-          # GridPosition is deliberately a narrow ownership/transport contract. The
-          # planner receives full Tile objects for source cells at runtime; spreading
-          # those objects would leak terrain/reservoir state into a cross-DO intent.
-          # Canonicalize both endpoints to x/y only instead of weakening the test.
           pathogen_path = Path("src/pathogen.ts")
           pathogen = pathogen_path.read_text()
-          old_coords = '''            grouped.set(key, {
-                  sourcePosition: { ...sourcePosition },
-                  desiredPosition: { ...desiredPosition },
-                  burden,
-                });'''
-          new_coords = '''            grouped.set(key, {
-                  sourcePosition: { x: sourcePosition.x, y: sourcePosition.y },
-                  desiredPosition: { x: desiredPosition.x, y: desiredPosition.y },
-                  burden,
-                });'''
-          if pathogen.count(old_coords) != 1:
-              raise SystemExit(f"coordinate canonicalization anchor count={pathogen.count(old_coords)}")
-          pathogen_path.write_text(pathogen.replace(old_coords, new_coords, 1))
+          replacements = {
+              "sourcePosition: { ...sourcePosition },": "sourcePosition: { x: sourcePosition.x, y: sourcePosition.y },",
+              "desiredPosition: { ...desiredPosition },": "desiredPosition: { x: desiredPosition.x, y: desiredPosition.y },",
+          }
+          for old_text, new_text in replacements.items():
+              if pathogen.count(old_text) != 1:
+                  raise SystemExit(f"coordinate canonicalization anchor {old_text!r} count={pathogen.count(old_text)}")
+              pathogen = pathogen.replace(old_text, new_text, 1)
+          pathogen_path.write_text(pathogen)
           PY
 
           npm install --no-audit --no-fund
