@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { createDemoState } from "./client/demo-state.js";
+import { agentDemography, populationComposition } from "./client/demography-ui.js";
 import { isHexGridCell } from "./client/hex-grid.js";
 import { createLiveNeighborSimulation } from "./client/live-region-rendering.js";
 import { ModelLibrary } from "./client/model-library.js";
@@ -45,11 +46,16 @@ const ui = {
   agentPosition: $("#agent-position"),
   agentHp: $("#agent-hp"),
   agentAutonomy: $("#agent-autonomy"),
+  agentAge: $("#agent-age"),
+  agentLifeStage: $("#agent-life-stage"),
+  agentParents: $("#agent-parents"),
+  agentPregnancy: $("#agent-pregnancy"),
   agentStatus: $("#agent-status"),
   invWood: $("#inv-wood"),
   invStone: $("#inv-stone"),
   invFood: $("#inv-food"),
   agentGoal: $("#agent-goal"),
+  populationComposition: $("#observation-population"),
   factionList: $("#faction-list"),
   eventList: $("#event-list"),
   pausedBadge: $("#paused-badge"),
@@ -337,6 +343,7 @@ function updateUi() {
   ui.pausedBadge.hidden = !app.paused;
   ui.pauseButton.textContent = app.paused ? "再開" : "一時停止";
   observationPanel.update(state);
+  ui.populationComposition.textContent = populationComposition(state);
 
   ui.factionList.replaceChildren();
   for (const faction of state.factions) {
@@ -385,6 +392,11 @@ function updateAgentDetail() {
   ui.agentPosition.textContent = `${agent.position.x}, ${agent.position.y}`;
   ui.agentHp.textContent = String(agent.hp);
   ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
+  const demography = agentDemography(agent, state);
+  ui.agentAge.textContent = demography.age;
+  ui.agentLifeStage.textContent = demography.lifeStage;
+  ui.agentParents.textContent = demography.parents;
+  ui.agentPregnancy.textContent = demography.pregnancy;
   ui.agentStatus.textContent = agent.status;
   ui.invWood.textContent = String(agent.inventory.wood);
   ui.invStone.textContent = String(agent.inventory.stone);
