@@ -566,36 +566,50 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
       runtimeAccess(this).runtime.snapshot().tick,
     ));
     const selected = records.filter((record) => selectedIds.has(record.transferId));
-    const outcomes = await Promise.all(selected.map(async (record) => {
-      try {
-        const response = await withPathogenEdgeDeadline((signal) =>
-          this.pathogenStub(record.toRegionId).fetch(new Request(
-            `https://moyo.internal${INTERNAL_PATHOGEN_RESERVOIR_TRANSFER_PATH}`,
-            {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "x-moyo-region-internal": record.toRegionId,
-              },
-              body: JSON.stringify(record),
-              signal,
-            },
-          )),
-        );
-        return response.ok ? record.transferId : undefined;
-      } catch (error) {
-        console.debug(
-          "MoYoGarden pathogen reservoir transfer unavailable",
-          record.toRegionId,
-          record.transferId,
-          error,
-        );
-        return undefined;
-      }
-    }));
-    const acknowledged = new Set(
-      outcomes.filter((value): value is string => value !== undefined),
-    );
+    const byTarget = new Map<string, OutgoingPathogenReservoirTransfer[]>();
+    for (const record of selected) {
+      const targetRecords = byTarget.get(record.toRegionId) ?? [];
+      targetRecords.push(record);
+      byTarget.set(record.toRegionId, targetRecords);
+    }
+
+    // Different neighboring DOs can progress concurrently, but keep transfers
+    // to the same target ordered. Besides avoiding needless storage-transaction
+    // contention in production, this preserves deterministic receiver credit
+    // when several source cells cross the same macro-region seam in one cadence.
+    const outcomeGroups = await Promise.all([...byTarget.entries()].map(
+      async ([targetRegionId, targetRecords]) => {
+        const acknowledged: string[] = [];
+        for (const record of targetRecords) {
+          try {
+            const response = await withPathogenEdgeDeadline((signal) =>
+              this.pathogenStub(targetRegionId).fetch(new Request(
+                `https://moyo.internal${INTERNAL_PATHOGEN_RESERVOIR_TRANSFER_PATH}`,
+                {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "x-moyo-region-internal": targetRegionId,
+                  },
+                  body: JSON.stringify(record),
+                  signal,
+                },
+              )),
+            );
+            if (response.ok) acknowledged.push(record.transferId);
+          } catch (error) {
+            console.debug(
+              "MoYoGarden pathogen reservoir transfer unavailable",
+              targetRegionId,
+              record.transferId,
+              error,
+            );
+          }
+        }
+        return acknowledged;
+      },
+    ));
+    const acknowledged = new Set(outcomeGroups.flat());
     if (acknowledged.size === 0) return;
     const current = await this.outgoingPathogenReservoirTransfers();
     await this.pathogenState.storage.put(
