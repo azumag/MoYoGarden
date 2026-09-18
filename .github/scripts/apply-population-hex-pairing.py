@@ -2,9 +2,11 @@ from pathlib import Path
 import sys
 
 runtime_path = Path("src/runtime.ts")
-test_path = Path("tests/population-relationship-gate.test.mjs")
+relationship_test_path = Path("tests/population-relationship-gate.test.mjs")
+housing_test_path = Path("tests/population-housing-capacity.test.mjs")
+simulation_test_path = Path("tests/simulation.test.mjs")
 
-TEST = r'''import assert from "node:assert/strict";
+RELATIONSHIP_TEST = r'''import assert from "node:assert/strict";
 import test from "node:test";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
@@ -71,10 +73,9 @@ test("conception requires an established social relationship instead of proximit
   });
   faction.resources.food = 100;
 
-  // At the first reproduction boundary these healthy adults are co-located but
-  // have never interacted. Demography runs before social interactions, so mere
-  // proximity must not create a pregnancy; the same tick then gives them a real
-  // conversation and reciprocal social memory.
+  // Demography runs before social interaction. Co-location alone cannot create
+  // a pregnancy; the same tick then establishes reciprocal social memory via
+  // the ordinary conversation loop.
   state.tick = 8_639;
   const first = new WorldRuntime({ state }).tick().state;
   const firstParent = first.agents.find((agent) => agent.id === parent.id);
@@ -86,7 +87,7 @@ test("conception requires an established social relationship instead of proximit
   assert.ok(firstPartner.socialMemory?.some((entry) => entry.agentId === parent.id && entry.familiarity > 0));
 
   // Once the low-level relationship exists, the next reproduction boundary can
-  // use it. No scripted couple or top-down family event is introduced.
+  // use it without inventing a scripted couple or top-down family event.
   first.tick = 17_279;
   const second = new WorldRuntime({ state: first }).tick().state;
   const secondParent = second.agents.find((agent) => agent.id === parent.id);
@@ -97,13 +98,13 @@ test("conception requires an established social relationship instead of proximit
 '''
 
 
-def write_test() -> None:
-    if test_path.exists():
-        raise SystemExit(f"{test_path} already exists")
-    test_path.write_text(TEST)
+def write_relationship_test() -> None:
+    if relationship_test_path.exists():
+        raise SystemExit(f"{relationship_test_path} already exists")
+    relationship_test_path.write_text(RELATIONSHIP_TEST)
 
 
-def apply_fix() -> None:
+def patch_runtime() -> None:
     text = runtime_path.read_text()
     old = '''        .map((candidate) => ({
           candidate,
@@ -130,9 +131,67 @@ def apply_fix() -> None:
     runtime_path.write_text(text.replace(old, new, 1))
 
 
+def patch_housing_fixture() -> None:
+    text = housing_test_path.read_text()
+    old = '''    state.agents.push(template);
+  }
+
+  state.structures = state.structures.filter((structure) => structure.factionId !== faction.id);
+'''
+    new = '''    state.agents.push(template);
+  }
+
+  // This test is about housing capacity, not relationship formation. Give each
+  // prospective pair a small persisted relationship so conception is otherwise
+  // eligible once capacity exists.
+  const householdMembers = state.agents.filter((agent) => agent.factionId === faction.id);
+  for (let index = 0; index < householdMembers.length; index += 2) {
+    const parent = householdMembers[index];
+    const partner = householdMembers[index + 1];
+    assert.ok(parent);
+    assert.ok(partner);
+    parent.socialMemory = [{ agentId: partner.id, familiarity: 3, lastInteractionTick: 1 }];
+    partner.socialMemory = [{ agentId: parent.id, familiarity: 3, lastInteractionTick: 1 }];
+  }
+
+  state.structures = state.structures.filter((structure) => structure.factionId !== faction.id);
+'''
+    if text.count(old) != 1:
+        raise SystemExit("expected housing fixture insertion anchor")
+    housing_test_path.write_text(text.replace(old, new, 1))
+
+
+def patch_simulation_fixture() -> None:
+    text = simulation_test_path.read_text()
+    old = '''    delete member.pregnancy;
+    delete member.lastBirthTick;
+    delete member.task;
+  }
+  partner.position = { ...parent.position };
+'''
+    new = '''    delete member.pregnancy;
+    delete member.lastBirthTick;
+    delete member.socialMemory;
+    delete member.task;
+  }
+  parent.socialMemory = [{ agentId: partner.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.socialMemory = [{ agentId: parent.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.position = { ...parent.position };
+'''
+    if text.count(old) != 1:
+        raise SystemExit("expected population growth fixture insertion anchor")
+    simulation_test_path.write_text(text.replace(old, new, 1))
+
+
+def apply_fix() -> None:
+    patch_runtime()
+    patch_housing_fixture()
+    patch_simulation_fixture()
+
+
 if len(sys.argv) != 2 or sys.argv[1] not in {"test", "fix"}:
     raise SystemExit("usage: apply-population-hex-pairing.py test|fix")
 if sys.argv[1] == "test":
-    write_test()
+    write_relationship_test()
 else:
     apply_fix()
