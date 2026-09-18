@@ -31,37 +31,30 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           worker = Path("src/worker.ts")
           text = worker.read_text()
 
-          old_snapshot = '''    if (request.method === "GET" && path === "/api/world/snapshot") {
-                return json(this.runtime.snapshot());
-              }'''.replace("              ", "")
-          new_snapshot = '''    if (request.method === "GET" && path === "/api/world/snapshot") {
-                const state = this.runtime.snapshot();
-                return json(url.searchParams.get("terrain") === "1" ? terrainPreviewState(state) : state);
-              }'''.replace("              ", "")
+          old_snapshot = '    if (request.method === "GET" && path === "/api/world/snapshot") {\n      return json(this.runtime.snapshot());\n    }'
+          new_snapshot = '    if (request.method === "GET" && path === "/api/world/snapshot") {\n      const state = this.runtime.snapshot();\n      return json(url.searchParams.get("terrain") === "1" ? terrainPreviewState(state) : state);\n    }'
           if old_snapshot not in text:
               raise SystemExit("snapshot patch anchor not found")
           text = text.replace(old_snapshot, new_snapshot, 1)
 
-          old_window = '''        const snapshotUrl = new URL(request.url);
-                snapshotUrl.pathname = "/api/world/snapshot";
-                snapshotUrl.search = "";
-                const response = await stub.fetch(new Request(snapshotUrl, { method: "GET", headers }));'''.replace("              ", "")
-          new_window = '''        const snapshotUrl = new URL(request.url);
-                snapshotUrl.pathname = "/api/world/snapshot";
-                snapshotUrl.search = "";
-                if (terrainOnly) snapshotUrl.searchParams.set("terrain", "1");
-                const response = await stub.fetch(new Request(snapshotUrl, { method: "GET", headers }));'''.replace("              ", "")
-          if old_window not in text:
+          window_anchor = '        snapshotUrl.search = "";\n'
+          if window_anchor not in text:
               raise SystemExit("window patch anchor not found")
-          text = text.replace(old_window, new_window, 1)
+          text = text.replace(
+              window_anchor,
+              window_anchor + '        if (terrainOnly) snapshotUrl.searchParams.set("terrain", "1");\n',
+              1,
+          )
           worker.write_text(text)
 
           test_file = Path("tests/terrain-preview-payload.test.mjs")
-          test_file.write_text(r'''import assert from "node:assert/strict";
+          test_file.write_text(dedent(r'''
+          import assert from "node:assert/strict";
           import test from "node:test";
           import worker, { RegionDurableObject } from "../dist-ts/src/worker.js";
 
@@ -161,7 +154,7 @@ jobs:
             assert.equal("agents" in payload.chunks[0].state, false);
             assert.equal("resource" in payload.chunks[0].state.tiles[0], false);
           });
-          '''.replace("          ", ""))
+          ''').lstrip())
           PY
 
       - name: Install dependencies
