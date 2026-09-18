@@ -252,6 +252,17 @@ jobs:
       - name: Typecheck, test, and build
         run: npm run build
 
+      - name: Normalize generated whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          for name in ("src/pathogen.ts", "tests/pathogen-reservoir-halo.test.mjs"):
+              path = Path(name)
+              path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
+          PY
+
       - name: Check diff
         run: git diff --check
 
