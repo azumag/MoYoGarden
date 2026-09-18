@@ -270,6 +270,11 @@ function upgradeNeighborPreview(view, preview) {
       placement.hexOffset.x,
       placement.hexOffset.z,
     );
+    // Region chunk roots also keep a fixed local offset for their lifetime. The
+    // preview/root ancestors still update normally during rebase, so freezing
+    // only this local matrix removes redundant per-frame recomposition safely.
+    group.updateMatrix();
+    group.matrixAutoUpdate = false;
     groups.push(group);
   }
   if (groups.length === 0) return false;
