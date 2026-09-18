@@ -6,7 +6,11 @@ import {
   pathogenReservoirOutboundIntents,
   tilePathogenReservoir,
 } from "../dist-ts/src/pathogen.js";
-import { RegionDurableObject } from "../dist-ts/src/pathogen-region.js";
+import {
+  PATHOGEN_RESERVOIR_TRANSFER_ATTEMPT_BUDGET,
+  RegionDurableObject,
+  selectPathogenReservoirAttemptIds,
+} from "../dist-ts/src/pathogen-region.js";
 import { regionCellTransition, regionGlobalCellOrigin } from "../dist-ts/src/region-topology.js";
 import { sampleWorldWind } from "../dist-ts/src/world-scale.js";
 
@@ -126,6 +130,27 @@ test("outbound reservoir planner emits only exact cross-DO low-level transport",
     regionCellTransition("garden-1", intents[0].desiredPosition, 40, 24)?.targetRegionId,
     chosen.transition.targetRegionId,
   );
+});
+
+test("pathogen reservoir retry selection stays bounded and rotates across backlog", () => {
+  const records = Array.from({ length: 10 }, (_entry, index) => ({
+    transferId: `transfer-${index.toString().padStart(2, "0")}`,
+  }));
+  const first = selectPathogenReservoirAttemptIds(records, 0);
+  const second = selectPathogenReservoirAttemptIds(records, 1);
+  assert.equal(first.length, PATHOGEN_RESERVOIR_TRANSFER_ATTEMPT_BUDGET);
+  assert.equal(new Set(first).size, first.length);
+  assert.equal(second.length, PATHOGEN_RESERVOIR_TRANSFER_ATTEMPT_BUDGET);
+  assert.notDeepEqual(second, first, "persistent retry backlog should rotate with simulation tick");
+
+  const seen = new Set();
+  for (let tick = 0; tick < records.length; tick += 1) {
+    for (const transferId of selectPathogenReservoirAttemptIds(records, tick)) {
+      seen.add(transferId);
+    }
+  }
+  assert.equal(seen.size, records.length, "bounded retry rotation must not starve deferred routes");
+  assert.deepEqual(selectPathogenReservoirAttemptIds(records, 0, 0), []);
 });
 
 test("cross-DO reservoir transfer debits source mass, journals delivery, and deduplicates retries", async () => {

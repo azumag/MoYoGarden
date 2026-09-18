@@ -94,6 +94,34 @@ const INCOMING_PATHOGEN_RESERVOIR_KEY = "pathogen:reservoir:incoming:v1";
 const PATHOGEN_RESERVOIR_TRANSFER_EPSILON = 1e-4;
 const DEFAULT_WORLD_SEED = 424_242;
 export const PATHOGEN_EDGE_READ_TIMEOUT_MS = 5_000;
+export const PATHOGEN_RESERVOIR_TRANSFER_ATTEMPT_BUDGET = 6;
+
+/**
+ * Keep cross-DO reservoir delivery work bounded without starving an old route.
+ *
+ * Retry and newly-created transfer phases use this selector independently, so
+ * an outage backlog cannot consume the budget reserved for transfers created by
+ * the current pathogen cadence. Sorting gives deterministic ordering and the
+ * tick-derived offset rotates the retry window across a persistent backlog.
+ */
+export function selectPathogenReservoirAttemptIds(
+  records: readonly { transferId: string }[],
+  tick: number,
+  limit = PATHOGEN_RESERVOIR_TRANSFER_ATTEMPT_BUDGET,
+): string[] {
+  const budget = Math.max(0, Math.floor(limit));
+  if (budget === 0 || records.length === 0) return [];
+  const pending = [...new Set(records.map((record) => record.transferId))]
+    .sort((a, b) => a.localeCompare(b));
+  if (pending.length <= budget) return pending;
+  const normalizedTick = Number.isSafeInteger(tick) ? Math.max(0, Math.floor(tick)) : 0;
+  const offset = normalizedTick % pending.length;
+  return Array.from(
+    { length: budget },
+    (_entry, index) => pending[(offset + index) % pending.length]!,
+  );
+}
+
 
 /**
  * Keep one unavailable neighbor from pinning a pathogen Alarm indefinitely.
@@ -525,11 +553,20 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
     return true;
   }
 
-  private async flushOutgoingPathogenReservoir(): Promise<void> {
-    const records = await this.outgoingPathogenReservoirTransfers();
+  private async flushOutgoingPathogenReservoir(
+    eligibleTransferIds: ReadonlySet<string>,
+  ): Promise<void> {
+    if (eligibleTransferIds.size === 0) return;
+    const records = (await this.outgoingPathogenReservoirTransfers())
+      .filter((record) => eligibleTransferIds.has(record.transferId));
     if (records.length === 0) return;
-    const acknowledged = new Set<string>();
-    for (const record of records) {
+
+    const selectedIds = new Set(selectPathogenReservoirAttemptIds(
+      records,
+      runtimeAccess(this).runtime.snapshot().tick,
+    ));
+    const selected = records.filter((record) => selectedIds.has(record.transferId));
+    const outcomes = await Promise.all(selected.map(async (record) => {
       try {
         const response = await withPathogenEdgeDeadline((signal) =>
           this.pathogenStub(record.toRegionId).fetch(new Request(
@@ -545,7 +582,7 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
             },
           )),
         );
-        if (response.ok) acknowledged.add(record.transferId);
+        return response.ok ? record.transferId : undefined;
       } catch (error) {
         console.debug(
           "MoYoGarden pathogen reservoir transfer unavailable",
@@ -553,8 +590,12 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
           record.transferId,
           error,
         );
+        return undefined;
       }
-    }
+    }));
+    const acknowledged = new Set(
+      outcomes.filter((value): value is string => value !== undefined),
+    );
     if (acknowledged.size === 0) return;
     const current = await this.outgoingPathogenReservoirTransfers();
     await this.pathogenState.storage.put(
@@ -763,7 +804,10 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
     // Retry older source-owned journals first. While a route is pending,
     // reserveOutgoingPathogenReservoir refuses to create a second transfer
     // for that same route, keeping retry state bounded during outages.
-    await this.flushOutgoingPathogenReservoir();
+    const retryTransferIds = new Set(
+      (await this.outgoingPathogenReservoirTransfers()).map((record) => record.transferId),
+    );
+    await this.flushOutgoingPathogenReservoir(retryTransferIds);
     const workingState = access.runtime.snapshot();
     const environment = this.pathogenEnvironmentFrame(workingState);
     const halo = shouldMaterializePathogenHalo(workingState, beforeTick, workingState.tick)
@@ -802,7 +846,12 @@ export class RegionDurableObject extends AutonomyRegionDurableObject {
       outboundState,
       this.pathogenEnvironmentFrame(outboundState),
     );
-    await this.flushOutgoingPathogenReservoir();
+    const freshTransferIds = new Set(
+      (await this.outgoingPathogenReservoirTransfers())
+        .filter((record) => !retryTransferIds.has(record.transferId))
+        .map((record) => record.transferId),
+    );
+    await this.flushOutgoingPathogenReservoir(freshTransferIds);
   }
 }
 
