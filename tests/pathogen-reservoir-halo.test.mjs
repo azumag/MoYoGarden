@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";
+import {
+  HEX_GRID_DIRECTIONS,
+  HEX_GRID_DIRECTION_STEPS,
+  hexGridBoundaryCells,
+  oppositeHexGridDirection,
+} from "../dist-ts/src/hex-grid.js";
 import {
   agentPathogenLoad,
   applyPathogenSteps,
@@ -9,6 +14,7 @@ import {
   pathogenHaloPressureMap,
   pathogenHaloReservoirMap,
 } from "../dist-ts/src/pathogen.js";
+import { sampleWorldWind } from "../dist-ts/src/world-scale.js";
 
 function agent(id, position) {
   return {
@@ -175,5 +181,83 @@ test("corner pathogen halo composes each ghost adjacency independently", () => {
   assert.ok(
     Math.abs(agentPathogenLoad(seamReservoirTarget) - agentPathogenLoad(localReservoirTarget)) < 1e-12,
     "two reservoir ghost cells at a macro-hex corner must equal two ordinary local adjacencies",
+  );
+});
+
+test("shared world wind shapes reservoir exposure identically across a region seam", () => {
+  const environment = { worldSeed: 424242, originX: 0, originY: 0 };
+  let targetPosition;
+  let wind;
+  for (let y = 1; y < 23 && targetPosition === undefined; y += 1) {
+    for (let x = 1; x < 39; x += 1) {
+      const candidate = sampleWorldWind(environment.worldSeed, x, y);
+      if (candidate.strength > 0.2) {
+        targetPosition = { x, y };
+        wind = candidate;
+        break;
+      }
+    }
+  }
+  assert.ok(targetPosition);
+  assert.ok(wind);
+
+  const upwindDirection = oppositeHexGridDirection(wind.direction);
+  const attenuatedDirection = HEX_GRID_DIRECTIONS.find(
+    (direction) => direction !== upwindDirection,
+  );
+  assert.ok(attenuatedDirection);
+
+  const localLoadFor = (direction) => {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    const target = agent(`local-${direction}`, targetPosition);
+    applyPathogenSteps({
+      agents: [target],
+      tiles: [tile({
+        x: targetPosition.x + step.x,
+        y: targetPosition.y + step.y,
+      }, 0.8)],
+    }, 1, environment);
+    return agentPathogenLoad(target);
+  };
+
+  const upwindLoad = localLoadFor(upwindDirection);
+  const attenuatedLoad = localLoadFor(attenuatedDirection);
+  assert.ok(
+    upwindLoad > attenuatedLoad,
+    "shared-world wind should preserve more exposure from an upwind reservoir",
+  );
+
+  const neighborPosition = { x: 8, y: 11 };
+  const neighborDirection = oppositeHexGridDirection(upwindDirection);
+  const link = {
+    sourceRegionId: "garden-1",
+    sourcePosition: targetPosition,
+    direction: upwindDirection,
+    neighborRegionId: "wind-neighbor",
+    neighborPosition,
+    neighborDirection,
+  };
+  const halo = pathogenHaloMaps([link], [{
+    regionId: "wind-neighbor",
+    direction: neighborDirection,
+    revision: 1,
+    tick: 30,
+    agents: [],
+    reservoirs: [{ position: neighborPosition, burden: 0.8 }],
+  }], environment);
+  const seamTarget = agent("seam-target-wind", targetPosition);
+  applyPathogenSteps(
+    { agents: [seamTarget], tiles: [] },
+    0,
+    environment,
+    halo.pressure,
+    1,
+    halo.reservoir,
+    halo.pressureExposure,
+    halo.reservoirExposure,
+  );
+  assert.ok(
+    Math.abs(agentPathogenLoad(seamTarget) - upwindLoad) < 1e-12,
+    "a DO seam must not change wind-shaped adjacent reservoir exposure",
   );
 });

@@ -2,7 +2,6 @@ import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
   hexGridBoundaryCells,
-  hexGridNeighbors,
   isHexGridCell,
   oppositeHexGridDirection,
   type HexGridDirection,
@@ -312,13 +311,18 @@ function advectPathogenReservoirs(
 function localReservoirExposure(
   reservoir: ReadonlyMap<string, number>,
   position: GridPosition,
+  environment: PathogenEnvironmentFrame | undefined,
 ): number {
   let exposure = (reservoir.get(positionKey(position)) ?? 0) * PATHOGEN_RESERVOIR_EXPOSURE_GAIN;
-  for (const neighbor of hexGridNeighbors(position)) {
-    const burden = reservoir.get(positionKey(neighbor)) ?? 0;
+  for (const direction of HEX_GRID_DIRECTIONS) {
+    const step = HEX_GRID_DIRECTION_STEPS[direction];
+    const burden = reservoir.get(positionKey({
+      x: position.x + step.x,
+      y: position.y + step.y,
+    })) ?? 0;
     exposure = unionPressure(
       exposure,
-      burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+      burden * pathogenAdjacentReservoirExposureGain(position, direction, environment),
     );
   }
   return exposure;
@@ -433,6 +437,22 @@ export function pathogenAdjacentContactGain(
   if (sourceDirection === upwindDirection) return PATHOGEN_ADJACENT_CONTACT_GAIN;
   return PATHOGEN_ADJACENT_CONTACT_GAIN *
     (1 - wind.strength * PATHOGEN_NON_UPWIND_CONTACT_REDUCTION);
+}
+
+/**
+ * Environmental reservoir exposure shares the same low-level wind
+ * directionality as adjacent carrier exposure while retaining its own
+ * weaker coefficient. Missing world-frame context preserves the legacy
+ * direction-neutral value exactly.
+ */
+export function pathogenAdjacentReservoirExposureGain(
+  position: GridPosition,
+  sourceDirection: HexGridDirection,
+  environment: PathogenEnvironmentFrame | undefined,
+): number {
+  const contactGain = pathogenAdjacentContactGain(position, sourceDirection, environment);
+  return PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN *
+    (contactGain / PATHOGEN_ADJACENT_CONTACT_GAIN);
 }
 
 function localContactExposure(
@@ -604,7 +624,11 @@ function materializePathogenHaloMaps(
           localKey,
           unionPressure(
             reservoirExposure.get(localKey) ?? 0,
-            burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+            burden * pathogenAdjacentReservoirExposureGain(
+              link.sourcePosition,
+              link.direction,
+              environment,
+            ),
           ),
         );
       }
@@ -723,7 +747,7 @@ function singlePathogenStep(
     const isAlive = agent.hp > 0;
     const directContact = isAlive ? localContactExposure(contactIndex, agent, environment) : 0;
     const environmentalExposure = isAlive
-      ? localReservoirExposure(previousReservoir, agent.position)
+      ? localReservoirExposure(previousReservoir, agent.position, environment)
       : 0;
     const contact = unionPressure(directContact, environmentalExposure) *
       clamp01(1 - currentImmunity * PATHOGEN_IMMUNITY_MAX_EFFECT);
@@ -929,4 +953,3 @@ export function applyPathogenTickRange(
   }
   return changed;
 }
-
