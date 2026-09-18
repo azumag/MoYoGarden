@@ -2,101 +2,15 @@ name: One-shot pathogen cleanup fix
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: retry pathogen cleanup fix v3'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Apply regression fix
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          source = Path('src/pathogen.ts')
-          text = source.read_text()
-          old = "  const keys = new Set([...advectedReservoir.keys(), ...shedding.keys()]);\n"
-          new = (
-              "  const keys = new Set([...advectedReservoir.keys(), ...shedding.keys()]);\n"
-              "  // Keep explicitly persisted zero-valued reservoirs in the mutation pass once\n"
-              "  // so the optional field can be deleted. pathogenReservoirIndex intentionally\n"
-              "  // omits zero burden from the hot index, but quiescent detection treats an\n"
-              "  // explicit field as cleanup work; without this bridge a stored zero would\n"
-              "  // survive forever and permanently defeat the quiescent fast path.\n"
-              "  for (const tile of tiles) {\n"
-              "    if ((tile as PathogenTile).pathogenReservoir !== undefined) {\n"
-              "      keys.add(positionKey(tile));\n"
-              "    }\n"
-              "  }\n"
-          )
-          if old not in text:
-              raise SystemExit('pathogen source anchor not found')
-          source.write_text(text.replace(old, new, 1))
-
-          test = Path('tests/pathogen-quiescent-fast-path.test.mjs')
-          text = test.read_text()
-          old = (
-              "  assert.equal(\n"
-              "    pathogenStateIsQuiescent(state),\n"
-              "    false,\n"
-              "    \"an explicitly stored active reservoir gets one normal pass so it can be cleaned\",\n"
-              "  );\n"
-              "  delete active.pathogenReservoir;\n"
-              "\n"
-              "  target.pathogenLoad = 0;\n"
-          )
-          new = (
-              "  assert.equal(\n"
-              "    pathogenStateIsQuiescent(state),\n"
-              "    false,\n"
-              "    \"an explicitly stored active reservoir gets one normal pass so it can be cleaned\",\n"
-              "  );\n"
-              "  assert.ok(applyPathogenSteps(state, 1) > 0);\n"
-              "  assert.equal(\n"
-              "    active.pathogenReservoir,\n"
-              "    undefined,\n"
-              "    \"the cleanup pass must delete an explicit zero reservoir instead of leaving the region hot\",\n"
-              "  );\n"
-              "  assert.equal(pathogenStateIsQuiescent(state), true);\n"
-              "\n"
-              "  target.pathogenLoad = 0;\n"
-          )
-          if old not in text:
-              raise SystemExit('pathogen test anchor not found')
-          test.write_text(text.replace(old, new, 1))
-          PY
-
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Typecheck, test, and build
-        run: npm run build
-
-      - name: Commit verified fix and remove one-shot workflow
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm .github/workflows/one-shot-pathogen-cleanup.yml
-          git add src/pathogen.ts tests/pathogen-quiescent-fast-path.test.mjs
-          git diff --cached --check
-          git commit -m 'fix: clear dormant pathogen reservoir markers'
-          git push origin HEAD:main
+      - name: Sanity
+        run: echo ready
