@@ -1,6 +1,7 @@
 import { readGraphicsSettings, applyGraphicsOverrides } from './graphics-settings.js';
 
 const HIGH_DPR_TOUCH_WIDTH_LIMIT = 1_400;
+const NARROW_TOUCH_WIDTH_LIMIT = 900;
 
 const PROFILES = Object.freeze({
   balanced: Object.freeze({
@@ -47,6 +48,12 @@ function highDprTouchDevice() {
   return touchPoints > 0 && pixelRatio >= 2 && width < HIGH_DPR_TOUCH_WIDTH_LIMIT;
 }
 
+function narrowTouchDevice() {
+  const touchPoints = Number(globalThis.navigator?.maxTouchPoints ?? 0);
+  const width = Number(globalThis.innerWidth ?? 1280);
+  return touchPoints > 0 && width < NARROW_TOUCH_WIDTH_LIMIT;
+}
+
 function automaticProfileId() {
   const memory = Number(globalThis.navigator?.deviceMemory ?? 0);
   const cores = Number(globalThis.navigator?.hardwareConcurrency ?? 0);
@@ -65,7 +72,11 @@ function automaticProfileId() {
 function needsAutoConstraintTuning() {
   const memory = Number(globalThis.navigator?.deviceMemory ?? 0);
   const cores = Number(globalThis.navigator?.hardwareConcurrency ?? 0);
-  return networkIsConstrained() || (memory > 0 && memory < 4) || (cores > 0 && cores < 4) || highDprTouchDevice();
+  return networkIsConstrained()
+    || (memory > 0 && memory < 4)
+    || (cores > 0 && cores < 4)
+    || highDprTouchDevice()
+    || narrowTouchDevice();
 }
 
 function tuneAutomaticBalancedProfile(profile, requested) {
