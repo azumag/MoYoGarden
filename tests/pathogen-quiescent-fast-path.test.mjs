@@ -56,7 +56,13 @@ test("quiescent detection ignores compatibility cells but preserves cleanup of a
     false,
     "an explicitly stored active reservoir gets one normal pass so it can be cleaned",
   );
-  delete active.pathogenReservoir;
+  assert.ok(applyPathogenSteps(state, 1) > 0);
+  assert.equal(
+    active.pathogenReservoir,
+    undefined,
+    "the cleanup pass must delete an explicit zero reservoir instead of leaving the region hot",
+  );
+  assert.equal(pathogenStateIsQuiescent(state), true);
 
   target.pathogenLoad = 0;
   assert.equal(pathogenStateIsQuiescent(state), false);

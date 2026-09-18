@@ -357,6 +357,16 @@ function advancePathogenReservoirs(
   }
 
   const keys = new Set([...advectedReservoir.keys(), ...shedding.keys()]);
+  // Keep explicitly persisted zero-valued reservoirs in the mutation pass once
+  // so the optional field can be deleted. pathogenReservoirIndex intentionally
+  // omits zero burden from the hot index, but quiescent detection treats an
+  // explicit field as cleanup work; without this bridge a stored zero would
+  // survive forever and permanently defeat the quiescent fast path.
+  for (const tile of tiles) {
+    if ((tile as PathogenTile).pathogenReservoir !== undefined) {
+      keys.add(positionKey(tile));
+    }
+  }
   let changed = 0;
   for (const key of keys) {
     const tile = tilesByPosition.get(key);
