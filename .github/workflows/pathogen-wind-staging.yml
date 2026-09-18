@@ -1,0 +1,291 @@
+name: Stage pathogen wind exposure improvement
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/pathogen-wind-staging.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    name: Apply and verify pathogen wind exposure
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply focused source and regression changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          pathogen_path = Path("src/pathogen.ts")
+          source = pathogen_path.read_text()
+          source = source.replace(
+              '  hexGridBoundaryCells,\n  hexGridNeighbors,\n  isHexGridCell,',
+              '  hexGridBoundaryCells,\n  isHexGridCell,',
+          )
+
+          old_local = '''function localReservoirExposure(
+            reservoir: ReadonlyMap<string, number>,
+            position: GridPosition,
+          ): number {
+            let exposure = (reservoir.get(positionKey(position)) ?? 0) * PATHOGEN_RESERVOIR_EXPOSURE_GAIN;
+            for (const neighbor of hexGridNeighbors(position)) {
+              const burden = reservoir.get(positionKey(neighbor)) ?? 0;
+              exposure = unionPressure(
+                exposure,
+                burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+              );
+            }
+            return exposure;
+          }
+          '''
+          new_local = '''function localReservoirExposure(
+            reservoir: ReadonlyMap<string, number>,
+            position: GridPosition,
+            environment: PathogenEnvironmentFrame | undefined,
+          ): number {
+            let exposure = (reservoir.get(positionKey(position)) ?? 0) * PATHOGEN_RESERVOIR_EXPOSURE_GAIN;
+            for (const direction of HEX_GRID_DIRECTIONS) {
+              const step = HEX_GRID_DIRECTION_STEPS[direction];
+              const burden = reservoir.get(positionKey({
+                x: position.x + step.x,
+                y: position.y + step.y,
+              })) ?? 0;
+              exposure = unionPressure(
+                exposure,
+                burden * pathogenAdjacentReservoirExposureGain(position, direction, environment),
+              );
+            }
+            return exposure;
+          }
+          '''
+          if old_local not in source:
+              raise SystemExit("local reservoir exposure anchor missing")
+          source = source.replace(old_local, new_local, 1)
+
+          contact_anchor = '''export function pathogenAdjacentContactGain(
+            position: GridPosition,
+            sourceDirection: HexGridDirection,
+            environment: PathogenEnvironmentFrame | undefined,
+          ): number {
+            if (environment === undefined) return PATHOGEN_ADJACENT_CONTACT_GAIN;
+            const wind = sampleWorldWind(
+              environment.worldSeed,
+              environment.originX + position.x,
+              environment.originY + position.y,
+            );
+            const upwindDirection = oppositeHexGridDirection(wind.direction);
+            if (sourceDirection === upwindDirection) return PATHOGEN_ADJACENT_CONTACT_GAIN;
+            return PATHOGEN_ADJACENT_CONTACT_GAIN *
+              (1 - wind.strength * PATHOGEN_NON_UPWIND_CONTACT_REDUCTION);
+          }
+          '''
+          helper = contact_anchor + '''
+          /**
+           * Apply the same shared-world airflow factor to environmental burden
+           * crossing one adjacent hex as to a living carrier on that hex.
+           *
+           * The base reservoir coefficient remains distinct from direct contact;
+           * only the directional attenuation is shared. With no environment frame
+           * this is exactly the historical adjacent-reservoir gain, preserving old
+           * saves and focused fixtures that do not model global wind.
+           */
+          export function pathogenAdjacentReservoirExposureGain(
+            position: GridPosition,
+            sourceDirection: HexGridDirection,
+            environment: PathogenEnvironmentFrame | undefined,
+          ): number {
+            const contactGain = pathogenAdjacentContactGain(position, sourceDirection, environment);
+            return PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN *
+              (contactGain / PATHOGEN_ADJACENT_CONTACT_GAIN);
+          }
+          '''
+          if contact_anchor not in source:
+              raise SystemExit("adjacent contact gain anchor missing")
+          source = source.replace(contact_anchor, helper, 1)
+
+          old_halo = '''        reservoirExposure.set(
+                  localKey,
+                  unionPressure(
+                    reservoirExposure.get(localKey) ?? 0,
+                    burden * PATHOGEN_RESERVOIR_ADJACENT_EXPOSURE_GAIN,
+                  ),
+                );'''
+          new_halo = '''        reservoirExposure.set(
+                  localKey,
+                  unionPressure(
+                    reservoirExposure.get(localKey) ?? 0,
+                    burden * pathogenAdjacentReservoirExposureGain(
+                      link.sourcePosition,
+                      link.direction,
+                      environment,
+                    ),
+                  ),
+                );'''
+          if old_halo not in source:
+              raise SystemExit("halo reservoir exposure anchor missing")
+          source = source.replace(old_halo, new_halo, 1)
+
+          old_call = '      ? localReservoirExposure(previousReservoir, agent.position)\n      : 0;'
+          new_call = '      ? localReservoirExposure(previousReservoir, agent.position, environment)\n      : 0;'
+          if old_call not in source:
+              raise SystemExit("local reservoir call anchor missing")
+          source = source.replace(old_call, new_call, 1)
+
+          old_doc = ''' * Environmental reservoir exposure follows the same hex
+           * geometry: same-cell burden is strongest, immediate six-neighbor burden is
+           * weaker, and a ghost-cell burden across a DO seam uses that exact adjacent
+           * strength without copying or mutating the remote tile. Existing local `flowTo`
+          '''
+          new_doc = ''' * Environmental reservoir exposure follows the same hex
+           * geometry: same-cell burden is strongest, immediate six-neighbor burden is
+           * weaker, and adjacent burden uses the same shared-world wind attenuation
+           * inside a region and across a DO seam without copying or mutating the remote
+           * tile. Existing local `flowTo`
+          '''
+          if old_doc not in source:
+              raise SystemExit("pathogen documentation anchor missing")
+          source = source.replace(old_doc, new_doc, 1)
+          pathogen_path.write_text(source)
+
+          test_path = Path("tests/pathogen-reservoir-halo.test.mjs")
+          test_source = test_path.read_text()
+          old_import = 'import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";'
+          new_import = '''import {
+            HEX_GRID_DIRECTIONS,
+            HEX_GRID_DIRECTION_STEPS,
+            hexGridBoundaryCells,
+            oppositeHexGridDirection,
+          } from "../dist-ts/src/hex-grid.js";'''
+          if old_import not in test_source:
+              raise SystemExit("test hex-grid import anchor missing")
+          test_source = test_source.replace(old_import, new_import, 1)
+          pathogen_import_end = '} from "../dist-ts/src/pathogen.js";\n'
+          if pathogen_import_end not in test_source:
+              raise SystemExit("test pathogen import anchor missing")
+          test_source = test_source.replace(
+              pathogen_import_end,
+              pathogen_import_end + 'import { sampleWorldWind } from "../dist-ts/src/world-scale.js";\n',
+              1,
+          )
+
+          regression = r'''
+
+          test("shared world wind shapes reservoir exposure identically across a region seam", () => {
+            const environment = { worldSeed: 424242, originX: 0, originY: 0 };
+            let targetPosition;
+            let wind;
+            for (let y = 1; y < 23 && targetPosition === undefined; y += 1) {
+              for (let x = 1; x < 39; x += 1) {
+                const candidate = sampleWorldWind(environment.worldSeed, x, y);
+                if (candidate.strength > 0.2) {
+                  targetPosition = { x, y };
+                  wind = candidate;
+                  break;
+                }
+              }
+            }
+            assert.ok(targetPosition);
+            assert.ok(wind);
+
+            const upwindDirection = oppositeHexGridDirection(wind.direction);
+            const attenuatedDirection = HEX_GRID_DIRECTIONS.find(
+              (direction) => direction !== upwindDirection,
+            );
+            assert.ok(attenuatedDirection);
+
+            const localLoadFor = (direction) => {
+              const step = HEX_GRID_DIRECTION_STEPS[direction];
+              const target = agent(`local-${direction}`, targetPosition);
+              applyPathogenSteps({
+                agents: [target],
+                tiles: [tile({
+                  x: targetPosition.x + step.x,
+                  y: targetPosition.y + step.y,
+                }, 0.8)],
+              }, 1, environment);
+              return agentPathogenLoad(target);
+            };
+
+            const upwindLoad = localLoadFor(upwindDirection);
+            const attenuatedLoad = localLoadFor(attenuatedDirection);
+            assert.ok(
+              upwindLoad > attenuatedLoad,
+              "shared-world wind should preserve more exposure from an upwind reservoir",
+            );
+
+            const neighborPosition = { x: 8, y: 11 };
+            const neighborDirection = oppositeHexGridDirection(upwindDirection);
+            const link = {
+              sourceRegionId: "garden-1",
+              sourcePosition: targetPosition,
+              direction: upwindDirection,
+              neighborRegionId: "wind-neighbor",
+              neighborPosition,
+              neighborDirection,
+            };
+            const halo = pathogenHaloMaps([link], [{
+              regionId: "wind-neighbor",
+              direction: neighborDirection,
+              revision: 1,
+              tick: 30,
+              agents: [],
+              reservoirs: [{ position: neighborPosition, burden: 0.8 }],
+            }], environment);
+            const seamTarget = agent("seam-target-wind", targetPosition);
+            applyPathogenSteps(
+              { agents: [seamTarget], tiles: [] },
+              0,
+              environment,
+              halo.pressure,
+              1,
+              halo.reservoir,
+              halo.pressureExposure,
+              halo.reservoirExposure,
+            );
+            assert.ok(
+              Math.abs(agentPathogenLoad(seamTarget) - upwindLoad) < 1e-12,
+              "a DO seam must not change wind-shaped adjacent reservoir exposure",
+            );
+          });
+          '''
+          if 'shared world wind shapes reservoir exposure identically across a region seam' in test_source:
+              raise SystemExit("regression test already present")
+          test_path.write_text(test_source.rstrip() + regression + "\n")
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck, test, and build
+        run: npm run build
+
+      - name: Check diff
+        run: git diff --check
+
+      - name: Commit verified improvement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/pathogen.ts tests/pathogen-reservoir-halo.test.mjs
+          git diff --cached --exit-code && { echo "expected product diff is empty" >&2; exit 1; } || true
+          git commit -m "sim: let shared wind shape reservoir exposure"
+          git push origin HEAD:main
