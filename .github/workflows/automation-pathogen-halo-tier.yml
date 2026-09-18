@@ -1,4 +1,4 @@
-name: Stage activity-aware pathogen halo
+name: Stage demographic observability UI
 
 on:
   push:
@@ -24,99 +24,201 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cat > public/client/demography-ui.js <<'EOF'
+          const LIFE_STAGE_LABELS = Object.freeze({
+            infant: "乳児",
+            juvenile: "若年",
+            adult: "成人",
+            elder: "高齢",
+          });
+
+          function lifeStage(agent) {
+            return Object.hasOwn(LIFE_STAGE_LABELS, agent?.lifeStage) ? agent.lifeStage : "adult";
+          }
+
+          function displayParent(parentId, agentsById) {
+            const parent = agentsById.get(parentId);
+            return parent?.name ? `${parent.name} (${parentId})` : parentId;
+          }
+
+          export function agentDemography(agent, state) {
+            const tick = Number.isSafeInteger(state?.tick) ? state.tick : 0;
+            const agents = Array.isArray(state?.agents) ? state.agents : [];
+            const agentsById = new Map(agents.map((entry) => [entry.id, entry]));
+            const stage = lifeStage(agent);
+            const ageTicks = Number.isSafeInteger(agent?.birthTick)
+              ? Math.max(0, tick - agent.birthTick)
+              : undefined;
+            const parents = Array.isArray(agent?.parents) && agent.parents.length === 2
+              ? agent.parents.map((parentId) => displayParent(parentId, agentsById)).join(" / ")
+              : "—（創始個体）";
+            const dueAtTick = agent?.pregnancy?.dueAtTick;
+            const pregnancy = Number.isSafeInteger(dueAtTick)
+              ? `妊娠中 · あと${Math.max(0, dueAtTick - tick)} tick`
+              : "—";
+            return {
+              age: ageTicks === undefined ? "不明（既存個体）" : `${ageTicks} tick`,
+              lifeStage: LIFE_STAGE_LABELS[stage],
+              parents,
+              pregnancy,
+            };
+          }
+
+          export function populationComposition(state) {
+            const counts = { infant: 0, juvenile: 0, adult: 0, elder: 0 };
+            let pregnant = 0;
+            const agents = Array.isArray(state?.agents) ? state.agents : [];
+            for (const agent of agents) {
+              counts[lifeStage(agent)] += 1;
+              if (agent?.pregnancy && Number.isSafeInteger(agent.pregnancy.dueAtTick)) pregnant += 1;
+            }
+            return `乳児 ${counts.infant} · 若年 ${counts.juvenile} · 成人 ${counts.adult} · 高齢 ${counts.elder} · 妊娠 ${pregnant}`;
+          }
+          EOF
+
           python - <<'PY'
           from pathlib import Path
-          import re
 
-          path = Path('src/pathogen-region.ts')
-          text = path.read_text()
-          old = '''import {
-            buildConfiguredHexHaloLinks,
-            buildDynamicHexHaloLinks,
-            type HexHaloLink,
-          } from "./hex-halo.js";'''
-          new = '''import { type HexHaloLink } from "./hex-halo.js";
-          import { haloLinksForActivity, type RegionActivityTier } from "./halo-region.js";'''
+          app = Path('public/app.js')
+          text = app.read_text()
+          old = 'import { createDemoState } from "./client/demo-state.js";\n'
+          new = old + 'import { agentDemography, populationComposition } from "./client/demography-ui.js";\n'
           if old not in text:
-              raise SystemExit('pathogen import anchor not found')
+              raise SystemExit('app import anchor not found')
           text = text.replace(old, new, 1)
 
-          anchor = 'export class RegionDurableObject extends AutonomyRegionDurableObject {'
-          helper = '''export function pathogenHaloLinksForActivity(
-            state: Pick<WorldState, "width" | "height">,
-            regionIds: readonly string[],
-            sourceRegionId: string,
-            tier: RegionActivityTier,
-          ): HexHaloLink[] {
-            return haloLinksForActivity(state, regionIds, sourceRegionId, tier);
-          }
-
+          old = '  agentAutonomy: $("#agent-autonomy"),\n  agentStatus: $("#agent-status"),\n'
+          new = '''  agentAutonomy: $("#agent-autonomy"),
+            agentAge: $("#agent-age"),
+            agentLifeStage: $("#agent-life-stage"),
+            agentParents: $("#agent-parents"),
+            agentPregnancy: $("#agent-pregnancy"),
+            agentStatus: $("#agent-status"),
           '''
-          if anchor not in text:
-              raise SystemExit('pathogen class anchor not found')
-          text = text.replace(anchor, helper + anchor, 1)
+          if old not in text:
+              raise SystemExit('app ui anchor not found')
+          text = text.replace(old, new, 1)
 
-          pattern = re.compile(
-              r'  private pathogenHaloLinks\(state: WorldState\): HexHaloLink\[\] \{.*?\n  \}\n\n  private async fetchNeighborPathogenEdge',
-              re.S,
-          )
-          replacement = '''  private pathogenHaloLinks(state: WorldState): HexHaloLink[] {
-            return pathogenHaloLinksForActivity(
-              state,
-              configuredRegionIds(this.pathogenEnv),
-              state.regionId,
-              this.activityTier(),
-            );
-          }
+          old = '  factionList: $("#faction-list"),\n'
+          new = '  populationComposition: $("#observation-population"),\n' + old
+          if old not in text:
+              raise SystemExit('observation ui anchor not found')
+          text = text.replace(old, new, 1)
 
-          private async fetchNeighborPathogenEdge'''
-          text, count = pattern.subn(replacement, text, count=1)
-          if count != 1:
-              raise SystemExit(f'pathogen halo method replacement count={count}')
-          path.write_text(text)
+          old = '  observationPanel.update(state);\n\n  ui.factionList.replaceChildren();\n'
+          new = '  observationPanel.update(state);\n  ui.populationComposition.textContent = populationComposition(state);\n\n  ui.factionList.replaceChildren();\n'
+          if old not in text:
+              raise SystemExit('observation update anchor not found')
+          text = text.replace(old, new, 1)
 
-          test_path = Path('tests/pathogen-halo-scope.test.mjs')
-          test_text = test_path.read_text()
-          old_import = '''  pathogenHaloEdgeRequests,
-            pathogenHaloLinksForAgents,
-            shouldMaterializePathogenHalo,'''
-          new_import = '''  pathogenHaloEdgeRequests,
-            pathogenHaloLinksForActivity,
-            pathogenHaloLinksForAgents,
-            shouldMaterializePathogenHalo,'''
-          if old_import not in test_text:
-              raise SystemExit('test import anchor not found')
-          test_text = test_text.replace(old_import, new_import, 1)
+          old = '''  ui.agentHp.textContent = String(agent.hp);
+            ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
+            ui.agentStatus.textContent = agent.status;
+          '''
+          new = '''  ui.agentHp.textContent = String(agent.hp);
+            ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
+            const demography = agentDemography(agent, state);
+            ui.agentAge.textContent = demography.age;
+            ui.agentLifeStage.textContent = demography.lifeStage;
+            ui.agentParents.textContent = demography.parents;
+            ui.agentPregnancy.textContent = demography.pregnancy;
+            ui.agentStatus.textContent = agent.status;
+          '''
+          if old not in text:
+              raise SystemExit('agent detail anchor not found')
+          text = text.replace(old, new, 1)
+          app.write_text(text)
 
-          insertion = '''
-          test("background pathogen halo keeps persisted legacy fan-out bounded", () => {
-            const extent = { width: 40, height: 24 };
-            const configured = ["garden-1", "garden-2", "garden-3"];
+          html = Path('public/index.html')
+          text = html.read_text()
+          old = '''              <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
+                          <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
+                        </dl>
+          '''
+          new = '''              <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
+                          <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
+                          <div><dt>年齢</dt><dd id="agent-age">—</dd></div>
+                          <div><dt>life stage</dt><dd id="agent-life-stage">—</dd></div>
+                          <div><dt>親</dt><dd id="agent-parents">—</dd></div>
+                          <div><dt>妊娠</dt><dd id="agent-pregnancy">—</dd></div>
+                        </dl>
+          '''
+          if old not in text:
+              raise SystemExit('agent html anchor not found')
+          text = text.replace(old, new, 1)
 
-            const active = pathogenHaloLinksForActivity(extent, configured, "garden-1", "active");
-            const warm = pathogenHaloLinksForActivity(extent, configured, "garden-1", "warm");
-            const cold = pathogenHaloLinksForActivity(extent, configured, "garden-1", "cold");
+          old = '''            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>
+                    </dl>
+          '''
+          new = '''            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>
+                    <div title="既存個体は成人として扱い、出生したBOTは保存されたlife stageを集計します。"><dt>人口構成</dt><dd id="observation-population">—</dd></div>
+                  </dl>
+          '''
+          if old not in text:
+              raise SystemExit('population html anchor not found')
+          text = text.replace(old, new, 1)
+          html.write_text(text)
+          PY
 
-            assert.equal(new Set(active.map((link) => link.neighborRegionId)).size, 6);
-            assert.equal(new Set(warm.map((link) => link.neighborRegionId)).size, 2);
-            assert.equal(new Set(cold.map((link) => link.neighborRegionId)).size, 2);
-            assert.ok(active.length > warm.length, "active viewing may read all six exact neighbors");
-            assert.equal(cold.length, warm.length, "background tiers must keep the configured compatibility budget");
+          cat > tests/demography-ui.test.mjs <<'EOF'
+          import assert from "node:assert/strict";
+          import { readFile } from "node:fs/promises";
+          import test from "node:test";
+          import { agentDemography, populationComposition } from "../public/client/demography-ui.js";
 
-            const canonical = pathogenHaloLinksForActivity(extent, configured, "hex-q4-r-2", "cold");
+          const founder = {
+            id: "founder", name: "Founder", factionId: "f", role: "farmer",
+            position: { x: 1, y: 1 }, hp: 100, energy: 100, capacity: 10,
+            inventory: { wood: 0, stone: 0, food: 0 }, autonomy: true, goal: "", status: "idle",
+          };
+          const parent = {
+            ...founder, id: "parent", name: "Parent", lifeStage: "adult", birthTick: 20,
+            pregnancy: { partnerId: "founder", conceivedAtTick: 90, dueAtTick: 130 },
+          };
+          const child = {
+            ...founder, id: "child", name: "Child", lifeStage: "juvenile", birthTick: 80,
+            parents: ["parent", "founder"],
+          };
+          const elder = { ...founder, id: "elder", name: "Elder", lifeStage: "elder", birthTick: 0 };
+          const infant = { ...founder, id: "infant", name: "Infant", lifeStage: "infant", birthTick: 115 };
+          const state = { tick: 120, agents: [founder, parent, child, elder, infant] };
+
+          test("selected-agent demography exposes age, life stage, lineage, and pregnancy without breaking founders", () => {
+            assert.deepEqual(agentDemography(founder, state), {
+              age: "不明（既存個体）",
+              lifeStage: "成人",
+              parents: "—（創始個体）",
+              pregnancy: "—",
+            });
+            assert.deepEqual(agentDemography(child, state), {
+              age: "40 tick",
+              lifeStage: "若年",
+              parents: "Parent (parent) / Founder (founder)",
+              pregnancy: "—",
+            });
+            assert.equal(agentDemography(parent, state).pregnancy, "妊娠中 · あと10 tick");
+          });
+
+          test("population composition treats schema-v1 founders as adults and reports pregnancy separately", () => {
             assert.equal(
-              new Set(canonical.map((link) => link.neighborRegionId)).size,
-              6,
-              "canonical sparse regions must retain six-direction halo without REGION_IDS enumeration",
+              populationComposition(state),
+              "乳児 1 · 若年 1 · 成人 2 · 高齢 1 · 妊娠 1",
             );
           });
-          '''
-          first_test = 'test("pathogen halo fetch scope follows occupied boundary cells instead of all six seams", () => {'
-          if first_test not in test_text:
-              raise SystemExit('test insertion anchor not found')
-          test_text = test_text.replace(first_test, insertion + '\n' + first_test, 1)
-          test_path.write_text(test_text)
-          PY
+
+          test("browser DOM keeps demographic observability wired to stable ids", async () => {
+            const [html, app] = await Promise.all([
+              readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+              readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+            ]);
+            for (const id of ["agent-age", "agent-life-stage", "agent-parents", "agent-pregnancy", "observation-population"]) {
+              assert.match(html, new RegExp(`id=["']${id}["']`));
+              assert.match(app, new RegExp(`#${id}`));
+            }
+            assert.match(app, /agentDemography\(agent, state\)/);
+            assert.match(app, /populationComposition\(state\)/);
+          });
+          EOF
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -128,7 +230,7 @@ jobs:
           set -euo pipefail
           git config user.name "Tsubasa Azumagakito"
           git config user.email "azumag@users.noreply.github.com"
-          git add src/pathogen-region.ts tests/pathogen-halo-scope.test.mjs
+          git add public/app.js public/index.html public/client/demography-ui.js tests/demography-ui.test.mjs
           git diff --cached --check
-          git commit -m "perf: bound background pathogen halo fan-out"
+          git commit -m "ui: expose demographic state in world observation"
           git push origin HEAD:main
