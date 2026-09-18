@@ -81,73 +81,29 @@ jobs:
 
           app = Path('public/app.js')
           text = app.read_text()
-          old = 'import { createDemoState } from "./client/demo-state.js";\n'
-          new = old + 'import { agentDemography, populationComposition } from "./client/demography-ui.js";\n'
-          if old not in text:
-              raise SystemExit('app import anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '  agentAutonomy: $("#agent-autonomy"),\n  agentStatus: $("#agent-status"),\n'
-          new = '''  agentAutonomy: $("#agent-autonomy"),
-          agentAge: $("#agent-age"),
-          agentLifeStage: $("#agent-life-stage"),
-          agentParents: $("#agent-parents"),
-          agentPregnancy: $("#agent-pregnancy"),
-          agentStatus: $("#agent-status"),
-          '''
-          if old not in text:
-              raise SystemExit('app ui anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '  factionList: $("#faction-list"),\n'
-          new = '  populationComposition: $("#observation-population"),\n' + old
-          if old not in text:
-              raise SystemExit('observation ui anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '  observationPanel.update(state);\n\n  ui.factionList.replaceChildren();\n'
-          new = '  observationPanel.update(state);\n  ui.populationComposition.textContent = populationComposition(state);\n\n  ui.factionList.replaceChildren();\n'
-          if old not in text:
-              raise SystemExit('observation update anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''  ui.agentHp.textContent = String(agent.hp);
-          ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
-          ui.agentStatus.textContent = agent.status;
-          '''
-          new = '''  ui.agentHp.textContent = String(agent.hp);
-          ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";
-          const demography = agentDemography(agent, state);
-          ui.agentAge.textContent = demography.age;
-          ui.agentLifeStage.textContent = demography.lifeStage;
-          ui.agentParents.textContent = demography.parents;
-          ui.agentPregnancy.textContent = demography.pregnancy;
-          ui.agentStatus.textContent = agent.status;
-          '''
-          if old not in text:
-              raise SystemExit('agent detail anchor not found')
-          text = text.replace(old, new, 1)
+          replacements = [
+            ('import { createDemoState } from "./client/demo-state.js";\n', 'import { createDemoState } from "./client/demo-state.js";\nimport { agentDemography, populationComposition } from "./client/demography-ui.js";\n'),
+            ('  agentAutonomy: $("#agent-autonomy"),\n', '  agentAutonomy: $("#agent-autonomy"),\n  agentAge: $("#agent-age"),\n  agentLifeStage: $("#agent-life-stage"),\n  agentParents: $("#agent-parents"),\n  agentPregnancy: $("#agent-pregnancy"),\n'),
+            ('  factionList: $("#faction-list"),\n', '  populationComposition: $("#observation-population"),\n  factionList: $("#faction-list"),\n'),
+            ('  observationPanel.update(state);\n', '  observationPanel.update(state);\n  ui.populationComposition.textContent = populationComposition(state);\n'),
+            ('  ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";\n', '  ui.agentAutonomy.textContent = agent.autonomy ? "ON" : "OFF";\n  const demography = agentDemography(agent, state);\n  ui.agentAge.textContent = demography.age;\n  ui.agentLifeStage.textContent = demography.lifeStage;\n  ui.agentParents.textContent = demography.parents;\n  ui.agentPregnancy.textContent = demography.pregnancy;\n'),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'app anchor count {text.count(old)} for {old!r}')
+              text = text.replace(old, new, 1)
           app.write_text(text)
 
           html = Path('public/index.html')
           text = html.read_text()
-          old = '''              <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
-              <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>'''
-          new = '''              <div><dt>HP</dt><dd id="agent-hp">—</dd></div>
-              <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>
-              <div><dt>年齢</dt><dd id="agent-age">—</dd></div>
-              <div><dt>life stage</dt><dd id="agent-life-stage">—</dd></div>
-              <div><dt>親</dt><dd id="agent-parents">—</dd></div>
-              <div><dt>妊娠</dt><dd id="agent-pregnancy">—</dd></div>'''
-          if old not in text:
-              raise SystemExit('agent html anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>'
-          new = old + '\n            <div title="既存個体は成人として扱い、出生したBOTは保存されたlife stageを集計します。"><dt>人口構成</dt><dd id="observation-population">—</dd></div>'
-          if old not in text:
-              raise SystemExit('population html anchor not found')
-          text = text.replace(old, new, 1)
+          replacements = [
+            ('              <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>\n', '              <div><dt>自律</dt><dd id="agent-autonomy">—</dd></div>\n              <div><dt>年齢</dt><dd id="agent-age">—</dd></div>\n              <div><dt>life stage</dt><dd id="agent-life-stage">—</dd></div>\n              <div><dt>親</dt><dd id="agent-parents">—</dd></div>\n              <div><dt>妊娠</dt><dd id="agent-pregnancy">—</dd></div>\n'),
+            ('            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>\n', '            <div title="病原体負荷が感染性の閾値を超えたBOTの数です。"><dt>感染性のあるBOT</dt><dd id="observation-infection">—</dd></div>\n            <div title="既存個体は成人として扱い、出生したBOTは保存されたlife stageを集計します。"><dt>人口構成</dt><dd id="observation-population">—</dd></div>\n'),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'html anchor count {text.count(old)} for {old!r}')
+              text = text.replace(old, new, 1)
           html.write_text(text)
           PY
 
