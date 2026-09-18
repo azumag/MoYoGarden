@@ -214,8 +214,17 @@ function resolveRegion(request: Request, env: Env): string | undefined {
   const requested =
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
   if (requested !== undefined && requested !== "" && parseAxialRegionId(requested) !== undefined) {
-    return requested;
+  // Canonical ids are intentionally sparse/list-free, but the shared global
+  // cell frame still has to fit inside JavaScript safe integers. Reject an
+  // unprojectable public coordinate as an unavailable region instead of
+  // letting later topology/window projection throw a 500.
+  try {
+    if (regionGlobalCellOrigin(requested) === undefined) return undefined;
+  } catch {
+    return undefined;
   }
+  return requested;
+}
   const regions = allowedRegions(env);
   if (requested === undefined || requested === "") return regions[0];
   return regions.includes(requested) ? requested : undefined;
