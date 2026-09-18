@@ -1,0 +1,207 @@
+name: Stage bounded region window concurrency
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-window-concurrency.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply bounded snapshot concurrency
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          worker_path = Path("src/worker.ts")
+          worker = worker_path.read_text()
+
+          constant_anchor = '''const MAX_VIRTUAL_CATCH_UP_TICKS = 12;
+          const TERRAIN_FRAME_VERSION = 1;
+          '''
+          constant_replacement = '''const MAX_VIRTUAL_CATCH_UP_TICKS = 12;
+          const TERRAIN_FRAME_VERSION = 1;
+          // Cloudflare Workers allow at most six outgoing connections to wait for
+          // response headers concurrently. Keep larger region windows from issuing
+          // 19/37/61 Durable Object snapshot requests in one simultaneous burst.
+          const REGION_WINDOW_SNAPSHOT_CONCURRENCY = 6;
+
+          async function mapWithConcurrency<T, U>(
+            values: readonly T[],
+            concurrency: number,
+            operation: (value: T, index: number) => Promise<U>,
+          ): Promise<U[]> {
+            if (values.length === 0) return [];
+            const limit = Math.max(1, Math.min(values.length, Math.floor(concurrency)));
+            const results = new Array<U>(values.length);
+            let nextIndex = 0;
+
+            const run = async (): Promise<void> => {
+              while (nextIndex < values.length) {
+                const index = nextIndex;
+                nextIndex += 1;
+                results[index] = await operation(values[index] as T, index);
+              }
+            };
+
+            await Promise.all(Array.from({ length: limit }, () => run()));
+            return results;
+          }
+          '''
+          if worker.count(constant_anchor) != 1:
+              raise SystemExit("window concurrency constant anchor mismatch")
+          worker = worker.replace(constant_anchor, constant_replacement, 1)
+
+          start_anchor = '''      const chunks = await Promise.all(entries.map(async (entry) => {
+          '''
+          start_replacement = '''      const chunks = await mapWithConcurrency(
+            entries,
+            REGION_WINDOW_SNAPSHOT_CONCURRENCY,
+            async (entry) => {
+          '''
+          if worker.count(start_anchor) != 1:
+              raise SystemExit("window Promise.all anchor mismatch")
+          worker = worker.replace(start_anchor, start_replacement, 1)
+
+          end_anchor = '''        };
+          }));
+          return json({
+          '''
+          end_replacement = '''        };
+            },
+          );
+          return json({
+          '''
+          if worker.count(end_anchor) != 1:
+              raise SystemExit("window Promise.all closing anchor mismatch")
+          worker = worker.replace(end_anchor, end_replacement, 1)
+          worker_path.write_text(worker)
+
+          test_path = Path("tests/region-window-concurrency.test.mjs")
+          test_path.write_text('''import assert from "node:assert/strict";
+          import test from "node:test";
+          import worker from "../dist-ts/src/worker-entry.js";
+
+          class TrackingNamespace {
+            constructor(delayMs = 5) {
+              this.delayMs = delayMs;
+              this.inFlight = 0;
+              this.maxInFlight = 0;
+              this.requests = 0;
+            }
+
+            idFromName(name) { return name; }
+
+            get(id) {
+              return {
+                fetch: async (request) => {
+                  this.requests += 1;
+                  this.inFlight += 1;
+                  this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+                  try {
+                    await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+                    const regionId = request.headers.get("x-moyo-region-internal") ?? id;
+                    return new Response(JSON.stringify({
+                      worldId: "garden",
+                      regionId,
+                      seed: 424242,
+                      width: 40,
+                      height: 24,
+                      tick: 0,
+                      revision: 0,
+                      tiles: [],
+                      agents: [],
+                      factions: [],
+                      structures: [],
+                      events: [],
+                      processedCommandIds: [],
+                    }), {
+                      status: 200,
+                      headers: { "content-type": "application/json" },
+                    });
+                  } finally {
+                    this.inFlight -= 1;
+                  }
+                },
+              };
+            }
+          }
+
+          test("radius-four sparse window bounds simultaneous region snapshot fetches", async () => {
+            const regions = new TrackingNamespace();
+            const env = {
+              DEFAULT_REGION_ID: "hex-q10-r-10",
+              WORLD_SEED: "424242",
+              TICK_MS: "10000",
+              OPEN_COMMANDS: "false",
+              REGIONS: regions,
+              ASSETS: { fetch: async () => new Response("not found", { status: 404 }) },
+            };
+            Object.defineProperty(env, "REGION_IDS", {
+              get() { throw new Error("canonical sparse window must not enumerate REGION_IDS"); },
+            });
+
+            const response = await worker.fetch(new Request(
+              "https://moyo.example/api/world/window?radius=4",
+            ), env);
+            assert.equal(response.status, 200);
+            const payload = await response.json();
+
+            assert.equal(payload.centerRegion, "hex-q10-r-10");
+            assert.equal(payload.chunks.length, 61);
+            assert.equal(regions.requests, 61);
+            assert.ok(
+              regions.maxInFlight <= 6,
+              `expected at most 6 simultaneous snapshot reads, got ${regions.maxInFlight}`,
+            );
+            assert.ok(regions.maxInFlight >= 2, "window aggregation should retain useful parallelism");
+            assert.equal(payload.chunks.every((chunk) => chunk.state !== undefined), true);
+          });
+          ''')
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        run: |
+          set -euo pipefail
+          npm run build
+          git diff --check
+
+      - name: Commit improvement and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          rm .github/workflows/automation-window-concurrency.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/worker.ts tests/region-window-concurrency.test.mjs
+          git add -u .github/workflows/automation-window-concurrency.yml
+          git diff --cached --check
+          git commit -m "perf: bound region window snapshot concurrency"
+          git push origin HEAD:main
