@@ -208,7 +208,7 @@ jobs:
               current,
             );
           });
-          '''.replace(/^          /gm, ''))
+          ''')
           PY
 
       - name: Install dependencies
