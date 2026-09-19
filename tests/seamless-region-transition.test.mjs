@@ -50,6 +50,7 @@ test("soft transition waits for target terrain instead of rebuilding old-center 
 
 test("same-region re-entry ignores stale terrain and transition responses", () => {
   assert.match(appSource, /let terrainWindowRequestVersion = 0;/);
+  assert.match(appSource, /let liveRegionWindowRequestVersion = 0;/);
   assert.match(appSource, /let regionTransitionVersion = 0;/);
 
   const terrainBody = functionBody(appSource, "loadTerrainWindow", "function refreshNearTerrainFromLive");
@@ -59,13 +60,22 @@ test("same-region re-entry ignores stale terrain and transition responses", () =
     /requestVersion !== terrainWindowRequestVersion \|\| requestedRegion !== app\.region/,
   );
 
+  const liveWindowBody = functionBody(appSource, "loadRegionWindow", "function startRegionWindowRefresh");
+  assert.match(liveWindowBody, /const requestVersion = \+\+liveRegionWindowRequestVersion;/);
+  assert.match(
+    liveWindowBody,
+    /requestVersion !== liveRegionWindowRequestVersion \|\| requestedRegion !== app\.region/,
+  );
+
   const connectBody = functionBody(appSource, "connect", "async function transitionRegion");
   assert.match(connectBody, /regionTransitionVersion \+= 1;/);
   assert.match(connectBody, /terrainWindowRequestVersion \+= 1;/);
+  assert.match(connectBody, /liveRegionWindowRequestVersion \+= 1;/);
 
   const transitionBody = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
   assert.match(transitionBody, /const transitionVersion = \+\+regionTransitionVersion;/);
   assert.match(transitionBody, /terrainWindowRequestVersion \+= 1;/);
+  assert.match(transitionBody, /liveRegionWindowRequestVersion \+= 1;/);
   const staleGuards = transitionBody.match(
     /transitionVersion !== regionTransitionVersion \|\| app\.region !== targetRegion/g,
   ) || [];

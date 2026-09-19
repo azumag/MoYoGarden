@@ -98,6 +98,7 @@ let terrainWindowCenter;
 let terrainWindowPayload;
 let neighborTerrainUpdatedAt = 0;
 let terrainWindowRequestVersion = 0;
+let liveRegionWindowRequestVersion = 0;
 let regionTransitionVersion = 0;
 let readyDispatched = false;
 
@@ -311,9 +312,10 @@ async function loadRegionWindow() {
     return;
   }
   const requestedRegion = app.region;
+  const requestVersion = ++liveRegionWindowRequestVersion;
   try {
     const payload = await requestJson("/api/world/window?radius=1&live=1", {}, 10_000);
-    if (requestedRegion !== app.region) return;
+    if (requestVersion !== liveRegionWindowRequestVersion || requestedRegion !== app.region) return;
     liveNeighborSimulation?.syncWindow(payload, app.region, LIVE_REGION_WINDOW_REFRESH_MS);
     refreshNearTerrainFromLive(payload);
   } catch (error) {
@@ -462,6 +464,7 @@ function populateRegions() {
 async function connect() {
   regionTransitionVersion += 1;
   terrainWindowRequestVersion += 1;
+  liveRegionWindowRequestVersion += 1;
   clearInterval(app.pollTimer);
   clearInterval(app.windowTimer);
   app.socket?.close();
@@ -498,6 +501,7 @@ async function transitionRegion(regionId) {
 
   const transitionVersion = ++regionTransitionVersion;
   terrainWindowRequestVersion += 1;
+  liveRegionWindowRequestVersion += 1;
   const previousRegion = app.region;
   const previousSocket = app.socket;
   app.socket = null;
