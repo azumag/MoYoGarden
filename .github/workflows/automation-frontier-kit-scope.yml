@@ -32,6 +32,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import re
+          import textwrap
 
           sim = Path("src/simulation.ts")
           text = sim.read_text()
@@ -56,8 +57,7 @@ jobs:
           title = 'test("source-region migration marker does not spend the kit before handoff", () => {'
           if title in current:
               raise SystemExit("regression already exists")
-          addition = r'''
-          
+          addition = textwrap.dedent(r'''
           test("source-region migration marker does not spend the kit before handoff", () => {
             const { source, builder, sourceCell } = migrationWorlds();
             const faction = source.factions.find((entry) => entry.id === builder.factionId);
@@ -66,7 +66,7 @@ jobs:
             assert.ok(buildTile);
             buildTile.terrain = "plain";
             delete buildTile.resource;
-          
+
             for (const agent of source.agents) {
               agent.autonomy = false;
               delete agent.task;
@@ -97,7 +97,7 @@ jobs:
               structureType: "camp",
               target: { ...sourceCell },
             };
-          
+
             const beforeFaction = { ...faction.resources };
             const advanced = simulate(source).state;
             const afterBuilder = advanced.agents.find((agent) => agent.id === builder.id);
@@ -121,8 +121,8 @@ jobs:
             assert.equal(afterStorehouse.storage.wood, 0);
             assert.equal(afterStorehouse.storage.stone, 0);
           });
-          '''
-          tests.write_text(current.rstrip() + addition + "\n")
+          ''').strip()
+          tests.write_text(current.rstrip() + "\n\n" + addition + "\n")
           PY
 
       - name: Install dependencies
@@ -130,8 +130,8 @@ jobs:
 
       - name: Validate product tree
         run: |
-          npm run build
           git diff --check
+          npm run build
 
       - name: Commit validated product change and remove staging workflow
         shell: bash
