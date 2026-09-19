@@ -27,33 +27,17 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
+          import textwrap
 
           simulation = Path('src/simulation.ts')
           text = simulation.read_text()
-          old = '''function factionCanAfford(state: WorldState, factionId: string, cost: Inventory): boolean {
-            const faction = getFaction(state, factionId);
-            return faction !== undefined && hasInventory(faction.resources, cost);
-          }
-
-          function consumeFactionResources(state: WorldState, factionId: string, cost: Inventory): boolean {
-            const faction = getFaction(state, factionId);
-            if (faction === undefined || !hasInventory(faction.resources, cost)) return false;
-
-            consumeInventory(faction.resources, cost);
-            const storages = activeFactionStructures(state, factionId).sort((a, b) => a.id.localeCompare(b.id));
-            for (const kind of RESOURCE_KINDS) {
-              let remaining = cost[kind];
-              for (const structure of storages) {
-                const taken = Math.min(remaining, structure.storage[kind]);
-                structure.storage[kind] -= taken;
-                remaining -= taken;
-                if (remaining === 0) break;
-              }
-            }
-            return true;
-          }
-          '''
-          new = '''function factionStoredResources(state: WorldState, factionId: string): Inventory {
+          pattern = re.compile(
+              r'function factionCanAfford\(state: WorldState, factionId: string, cost: Inventory\): boolean \{.*?\n\}\n\n'
+              r'function consumeFactionResources\(state: WorldState, factionId: string, cost: Inventory\): boolean \{.*?\n\}\n',
+              re.S,
+          )
+          replacement = '''function factionStoredResources(state: WorldState, factionId: string): Inventory {
             const stored = emptyInventory();
             for (const structure of activeFactionStructures(state, factionId)) {
               for (const kind of RESOURCE_KINDS) stored[kind] += structure.storage[kind];
@@ -89,11 +73,13 @@ jobs:
             return true;
           }
           '''
-          if old not in text:
-              raise SystemExit('resource helper anchor not found')
-          simulation.write_text(text.replace(old, new, 1))
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'resource helper replacement count={count}')
+          simulation.write_text(text)
 
-          Path('tests/simulation-resource-conservation.test.mjs').write_text('''import assert from "node:assert/strict";
+          test_source = r'''
+          import assert from "node:assert/strict";
           import test from "node:test";
           import { HEX_GRID_STEPS } from "../dist-ts/src/hex-grid.js";
           import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
@@ -194,7 +180,8 @@ jobs:
               }), emptyInventory());
             assert.deepEqual(remaining, emptyInventory());
           });
-          '''.replace(/^          /gm, ''))
+          '''
+          Path('tests/simulation-resource-conservation.test.mjs').write_text(textwrap.dedent(test_source).lstrip())
           PY
 
       - name: Install dependencies
