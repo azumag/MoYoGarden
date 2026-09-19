@@ -114,3 +114,35 @@ test("pioneer accepts one extra step to avoid a heavily crowded settlement seam"
     "three occupied seam slots should cost more than one extra step of pioneer travel",
   );
 });
+
+test("dead residents do not bias pioneer seam crowding", () => {
+  const baseline = transitBuilderFixture(26091921);
+  baseline.builder.position = { x: 19, y: 11 };
+  baseline.state.agents = [baseline.builder];
+  const corridorA = { x: 30, y: 9 };
+  const corridorB = { x: 30, y: 11 };
+  const baselinePlan = planAutonomousSettlementMigration(
+    baseline.state,
+    eastHalo(corridorA, corridorB),
+  );
+  assert.ok(baselinePlan);
+
+  const fixture = transitBuilderFixture(26091921);
+  fixture.builder.position = { x: 19, y: 11 };
+  const dead = fixture.state.agents.filter((agent) => agent.id !== fixture.builder.id).slice(0, 2);
+  assert.equal(dead.length, 2);
+  for (const resident of dead) {
+    resident.autonomy = false;
+    resident.hp = 0;
+  }
+  dead[0].position = { x: 29, y: 9 };
+  dead[1].position = { x: 29, y: 10 };
+  fixture.state.agents = [fixture.builder, ...dead];
+
+  const plan = planAutonomousSettlementMigration(
+    fixture.state,
+    eastHalo(corridorA, corridorB),
+  );
+  assert.ok(plan);
+  assert.deepEqual(plan.boundaryTarget, baselinePlan.boundaryTarget);
+});

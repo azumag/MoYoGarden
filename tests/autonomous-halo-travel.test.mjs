@@ -286,3 +286,31 @@ test("equivalent cross-region expeditions prefer the higher-energy autonomous BO
   assert.ok(plan);
   assert.equal(plan.agentId, high.id);
 });
+
+test("dead BOTs do not bias cross-region resource expedition crowding", () => {
+  const baseline = depletedInteriorWoodcutter();
+  baseline.state.agents = [baseline.agent];
+  const baselineEastCells = hexGridBoundaryCells(baseline.state, "east");
+  const baselineWestCells = hexGridBoundaryCells(baseline.state, "west");
+  const baselineEast = haloResource(baseline.state, "east", Math.floor(baselineEastCells.length / 2), "garden-2", "wood", 8);
+  const baselineWest = haloResource(baseline.state, "west", Math.floor(baselineWestCells.length / 2), "garden-4", "wood", 8);
+  const baselinePlan = planAutonomousHaloTravel(baseline.state, [baselineEast, baselineWest]);
+  assert.ok(baselinePlan);
+
+  const fixture = depletedInteriorWoodcutter();
+  const eastCells = hexGridBoundaryCells(fixture.state, "east");
+  const westCells = hexGridBoundaryCells(fixture.state, "west");
+  const east = haloResource(fixture.state, "east", Math.floor(eastCells.length / 2), "garden-2", "wood", 8);
+  const west = haloResource(fixture.state, "west", Math.floor(westCells.length / 2), "garden-4", "wood", 8);
+  const corpse = fixture.state.agents.find((candidate) => candidate.id !== fixture.agent.id);
+  assert.ok(corpse);
+  corpse.hp = 0;
+  corpse.autonomy = false;
+  corpse.position = { ...east.sourcePosition };
+  fixture.state.agents = [fixture.agent, corpse];
+
+  const plan = planAutonomousHaloTravel(fixture.state, [east, west]);
+  assert.ok(plan);
+  assert.equal(plan.direction, baselinePlan.direction);
+  assert.deepEqual(plan.boundaryTarget, baselinePlan.boundaryTarget);
+});

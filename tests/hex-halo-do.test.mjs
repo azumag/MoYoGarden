@@ -218,3 +218,36 @@ test("canonical halo alarms do not enumerate REGION_IDS", async () => {
   await entry.object.alarm();
   assert.equal(entry.object.runtime.snapshot().tick, 30);
 });
+
+test("halo support summaries expose only living occupants", async () => {
+  const env = environment();
+  const initial = await call(env, "/api/world/snapshot?region=garden-2");
+  assert.equal(initial.response.status, 200);
+  const entry = env.REGIONS.entries.get("garden-2");
+  assert.ok(entry);
+  await entry.state.ready;
+
+  const state = entry.object.runtime.snapshot();
+  const living = state.agents.filter((agent) => agent.hp > 0);
+  assert.ok(living.length > 0);
+  const corpse = structuredClone(living[0]);
+  corpse.id = "dead-halo-occupant";
+  corpse.hp = 0;
+  state.agents.push(corpse);
+  entry.object.runtime = new WorldRuntime({ state });
+
+  const response = await entry.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edge?direction=west",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(response.status, 200);
+  const edge = await response.json();
+  assert.equal(edge.regionSummary.occupants, living.length);
+  assert.equal(
+    Object.values(edge.regionSummary.occupantsByFaction ?? {}).reduce((sum, count) => sum + count, 0),
+    living.length,
+  );
+});
