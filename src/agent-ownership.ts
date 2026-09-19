@@ -128,6 +128,8 @@ function arrivalTaskAfterHandoff(
   if (
     task.type === "move"
     && agent.role === "builder"
+    && agent.settlementMigrationOriginRegionId !== undefined
+    && agent.settlementMigrationOriginRegionId !== targetState.regionId
     && carriesCampKit(agent)
   ) {
     const buildingCamp = targetBuildingFactionCamp(agent, targetState);

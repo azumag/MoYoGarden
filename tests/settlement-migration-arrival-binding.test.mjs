@@ -62,6 +62,7 @@ test("arriving pioneer stays bound to a target-local camp that completes before 
   pioneer.energy = 100;
   pioneer.position = { ...sourceCell };
   pioneer.inventory = { ...BUILD_RECIPES.camp.cost };
+  pioneer.settlementMigrationOriginRegionId = source.regionId;
   pioneer.task = {
     source: "autonomy",
     issuedAtTick: source.tick,

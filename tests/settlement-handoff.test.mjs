@@ -31,6 +31,7 @@ function migrationWorlds() {
   builder.autonomy = true;
   builder.position = { ...sourceCell };
   builder.inventory = { wood: 8, stone: 4, food: 0 };
+  builder.settlementMigrationOriginRegionId = source.regionId;
   builder.task = {
     source: "autonomy",
     issuedAtTick: source.tick,
