@@ -1,0 +1,141 @@
+name: One-shot stale region request guard
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-stale-region-requests.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Apply stale-response guards and regression contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app_path = Path('public/app.js')
+          app = app_path.read_text()
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one anchor, found {count}')
+              return text.replace(old, new, 1)
+
+          app = replace_once(
+              app,
+              'let neighborTerrainUpdatedAt = 0;\nlet readyDispatched = false;\n',
+              'let neighborTerrainUpdatedAt = 0;\nlet terrainWindowRequestVersion = 0;\nlet regionTransitionVersion = 0;\nlet readyDispatched = false;\n',
+              'request version declarations',
+          )
+
+          app = replace_once(
+              app,
+              'async function loadTerrainWindow(force = false) {\n  if (!app.state || (!force && terrainWindowCenter === app.region && neighborPreviewRoot)) return;\n  const requestedRegion = app.region;\n  try {\n',
+              'async function loadTerrainWindow(force = false) {\n  if (!app.state || (!force && terrainWindowCenter === app.region && neighborPreviewRoot)) return;\n  const requestedRegion = app.region;\n  const requestVersion = ++terrainWindowRequestVersion;\n  try {\n',
+              'terrain request version start',
+          )
+          app = replace_once(
+              app,
+              '    if (requestedRegion !== app.region) return;\n    buildNeighborPreview(payload);\n',
+              '    if (requestVersion !== terrainWindowRequestVersion || requestedRegion !== app.region) return;\n    buildNeighborPreview(payload);\n',
+              'terrain request stale guard',
+          )
+
+          app = replace_once(
+              app,
+              'async function connect() {\n  clearInterval(app.pollTimer);\n',
+              'async function connect() {\n  regionTransitionVersion += 1;\n  terrainWindowRequestVersion += 1;\n  clearInterval(app.pollTimer);\n',
+              'connect invalidation',
+          )
+
+          app = replace_once(
+              app,
+              'async function transitionRegion(regionId) {\n  const targetRegion = typeof regionId === "string" ? regionId.trim() : "";\n  if (!targetRegion || targetRegion === app.region) return;\n\n  const previousRegion = app.region;\n',
+              'async function transitionRegion(regionId) {\n  const targetRegion = typeof regionId === "string" ? regionId.trim() : "";\n  if (!targetRegion || targetRegion === app.region) return;\n\n  const transitionVersion = ++regionTransitionVersion;\n  terrainWindowRequestVersion += 1;\n  const previousRegion = app.region;\n',
+              'transition version start',
+          )
+          app = replace_once(
+              app,
+              '    if (app.region !== targetRegion) return;\n\n    const chunks = Array.isArray(windowPayload?.chunks) ? windowPayload.chunks : [];\n',
+              '    if (transitionVersion !== regionTransitionVersion || app.region !== targetRegion) return;\n\n    const chunks = Array.isArray(windowPayload?.chunks) ? windowPayload.chunks : [];\n',
+              'transition success stale guard',
+          )
+          app = replace_once(
+              app,
+              '  } catch (error) {\n    if (app.region !== targetRegion) return;\n    app.region = previousRegion;\n',
+              '  } catch (error) {\n    if (transitionVersion !== regionTransitionVersion || app.region !== targetRegion) return;\n    app.region = previousRegion;\n',
+              'transition failure stale guard',
+          )
+          app_path.write_text(app)
+
+          test_path = Path('tests/seamless-region-transition.test.mjs')
+          tests = test_path.read_text()
+          addition = r'''
+
+test("same-region re-entry ignores stale terrain and transition responses", () => {
+  assert.match(appSource, /let terrainWindowRequestVersion = 0;/);
+  assert.match(appSource, /let regionTransitionVersion = 0;/);
+
+  const terrainBody = functionBody(appSource, "loadTerrainWindow", "function refreshNearTerrainFromLive");
+  assert.match(terrainBody, /const requestVersion = \+\+terrainWindowRequestVersion;/);
+  assert.match(
+    terrainBody,
+    /requestVersion !== terrainWindowRequestVersion \|\| requestedRegion !== app\.region/,
+  );
+
+  const connectBody = functionBody(appSource, "connect", "async function transitionRegion");
+  assert.match(connectBody, /regionTransitionVersion \+= 1;/);
+  assert.match(connectBody, /terrainWindowRequestVersion \+= 1;/);
+
+  const transitionBody = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
+  assert.match(transitionBody, /const transitionVersion = \+\+regionTransitionVersion;/);
+  assert.match(transitionBody, /terrainWindowRequestVersion \+= 1;/);
+  const staleGuards = transitionBody.match(
+    /transitionVersion !== regionTransitionVersion \|\| app\.region !== targetRegion/g,
+  ) || [];
+  assert.equal(staleGuards.length, 2, "success and failure paths must both reject stale transitions");
+});
+'''
+          marker = 'test("same-region re-entry ignores stale terrain and transition responses"'
+          if marker in tests:
+              raise SystemExit('regression test already present')
+          test_path.write_text(tests.rstrip() + addition)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          git diff --check
+
+      - name: Commit validated product change and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/automation-stale-region-requests.yml
+          git add public/app.js tests/seamless-region-transition.test.mjs .github/workflows/automation-stale-region-requests.yml
+          git diff --cached --check
+          git config user.name "Tsubasa Azumagakito"
+          git config user.email "azumag@users.noreply.github.com"
+          git commit -m "fix: ignore stale region loading responses"
+          git push origin HEAD:main
