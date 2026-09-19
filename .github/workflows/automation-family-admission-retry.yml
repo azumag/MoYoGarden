@@ -33,90 +33,43 @@ jobs:
               text = p.read_text()
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f"{path}: expected one replacement anchor, found {count}")
+                  raise SystemExit(f"{path}: expected one replacement anchor, found {count}: {old!r}")
               p.write_text(text.replace(old, new, 1))
 
           replace_once(
               "src/settlement-migration.ts",
-              '''export interface SettlementFamilyRegistrationResult {
-            agentIds: string[];
-            candidateCount: number;
-          }
-
-          const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;''',
-              '''export interface SettlementFamilyRegistrationResult {
-            agentIds: string[];
-            candidateCount: number;
-          }
-
-          export function settlementFamilyRegistrationDeferred(
-            result: SettlementFamilyRegistrationResult,
-          ): boolean {
-            return result.candidateCount > 0 && result.agentIds.length === 0;
-          }
-
-          const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;''',
+              "export interface SettlementFamilyRegistrationResult {\n  agentIds: string[];\n  candidateCount: number;\n}\n",
+              "export interface SettlementFamilyRegistrationResult {\n  agentIds: string[];\n  candidateCount: number;\n}\n\nexport function settlementFamilyRegistrationDeferred(\n  result: SettlementFamilyRegistrationResult,\n): boolean {\n  return result.candidateCount > 0 && result.agentIds.length === 0;\n}\n",
           )
 
           replace_once(
               "src/autonomy-region.ts",
-              '''  registerSettlementFamilyFollowers,
-            settlementFamilyAdmissionHeadroom,''',
-              '''  registerSettlementFamilyFollowers,
-            settlementFamilyAdmissionHeadroom,
-            settlementFamilyRegistrationDeferred,''',
+              "  settlementFamilyAdmissionHeadroom,\n",
+              "  settlementFamilyAdmissionHeadroom,\n  settlementFamilyRegistrationDeferred,\n",
           )
 
           replace_once(
               "src/autonomy-region.ts",
-              '''    if (result.agentIds.length > 0) this.replaceRuntimeState(state);
-            return new Response(JSON.stringify({
-              ok: true,''',
-              '''    if (settlementFamilyRegistrationDeferred(result)) {
-              return new Response(JSON.stringify({
-                error: "settlement family admission deferred",
-                targetRegionId: body.targetRegionId,
-                candidateCount: result.candidateCount,
-              }), {
-                status: 409,
-                headers: { "content-type": "application/json; charset=utf-8" },
-              });
-            }
-            if (result.agentIds.length > 0) this.replaceRuntimeState(state);
-            return new Response(JSON.stringify({
-              ok: true,''',
+              "    if (result.agentIds.length > 0) this.replaceRuntimeState(state);\n",
+              "    if (settlementFamilyRegistrationDeferred(result)) {\n      return new Response(JSON.stringify({\n        error: \"settlement family admission deferred\",\n        targetRegionId: body.targetRegionId,\n        candidateCount: result.candidateCount,\n      }), {\n        status: 409,\n        headers: { \"content-type\": \"application/json; charset=utf-8\" },\n      });\n    }\n    if (result.agentIds.length > 0) this.replaceRuntimeState(state);\n",
           )
 
           replace_once(
               "tests/settlement-family-admission-atomic.test.mjs",
-              '''import { registerSettlementFamilyFollowers } from "../dist-ts/src/settlement-migration.js";''',
-              '''import {
-            registerSettlementFamilyFollowers,
-            settlementFamilyRegistrationDeferred,
-          } from "../dist-ts/src/settlement-migration.js";''',
+              "import { registerSettlementFamilyFollowers } from \"../dist-ts/src/settlement-migration.js\";\n",
+              "import {\n  registerSettlementFamilyFollowers,\n  settlementFamilyRegistrationDeferred,\n} from \"../dist-ts/src/settlement-migration.js\";\n",
           )
 
           replace_once(
               "tests/settlement-family-admission-atomic.test.mjs",
-              '''  assert.equal(partner.settlementFamilyTargetRegionId, undefined);
-            assert.equal(child.settlementFamilyTargetRegionId, undefined);
-
-            const twoSlots = registerSettlementFamilyFollowers(''',
-              '''  assert.equal(partner.settlementFamilyTargetRegionId, undefined);
-            assert.equal(child.settlementFamilyTargetRegionId, undefined);
-            assert.equal(oneSlot.candidateCount, 2);
-            assert.equal(settlementFamilyRegistrationDeferred(oneSlot), true);
-
-            const twoSlots = registerSettlementFamilyFollowers(''',
+              "  assert.equal(child.settlementFamilyTargetRegionId, undefined);\n\n  const twoSlots = registerSettlementFamilyFollowers(\n",
+              "  assert.equal(child.settlementFamilyTargetRegionId, undefined);\n  assert.equal(oneSlot.candidateCount, 2);\n  assert.equal(settlementFamilyRegistrationDeferred(oneSlot), true);\n\n  const twoSlots = registerSettlementFamilyFollowers(\n",
           )
 
           replace_once(
               "tests/settlement-family-admission-atomic.test.mjs",
-              '''  assert.equal(child.settlementFamilyTargetRegionId, "hex-q1-r0");
-          });''',
-              '''  assert.equal(child.settlementFamilyTargetRegionId, "hex-q1-r0");
-            assert.equal(settlementFamilyRegistrationDeferred(twoSlots), false);
-          });''',
+              "  assert.equal(child.settlementFamilyTargetRegionId, \"hex-q1-r0\");\n});\n",
+              "  assert.equal(child.settlementFamilyTargetRegionId, \"hex-q1-r0\");\n  assert.equal(settlementFamilyRegistrationDeferred(twoSlots), false);\n});\n",
           )
           PY
 
