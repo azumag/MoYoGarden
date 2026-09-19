@@ -27,162 +27,11 @@ jobs:
           node-version: "22"
 
       - name: Apply frontier camp material fix
-        shell: bash
         run: |
           set -euo pipefail
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-          python3 - <<'PY'
-          from pathlib import Path
-
-          simulation_path = Path("src/simulation.ts")
-          simulation = simulation_path.read_text()
-          old = '''  const recipe = BUILD_RECIPES[task.structureType];
-          const activeStructures = activeFactionStructures(state, agent.factionId);
-          const paid =
-            activeStructures.length === 0
-              ? hasInventory(agent.inventory, recipe.cost)
-              : factionCanAfford(state, agent.factionId, recipe.cost);
-          if (!paid) {
-            agent.status = `missing materials for ${task.structureType}`;
-            delete agent.task;
-            return undefined;
-          }
-          if (activeStructures.length === 0) consumeInventory(agent.inventory, recipe.cost);
-          else consumeFactionResources(state, agent.factionId, recipe.cost);
-          '''
-          new = '''  const recipe = BUILD_RECIPES[task.structureType];
-          const activeStructures = activeFactionStructures(state, agent.factionId);
-          // A pioneer camp kit has already been removed from the source region's
-          // physical storage and faction ledger before ownership handoff. If the
-          // destination happens to contain another same-faction active structure
-          // (for example a storehouse without a camp), the carried kit must still
-          // pay for the frontier camp rather than charging destination stock again.
-          const carriedPioneerCampKit =
-            task.structureType === "camp"
-            && agent.settlementMigrationOriginRegionId !== undefined
-            && hasInventory(agent.inventory, recipe.cost);
-          const paid = carriedPioneerCampKit || (
-            activeStructures.length === 0
-              ? hasInventory(agent.inventory, recipe.cost)
-              : factionCanAfford(state, agent.factionId, recipe.cost)
-          );
-          if (!paid) {
-            agent.status = `missing materials for ${task.structureType}`;
-            delete agent.task;
-            return undefined;
-          }
-          if (carriedPioneerCampKit || activeStructures.length === 0) {
-            consumeInventory(agent.inventory, recipe.cost);
-          } else {
-            consumeFactionResources(state, agent.factionId, recipe.cost);
-          }
-          '''
-          if simulation.count(old) != 1:
-              raise SystemExit("startConstruction payment anchor mismatch")
-          simulation_path.write_text(simulation.replace(old, new, 1))
-
-          test_path = Path("tests/settlement-handoff.test.mjs")
-          test = test_path.read_text()
-          import_anchor = 'import { hexGridBoundaryCells, hexGridHandoffTarget } from "../dist-ts/src/hex-grid.js";\n'
-          import_replacement = (
-              import_anchor
-              + 'import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";\n'
-              + 'import { prepareSettlementMigrationKit } from "../dist-ts/src/settlement-migration.js";\n'
-          )
-          if test.count(import_anchor) != 1:
-              raise SystemExit("settlement handoff import anchor mismatch")
-          test = test.replace(import_anchor, import_replacement, 1)
-
-          addition = r'''
-
-test("pioneer carried kit funds frontier camp even beside existing non-camp storage", () => {
-  const { source, target, builder, sourceCell, targetCell } = migrationWorlds();
-  const sourceFaction = source.factions.find((entry) => entry.id === builder.factionId);
-  const targetFaction = target.factions.find((entry) => entry.id === builder.factionId);
-  assert.ok(sourceFaction);
-  assert.ok(targetFaction);
-
-  source.structures = [{
-    id: "source-camp",
-    factionId: builder.factionId,
-    type: "camp",
-    position: { ...sourceCell },
-    status: "active",
-    progress: 6,
-    requiredProgress: 6,
-    storage: { ...BUILD_RECIPES.camp.cost },
-  }];
-  sourceFaction.resources = { ...BUILD_RECIPES.camp.cost };
-  builder.inventory = { wood: 0, stone: 0, food: 0 };
-  assert.equal(prepareSettlementMigrationKit(source, builder.id), true);
-  assert.deepEqual(source.structures[0].storage, { wood: 0, stone: 0, food: 0 });
-  assert.deepEqual(sourceFaction.resources, { wood: 0, stone: 0, food: 0 });
-  assert.deepEqual(builder.inventory, BUILD_RECIPES.camp.cost);
-
-  target.agents = [];
-  target.structures = [{
-    id: "target-storehouse",
-    factionId: builder.factionId,
-    type: "storehouse",
-    position: { ...targetCell },
-    status: "active",
-    progress: 8,
-    requiredProgress: 8,
-    storage: { wood: 100, stone: 100, food: 100 },
-  }];
-  targetFaction.resources = { wood: 100, stone: 100, food: 100 };
-  const targetWoodBefore = targetFaction.resources.wood;
-  const targetStoneBefore = targetFaction.resources.stone;
-  const targetStorehouse = target.structures[0];
-  const storedWoodBefore = targetStorehouse.storage.wood;
-  const storedStoneBefore = targetStorehouse.storage.stone;
-
-  const detached = detachAgentOwnership(source, [], builder.id);
-  assert.equal(detached.ok, true);
-  const attached = attachAgentOwnership(
-    target,
-    [],
-    detached.value.agent,
-    targetCell,
-    source.regionId,
-  );
-  assert.equal(attached.ok, true);
-
-  const globalId = globalHandoffAgentId(builder.id, source.regionId);
-  let advanced = attached.value.state;
-  for (let step = 0; step < 20; step += 1) {
-    advanced = simulate(advanced).state;
-    if (advanced.structures.some((structure) =>
-      structure.factionId === builder.factionId
-      && structure.type === "camp"
-      && structure.status === "active"
-    )) break;
-  }
-
-  const arrived = advanced.agents.find((agent) => agent.id === globalId);
-  const frontierCamp = advanced.structures.find((structure) =>
-    structure.factionId === builder.factionId
-    && structure.type === "camp"
-    && structure.status === "active"
-  );
-  const destinationStorehouse = advanced.structures.find((structure) => structure.id === "target-storehouse");
-  const destinationFaction = advanced.factions.find((entry) => entry.id === builder.factionId);
-  assert.ok(arrived);
-  assert.ok(frontierCamp, "carried kit should become one active frontier camp");
-  assert.ok(destinationStorehouse);
-  assert.ok(destinationFaction);
-  assert.deepEqual(arrived.inventory, { wood: 0, stone: 0, food: 0 });
-  assert.equal(destinationFaction.resources.wood, targetWoodBefore);
-  assert.equal(destinationFaction.resources.stone, targetStoneBefore);
-  assert.equal(destinationStorehouse.storage.wood, storedWoodBefore);
-  assert.equal(destinationStorehouse.storage.stone, storedStoneBefore);
-});
-'''
-          if 'pioneer carried kit funds frontier camp even beside existing non-camp storage' in test:
-              raise SystemExit("end-to-end test already exists")
-          test_path.write_text(test.rstrip() + addition + "\n")
-          PY
+          python3 scripts/apply-pioneer-camp-kit-end-to-end.py
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -193,13 +42,13 @@ test("pioneer carried kit funds frontier camp even beside existing non-camp stor
           npm run build
           git diff --check
 
-      - name: Commit improvement and remove staging workflow
-        shell: bash
+      - name: Commit improvement and remove staging files
         run: |
           set -euo pipefail
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           rm .github/workflows/automation-pioneer-camp-kit-end-to-end.yml
+          rm scripts/apply-pioneer-camp-kit-end-to-end.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
