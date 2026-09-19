@@ -60,7 +60,7 @@ export interface SettlementFamilyRegistrationResult {
 export function settlementFamilyRegistrationDeferred(
   result: SettlementFamilyRegistrationResult,
 ): boolean {
-  return result.candidateCount > 0 && result.agentIds.length === 0;
+  return result.agentIds.length < result.candidateCount;
 }
 
 const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;

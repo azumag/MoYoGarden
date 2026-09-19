@@ -1584,6 +1584,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       body.pioneerPartnerId,
       body.maxFollowers,
     );
+    if (result.agentIds.length > 0) this.replaceRuntimeState(state);
     if (settlementFamilyRegistrationDeferred(result)) {
       return new Response(JSON.stringify({
         error: "settlement family admission deferred",
@@ -1594,7 +1595,6 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         headers: { "content-type": "application/json; charset=utf-8" },
       });
     }
-    if (result.agentIds.length > 0) this.replaceRuntimeState(state);
     return new Response(JSON.stringify({
       ok: true,
       targetRegionId: body.targetRegionId,
