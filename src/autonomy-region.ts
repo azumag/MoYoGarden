@@ -1602,12 +1602,19 @@ private async releaseSettlementFamilyAdmissionSlot(request: Request): Promise<Re
     || body.agentId.length === 0
     || body.agentId.length > 192
     || !body.agentId.startsWith("agent-global:")
+    || typeof body.releaseIssuedAtMs !== "number"
+    || !Number.isFinite(body.releaseIssuedAtMs)
+    || body.releaseIssuedAtMs <= 0
   ) {
-    return new Response(JSON.stringify({ error: "agentId must be a world-global agent ID" }), { status: 400 });
+    return new Response(JSON.stringify({
+      error: "agentId must be a world-global agent ID and releaseIssuedAtMs must be finite",
+    }), { status: 400 });
   }
 
   const state = runtimeAccess(this).runtime.snapshot();
   const now = Date.now();
+  const reservationExpiresAtCutoffMs = body.releaseIssuedAtMs
+    + SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS;
   let released = false;
   await this.autonomyState.blockConcurrencyWhile(async () => {
     const stored = await this.autonomyState.storage.get<unknown>(
@@ -1621,6 +1628,7 @@ private async releaseSettlementFamilyAdmissionSlot(request: Request): Promise<Re
     const next = releaseSettlementFamilyAdmissionAgent(
       normalized.reservations,
       body.agentId as string,
+      reservationExpiresAtCutoffMs,
     );
     if (normalized.changed || released) {
       await this.autonomyState.storage.put(
@@ -1647,7 +1655,7 @@ private async notifySettlementFamilyAdmissionRelease(
           "content-type": "application/json",
           "x-moyo-region-internal": targetRegionId,
         },
-        body: JSON.stringify({ agentId }),
+        body: JSON.stringify({ agentId, releaseIssuedAtMs: Date.now() }),
       },
     ));
     return response.ok;

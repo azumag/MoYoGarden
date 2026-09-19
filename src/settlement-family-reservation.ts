@@ -66,10 +66,18 @@ export function settlementFamilyReservedSlots(
 export function releaseSettlementFamilyAdmissionAgent(
   reservations: readonly SettlementFamilyAdmissionReservation[],
   agentId: string,
+  expiresAtCutoffMs: number,
 ): SettlementFamilyAdmissionReservation[] {
-  if (agentId.length === 0) return [...reservations];
+  // A release can cross a retry that refreshes the same stable follower's
+  // admission lease. Refuse to erase any promise renewed after the source
+  // issued this release; a bounded stale reservation is safer than silently
+  // overbooking destination housing/food capacity.
+  if (agentId.length === 0 || !Number.isFinite(expiresAtCutoffMs)) return [...reservations];
   return reservations.flatMap((reservation) => {
-    if (!reservation.agentIds.includes(agentId)) return [reservation];
+    if (
+      !reservation.agentIds.includes(agentId)
+      || reservation.expiresAtMs > expiresAtCutoffMs
+    ) return [reservation];
     const agentIds = reservation.agentIds.filter((entry) => entry !== agentId);
     return agentIds.length > 0 ? [{ ...reservation, agentIds }] : [];
   });
