@@ -513,6 +513,7 @@ function nextStepTowards(state: WorldState, start: GridPosition, target: GridPos
   // remain visible to later BOTs; a tick-start snapshot would change routing.
   const occupancy = new Map<string, number>();
   for (const agent of state.agents) {
+    if (agent.hp <= 0) continue;
     const key = positionKey(agent.position);
     occupancy.set(key, (occupancy.get(key) ?? 0) + 1);
   }
@@ -586,6 +587,7 @@ function resourceCongestionIndex(
 ): Map<string, number> {
   const index = new Map<string, number>();
   for (const agent of state.agents) {
+    if (agent.hp <= 0) continue;
     const keys = new Set<string>([positionKey(agent.position)]);
     if (
       agent.task?.type === "gather" &&
@@ -612,6 +614,7 @@ function depositCongestionIndex(
     else ids.push(structure.id);
   }
   for (const agent of state.agents) {
+    if (agent.hp <= 0) continue;
     const affected = new Set(idsByPosition.get(positionKey(agent.position)) ?? []);
     if (
       agent.task?.type === "deposit" &&
@@ -628,6 +631,7 @@ function depositCongestionIndex(
 function buildCongestionIndex(state: Pick<WorldState, "agents">): Map<string, number> {
   const index = new Map<string, number>();
   for (const agent of state.agents) {
+    if (agent.hp <= 0) continue;
     const keys = new Set<string>([positionKey(agent.position)]);
     if (agent.task?.type === "build" && agent.task.target !== undefined) {
       keys.add(positionKey(agent.task.target));
@@ -909,7 +913,9 @@ function localAgentCrowding(
   position: GridPosition,
 ): number {
   return state.agents.reduce(
-    (count, candidate) => count + (samePosition(candidate.position, position) ? 1 : 0),
+    (count, candidate) => count + (
+      candidate.hp > 0 && samePosition(candidate.position, position) ? 1 : 0
+    ),
     0,
   );
 }
