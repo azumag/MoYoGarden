@@ -1198,17 +1198,30 @@ function startConstruction(
   }
   const recipe = BUILD_RECIPES[task.structureType];
   const activeStructures = activeFactionStructures(state, agent.factionId);
-  const paid =
+  // A pioneer camp kit has already been removed from the source region's
+  // physical storage and faction ledger before ownership handoff. If the
+  // destination happens to contain another same-faction active structure
+  // (for example a storehouse without a camp), the carried kit must still
+  // pay for the frontier camp rather than charging destination stock again.
+  const carriedPioneerCampKit =
+    task.structureType === "camp"
+    && agent.settlementMigrationOriginRegionId !== undefined
+    && hasInventory(agent.inventory, recipe.cost);
+  const paid = carriedPioneerCampKit || (
     activeStructures.length === 0
       ? hasInventory(agent.inventory, recipe.cost)
-      : factionCanAfford(state, agent.factionId, recipe.cost);
+      : factionCanAfford(state, agent.factionId, recipe.cost)
+  );
   if (!paid) {
     agent.status = `missing materials for ${task.structureType}`;
     delete agent.task;
     return undefined;
   }
-  if (activeStructures.length === 0) consumeInventory(agent.inventory, recipe.cost);
-  else consumeFactionResources(state, agent.factionId, recipe.cost);
+  if (carriedPioneerCampKit || activeStructures.length === 0) {
+    consumeInventory(agent.inventory, recipe.cost);
+  } else {
+    consumeFactionResources(state, agent.factionId, recipe.cost);
+  }
 
   const structure: Structure = {
     id: `structure-${agent.factionId}-${task.structureType}-${state.tick}-${state.structures.length + 1}`,

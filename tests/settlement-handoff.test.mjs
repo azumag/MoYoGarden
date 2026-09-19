@@ -6,6 +6,8 @@ import {
   globalHandoffAgentId,
 } from "../dist-ts/src/agent-ownership.js";
 import { hexGridBoundaryCells, hexGridHandoffTarget } from "../dist-ts/src/hex-grid.js";
+import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
+import { prepareSettlementMigrationKit } from "../dist-ts/src/settlement-migration.js";
 import { simulate } from "../dist-ts/src/simulation.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
@@ -126,4 +128,87 @@ test("pioneer joins an existing same-faction settlement instead of forcing a dup
     1,
     "joining must not manufacture another camp on the first target-side tick",
   );
+});
+
+test("pioneer carried kit funds frontier camp even beside existing non-camp storage", () => {
+  const { source, target, builder, sourceCell, targetCell } = migrationWorlds();
+  const sourceFaction = source.factions.find((entry) => entry.id === builder.factionId);
+  const targetFaction = target.factions.find((entry) => entry.id === builder.factionId);
+  assert.ok(sourceFaction);
+  assert.ok(targetFaction);
+
+  source.structures = [{
+    id: "source-camp",
+    factionId: builder.factionId,
+    type: "camp",
+    position: { ...sourceCell },
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { ...BUILD_RECIPES.camp.cost },
+  }];
+  sourceFaction.resources = { ...BUILD_RECIPES.camp.cost };
+  builder.inventory = { wood: 0, stone: 0, food: 0 };
+  assert.equal(prepareSettlementMigrationKit(source, builder.id), true);
+  assert.deepEqual(source.structures[0].storage, { wood: 0, stone: 0, food: 0 });
+  assert.deepEqual(sourceFaction.resources, { wood: 0, stone: 0, food: 0 });
+  assert.deepEqual(builder.inventory, BUILD_RECIPES.camp.cost);
+
+  target.agents = [];
+  target.structures = [{
+    id: "target-storehouse",
+    factionId: builder.factionId,
+    type: "storehouse",
+    position: { ...targetCell },
+    status: "active",
+    progress: 8,
+    requiredProgress: 8,
+    storage: { wood: 100, stone: 100, food: 100 },
+  }];
+  targetFaction.resources = { wood: 100, stone: 100, food: 100 };
+  const targetWoodBefore = targetFaction.resources.wood;
+  const targetStoneBefore = targetFaction.resources.stone;
+  const targetStorehouse = target.structures[0];
+  const storedWoodBefore = targetStorehouse.storage.wood;
+  const storedStoneBefore = targetStorehouse.storage.stone;
+
+  const detached = detachAgentOwnership(source, [], builder.id);
+  assert.equal(detached.ok, true);
+  const attached = attachAgentOwnership(
+    target,
+    [],
+    detached.value.agent,
+    targetCell,
+    source.regionId,
+  );
+  assert.equal(attached.ok, true);
+
+  const globalId = globalHandoffAgentId(builder.id, source.regionId);
+  let advanced = attached.value.state;
+  for (let step = 0; step < 20; step += 1) {
+    advanced = simulate(advanced).state;
+    if (advanced.structures.some((structure) =>
+      structure.factionId === builder.factionId
+      && structure.type === "camp"
+      && structure.status === "active"
+    )) break;
+  }
+
+  const arrived = advanced.agents.find((agent) => agent.id === globalId);
+  const frontierCamp = advanced.structures.find((structure) =>
+    structure.factionId === builder.factionId
+    && structure.type === "camp"
+    && structure.status === "active"
+  );
+  const destinationStorehouse = advanced.structures.find((structure) => structure.id === "target-storehouse");
+  const destinationFaction = advanced.factions.find((entry) => entry.id === builder.factionId);
+  assert.ok(arrived);
+  assert.ok(frontierCamp, "carried kit should become one active frontier camp");
+  assert.ok(destinationStorehouse);
+  assert.ok(destinationFaction);
+  assert.deepEqual(arrived.inventory, { wood: 0, stone: 0, food: 0 });
+  assert.equal(destinationFaction.resources.wood, targetWoodBefore);
+  assert.equal(destinationFaction.resources.stone, targetStoneBefore);
+  assert.equal(destinationStorehouse.storage.wood, storedWoodBefore);
+  assert.equal(destinationStorehouse.storage.stone, storedStoneBefore);
 });
