@@ -18,7 +18,7 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { hexDistance, regionAxialCoordinate } from "./region-topology.js";
-import { getAgent, getFaction, isPassable } from "./world.js";
+import { activeFactionStructures, getAgent, getFaction, isPassable } from "./world.js";
 
 const RESIDENT_CAPACITY_PER_CAMP = 6;
 const CAMP_MIN_SPACING = 2;
@@ -1095,7 +1095,16 @@ export function canPrepareSettlementMigrationKit(state: WorldState, agent: Agent
   const deficit = campKitDeficit(agent);
   const load = RESOURCE_KINDS.reduce((sum, kind) => sum + deficit[kind], 0);
   if (inventoryTotal(agent.inventory) + load > agent.capacity) return false;
-  return RESOURCE_KINDS.every((kind) => faction.resources[kind] >= deficit[kind]);
+
+  // The ledger is an aggregate view; the transferable material itself
+  // must exist in active structure storage before it can become carried
+  // inventory. Requiring both prevents a pioneer kit from duplicating
+  // wood/stone in rolling or legacy states where ledger > stored stock.
+  const storages = activeFactionStructures(state, agent.factionId);
+  return RESOURCE_KINDS.every((kind) =>
+    faction.resources[kind] >= deficit[kind]
+    && storages.reduce((sum, structure) => sum + structure.storage[kind], 0) >= deficit[kind]
+  );
 }
 
 export function prepareSettlementMigrationKit(state: WorldState, agentId: string): boolean {
@@ -1112,7 +1121,16 @@ export function prepareSettlementMigrationKit(state: WorldState, agentId: string
     agent.settlementMigrationOriginRegionId = state.regionId;
   }
   const deficit = campKitDeficit(agent);
+  const storages = activeFactionStructures(state, agent.factionId)
+    .sort((a, b) => a.id.localeCompare(b.id));
   for (const kind of RESOURCE_KINDS) {
+    let remaining = deficit[kind];
+    for (const structure of storages) {
+      const taken = Math.min(remaining, structure.storage[kind]);
+      structure.storage[kind] -= taken;
+      remaining -= taken;
+      if (remaining === 0) break;
+    }
     faction.resources[kind] -= deficit[kind];
     agent.inventory[kind] += deficit[kind];
   }

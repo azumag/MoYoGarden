@@ -111,7 +111,7 @@ test("camp-kit preparation resets the route origin at settlements and preserves 
     status: "active",
     progress: BUILD_RECIPES.camp.work,
     requiredProgress: BUILD_RECIPES.camp.work,
-    storage: { wood: 0, stone: 0, food: 0 },
+    storage: { wood: 100, stone: 100, food: 0 },
   }];
   assert.equal(prepareSettlementMigrationKit(settled, settledBuilder.id), true);
   assert.equal(settledBuilder.settlementMigrationOriginRegionId, "garden-2");

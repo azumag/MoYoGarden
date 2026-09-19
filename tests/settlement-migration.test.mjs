@@ -48,7 +48,7 @@ function fixture() {
     status: "active",
     progress: 6,
     requiredProgress: 6,
-    storage: { wood: 0, stone: 0, food: 0 },
+    storage: { wood: 40, stone: 30, food: 20 },
   };
   const blockers = state.tiles
     .filter((tile) =>
@@ -286,15 +286,36 @@ test("a viable spaced local camp site keeps growth local", () => {
   assert.equal(planAutonomousSettlementMigration(state, eastHalo()), undefined);
 });
 
-test("migration kit transfer conserves spendable plus carried camp materials", () => {
+test("migration kit transfer conserves stored, ledger, and carried camp materials", () => {
   const { state, builder, faction } = fixture();
-  const beforeWood = faction.resources.wood + builder.inventory.wood;
-  const beforeStone = faction.resources.stone + builder.inventory.stone;
+  const camp = state.structures.find((structure) => structure.id === "home-camp");
+  assert.ok(camp);
+  const beforeWood = camp.storage.wood + builder.inventory.wood;
+  const beforeStone = camp.storage.stone + builder.inventory.stone;
+  const beforeLedgerWood = faction.resources.wood + builder.inventory.wood;
+  const beforeLedgerStone = faction.resources.stone + builder.inventory.stone;
   assert.equal(prepareSettlementMigrationKit(state, builder.id), true);
   assert.equal(builder.inventory.wood, 8);
   assert.equal(builder.inventory.stone, 4);
-  assert.equal(faction.resources.wood + builder.inventory.wood, beforeWood);
-  assert.equal(faction.resources.stone + builder.inventory.stone, beforeStone);
+  assert.equal(camp.storage.wood, 32);
+  assert.equal(camp.storage.stone, 26);
+  assert.equal(camp.storage.wood + builder.inventory.wood, beforeWood);
+  assert.equal(camp.storage.stone + builder.inventory.stone, beforeStone);
+  assert.equal(faction.resources.wood + builder.inventory.wood, beforeLedgerWood);
+  assert.equal(faction.resources.stone + builder.inventory.stone, beforeLedgerStone);
+});
+
+test("migration kit does not materialize ledger-only resources absent from storage", () => {
+  const { state, builder, faction } = fixture();
+  const camp = state.structures.find((structure) => structure.id === "home-camp");
+  assert.ok(camp);
+  camp.storage = { wood: 0, stone: 0, food: 0 };
+  const beforeLedger = structuredClone(faction.resources);
+  const beforeInventory = structuredClone(builder.inventory);
+  assert.equal(prepareSettlementMigrationKit(state, builder.id), false);
+  assert.deepEqual(faction.resources, beforeLedger);
+  assert.deepEqual(builder.inventory, beforeInventory);
+  assert.deepEqual(camp.storage, { wood: 0, stone: 0, food: 0 });
 });
 
 test("migration does not start below settlement capacity", () => {
