@@ -34,108 +34,101 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           python3 - <<'PY'
           from pathlib import Path
+          import textwrap
 
           migration_path = Path("src/settlement-migration.ts")
           migration = migration_path.read_text()
-          old_migration = '  const population = state.agents.filter((agent) => agent.factionId === factionId).length;\n'
-          new_migration = '''  const population = state.agents.filter((agent) =>
-            agent.factionId === factionId && agent.hp > 0
-          ).length;
-          '''
+          old_migration = "  const population = state.agents.filter((agent) => agent.factionId === factionId).length;\n"
+          new_migration = "  const population = state.agents.filter((agent) =>\n    agent.factionId === factionId && agent.hp > 0\n  ).length;\n"
           if migration.count(old_migration) != 1:
               raise SystemExit(f"settlement population anchor count={migration.count(old_migration)}")
-          migration = migration.replace(old_migration, new_migration, 1)
-          migration_path.write_text(migration)
+          migration_path.write_text(migration.replace(old_migration, new_migration, 1))
 
           simulation_path = Path("src/simulation.ts")
           simulation = simulation_path.read_text()
-          old_simulation = '    const population = state.agents.filter((candidate) => candidate.factionId === agent.factionId).length;\n'
-          new_simulation = '''    const population = state.agents.filter((candidate) =>
-              candidate.factionId === agent.factionId && candidate.hp > 0
-            ).length;
-          '''
+          old_simulation = "    const population = state.agents.filter((candidate) => candidate.factionId === agent.factionId).length;\n"
+          new_simulation = "    const population = state.agents.filter((candidate) =>\n      candidate.factionId === agent.factionId && candidate.hp > 0\n    ).length;\n"
           if simulation.count(old_simulation) != 1:
               raise SystemExit(f"simulation population anchor count={simulation.count(old_simulation)}")
-          simulation = simulation.replace(old_simulation, new_simulation, 1)
-          simulation_path.write_text(simulation)
+          simulation_path.write_text(simulation.replace(old_simulation, new_simulation, 1))
 
           migration_test_path = Path("tests/settlement-migration.test.mjs")
           migration_test = migration_test_path.read_text()
-          migration_test_block = r'''
-
-test("dead residents do not create settlement migration pressure", () => {
-  const { state, builder } = fixture();
-  const living = state.agents.slice(0, 5);
-  const dead = state.agents.slice(5);
-  assert.ok(dead.length >= 2);
-  for (const agent of dead) agent.hp = 0;
-  state.agents = [...living, ...dead];
-
-  assert.equal(
-    state.agents.filter((agent) => agent.factionId === builder.factionId && agent.hp > 0).length,
-    5,
-  );
-  assert.equal(settlementMigrationPressure(state, builder.factionId), false);
-  assert.equal(planAutonomousSettlementMigration(state, eastHalo()), undefined);
-});
-'''
+          migration_test_block = textwrap.dedent(r'''
+          
+          test("dead residents do not create settlement migration pressure", () => {
+            const { state, builder } = fixture();
+            const living = state.agents.slice(0, 5);
+            const dead = state.agents.slice(5);
+            assert.ok(dead.length >= 2);
+            for (const agent of dead) agent.hp = 0;
+            state.agents = [...living, ...dead];
+          
+            assert.equal(
+              state.agents.filter((agent) => agent.factionId === builder.factionId && agent.hp > 0).length,
+              5,
+            );
+            assert.equal(settlementMigrationPressure(state, builder.factionId), false);
+            assert.equal(planAutonomousSettlementMigration(state, eastHalo()), undefined);
+          });
+          ''')
           if 'test("dead residents do not create settlement migration pressure"' in migration_test:
               raise SystemExit("migration regression already exists")
           migration_test_path.write_text(migration_test.rstrip() + migration_test_block + "\n")
 
           simulation_test_path = Path("tests/simulation.test.mjs")
           simulation_test = simulation_test_path.read_text()
-          simulation_test_block = r'''
-
-test("dead residents do not trigger autonomous housing expansion", () => {
-  const state = createInitialWorld({ seed: 2031 });
-  const builder = state.agents.find((agent) => agent.role === "builder"); assert.ok(builder);
-  const faction = state.factions.find((entry) => entry.id === builder.factionId); assert.ok(faction);
-  const residents = [builder, ...state.agents.filter((agent) => agent.id !== builder.id).slice(0, 6)];
-  assert.equal(residents.length, 7);
-  for (const [index, agent] of residents.entries()) {
-    agent.factionId = builder.factionId;
-    agent.hp = index < 5 ? 100 : 0;
-    agent.energy = 100;
-    agent.autonomy = agent.id === builder.id;
-    delete agent.task;
-  }
-  state.agents = residents;
-  faction.resources = { wood: 100, stone: 100, food: 100 };
-
-  const position = { ...builder.position };
-  state.structures = [
-    {
-      id: "living-pressure-camp",
-      factionId: builder.factionId,
-      type: "camp",
-      position,
-      status: "active",
-      progress: 6,
-      requiredProgress: 6,
-      storage: { wood: 0, stone: 0, food: 0 },
-    },
-    ...["storehouse", "market", "workshop"].map((type, index) => ({
-      id: `living-pressure-${type}`,
-      factionId: builder.factionId,
-      type,
-      position: { x: position.x + index + 1, y: position.y },
-      status: "active",
-      progress: 20,
-      requiredProgress: 1,
-      storage: { wood: 0, stone: 0, food: 0 },
-    })),
-  ];
-
-  const next = simulate(state).state;
-  const nextBuilder = next.agents.find((agent) => agent.id === builder.id); assert.ok(nextBuilder);
-  assert.notEqual(
-    nextBuilder.task?.type === "build" && nextBuilder.task.structureType === "camp",
-    true,
-    "only living residents should create housing expansion pressure",
-  );
-});
-'''
+          simulation_test_block = textwrap.dedent(r'''
+          
+          test("dead residents do not trigger autonomous housing expansion", () => {
+            const state = createInitialWorld({ seed: 2031 });
+            const builder = state.agents.find((agent) => agent.role === "builder"); assert.ok(builder);
+            const faction = state.factions.find((entry) => entry.id === builder.factionId); assert.ok(faction);
+            const residents = [builder, ...state.agents.filter((agent) => agent.id !== builder.id).slice(0, 6)];
+            assert.equal(residents.length, 7);
+            for (const [index, agent] of residents.entries()) {
+              agent.factionId = builder.factionId;
+              agent.hp = index < 5 ? 100 : 0;
+              agent.energy = 100;
+              agent.autonomy = agent.id === builder.id;
+              delete agent.task;
+            }
+            state.agents = residents;
+            faction.resources = { wood: 100, stone: 100, food: 100 };
+          
+            const position = { ...builder.position };
+            state.structures = [
+              {
+                id: "living-pressure-camp",
+                factionId: builder.factionId,
+                type: "camp",
+                position,
+                status: "active",
+                progress: 6,
+                requiredProgress: 6,
+                storage: { wood: 0, stone: 0, food: 0 },
+              },
+              ...["storehouse", "market", "workshop"].map((type, index) => ({
+                id: `living-pressure-${type}`,
+                factionId: builder.factionId,
+                type,
+                position: { x: position.x + index + 1, y: position.y },
+                status: "active",
+                progress: 20,
+                requiredProgress: 1,
+                storage: { wood: 0, stone: 0, food: 0 },
+              })),
+            ];
+          
+            const next = simulate(state).state;
+            const nextBuilder = next.agents.find((agent) => agent.id === builder.id); assert.ok(nextBuilder);
+            assert.notEqual(
+              nextBuilder.task?.type === "build" && nextBuilder.task.structureType === "camp",
+              true,
+              "only living residents should create housing expansion pressure",
+            );
+          });
+          ''')
           if 'test("dead residents do not trigger autonomous housing expansion"' in simulation_test:
               raise SystemExit("simulation regression already exists")
           simulation_test_path.write_text(simulation_test.rstrip() + simulation_test_block + "\n")
