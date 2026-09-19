@@ -1,0 +1,111 @@
+name: Stage terrain preview source compaction
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-terrain-preview-source-compaction.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Compact terrain snapshots at the Durable Object source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          worker_path = Path("src/worker.ts")
+          worker = worker_path.read_text()
+          import_anchor = 'import { WorldRuntime } from "./runtime.js";\n'
+          import_replacement = 'import { isHexGridCell } from "./hex-grid.js";\n' + import_anchor
+          if 'import { isHexGridCell } from "./hex-grid.js";' not in worker:
+              if worker.count(import_anchor) != 1:
+                  raise SystemExit("worker import anchor mismatch")
+              worker = worker.replace(import_anchor, import_replacement, 1)
+
+          old_tiles = '''    tiles: state.tiles.map((tile) => ({
+              x: tile.x,
+              y: tile.y,
+              terrain: tile.terrain,
+              ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
+            })),'''
+          new_tiles = '''    tiles: state.tiles
+              .filter((tile) => isHexGridCell(state, tile))
+              .map((tile) => ({
+                x: tile.x,
+                y: tile.y,
+                terrain: tile.terrain,
+                ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
+              })),'''
+          if old_tiles not in worker:
+              raise SystemExit("terrainPreviewState tile anchor mismatch")
+          worker = worker.replace(old_tiles, new_tiles, 1)
+          worker_path.write_text(worker)
+
+          test_path = Path("tests/terrain-preview-payload.test.mjs")
+          test = test_path.read_text()
+          test_import_anchor = 'import worker, { RegionDurableObject } from "../dist-ts/src/worker.js";\n'
+          test_import_replacement = (
+              'import { isHexGridCell } from "../dist-ts/src/hex-grid.js";\n' +
+              test_import_anchor
+          )
+          if 'from "../dist-ts/src/hex-grid.js"' not in test:
+              if test.count(test_import_anchor) != 1:
+                  raise SystemExit("terrain preview test import anchor mismatch")
+              test = test.replace(test_import_anchor, test_import_replacement, 1)
+
+          old_assert = '  assert.equal(terrain.tiles.length, full.tiles.length);\n'
+          new_assert = '''  const activeFullTiles = full.tiles.filter((tile) => isHexGridCell(full, tile));
+            assert.equal(terrain.tiles.length, activeFullTiles.length);
+            assert.ok(terrain.tiles.length < full.tiles.length);
+            assert.equal(terrain.tiles.every((tile) => isHexGridCell(full, tile)), true);
+          '''
+          if test.count(old_assert) != 1:
+              raise SystemExit("terrain preview tile-count assertion anchor mismatch")
+          test = test.replace(old_assert, new_assert, 1)
+          test_path.write_text(test)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        run: |
+          set -euo pipefail
+          npm run build
+          git diff --check
+
+      - name: Commit improvement and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          rm .github/workflows/automation-terrain-preview-source-compaction.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "perf: compact terrain snapshots at source"
+          git push origin HEAD:main
