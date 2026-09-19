@@ -688,6 +688,7 @@ function localTravelPathScores(
   ]);
   const crowdingByPosition = new Map<string, number>();
   for (const occupant of state.agents) {
+    if (occupant.hp <= 0) continue;
     const key = positionKey(occupant.position);
     crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
   }

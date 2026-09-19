@@ -262,6 +262,7 @@ export function planSettlementFamilyFollow(
   if (currentAxial === undefined) return undefined;
   const crowdingByPosition = new Map<string, number>();
   for (const occupant of state.agents) {
+    if (occupant.hp <= 0) continue;
     const key = positionKey(occupant.position);
     crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
   }
@@ -628,7 +629,7 @@ function localSettlementSupport(state: WorldState): SettlementNeighborSupport {
     addSettlementSupportTile(support, tile);
   }
   support.populationSampleCells = support.passableCells;
-  support.occupants = state.agents.length;
+  support.occupants = state.agents.filter((agent) => agent.hp > 0).length;
   support.campSampleCells = support.passableCells;
   support.activeCamps = state.structures.filter((structure) =>
     structure.type === "camp" && structure.status === "active"
@@ -1256,6 +1257,7 @@ export function planAutonomousSettlementMigration(
   const pathsByOrigin = new Map<string, Map<string, LocalPathScore>>();
   const crowdingByPosition = new Map<string, number>();
   for (const occupant of state.agents) {
+    if (occupant.hp <= 0) continue;
     const key = positionKey(occupant.position);
     crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
   }

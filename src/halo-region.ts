@@ -403,7 +403,10 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
     const occupantCounts = new Map<string, number>();
     const occupantsByPosition = new Map<string, number>();
+    let livingOccupants = 0;
     for (const agent of state.agents) {
+      if (agent.hp <= 0) continue;
+      livingOccupants += 1;
       occupantCounts.set(
         agent.factionId,
         (occupantCounts.get(agent.factionId) ?? 0) + 1,
@@ -437,7 +440,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         storageHeadroomByFaction,
         occupantsByFaction,
         passableCells,
-        occupants: state.agents.length,
+        occupants: livingOccupants,
       },
       occupantsByPosition,
     };
