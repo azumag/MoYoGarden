@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { globalHandoffAgentId } from "../dist-ts/src/agent-ownership.js";
 import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
-import { registerSettlementFamilyFollowers } from "../dist-ts/src/settlement-migration.js";
+import {
+  registerSettlementFamilyFollowers,
+  settlementFamilyRegistrationDeferred,
+} from "../dist-ts/src/settlement-migration.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
 function clearHex(state) {
@@ -58,6 +61,8 @@ test("family migration keeps a dependent with its active source-side caregiver",
   );
   assert.equal(partner.settlementFamilyTargetRegionId, undefined);
   assert.equal(child.settlementFamilyTargetRegionId, undefined);
+  assert.equal(oneSlot.candidateCount, 2);
+  assert.equal(settlementFamilyRegistrationDeferred(oneSlot), true);
 
   const twoSlots = registerSettlementFamilyFollowers(
     source,
@@ -70,4 +75,5 @@ test("family migration keeps a dependent with its active source-side caregiver",
   assert.deepEqual(twoSlots.agentIds, ["partner", "child"]);
   assert.equal(partner.settlementFamilyTargetRegionId, "hex-q1-r0");
   assert.equal(child.settlementFamilyTargetRegionId, "hex-q1-r0");
+  assert.equal(settlementFamilyRegistrationDeferred(twoSlots), false);
 });

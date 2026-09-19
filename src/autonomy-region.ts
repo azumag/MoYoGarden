@@ -37,6 +37,7 @@ import {
   prepareSettlementMigrationKit,
   registerSettlementFamilyFollowers,
   settlementFamilyAdmissionHeadroom,
+  settlementFamilyRegistrationDeferred,
   shouldScoutSettlementMigration,
   type AutonomousSettlementMigrationPlan,
 } from "./settlement-migration.js";
@@ -1583,6 +1584,16 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       body.pioneerPartnerId,
       body.maxFollowers,
     );
+    if (settlementFamilyRegistrationDeferred(result)) {
+      return new Response(JSON.stringify({
+        error: "settlement family admission deferred",
+        targetRegionId: body.targetRegionId,
+        candidateCount: result.candidateCount,
+      }), {
+        status: 409,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    }
     if (result.agentIds.length > 0) this.replaceRuntimeState(state);
     return new Response(JSON.stringify({
       ok: true,

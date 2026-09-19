@@ -57,6 +57,12 @@ export interface SettlementFamilyRegistrationResult {
   candidateCount: number;
 }
 
+export function settlementFamilyRegistrationDeferred(
+  result: SettlementFamilyRegistrationResult,
+): boolean {
+  return result.candidateCount > 0 && result.agentIds.length === 0;
+}
+
 const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;
 const GLOBAL_AGENT_PREFIX = "agent-global:";
 
