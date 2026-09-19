@@ -1206,6 +1206,7 @@ function startConstruction(
   const carriedPioneerCampKit =
     task.structureType === "camp"
     && agent.settlementMigrationOriginRegionId !== undefined
+    && agent.settlementMigrationOriginRegionId !== state.regionId
     && hasInventory(agent.inventory, recipe.cost);
   const paid = carriedPioneerCampKit || (
     activeStructures.length === 0

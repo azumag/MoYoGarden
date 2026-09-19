@@ -212,3 +212,67 @@ test("pioneer carried kit funds frontier camp even beside existing non-camp stor
   assert.equal(destinationStorehouse.storage.wood, storedWoodBefore);
   assert.equal(destinationStorehouse.storage.stone, storedStoneBefore);
 });
+
+test("source-region migration marker does not spend the kit before handoff", () => {
+  const { source, builder, sourceCell } = migrationWorlds();
+  const faction = source.factions.find((entry) => entry.id === builder.factionId);
+  assert.ok(faction);
+  const buildTile = source.tiles[sourceCell.y * source.width + sourceCell.x];
+  assert.ok(buildTile);
+  buildTile.terrain = "plain";
+  delete buildTile.resource;
+
+  for (const agent of source.agents) {
+    agent.autonomy = false;
+    delete agent.task;
+  }
+  const storageTile = source.tiles.find((tile) =>
+    tile.terrain !== "water"
+    && (tile.x !== sourceCell.x || tile.y !== sourceCell.y)
+  );
+  assert.ok(storageTile);
+  source.structures = [{
+    id: "source-storehouse",
+    factionId: builder.factionId,
+    type: "storehouse",
+    position: { x: storageTile.x, y: storageTile.y },
+    status: "active",
+    progress: 8,
+    requiredProgress: 8,
+    storage: { ...BUILD_RECIPES.camp.cost },
+  }];
+  faction.resources = { wood: 100, stone: 100, food: 100 };
+  builder.position = { ...sourceCell };
+  builder.inventory = { ...BUILD_RECIPES.camp.cost };
+  builder.settlementMigrationOriginRegionId = source.regionId;
+  builder.task = {
+    source: "autonomy",
+    issuedAtTick: source.tick,
+    type: "build",
+    structureType: "camp",
+    target: { ...sourceCell },
+  };
+
+  const beforeFaction = { ...faction.resources };
+  const advanced = simulate(source).state;
+  const afterBuilder = advanced.agents.find((agent) => agent.id === builder.id);
+  const afterFaction = advanced.factions.find((entry) => entry.id === builder.factionId);
+  const afterStorehouse = advanced.structures.find((structure) => structure.id === "source-storehouse");
+  assert.ok(afterBuilder);
+  assert.ok(afterFaction);
+  assert.ok(afterStorehouse);
+  assert.ok(advanced.structures.some((structure) =>
+    structure.factionId === builder.factionId
+    && structure.type === "camp"
+    && structure.status === "building"
+  ));
+  assert.deepEqual(
+    afterBuilder.inventory,
+    BUILD_RECIPES.camp.cost,
+    "the migration kit is only frontier cargo after ownership has crossed into another region",
+  );
+  assert.equal(afterFaction.resources.wood, beforeFaction.wood - BUILD_RECIPES.camp.cost.wood);
+  assert.equal(afterFaction.resources.stone, beforeFaction.stone - BUILD_RECIPES.camp.cost.stone);
+  assert.equal(afterStorehouse.storage.wood, 0);
+  assert.equal(afterStorehouse.storage.stone, 0);
+});
