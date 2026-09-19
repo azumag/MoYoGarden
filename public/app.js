@@ -97,6 +97,8 @@ let liveNeighborSimulation;
 let terrainWindowCenter;
 let terrainWindowPayload;
 let neighborTerrainUpdatedAt = 0;
+let terrainWindowRequestVersion = 0;
+let regionTransitionVersion = 0;
 let readyDispatched = false;
 
 function toast(message, error = false) {
@@ -277,9 +279,10 @@ function buildNeighborPreview(payload) {
 async function loadTerrainWindow(force = false) {
   if (!app.state || (!force && terrainWindowCenter === app.region && neighborPreviewRoot)) return;
   const requestedRegion = app.region;
+  const requestVersion = ++terrainWindowRequestVersion;
   try {
     const payload = await requestJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000);
-    if (requestedRegion !== app.region) return;
+    if (requestVersion !== terrainWindowRequestVersion || requestedRegion !== app.region) return;
     buildNeighborPreview(payload);
     terrainWindowPayload = payload;
     terrainWindowCenter = app.region;
@@ -457,6 +460,8 @@ function populateRegions() {
 }
 
 async function connect() {
+  regionTransitionVersion += 1;
+  terrainWindowRequestVersion += 1;
   clearInterval(app.pollTimer);
   clearInterval(app.windowTimer);
   app.socket?.close();
@@ -491,6 +496,8 @@ async function transitionRegion(regionId) {
   const targetRegion = typeof regionId === "string" ? regionId.trim() : "";
   if (!targetRegion || targetRegion === app.region) return;
 
+  const transitionVersion = ++regionTransitionVersion;
+  terrainWindowRequestVersion += 1;
   const previousRegion = app.region;
   const previousSocket = app.socket;
   app.socket = null;
@@ -506,7 +513,7 @@ async function transitionRegion(regionId) {
       requestJson("/api/health"),
       requestJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000),
     ]);
-    if (app.region !== targetRegion) return;
+    if (transitionVersion !== regionTransitionVersion || app.region !== targetRegion) return;
 
     const chunks = Array.isArray(windowPayload?.chunks) ? windowPayload.chunks : [];
     const center = chunks.find((chunk) =>
@@ -534,7 +541,7 @@ async function transitionRegion(regionId) {
     startRegionWindowRefresh();
     connectSocket();
   } catch (error) {
-    if (app.region !== targetRegion) return;
+    if (transitionVersion !== regionTransitionVersion || app.region !== targetRegion) return;
     app.region = previousRegion;
     populateRegions();
     setConnection("offline", "境界同期を再試行");

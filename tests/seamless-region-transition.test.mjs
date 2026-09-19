@@ -47,3 +47,27 @@ test("soft transition waits for target terrain instead of rebuilding old-center 
   assert.ok(fetchTerrain >= 0 && fetchTerrain < promote, "target terrain must be ready before promotion");
   assert.ok(promote >= 0 && promote < rebuild, "new center must be active before target terrain is rebuilt");
 });
+
+test("same-region re-entry ignores stale terrain and transition responses", () => {
+  assert.match(appSource, /let terrainWindowRequestVersion = 0;/);
+  assert.match(appSource, /let regionTransitionVersion = 0;/);
+
+  const terrainBody = functionBody(appSource, "loadTerrainWindow", "function refreshNearTerrainFromLive");
+  assert.match(terrainBody, /const requestVersion = \+\+terrainWindowRequestVersion;/);
+  assert.match(
+    terrainBody,
+    /requestVersion !== terrainWindowRequestVersion \|\| requestedRegion !== app\.region/,
+  );
+
+  const connectBody = functionBody(appSource, "connect", "async function transitionRegion");
+  assert.match(connectBody, /regionTransitionVersion \+= 1;/);
+  assert.match(connectBody, /terrainWindowRequestVersion \+= 1;/);
+
+  const transitionBody = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
+  assert.match(transitionBody, /const transitionVersion = \+\+regionTransitionVersion;/);
+  assert.match(transitionBody, /terrainWindowRequestVersion \+= 1;/);
+  const staleGuards = transitionBody.match(
+    /transitionVersion !== regionTransitionVersion \|\| app\.region !== targetRegion/g,
+  ) || [];
+  assert.equal(staleGuards.length, 2, "success and failure paths must both reject stale transitions");
+});
