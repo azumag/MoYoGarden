@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker.js";
 
 class MemoryStorage {
@@ -44,7 +45,10 @@ test("terrain snapshot omits simulation-only payload at the Durable Object sourc
   assert.equal(terrain.height, full.height);
   assert.equal(terrain.tick, full.tick);
   assert.equal(terrain.revision, full.revision);
-  assert.equal(terrain.tiles.length, full.tiles.length);
+  const activeFullTiles = full.tiles.filter((tile) => isHexGridCell(full, tile));
+  assert.equal(terrain.tiles.length, activeFullTiles.length);
+  assert.ok(terrain.tiles.length < full.tiles.length);
+  assert.equal(terrain.tiles.every((tile) => isHexGridCell(full, tile)), true);
   assert.equal("agents" in terrain, false);
   assert.equal("structures" in terrain, false);
   assert.equal("events" in terrain, false);

@@ -5,6 +5,7 @@ import {
   type WorldCommand,
   type WorldState,
 } from "./protocol.js";
+import { isHexGridCell } from "./hex-grid.js";
 import { WorldRuntime } from "./runtime.js";
 import { updateTileHydrology } from "./simulation.js";
 import { createInitialWorld, validateWorldState } from "./world.js";
@@ -322,12 +323,14 @@ function terrainPreviewState(state: WorldState) {
     height: state.height,
     tick: state.tick,
     revision: state.revision,
-    tiles: state.tiles.map((tile) => ({
-      x: tile.x,
-      y: tile.y,
-      terrain: tile.terrain,
-      ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
-    })),
+    tiles: state.tiles
+      .filter((tile) => isHexGridCell(state, tile))
+      .map((tile) => ({
+        x: tile.x,
+        y: tile.y,
+        terrain: tile.terrain,
+        ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
+      })),
   };
 }
 
