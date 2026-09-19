@@ -41,6 +41,12 @@ import {
   shouldScoutSettlementMigration,
   type AutonomousSettlementMigrationPlan,
 } from "./settlement-migration.js";
+import {
+  normalizeSettlementFamilyAdmissionReservations,
+  settlementFamilyReservedSlots,
+  upsertSettlementFamilyAdmissionReservation,
+  type SettlementFamilyAdmissionReservation,
+} from "./settlement-family-reservation.js";
 import { WorldRuntime } from "./runtime.js";
 import { isPassable } from "./world.js";
 
@@ -154,6 +160,7 @@ const AUTONOMOUS_TRAVELS_KEY = "handoff:autonomy:travel:v2";
 const AUTONOMOUS_SUPPLY_CLAIMS_KEY = "handoff:autonomy:claims:v1";
 const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
 const AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";
+const SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY = "handoff:autonomy:settlement-family-admission:v1";
 const AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migration:v1";
 // Shared with handoff-region.ts. The autonomy layer only reads this
 // crash-safe journal to resolve the current owner of a world-global BOT.
@@ -175,6 +182,11 @@ const MAX_CONCURRENT_AUTONOMOUS_TRAVELS = 3;
 // Destination admission uses wall-clock expiry because source and destination
 // simulation ticks may advance at different active/warm/cold cadences.
 const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+// Family followers can traverse several warm/cold regions after admission.
+// Keep promised housing/food capacity for a bounded wall-clock day so a
+// second pioneer cannot overbook the same slots while the first wave is
+// physically in flight. Arrival reconciliation releases slots immediately.
+const SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS = 24 * 60 * 60 * 1_000;
 // Source simulation ticks can advance much faster than a courier in warm/cold
 // relay regions. Keep the promised return sink alive on wall time as well, but
 // bound crash leakage so abandoned cargo cannot reserve capacity forever.
@@ -1557,6 +1569,58 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
+private async activeSettlementFamilyAdmissionReservations(
+  state: WorldState,
+  now = Date.now(),
+): Promise<SettlementFamilyAdmissionReservation[]> {
+  const stored = await this.autonomyState.storage.get<unknown>(
+    SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+  );
+  const presentAgentIds = new Set(state.agents.map((agent) => agent.id));
+  const normalized = normalizeSettlementFamilyAdmissionReservations(stored, presentAgentIds, now);
+  if (normalized.changed) {
+    await this.autonomyState.storage.put(
+      SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+      normalized.reservations,
+    );
+  }
+  return normalized.reservations;
+}
+
+private async reserveSettlementFamilyAdmissions(
+  state: WorldState,
+  sourceRegionId: string,
+  pioneerId: string,
+  factionId: string,
+  sourceAgentIds: readonly string[],
+): Promise<void> {
+  const agentIds = [...new Set(sourceAgentIds.map((agentId) =>
+    globalHandoffAgentId(agentId, sourceRegionId)
+  ))];
+  if (agentIds.length === 0) return;
+  const reservationId = `family:${sourceRegionId}:${pioneerId}:${state.regionId}`;
+  const now = Date.now();
+  await this.autonomyState.blockConcurrencyWhile(async () => {
+    const stored = await this.autonomyState.storage.get<unknown>(
+      SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+    );
+    const presentAgentIds = new Set(state.agents.map((agent) => agent.id));
+    const normalized = normalizeSettlementFamilyAdmissionReservations(stored, presentAgentIds, now);
+    const next = upsertSettlementFamilyAdmissionReservation(
+      normalized.reservations,
+      {
+        reservationId,
+        sourceRegionId,
+        pioneerId,
+        factionId,
+        agentIds,
+        expiresAtMs: now + SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS,
+      },
+    );
+    await this.autonomyState.storage.put(SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY, next);
+  });
+}
+
   private async registerSettlementFamilyFollow(request: Request): Promise<Response> {
     let body: unknown;
     try {
@@ -1589,6 +1653,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       return new Response(JSON.stringify({
         error: "settlement family admission deferred",
         targetRegionId: body.targetRegionId,
+        registeredAgentIds: result.agentIds,
         candidateCount: result.candidateCount,
       }), {
         status: 409,
@@ -1623,7 +1688,12 @@ export class RegionDurableObject extends HaloRegionDurableObject {
         dirty = true;
         continue;
       }
-      const familyAdmissionHeadroom = settlementFamilyAdmissionHeadroom(state, pioneer.factionId);
+const familyReservations = await this.activeSettlementFamilyAdmissionReservations(state);
+const familyAdmissionHeadroom = Math.max(
+  0,
+  settlementFamilyAdmissionHeadroom(state, pioneer.factionId)
+    - settlementFamilyReservedSlots(familyReservations, pioneer.factionId),
+);
 
       if (familyAdmissionHeadroom <= 0) continue;
       try {
@@ -1646,8 +1716,26 @@ export class RegionDurableObject extends HaloRegionDurableObject {
             }),
           },
         ));
-        if (!response.ok) continue;
-        delete pioneer.settlementMigrationOriginRegionId;
+let payload: unknown;
+try {
+  payload = await response.clone().json();
+} catch {
+  payload = undefined;
+}
+const registeredAgentIds = isRecord(payload) && Array.isArray(payload.registeredAgentIds)
+  ? payload.registeredAgentIds.filter((agentId): agentId is string => typeof agentId === "string")
+  : [];
+if (registeredAgentIds.length > 0) {
+  await this.reserveSettlementFamilyAdmissions(
+    state,
+    sourceRegionId,
+    pioneer.id,
+    pioneer.factionId,
+    registeredAgentIds,
+  );
+}
+if (!response.ok) continue;
+delete pioneer.settlementMigrationOriginRegionId;
         pioneer.status = "frontier camp established; family route opened";
         dirty = true;
       } catch {
