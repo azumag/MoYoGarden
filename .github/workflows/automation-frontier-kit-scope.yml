@@ -84,7 +84,7 @@ jobs:
               status: "active",
               progress: 8,
               requiredProgress: 8,
-              storage: { wood: 0, stone: 0, food: 0 },
+              storage: { ...BUILD_RECIPES.camp.cost },
             }];
             faction.resources = { wood: 100, stone: 100, food: 100 };
             builder.position = { ...sourceCell };
@@ -102,8 +102,10 @@ jobs:
             const advanced = simulate(source).state;
             const afterBuilder = advanced.agents.find((agent) => agent.id === builder.id);
             const afterFaction = advanced.factions.find((entry) => entry.id === builder.factionId);
+            const afterStorehouse = advanced.structures.find((structure) => structure.id === "source-storehouse");
             assert.ok(afterBuilder);
             assert.ok(afterFaction);
+            assert.ok(afterStorehouse);
             assert.ok(advanced.structures.some((structure) =>
               structure.factionId === builder.factionId
               && structure.type === "camp"
@@ -116,6 +118,8 @@ jobs:
             );
             assert.equal(afterFaction.resources.wood, beforeFaction.wood - BUILD_RECIPES.camp.cost.wood);
             assert.equal(afterFaction.resources.stone, beforeFaction.stone - BUILD_RECIPES.camp.cost.stone);
+            assert.equal(afterStorehouse.storage.wood, 0);
+            assert.equal(afterStorehouse.storage.stone, 0);
           });
           '''
           tests.write_text(current.rstrip() + addition + "\n")
