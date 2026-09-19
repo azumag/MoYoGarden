@@ -15,6 +15,15 @@ export const POPULATION_MAX_LIFESPAN_TICKS =
 // payment. Charging twice per compressed day keeps the feedback visible without
 // adding per-tick storage writes or changing persisted schema.
 export const POPULATION_MAINTENANCE_INTERVAL_TICKS = POPULATION_DAY_TICKS / 2;
+// Every living resident has a basal food cost independent of work. This is the
+// density-dependent survival link: population is not capped by a resident count;
+// it is limited by how much food the local ecology + gathering/logistics can
+// continuously replace. Water/land already shape organic regrowth through
+// surface moisture and the number of renewable food deposits.
+export const POPULATION_BASAL_FOOD_INTERVAL_TICKS = POPULATION_DAY_TICKS;
+const POPULATION_BASAL_FOOD_COST = 1;
+const POPULATION_BASAL_HUNGER_ENERGY_COST = 8;
+const POPULATION_BASAL_HUNGER_HEALTH_COST = 1;
 const POPULATION_PREGNANCY_FOOD_COST = 1;
 const POPULATION_DEPENDENT_FOOD_COST = 1;
 const POPULATION_PREGNANCY_ENERGY_COST = 2;
@@ -374,7 +383,36 @@ export function applyPopulationMaintenance(state: WorldState): void {
   }
 
   const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
+
+  // Basal metabolism applies to founders, workers, elders and dependents alike.
+  // Food scarcity therefore cannot be bypassed by idling or by having no trusted
+  // birth date. Rotate the deterministic allocation order by simulation day so
+  // a persistent shortage is shared over time instead of always starving the
+  // lexicographically-last residents.
+  if (state.tick % POPULATION_BASAL_FOOD_INTERVAL_TICKS === 0) {
+    const living = agents.filter((agent) => agent.hp > 0);
+    const offset = living.length === 0
+      ? 0
+      : Math.floor(state.tick / POPULATION_BASAL_FOOD_INTERVAL_TICKS) % living.length;
+    const allocationOrder = [
+      ...living.slice(offset),
+      ...living.slice(0, offset),
+    ];
+    for (const agent of allocationOrder) {
+      const nourished = consumeStoredFood(state, agent.factionId, POPULATION_BASAL_FOOD_COST);
+      if (nourished) {
+        if (agent.status === "starving; basal food deficit") {
+          agent.status = "recovering from food scarcity";
+        }
+        continue;
+      }
+      agent.energy = Math.max(0, agent.energy - POPULATION_BASAL_HUNGER_ENERGY_COST);
+      agent.hp = Math.max(0, agent.hp - POPULATION_BASAL_HUNGER_HEALTH_COST);
+      if (agent.hp > 0) agent.status = "starving; basal food deficit";
+    }
+  }
   for (const agent of agents) {
+    if (agent.hp <= 0) continue;
     if (agent.pregnancy !== undefined && agent.pregnancy.dueAtTick > state.tick) {
       const nourished = consumeStoredFood(
         state,
@@ -402,6 +440,7 @@ export function applyPopulationMaintenance(state: WorldState): void {
 
   for (const dependent of agents) {
     if (
+      dependent.hp <= 0 ||
       (dependent.lifeStage !== "infant" && dependent.lifeStage !== "juvenile") ||
       dependent.birthTick === undefined ||
       state.tick <= dependent.birthTick
@@ -443,6 +482,12 @@ export function applyPopulationMaintenance(state: WorldState): void {
       caregiver.energy = Math.max(0, caregiver.energy - POPULATION_CAREGIVER_ENERGY_COST);
     }
   }
+
+  // Basal deprivation is a real mortality path, including for non-autonomous
+  // dependents and legacy founders. Do not leave zero-HP residents occupying
+  // housing, crowding, migration or relationship state until another subsystem
+  // happens to notice them.
+  state.agents = state.agents.filter((agent) => agent.hp > 0);
 }
 
 export function applyPopulationAging(state: WorldState): void {

@@ -433,7 +433,10 @@ test("population growth requires conception, gestation, and biological parentage
   assert.equal(conceivedParent.pregnancy?.partnerId, partner.id);
   assert.equal(conceivedParent.pregnancy?.conceivedAtTick, 8_640);
   assert.equal(conceivedParent.pregnancy?.dueAtTick, 17_280);
-  assert.equal(conceived.factions.find((entry) => entry.id === faction.id)?.resources.food, 40);
+  assert.equal(
+    conceived.factions.find((entry) => entry.id === faction.id)?.resources.food,
+    40 - members.length,
+  );
 
   conceived.tick = 17_279;
   const born = new WorldRuntime({ state: conceived }).tick().state;
@@ -442,8 +445,9 @@ test("population growth requires conception, gestation, and biological parentage
   const camp = born.structures.find((structure) => structure.id === "population-growth-camp"); assert.ok(camp);
 
   assert.equal(nextMembers.length, members.length + 1);
-  assert.equal(born.factions.find((entry) => entry.id === faction.id)?.resources.food, 34);
-  assert.equal(camp.storage.food, 34);
+  const expectedFoodAfterBirth = 40 - members.length * 2 - 6;
+  assert.equal(born.factions.find((entry) => entry.id === faction.id)?.resources.food, expectedFoodAfterBirth);
+  assert.equal(camp.storage.food, expectedFoodAfterBirth);
   const birthParent = born.agents.find((entry) => entry.id === parent.id); assert.ok(birthParent);
   assert.equal(newcomer.lifeStage, "infant");
   assert.equal(newcomer.autonomy, false);

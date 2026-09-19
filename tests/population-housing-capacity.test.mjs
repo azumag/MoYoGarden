@@ -62,7 +62,7 @@ test("housing saturation does not directly gate conception or birth", () => {
   assert.equal(conceived.agents.filter((agent) => agent.factionId === faction.id).length, 6);
   assert.equal(gestationalParent.pregnancy?.conceivedAtTick, 8_640);
   assert.equal(gestationalParent.pregnancy?.dueAtTick, 17_280);
-  assert.equal(conceived.factions.find((entry) => entry.id === faction.id)?.resources.food, 100);
+  assert.equal(conceived.factions.find((entry) => entry.id === faction.id)?.resources.food, 94);
 
   conceived.tick = 17_279;
   const born = new WorldRuntime({ state: conceived }).tick().state;
@@ -73,6 +73,6 @@ test("housing saturation does not directly gate conception or birth", () => {
   assert.equal(newborn.autonomy, false);
   assert.deepEqual(newborn.position, gestationalParent.position);
   assert.deepEqual(newborn.parents, [gestationalParent.id, partnerId]);
-  assert.equal(born.factions.find((entry) => entry.id === faction.id)?.resources.food, 94);
-  assert.equal(born.structures.find((structure) => structure.id === "housing-camp-a")?.storage.food, 94);
+  assert.equal(born.factions.find((entry) => entry.id === faction.id)?.resources.food, 82);
+  assert.equal(born.structures.find((structure) => structure.id === "housing-camp-a")?.storage.food, 82);
 });
