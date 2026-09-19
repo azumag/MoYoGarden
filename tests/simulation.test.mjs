@@ -462,3 +462,52 @@ test("population growth requires conception, gestation, and biological parentage
   assert.equal(adult.lifeStage, "adult");
   assert.equal(adult.autonomy, true);
 });
+
+test("dead residents do not trigger autonomous housing expansion", () => {
+  const state = createInitialWorld({ seed: 2031 });
+  const builder = state.agents.find((agent) => agent.role === "builder"); assert.ok(builder);
+  const faction = state.factions.find((entry) => entry.id === builder.factionId); assert.ok(faction);
+  const residents = [builder, ...state.agents.filter((agent) => agent.id !== builder.id).slice(0, 6)];
+  assert.equal(residents.length, 7);
+  for (const [index, agent] of residents.entries()) {
+    agent.factionId = builder.factionId;
+    agent.hp = index < 5 ? 100 : 0;
+    agent.energy = 100;
+    agent.autonomy = agent.id === builder.id;
+    delete agent.task;
+  }
+  state.agents = residents;
+  faction.resources = { wood: 100, stone: 100, food: 100 };
+
+  const position = { ...builder.position };
+  state.structures = [
+    {
+      id: "living-pressure-camp",
+      factionId: builder.factionId,
+      type: "camp",
+      position,
+      status: "active",
+      progress: 6,
+      requiredProgress: 6,
+      storage: { wood: 0, stone: 0, food: 0 },
+    },
+    ...["storehouse", "market", "workshop"].map((type, index) => ({
+      id: `living-pressure-${type}`,
+      factionId: builder.factionId,
+      type,
+      position: { x: position.x + index + 1, y: position.y },
+      status: "active",
+      progress: 20,
+      requiredProgress: 1,
+      storage: { wood: 0, stone: 0, food: 0 },
+    })),
+  ];
+
+  const next = simulate(state).state;
+  const nextBuilder = next.agents.find((agent) => agent.id === builder.id); assert.ok(nextBuilder);
+  assert.notEqual(
+    nextBuilder.task?.type === "build" && nextBuilder.task.structureType === "camp",
+    true,
+    "only living residents should create housing expansion pressure",
+  );
+});

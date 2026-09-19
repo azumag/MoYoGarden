@@ -853,7 +853,9 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
       }
     }
 
-    const population = state.agents.filter((candidate) => candidate.factionId === agent.factionId).length;
+    const population = state.agents.filter((candidate) =>
+      candidate.factionId === agent.factionId && candidate.hp > 0
+    ).length;
     const residentCapacity = activeCamps.length * SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP;
     if (population >= residentCapacity) {
       const campBuildReserved = state.agents.some(

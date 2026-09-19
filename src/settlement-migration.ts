@@ -1072,7 +1072,9 @@ export function settlementMigrationPressure(state: WorldState, factionId: string
     && structure.type === "camp"
     && structure.status === "building"
   )) return false;
-  const population = state.agents.filter((agent) => agent.factionId === factionId).length;
+  const population = state.agents.filter((agent) =>
+    agent.factionId === factionId && agent.hp > 0
+  ).length;
   if (population < camps.length * RESIDENT_CAPACITY_PER_CAMP) return false;
   return !hasLocalSpacedCampSite(state, factionId);
 }

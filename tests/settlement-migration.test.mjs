@@ -356,3 +356,19 @@ test("arrived pioneer settles when durable renewable capacity density is not ric
     "equal durable renewable capacity density should settle locally instead of risking region ping-pong",
   );
 });
+
+test("dead residents do not create settlement migration pressure", () => {
+  const { state, builder } = fixture();
+  const living = state.agents.slice(0, 5);
+  const dead = state.agents.slice(5);
+  assert.ok(dead.length >= 2);
+  for (const agent of dead) agent.hp = 0;
+  state.agents = [...living, ...dead];
+
+  assert.equal(
+    state.agents.filter((agent) => agent.factionId === builder.factionId && agent.hp > 0).length,
+    5,
+  );
+  assert.equal(settlementMigrationPressure(state, builder.factionId), false);
+  assert.equal(planAutonomousSettlementMigration(state, eastHalo()), undefined);
+});
