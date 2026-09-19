@@ -55,7 +55,6 @@ jobs:
           migration_test_path = Path("tests/settlement-migration.test.mjs")
           migration_test = migration_test_path.read_text()
           migration_test_block = textwrap.dedent(r'''
-          
           test("dead residents do not create settlement migration pressure", () => {
             const { state, builder } = fixture();
             const living = state.agents.slice(0, 5);
@@ -63,7 +62,7 @@ jobs:
             assert.ok(dead.length >= 2);
             for (const agent of dead) agent.hp = 0;
             state.agents = [...living, ...dead];
-          
+
             assert.equal(
               state.agents.filter((agent) => agent.factionId === builder.factionId && agent.hp > 0).length,
               5,
@@ -71,15 +70,14 @@ jobs:
             assert.equal(settlementMigrationPressure(state, builder.factionId), false);
             assert.equal(planAutonomousSettlementMigration(state, eastHalo()), undefined);
           });
-          ''')
+          ''').strip()
           if 'test("dead residents do not create settlement migration pressure"' in migration_test:
               raise SystemExit("migration regression already exists")
-          migration_test_path.write_text(migration_test.rstrip() + migration_test_block + "\n")
+          migration_test_path.write_text(migration_test.rstrip() + "\n\n" + migration_test_block + "\n")
 
           simulation_test_path = Path("tests/simulation.test.mjs")
           simulation_test = simulation_test_path.read_text()
           simulation_test_block = textwrap.dedent(r'''
-          
           test("dead residents do not trigger autonomous housing expansion", () => {
             const state = createInitialWorld({ seed: 2031 });
             const builder = state.agents.find((agent) => agent.role === "builder"); assert.ok(builder);
@@ -95,7 +93,7 @@ jobs:
             }
             state.agents = residents;
             faction.resources = { wood: 100, stone: 100, food: 100 };
-          
+
             const position = { ...builder.position };
             state.structures = [
               {
@@ -119,7 +117,7 @@ jobs:
                 storage: { wood: 0, stone: 0, food: 0 },
               })),
             ];
-          
+
             const next = simulate(state).state;
             const nextBuilder = next.agents.find((agent) => agent.id === builder.id); assert.ok(nextBuilder);
             assert.notEqual(
@@ -128,10 +126,10 @@ jobs:
               "only living residents should create housing expansion pressure",
             );
           });
-          ''')
+          ''').strip()
           if 'test("dead residents do not trigger autonomous housing expansion"' in simulation_test:
               raise SystemExit("simulation regression already exists")
-          simulation_test_path.write_text(simulation_test.rstrip() + simulation_test_block + "\n")
+          simulation_test_path.write_text(simulation_test.rstrip() + "\n\n" + simulation_test_block + "\n")
           PY
 
       - name: Install dependencies
