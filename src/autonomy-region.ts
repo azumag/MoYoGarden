@@ -43,6 +43,7 @@ import {
 } from "./settlement-migration.js";
 import {
   normalizeSettlementFamilyAdmissionReservations,
+  releaseSettlementFamilyAdmissionAgent,
   settlementFamilyReservedSlots,
   upsertSettlementFamilyAdmissionReservation,
   type SettlementFamilyAdmissionReservation,
@@ -174,6 +175,7 @@ const INTERNAL_STORAGE_RESERVE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/reserv
 const INTERNAL_STORAGE_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}storage/release`;
 const INTERNAL_AGENT_LOOKUP_PATH = `${INTERNAL_AUTONOMY_PREFIX}agent/lookup`;
 const INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}settlement/family/register`;
+const INTERNAL_SETTLEMENT_FAMILY_RELEASE_PATH = `${INTERNAL_AUTONOMY_PREFIX}settlement/family/release`;
 const LOW_ENERGY_THRESHOLD = 18;
 const AUTONOMOUS_SCOUT_INTERVAL = 12;
 const AUTONOMOUS_TRAVEL_TTL = 48;
@@ -1585,6 +1587,122 @@ private async activeSettlementFamilyAdmissionReservations(
     );
   }
   return normalized.reservations;
+}
+
+private async releaseSettlementFamilyAdmissionSlot(request: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "request body must be valid JSON" }), { status: 400 });
+  }
+  if (
+    !isRecord(body)
+    || typeof body.agentId !== "string"
+    || body.agentId.length === 0
+    || body.agentId.length > 192
+    || !body.agentId.startsWith("agent-global:")
+  ) {
+    return new Response(JSON.stringify({ error: "agentId must be a world-global agent ID" }), { status: 400 });
+  }
+
+  const state = runtimeAccess(this).runtime.snapshot();
+  const now = Date.now();
+  let released = false;
+  await this.autonomyState.blockConcurrencyWhile(async () => {
+    const stored = await this.autonomyState.storage.get<unknown>(
+      SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+    );
+    const presentAgentIds = new Set(state.agents.map((agent) => agent.id));
+    const normalized = normalizeSettlementFamilyAdmissionReservations(stored, presentAgentIds, now);
+    released = normalized.reservations.some((reservation) =>
+      reservation.agentIds.includes(body.agentId as string)
+    );
+    const next = releaseSettlementFamilyAdmissionAgent(
+      normalized.reservations,
+      body.agentId as string,
+    );
+    if (normalized.changed || released) {
+      await this.autonomyState.storage.put(
+        SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+        next,
+      );
+    }
+  });
+  return new Response(JSON.stringify({ ok: true, agentId: body.agentId, released }), {
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+private async notifySettlementFamilyAdmissionRelease(
+  targetRegionId: string,
+  agentId: string,
+): Promise<boolean> {
+  try {
+    const response = await this.autonomyStub(targetRegionId).fetch(new Request(
+      `https://moyo.internal${INTERNAL_SETTLEMENT_FAMILY_RELEASE_PATH}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-moyo-region-internal": targetRegionId,
+        },
+        body: JSON.stringify({ agentId }),
+      },
+    ));
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+private async reconcileSettlementFamilyAdmissionRoutes(
+  before: WorldState,
+  after: WorldState,
+): Promise<void> {
+  const afterById = new Map(after.agents.map((agent) => [agent.id, agent]));
+  let dirty = false;
+  for (const previous of before.agents) {
+    const targetRegionId = previous.settlementFamilyTargetRegionId;
+    if (targetRegionId === undefined) continue;
+    const targetAxial = regionAxialCoordinate(targetRegionId);
+    const sourceAxial = regionAxialCoordinate(before.regionId);
+    if (
+      targetRegionId === before.regionId
+      || (
+        targetAxial !== undefined
+        && sourceAxial !== undefined
+        && targetAxial.q === sourceAxial.q
+        && targetAxial.r === sourceAxial.r
+      )
+    ) continue;
+
+    const current = afterById.get(previous.id);
+    if (current === undefined) continue;
+    const currentTarget = current.settlementFamilyTargetRegionId;
+    const currentTargetAxial = currentTarget === undefined
+      ? undefined
+      : regionAxialCoordinate(currentTarget);
+    const sameTarget = currentTarget === targetRegionId || (
+      currentTargetAxial !== undefined
+      && targetAxial !== undefined
+      && currentTargetAxial.q === targetAxial.q
+      && currentTargetAxial.r === targetAxial.r
+    );
+    if (current.hp > 0 && sameTarget) continue;
+
+    const globalAgentId = globalHandoffAgentId(previous.id, before.regionId);
+    const released = await this.notifySettlementFamilyAdmissionRelease(
+      targetRegionId,
+      globalAgentId,
+    );
+    if (!released) continue;
+    if (current.hp <= 0 && sameTarget) {
+      delete current.settlementFamilyTargetRegionId;
+      dirty = true;
+    }
+  }
+  if (dirty) this.replaceRuntimeState(after);
 }
 
 private async reserveSettlementFamilyAdmissions(
@@ -3030,6 +3148,9 @@ private async resumeOrPlanAutonomousTradeHandoff(state: WorldState): Promise<boo
     if (request.method === "POST" && url.pathname === INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH) {
       return this.registerSettlementFamilyFollow(request);
     }
+    if (request.method === "POST" && url.pathname === INTERNAL_SETTLEMENT_FAMILY_RELEASE_PATH) {
+      return this.releaseSettlementFamilyAdmissionSlot(request);
+    }
     if (request.method === "POST" && url.pathname === INTERNAL_CLAIM_REGISTER_PATH) {
       return this.registerArrivalClaim(request);
     }
@@ -3050,6 +3171,10 @@ private async resumeOrPlanAutonomousTradeHandoff(state: WorldState): Promise<boo
       const simulationBefore = runtimeAccess(this).runtime.snapshot();
       await super.alarm();
       await this.reconcileArrivalClaims(
+        simulationBefore,
+        runtimeAccess(this).runtime.snapshot(),
+      );
+      await this.reconcileSettlementFamilyAdmissionRoutes(
         simulationBefore,
         runtimeAccess(this).runtime.snapshot(),
       );

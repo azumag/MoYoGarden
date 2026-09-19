@@ -63,6 +63,18 @@ export function settlementFamilyReservedSlots(
   return reserved.size;
 }
 
+export function releaseSettlementFamilyAdmissionAgent(
+  reservations: readonly SettlementFamilyAdmissionReservation[],
+  agentId: string,
+): SettlementFamilyAdmissionReservation[] {
+  if (agentId.length === 0) return [...reservations];
+  return reservations.flatMap((reservation) => {
+    if (!reservation.agentIds.includes(agentId)) return [reservation];
+    const agentIds = reservation.agentIds.filter((entry) => entry !== agentId);
+    return agentIds.length > 0 ? [{ ...reservation, agentIds }] : [];
+  });
+}
+
 export function upsertSettlementFamilyAdmissionReservation(
   reservations: readonly SettlementFamilyAdmissionReservation[],
   incoming: SettlementFamilyAdmissionReservation,
