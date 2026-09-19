@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Apply migration-intent guard and regression
+      - name: Apply migration-intent guard and regressions
         shell: bash
         run: |
           set -euo pipefail
@@ -62,8 +62,19 @@ jobs:
             builder.settlementMigrationOriginRegionId = source.regionId;
             builder.task = {'''
           if test_text.count(old_fixture) != 1:
-              raise SystemExit(f"expected one migration fixture anchor, found {test_text.count(old_fixture)}")
+              raise SystemExit(f"expected one settlement-handoff fixture anchor, found {test_text.count(old_fixture)}")
           existing.write_text(test_text.replace(old_fixture, new_fixture))
+
+          arrival = Path("tests/settlement-migration-arrival-binding.test.mjs")
+          arrival_text = arrival.read_text()
+          old_arrival = '''  pioneer.inventory = { ...BUILD_RECIPES.camp.cost };
+            pioneer.task = {'''
+          new_arrival = '''  pioneer.inventory = { ...BUILD_RECIPES.camp.cost };
+            pioneer.settlementMigrationOriginRegionId = source.regionId;
+            pioneer.task = {'''
+          if arrival_text.count(old_arrival) != 1:
+              raise SystemExit(f"expected one arrival-binding fixture anchor, found {arrival_text.count(old_arrival)}")
+          arrival.write_text(arrival_text.replace(old_arrival, new_arrival))
           PY
 
           cat > tests/settlement-handoff-intent.test.mjs <<'EOF'
