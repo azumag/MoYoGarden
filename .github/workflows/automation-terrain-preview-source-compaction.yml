@@ -49,18 +49,34 @@ jobs:
               y: tile.y,
               terrain: tile.terrain,
               ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
+            })),'''.replace('              ', '      ').replace('            })),', '    })),' )
+          actual_old_tiles = '''    tiles: state.tiles.map((tile) => ({
+              x: tile.x,
+              y: tile.y,
+              terrain: tile.terrain,
+              ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
             })),'''
-          new_tiles = '''    tiles: state.tiles
-              .filter((tile) => isHexGridCell(state, tile))
-              .map((tile) => ({
-                x: tile.x,
-                y: tile.y,
-                terrain: tile.terrain,
-                ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),
-              })),'''
-          if old_tiles not in worker:
+          # YAML indentation can make visual alignment misleading; construct the
+          # exact TypeScript fragment explicitly.
+          actual_old_tiles = (
+              '    tiles: state.tiles.map((tile) => ({\n'
+              '      x: tile.x,\n'
+              '      y: tile.y,\n'
+              '      terrain: tile.terrain,\n'
+              '      ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),\n'
+              '    })),')
+          new_tiles = (
+              '    tiles: state.tiles\n'
+              '      .filter((tile) => isHexGridCell(state, tile))\n'
+              '      .map((tile) => ({\n'
+              '        x: tile.x,\n'
+              '        y: tile.y,\n'
+              '        terrain: tile.terrain,\n'
+              '        ...(Number.isFinite(tile.elevation) ? { elevation: tile.elevation } : {}),\n'
+              '      })),')
+          if actual_old_tiles not in worker:
               raise SystemExit("terrainPreviewState tile anchor mismatch")
-          worker = worker.replace(old_tiles, new_tiles, 1)
+          worker = worker.replace(actual_old_tiles, new_tiles, 1)
           worker_path.write_text(worker)
 
           test_path = Path("tests/terrain-preview-payload.test.mjs")
@@ -76,11 +92,12 @@ jobs:
               test = test.replace(test_import_anchor, test_import_replacement, 1)
 
           old_assert = '  assert.equal(terrain.tiles.length, full.tiles.length);\n'
-          new_assert = '''  const activeFullTiles = full.tiles.filter((tile) => isHexGridCell(full, tile));
-            assert.equal(terrain.tiles.length, activeFullTiles.length);
-            assert.ok(terrain.tiles.length < full.tiles.length);
-            assert.equal(terrain.tiles.every((tile) => isHexGridCell(full, tile)), true);
-          '''
+          new_assert = (
+              '  const activeFullTiles = full.tiles.filter((tile) => isHexGridCell(full, tile));\n'
+              '  assert.equal(terrain.tiles.length, activeFullTiles.length);\n'
+              '  assert.ok(terrain.tiles.length < full.tiles.length);\n'
+              '  assert.equal(terrain.tiles.every((tile) => isHexGridCell(full, tile)), true);\n'
+          )
           if test.count(old_assert) != 1:
               raise SystemExit("terrain preview tile-count assertion anchor mismatch")
           test = test.replace(old_assert, new_assert, 1)
