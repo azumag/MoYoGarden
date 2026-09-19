@@ -28,45 +28,25 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected one replacement anchor, found {count}")
-              p.write_text(text.replace(old, new, 1))
+          settlement_path = Path("src/settlement-migration.ts")
+          settlement = settlement_path.read_text()
+          old_deferred = "  return result.candidateCount > 0 && result.agentIds.length === 0;"
+          new_deferred = "  return result.agentIds.length < result.candidateCount;"
+          if settlement.count(old_deferred) != 1:
+              raise SystemExit(f"settlement deferred anchor count={settlement.count(old_deferred)}")
+          settlement_path.write_text(settlement.replace(old_deferred, new_deferred, 1))
 
-          replace_once(
-              "src/settlement-migration.ts",
-              '''  return result.candidateCount > 0 && result.agentIds.length === 0;''',
-              '''  return result.agentIds.length < result.candidateCount;''',
-          )
-
-          replace_once(
-              "src/autonomy-region.ts",
-              '''    if (settlementFamilyRegistrationDeferred(result)) {
-              return new Response(JSON.stringify({
-                error: "settlement family admission deferred",
-                targetRegionId: body.targetRegionId,
-                candidateCount: result.candidateCount,
-              }), {
-                status: 409,
-                headers: { "content-type": "application/json; charset=utf-8" },
-              });
-            }
-            if (result.agentIds.length > 0) this.replaceRuntimeState(state);''',
-              '''    if (result.agentIds.length > 0) this.replaceRuntimeState(state);
-            if (settlementFamilyRegistrationDeferred(result)) {
-              return new Response(JSON.stringify({
-                error: "settlement family admission deferred",
-                targetRegionId: body.targetRegionId,
-                candidateCount: result.candidateCount,
-              }), {
-                status: 409,
-                headers: { "content-type": "application/json; charset=utf-8" },
-              });
-            }''',
-          )
+          autonomy_path = Path("src/autonomy-region.ts")
+          autonomy = autonomy_path.read_text()
+          persist = "    if (result.agentIds.length > 0) this.replaceRuntimeState(state);\n"
+          deferred = "    if (settlementFamilyRegistrationDeferred(result)) {\n"
+          if autonomy.count(persist) != 1:
+              raise SystemExit(f"family persistence anchor count={autonomy.count(persist)}")
+          if autonomy.count(deferred) != 1:
+              raise SystemExit(f"family deferred anchor count={autonomy.count(deferred)}")
+          autonomy = autonomy.replace(persist, "", 1)
+          autonomy = autonomy.replace(deferred, persist + deferred, 1)
+          autonomy_path.write_text(autonomy)
 
           test_path = Path("tests/settlement-family-admission-atomic.test.mjs")
           text = test_path.read_text()
