@@ -146,4 +146,4 @@ test("pioneer carried kit funds frontier camp even beside existing non-camp stor
 '''
 if 'pioneer carried kit funds frontier camp even beside existing non-camp storage' in test:
     raise SystemExit("end-to-end test already exists")
-test_path.write_text(test.rstrip() + addition + "\n")
+test_path.write_text(test.rstrip() + addition)
