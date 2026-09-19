@@ -1,0 +1,400 @@
+name: Stage living crowding consistency fix
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-living-crowding.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Ignore dead agents in local crowding
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          simulation_path = Path("src/simulation.ts")
+          simulation = simulation_path.read_text()
+
+          replacements = [
+            (
+              """  const occupancy = new Map<string, number>();\n  for (const agent of state.agents) {\n    const key = positionKey(agent.position);\n    occupancy.set(key, (occupancy.get(key) ?? 0) + 1);\n  }\n""",
+              """  const occupancy = new Map<string, number>();\n  for (const agent of state.agents) {\n    if (agent.hp <= 0) continue;\n    const key = positionKey(agent.position);\n    occupancy.set(key, (occupancy.get(key) ?? 0) + 1);\n  }\n""",
+            ),
+            (
+              """  const index = new Map<string, number>();\n  for (const agent of state.agents) {\n    const keys = new Set<string>([positionKey(agent.position)]);\n    if (\n      agent.task?.type === \"gather\" &&\n""",
+              """  const index = new Map<string, number>();\n  for (const agent of state.agents) {\n    if (agent.hp <= 0) continue;\n    const keys = new Set<string>([positionKey(agent.position)]);\n    if (\n      agent.task?.type === \"gather\" &&\n""",
+            ),
+            (
+              """  for (const agent of state.agents) {\n    const affected = new Set(idsByPosition.get(positionKey(agent.position)) ?? []);\n    if (\n      agent.task?.type === \"deposit\" &&\n""",
+              """  for (const agent of state.agents) {\n    if (agent.hp <= 0) continue;\n    const affected = new Set(idsByPosition.get(positionKey(agent.position)) ?? []);\n    if (\n      agent.task?.type === \"deposit\" &&\n""",
+            ),
+            (
+              """function buildCongestionIndex(state: Pick<WorldState, \"agents\">): Map<string, number> {\n  const index = new Map<string, number>();\n  for (const agent of state.agents) {\n    const keys = new Set<string>([positionKey(agent.position)]);\n""",
+              """function buildCongestionIndex(state: Pick<WorldState, \"agents\">): Map<string, number> {\n  const index = new Map<string, number>();\n  for (const agent of state.agents) {\n    if (agent.hp <= 0) continue;\n    const keys = new Set<string>([positionKey(agent.position)]);\n""",
+            ),
+            (
+              """  return state.agents.reduce(\n    (count, candidate) => count + (samePosition(candidate.position, position) ? 1 : 0),\n    0,\n  );\n""",
+              """  return state.agents.reduce(\n    (count, candidate) => count + (\n      candidate.hp > 0 && samePosition(candidate.position, position) ? 1 : 0\n    ),\n    0,\n  );\n""",
+            ),
+          ]
+
+          for old, new in replacements:
+              count = simulation.count(old)
+              if count != 1:
+                  raise SystemExit(f"simulation replacement anchor count={count}: {old[:80]!r}")
+              simulation = simulation.replace(old, new, 1)
+          simulation_path.write_text(simulation)
+
+          route_path = Path("tests/simulation-route-crowding.test.mjs")
+          route = route_path.read_text()
+          route_test = r'''
+
+test("dead agents do not influence movement crowding", () => {
+  const makeState = (includeCorpses) => {
+    const state = createInitialWorld({ seed: 2413, width: 16, height: 12 });
+    for (const tile of state.tiles) {
+      tile.terrain = "plain";
+      tile.elevation = 0.5;
+      delete tile.resource;
+      delete tile.flowTo;
+      tile.drainage = 0;
+      tile.erosionPressure = 0;
+    }
+    const mover = state.agents[0];
+    assert.ok(mover);
+    mover.position = { x: 7, y: 5 };
+    mover.autonomy = false;
+    mover.energy = 100;
+    mover.hp = 100;
+    delete mover.task;
+
+    const corpses = state.agents.slice(1, 4);
+    assert.equal(corpses.length, 3);
+    for (const corpse of corpses) {
+      corpse.position = { x: 9, y: 4 };
+      corpse.autonomy = false;
+      corpse.hp = 0;
+      delete corpse.task;
+    }
+    state.agents = includeCorpses ? [mover, ...corpses] : [mover];
+
+    const obstacle = state.tiles.find((tile) => tile.x === 7 && tile.y === 4);
+    assert.ok(obstacle);
+    obstacle.terrain = "water";
+    obstacle.elevation = 0;
+    return { state, mover };
+  };
+
+  const target = { x: 12, y: 1 };
+  const baseline = makeState(false);
+  const baselineNext = simulate(baseline.state, [{
+    id: "move-without-corpses",
+    agentId: baseline.mover.id,
+    submittedAtTick: baseline.state.tick,
+    type: "move",
+    target,
+  }]).state.agents.find((agent) => agent.id === baseline.mover.id);
+  assert.ok(baselineNext);
+
+  const withCorpses = makeState(true);
+  const corpseNext = simulate(withCorpses.state, [{
+    id: "move-past-corpses",
+    agentId: withCorpses.mover.id,
+    submittedAtTick: withCorpses.state.tick,
+    type: "move",
+    target,
+  }]).state.agents.find((agent) => agent.id === withCorpses.mover.id);
+  assert.ok(corpseNext);
+
+  assert.deepEqual(corpseNext.position, baselineNext.position);
+});
+'''
+          if 'test("dead agents do not influence movement crowding"' not in route:
+              route_path.write_text(route.rstrip() + route_test + "\n")
+
+          crowding_path = Path("tests/simulation-crowding.test.mjs")
+          crowding = crowding_path.read_text()
+          crowding_tests = r'''
+
+test("dead agents do not bias autonomous resource, deposit, or build target congestion", () => {
+  {
+    const state = plainResourceFixture();
+    const worker = state.agents.find((agent) => agent.role === "woodcutter");
+    assert.ok(worker);
+    worker.position = { x: 7, y: 5 };
+    worker.energy = 100;
+    worker.hp = 100;
+    worker.inventory = { wood: 0, stone: 0, food: 0 };
+    worker.autonomy = true;
+    delete worker.task;
+
+    const preferred = state.tiles.find((tile) => tile.x === 8 && tile.y === 5);
+    const alternate = state.tiles.find((tile) => tile.x === 7 && tile.y === 6);
+    assert.ok(preferred);
+    assert.ok(alternate);
+    preferred.terrain = "forest";
+    preferred.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+    alternate.terrain = "forest";
+    alternate.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+
+    const corpses = state.agents.filter((agent) => agent.id !== worker.id).slice(0, 3);
+    assert.equal(corpses.length, 3);
+    for (const corpse of corpses) {
+      corpse.position = { x: preferred.x, y: preferred.y };
+      corpse.autonomy = false;
+      corpse.hp = 0;
+      delete corpse.task;
+    }
+    state.agents = [worker, ...corpses];
+
+    const next = simulate(state).state;
+    const moved = next.agents.find((agent) => agent.id === worker.id);
+    assert.ok(moved);
+    assert.deepEqual(moved.task?.target, { x: preferred.x, y: preferred.y });
+  }
+
+  {
+    const state = plainResourceFixture();
+    const worker = state.agents.find((agent) => agent.role === "woodcutter");
+    assert.ok(worker);
+    worker.position = { x: 7, y: 5 };
+    worker.energy = 100;
+    worker.hp = 100;
+    worker.inventory = { wood: 6, stone: 0, food: 0 };
+    worker.autonomy = true;
+    delete worker.task;
+
+    const preferred = {
+      id: "a-dead-uncongested-store",
+      factionId: worker.factionId,
+      type: "camp",
+      position: { x: 8, y: 5 },
+      status: "active",
+      progress: 6,
+      requiredProgress: 6,
+      storage: { wood: 0, stone: 0, food: 0 },
+    };
+    const alternate = {
+      ...preferred,
+      id: "z-alternate-store",
+      position: { x: 7, y: 6 },
+      storage: { wood: 0, stone: 0, food: 0 },
+    };
+    state.structures = [preferred, alternate];
+    const corpses = state.agents.filter((agent) => agent.id !== worker.id).slice(0, 3);
+    assert.equal(corpses.length, 3);
+    for (const corpse of corpses) {
+      corpse.position = { ...preferred.position };
+      corpse.autonomy = false;
+      corpse.hp = 0;
+      delete corpse.task;
+    }
+    state.agents = [worker, ...corpses];
+
+    const next = simulate(state).state;
+    const moved = next.agents.find((agent) => agent.id === worker.id);
+    assert.ok(moved);
+    assert.equal(moved.task?.type, "deposit");
+    assert.equal(moved.task?.structureId, preferred.id);
+  }
+
+  {
+    const state = plainResourceFixture();
+    const builder = state.agents.find((agent) => agent.role === "builder");
+    assert.ok(builder);
+    builder.position = { x: 7, y: 5 };
+    builder.energy = 100;
+    builder.hp = 100;
+    builder.inventory = { wood: 0, stone: 0, food: 0 };
+    builder.autonomy = true;
+    delete builder.task;
+
+    const faction = state.factions.find((entry) => entry.id === builder.factionId);
+    assert.ok(faction);
+    faction.resources = { wood: 100, stone: 100, food: 100 };
+    state.structures = [{
+      id: "dead-crowding-builder-camp",
+      factionId: builder.factionId,
+      type: "camp",
+      position: { ...builder.position },
+      status: "active",
+      progress: 6,
+      requiredProgress: 6,
+      storage: { wood: 0, stone: 0, food: 0 },
+    }];
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water") continue;
+      tile.resource = { kind: "food", amount: 1, maxAmount: 1 };
+    }
+    const preferred = state.tiles.find((tile) => tile.x === 8 && tile.y === 5);
+    const alternate = state.tiles.find((tile) => tile.x === 7 && tile.y === 6);
+    assert.ok(preferred);
+    assert.ok(alternate);
+    preferred.terrain = "plain";
+    alternate.terrain = "plain";
+    delete preferred.resource;
+    delete alternate.resource;
+
+    const corpses = state.agents.filter((agent) => agent.id !== builder.id).slice(0, 3);
+    assert.equal(corpses.length, 3);
+    const otherFaction = state.factions.find((entry) => entry.id !== builder.factionId);
+    assert.ok(otherFaction);
+    for (const corpse of corpses) {
+      corpse.factionId = otherFaction.id;
+      corpse.position = { x: preferred.x, y: preferred.y };
+      corpse.autonomy = false;
+      corpse.hp = 0;
+      delete corpse.task;
+    }
+    state.agents = [builder, ...corpses];
+
+    const next = simulate(state).state;
+    const moved = next.agents.find((agent) => agent.id === builder.id);
+    assert.ok(moved);
+    assert.equal(moved.task?.type, "build");
+    assert.deepEqual(moved.task?.target, { x: preferred.x, y: preferred.y });
+  }
+});
+
+test("dead agents do not throttle same-cell gather or deposit throughput", () => {
+  {
+    const state = plainResourceFixture();
+    const worker = state.agents.find((agent) => agent.role === "woodcutter");
+    assert.ok(worker);
+    const target = state.tiles.find((tile) => tile.x === 7 && tile.y === 5);
+    assert.ok(target);
+    target.terrain = "forest";
+    target.resource = { kind: "wood", amount: 20, maxAmount: 20 };
+    worker.position = { x: target.x, y: target.y };
+    worker.energy = 100;
+    worker.hp = 100;
+    worker.inventory = { wood: 0, stone: 0, food: 0 };
+    worker.autonomy = false;
+    worker.task = {
+      source: "autonomy",
+      issuedAtTick: state.tick,
+      type: "gather",
+      resource: "wood",
+      target: { x: target.x, y: target.y },
+    };
+    const corpses = state.agents.filter((agent) => agent.id !== worker.id).slice(0, 2);
+    assert.equal(corpses.length, 2);
+    for (const corpse of corpses) {
+      corpse.position = { x: target.x, y: target.y };
+      corpse.autonomy = false;
+      corpse.hp = 0;
+      delete corpse.task;
+    }
+    state.agents = [worker, ...corpses];
+
+    const next = simulate(state).state;
+    const gathered = next.agents.find((agent) => agent.id === worker.id);
+    const remaining = next.tiles.find((tile) => tile.x === target.x && tile.y === target.y);
+    assert.ok(gathered);
+    assert.ok(remaining?.resource);
+    assert.equal(gathered.inventory.wood, 2);
+    assert.equal(remaining.resource.amount, 18);
+  }
+
+  {
+    const state = plainResourceFixture();
+    const worker = state.agents.find((agent) => agent.role === "woodcutter");
+    assert.ok(worker);
+    const faction = state.factions.find((entry) => entry.id === worker.factionId);
+    assert.ok(faction);
+    const store = {
+      id: "corpse-free-throughput-store",
+      factionId: worker.factionId,
+      type: "camp",
+      position: { x: 7, y: 5 },
+      status: "active",
+      progress: 6,
+      requiredProgress: 6,
+      storage: { wood: 0, stone: 0, food: 0 },
+    };
+    state.structures = [store];
+    worker.position = { ...store.position };
+    worker.energy = 100;
+    worker.hp = 100;
+    worker.inventory = { wood: 6, stone: 0, food: 0 };
+    worker.autonomy = false;
+    worker.task = {
+      source: "autonomy",
+      issuedAtTick: state.tick,
+      type: "deposit",
+      structureId: store.id,
+    };
+    const corpses = state.agents.filter((agent) => agent.id !== worker.id).slice(0, 2);
+    assert.equal(corpses.length, 2);
+    for (const corpse of corpses) {
+      corpse.position = { ...store.position };
+      corpse.autonomy = false;
+      corpse.hp = 0;
+      delete corpse.task;
+    }
+    state.agents = [worker, ...corpses];
+    const factionWoodBefore = faction.resources.wood;
+
+    const next = simulate(state).state;
+    const depositor = next.agents.find((agent) => agent.id === worker.id);
+    const nextStore = next.structures.find((structure) => structure.id === store.id);
+    const nextFaction = next.factions.find((entry) => entry.id === worker.factionId);
+    assert.ok(depositor);
+    assert.ok(nextStore);
+    assert.ok(nextFaction);
+    assert.equal(depositor.inventory.wood, 0);
+    assert.equal(nextStore.storage.wood, 6);
+    assert.equal(nextFaction.resources.wood, factionWoodBefore + 6);
+    assert.equal(depositor.task, undefined);
+  }
+});
+'''
+          if 'test("dead agents do not bias autonomous resource, deposit, or build target congestion"' not in crowding:
+              crowding_path.write_text(crowding.rstrip() + crowding_tests + "\n")
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        run: |
+          set -euo pipefail
+          npm run build
+          git diff --check
+
+      - name: Commit improvement and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          rm .github/workflows/automation-living-crowding.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "sim: ignore dead agents in crowding"
+          git push origin HEAD:main
