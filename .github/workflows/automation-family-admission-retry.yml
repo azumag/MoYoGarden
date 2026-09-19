@@ -1,0 +1,139 @@
+name: Validate family admission retry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/automation-family-admission-retry.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply bounded family-admission retry fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement anchor, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/settlement-migration.ts",
+              '''export interface SettlementFamilyRegistrationResult {
+            agentIds: string[];
+            candidateCount: number;
+          }
+
+          const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;''',
+              '''export interface SettlementFamilyRegistrationResult {
+            agentIds: string[];
+            candidateCount: number;
+          }
+
+          export function settlementFamilyRegistrationDeferred(
+            result: SettlementFamilyRegistrationResult,
+          ): boolean {
+            return result.candidateCount > 0 && result.agentIds.length === 0;
+          }
+
+          const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;''',
+          )
+
+          replace_once(
+              "src/autonomy-region.ts",
+              '''  registerSettlementFamilyFollowers,
+            settlementFamilyAdmissionHeadroom,''',
+              '''  registerSettlementFamilyFollowers,
+            settlementFamilyAdmissionHeadroom,
+            settlementFamilyRegistrationDeferred,''',
+          )
+
+          replace_once(
+              "src/autonomy-region.ts",
+              '''    if (result.agentIds.length > 0) this.replaceRuntimeState(state);
+            return new Response(JSON.stringify({
+              ok: true,''',
+              '''    if (settlementFamilyRegistrationDeferred(result)) {
+              return new Response(JSON.stringify({
+                error: "settlement family admission deferred",
+                targetRegionId: body.targetRegionId,
+                candidateCount: result.candidateCount,
+              }), {
+                status: 409,
+                headers: { "content-type": "application/json; charset=utf-8" },
+              });
+            }
+            if (result.agentIds.length > 0) this.replaceRuntimeState(state);
+            return new Response(JSON.stringify({
+              ok: true,''',
+          )
+
+          replace_once(
+              "tests/settlement-family-admission-atomic.test.mjs",
+              '''import { registerSettlementFamilyFollowers } from "../dist-ts/src/settlement-migration.js";''',
+              '''import {
+            registerSettlementFamilyFollowers,
+            settlementFamilyRegistrationDeferred,
+          } from "../dist-ts/src/settlement-migration.js";''',
+          )
+
+          replace_once(
+              "tests/settlement-family-admission-atomic.test.mjs",
+              '''  assert.equal(partner.settlementFamilyTargetRegionId, undefined);
+            assert.equal(child.settlementFamilyTargetRegionId, undefined);
+
+            const twoSlots = registerSettlementFamilyFollowers(''',
+              '''  assert.equal(partner.settlementFamilyTargetRegionId, undefined);
+            assert.equal(child.settlementFamilyTargetRegionId, undefined);
+            assert.equal(oneSlot.candidateCount, 2);
+            assert.equal(settlementFamilyRegistrationDeferred(oneSlot), true);
+
+            const twoSlots = registerSettlementFamilyFollowers(''',
+          )
+
+          replace_once(
+              "tests/settlement-family-admission-atomic.test.mjs",
+              '''  assert.equal(child.settlementFamilyTargetRegionId, "hex-q1-r0");
+          });''',
+              '''  assert.equal(child.settlementFamilyTargetRegionId, "hex-q1-r0");
+            assert.equal(settlementFamilyRegistrationDeferred(twoSlots), false);
+          });''',
+          )
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        run: |
+          git diff --check
+          npm run build
+
+      - name: Commit validated product change and remove one-shot workflow
+        shell: bash
+        run: |
+          rm .github/workflows/automation-family-admission-retry.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/autonomy-region.ts src/settlement-migration.ts tests/settlement-family-admission-atomic.test.mjs .github/workflows/automation-family-admission-retry.yml
+          git commit -m "sim: retry atomic family admission"
+          git push origin HEAD:main
