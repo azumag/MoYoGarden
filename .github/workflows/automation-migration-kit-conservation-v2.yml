@@ -1,0 +1,225 @@
+name: Stage migration kit conservation fix v2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-migration-kit-conservation-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply migration kit conservation fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          migration_path = Path("src/settlement-migration.ts")
+          migration = migration_path.read_text()
+
+          old_import = 'import { getAgent, getFaction, isPassable } from "./world.js";'
+          new_import = 'import { activeFactionStructures, getAgent, getFaction, isPassable } from "./world.js";'
+          if migration.count(old_import) != 1:
+              raise SystemExit("world import anchor mismatch")
+          migration = migration.replace(old_import, new_import, 1)
+
+          old_can = '''export function canPrepareSettlementMigrationKit(state: WorldState, agent: Agent): boolean {
+            const faction = getFaction(state, agent.factionId);
+            if (faction === undefined) return false;
+            const deficit = campKitDeficit(agent);
+            const load = RESOURCE_KINDS.reduce((sum, kind) => sum + deficit[kind], 0);
+            if (inventoryTotal(agent.inventory) + load > agent.capacity) return false;
+            return RESOURCE_KINDS.every((kind) => faction.resources[kind] >= deficit[kind]);
+          }
+
+          export function prepareSettlementMigrationKit(state: WorldState, agentId: string): boolean {
+            const agent = getAgent(state, agentId);
+            if (agent === undefined || !canPrepareSettlementMigrationKit(state, agent)) return false;
+            const faction = getFaction(state, agent.factionId);
+            if (faction === undefined) return false;
+            const hasLocalCamp = state.structures.some((structure) =>
+              structure.factionId === agent.factionId
+              && structure.type === "camp"
+              && (structure.status === "active" || structure.status === "building")
+            );
+            if (hasLocalCamp || agent.settlementMigrationOriginRegionId === undefined) {
+              agent.settlementMigrationOriginRegionId = state.regionId;
+            }
+            const deficit = campKitDeficit(agent);
+            for (const kind of RESOURCE_KINDS) {
+              faction.resources[kind] -= deficit[kind];
+              agent.inventory[kind] += deficit[kind];
+            }
+            return true;
+          }'''
+
+          new_can = '''export function canPrepareSettlementMigrationKit(state: WorldState, agent: Agent): boolean {
+            const faction = getFaction(state, agent.factionId);
+            if (faction === undefined) return false;
+            const deficit = campKitDeficit(agent);
+            const load = RESOURCE_KINDS.reduce((sum, kind) => sum + deficit[kind], 0);
+            if (inventoryTotal(agent.inventory) + load > agent.capacity) return false;
+
+            // The faction ledger is an aggregate view of spendable stock; the
+            // material itself lives in active structure storage. A pioneer kit is
+            // carried inventory, so require the physical stock as well as the ledger
+            // before moving it into the BOT. This prevents migration from creating a
+            // second copy when a rolling/legacy state has ledger > stored material.
+            const storages = activeFactionStructures(state, agent.factionId);
+            return RESOURCE_KINDS.every((kind) =>
+              faction.resources[kind] >= deficit[kind]
+              && storages.reduce((sum, structure) => sum + structure.storage[kind], 0) >= deficit[kind]
+            );
+          }
+
+          export function prepareSettlementMigrationKit(state: WorldState, agentId: string): boolean {
+            const agent = getAgent(state, agentId);
+            if (agent === undefined || !canPrepareSettlementMigrationKit(state, agent)) return false;
+            const faction = getFaction(state, agent.factionId);
+            if (faction === undefined) return false;
+            const hasLocalCamp = state.structures.some((structure) =>
+              structure.factionId === agent.factionId
+              && structure.type === "camp"
+              && (structure.status === "active" || structure.status === "building")
+            );
+            if (hasLocalCamp || agent.settlementMigrationOriginRegionId === undefined) {
+              agent.settlementMigrationOriginRegionId = state.regionId;
+            }
+            const deficit = campKitDeficit(agent);
+            const storages = activeFactionStructures(state, agent.factionId)
+              .sort((a, b) => a.id.localeCompare(b.id));
+            for (const kind of RESOURCE_KINDS) {
+              let remaining = deficit[kind];
+              for (const structure of storages) {
+                const taken = Math.min(remaining, structure.storage[kind]);
+                structure.storage[kind] -= taken;
+                remaining -= taken;
+                if (remaining === 0) break;
+              }
+              faction.resources[kind] -= deficit[kind];
+              agent.inventory[kind] += deficit[kind];
+            }
+            return true;
+          }'''
+
+          if migration.count(old_can) != 1:
+              raise SystemExit("migration kit function anchor mismatch")
+          migration = migration.replace(old_can, new_can, 1)
+          migration_path.write_text(migration)
+
+          test_path = Path("tests/settlement-migration.test.mjs")
+          test = test_path.read_text()
+
+          old_storage = '    storage: { wood: 0, stone: 0, food: 0 },\n  };\n  const blockers = state.tiles'
+          new_storage = '    storage: { wood: 40, stone: 30, food: 20 },\n  };\n  const blockers = state.tiles'
+          if test.count(old_storage) != 1:
+              raise SystemExit("fixture camp storage anchor mismatch")
+          test = test.replace(old_storage, new_storage, 1)
+
+          old_kit_test = '''test("migration kit transfer conserves spendable plus carried camp materials", () => {
+            const { state, builder, faction } = fixture();
+            const beforeWood = faction.resources.wood + builder.inventory.wood;
+            const beforeStone = faction.resources.stone + builder.inventory.stone;
+            assert.equal(prepareSettlementMigrationKit(state, builder.id), true);
+            assert.equal(builder.inventory.wood, 8);
+            assert.equal(builder.inventory.stone, 4);
+            assert.equal(faction.resources.wood + builder.inventory.wood, beforeWood);
+            assert.equal(faction.resources.stone + builder.inventory.stone, beforeStone);
+          });'''
+
+          new_kit_test = '''test("migration kit transfer conserves stored, ledger, and carried camp materials", () => {
+            const { state, builder, faction } = fixture();
+            const camp = state.structures.find((structure) => structure.id === "home-camp");
+            assert.ok(camp);
+            const beforeWood = camp.storage.wood + builder.inventory.wood;
+            const beforeStone = camp.storage.stone + builder.inventory.stone;
+            const beforeLedgerWood = faction.resources.wood + builder.inventory.wood;
+            const beforeLedgerStone = faction.resources.stone + builder.inventory.stone;
+
+            assert.equal(prepareSettlementMigrationKit(state, builder.id), true);
+            assert.equal(builder.inventory.wood, 8);
+            assert.equal(builder.inventory.stone, 4);
+            assert.equal(camp.storage.wood, 32);
+            assert.equal(camp.storage.stone, 26);
+            assert.equal(camp.storage.wood + builder.inventory.wood, beforeWood);
+            assert.equal(camp.storage.stone + builder.inventory.stone, beforeStone);
+            assert.equal(faction.resources.wood + builder.inventory.wood, beforeLedgerWood);
+            assert.equal(faction.resources.stone + builder.inventory.stone, beforeLedgerStone);
+          });
+
+          test("migration kit does not materialize ledger-only resources absent from storage", () => {
+            const { state, builder, faction } = fixture();
+            const camp = state.structures.find((structure) => structure.id === "home-camp");
+            assert.ok(camp);
+            camp.storage = { wood: 0, stone: 0, food: 0 };
+            const beforeLedger = structuredClone(faction.resources);
+            const beforeInventory = structuredClone(builder.inventory);
+
+            assert.equal(prepareSettlementMigrationKit(state, builder.id), false);
+            assert.deepEqual(faction.resources, beforeLedger);
+            assert.deepEqual(builder.inventory, beforeInventory);
+            assert.deepEqual(camp.storage, { wood: 0, stone: 0, food: 0 });
+          });'''
+
+          if test.count(old_kit_test) != 1:
+              raise SystemExit("migration kit test anchor mismatch")
+          test = test.replace(old_kit_test, new_kit_test, 1)
+          test_path.write_text(test)
+
+          route_path = Path("tests/settlement-route-origin-progress.test.mjs")
+          route = route_path.read_text()
+          old_route_storage = '''    storage: { wood: 0, stone: 0, food: 0 },
+          }];
+          assert.equal(prepareSettlementMigrationKit(settled, settledBuilder.id), true);'''
+          new_route_storage = '''    storage: { wood: 100, stone: 100, food: 0 },
+          }];
+          assert.equal(prepareSettlementMigrationKit(settled, settledBuilder.id), true);'''
+          if route.count(old_route_storage) != 1:
+              raise SystemExit("route-origin physical stock fixture anchor mismatch")
+          route = route.replace(old_route_storage, new_route_storage, 1)
+          route_path.write_text(route)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        run: |
+          set -euo pipefail
+          npm run build
+          git diff --check
+
+      - name: Commit improvement and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          rm .github/workflows/automation-migration-kit-conservation-v2.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "sim: conserve pioneer migration kit stock"
+          git push origin HEAD:main
