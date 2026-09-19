@@ -1,5 +1,11 @@
 function terrainTile(tile) {
-  if (!tile || !Number.isInteger(tile.x) || !Number.isInteger(tile.y)) return null;
+  if (
+    !tile
+    || !Number.isInteger(tile.x)
+    || !Number.isInteger(tile.y)
+    || typeof tile.terrain !== "string"
+    || tile.terrain.length === 0
+  ) return null;
   return {
     x: tile.x,
     y: tile.y,
@@ -44,7 +50,17 @@ function reuseCachedTerrainTiles(cachedTiles, nextTiles) {
 
 function mergeTerrainTiles(cachedTiles, liveTiles) {
   const cached = normalizedTerrainTiles(cachedTiles);
-  const live = normalizedTerrainTiles(liveTiles);
+  const cachedByCell = new Map(cached.map((tile) => [terrainTileKey(tile), tile]));
+  const live = normalizedTerrainTiles(liveTiles).map((tile) => {
+    const previous = cachedByCell.get(terrainTileKey(tile));
+    // Live windows are allowed to be partial. If a valid terrain classification
+    // arrives without a finite elevation, keep the last-known height for that
+    // exact cell instead of flattening an already-rendered seam until the next
+    // complete terrain refresh. A malformed terrain classification is rejected
+    // by terrainTile() above and therefore cannot erase the cached cell either.
+    if (!previous || tile.elevation !== undefined || previous.elevation === undefined) return tile;
+    return { ...tile, elevation: previous.elevation };
+  });
   if (live.length === 0) return reuseCachedTerrainTiles(cachedTiles, cached);
 
   // Cardinality alone is not enough to prove a live refresh is complete. A
