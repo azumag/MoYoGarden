@@ -1,0 +1,264 @@
+name: Stage living migration occupancy fix
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/automation-living-migration-occupancy.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply living-occupancy semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new, expected=1):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} anchors, found {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new))
+
+          crowding_old = '''  for (const occupant of state.agents) {
+            const key = positionKey(occupant.position);
+            crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
+          }'''
+          crowding_new = '''  for (const occupant of state.agents) {
+            if (occupant.hp <= 0) continue;
+            const key = positionKey(occupant.position);
+            crowdingByPosition.set(key, (crowdingByPosition.get(key) ?? 0) + 1);
+          }'''
+          replace_exact("src/settlement-migration.ts", crowding_old, crowding_new, expected=2)
+          replace_exact("src/autonomy-region.ts", crowding_old, crowding_new, expected=1)
+
+          replace_exact(
+              "src/settlement-migration.ts",
+              "  support.occupants = state.agents.length;",
+              "  support.occupants = state.agents.filter((agent) => agent.hp > 0).length;",
+          )
+
+          halo_old = '''  const occupantCounts = new Map<string, number>();
+          const occupantsByPosition = new Map<string, number>();
+          for (const agent of state.agents) {
+            occupantCounts.set(agent.factionId, (occupantCounts.get(agent.factionId) ?? 0) + 1);
+            const key = `${agent.position.x},${agent.position.y}`;
+            occupantsByPosition.set(key, (occupantsByPosition.get(key) ?? 0) + 1);
+          }'''
+          halo_new = '''  const occupantCounts = new Map<string, number>();
+          const occupantsByPosition = new Map<string, number>();
+          let livingOccupants = 0;
+          for (const agent of state.agents) {
+            if (agent.hp <= 0) continue;
+            livingOccupants += 1;
+            occupantCounts.set(agent.factionId, (occupantCounts.get(agent.factionId) ?? 0) + 1);
+            const key = `${agent.position.x},${agent.position.y}`;
+            occupantsByPosition.set(key, (occupantsByPosition.get(key) ?? 0) + 1);
+          }'''
+          replace_exact("src/halo-region.ts", halo_old, halo_new)
+          replace_exact(
+              "src/halo-region.ts",
+              "      occupants: state.agents.length,",
+              "      occupants: livingOccupants,",
+          )
+
+          settlement_test = Path("tests/settlement-route-crowding.test.mjs")
+          settlement = settlement_test.read_text()
+          settlement_append = r'''
+
+test("dead residents do not bias pioneer seam crowding", () => {
+  const baseline = transitBuilderFixture(26091921);
+  baseline.builder.position = { x: 19, y: 11 };
+  baseline.state.agents = [baseline.builder];
+  const crowdedCorridor = { x: 30, y: 9 };
+  const quietCorridor = { x: 30, y: 11 };
+  const baselinePlan = planAutonomousSettlementMigration(
+    baseline.state,
+    eastHalo(crowdedCorridor, quietCorridor),
+  );
+  assert.ok(baselinePlan);
+
+  const fixture = transitBuilderFixture(26091921);
+  fixture.builder.position = { x: 19, y: 11 };
+  const dead = fixture.state.agents.filter((agent) => agent.id !== fixture.builder.id).slice(0, 2);
+  assert.equal(dead.length, 2);
+  for (const resident of dead) {
+    resident.autonomy = false;
+    resident.hp = 0;
+  }
+  dead[0].position = { x: 29, y: 9 };
+  dead[1].position = { x: 29, y: 10 };
+  fixture.state.agents = [fixture.builder, ...dead];
+
+  const plan = planAutonomousSettlementMigration(
+    fixture.state,
+    eastHalo(crowdedCorridor, quietCorridor),
+  );
+  assert.ok(plan);
+  assert.deepEqual(
+    plan.boundaryTarget,
+    baselinePlan.boundaryTarget,
+    "dead residents must not make an otherwise equivalent pioneer corridor look crowded",
+  );
+});
+'''
+          if 'dead residents do not bias pioneer seam crowding' in settlement:
+              raise SystemExit("settlement dead-crowding regression already exists")
+          settlement_test.write_text(settlement.rstrip() + settlement_append + "\n")
+
+          autonomy_test = Path("tests/autonomous-halo-travel.test.mjs")
+          autonomy = autonomy_test.read_text()
+          autonomy_append = r'''
+
+test("dead BOTs do not bias cross-region resource expedition crowding", () => {
+  const baseline = depletedInteriorWoodcutter();
+  baseline.state.agents = [baseline.agent];
+  const baselineEastCells = hexGridBoundaryCells(baseline.state, "east");
+  const baselineWestCells = hexGridBoundaryCells(baseline.state, "west");
+  const baselineEast = haloResource(
+    baseline.state,
+    "east",
+    Math.floor(baselineEastCells.length / 2),
+    "garden-2",
+    "wood",
+    8,
+  );
+  const baselineWest = haloResource(
+    baseline.state,
+    "west",
+    Math.floor(baselineWestCells.length / 2),
+    "garden-4",
+    "wood",
+    8,
+  );
+  const baselinePlan = planAutonomousHaloTravel(baseline.state, [baselineEast, baselineWest]);
+  assert.ok(baselinePlan);
+
+  const fixture = depletedInteriorWoodcutter();
+  const eastCells = hexGridBoundaryCells(fixture.state, "east");
+  const westCells = hexGridBoundaryCells(fixture.state, "west");
+  const east = haloResource(
+    fixture.state,
+    "east",
+    Math.floor(eastCells.length / 2),
+    "garden-2",
+    "wood",
+    8,
+  );
+  const west = haloResource(
+    fixture.state,
+    "west",
+    Math.floor(westCells.length / 2),
+    "garden-4",
+    "wood",
+    8,
+  );
+  const corpse = fixture.state.agents.find((candidate) => candidate.id !== fixture.agent.id);
+  assert.ok(corpse);
+  corpse.hp = 0;
+  corpse.autonomy = false;
+  corpse.position = { ...east.sourcePosition };
+  fixture.state.agents = [fixture.agent, corpse];
+
+  const plan = planAutonomousHaloTravel(fixture.state, [east, west]);
+  assert.ok(plan);
+  assert.equal(plan.direction, baselinePlan.direction);
+  assert.deepEqual(
+    plan.boundaryTarget,
+    baselinePlan.boundaryTarget,
+    "a dead BOT on the seam must not change expedition routing",
+  );
+});
+'''
+          if 'dead BOTs do not bias cross-region resource expedition crowding' in autonomy:
+              raise SystemExit("autonomy dead-crowding regression already exists")
+          autonomy_test.write_text(autonomy.rstrip() + autonomy_append + "\n")
+
+          halo_test = Path("tests/hex-halo-do.test.mjs")
+          halo = halo_test.read_text()
+          halo_append = r'''
+
+test("halo support summaries expose only living occupants", async () => {
+  const env = environment();
+  const initial = await call(env, "/api/world/snapshot?region=garden-2");
+  assert.equal(initial.response.status, 200);
+  const entry = env.REGIONS.entries.get("garden-2");
+  assert.ok(entry);
+  await entry.state.ready;
+
+  const state = entry.object.runtime.snapshot();
+  const living = state.agents.filter((agent) => agent.hp > 0);
+  assert.ok(living.length > 0);
+  const corpse = structuredClone(living[0]);
+  corpse.id = "dead-halo-occupant";
+  corpse.hp = 0;
+  state.agents.push(corpse);
+  entry.object.runtime = new WorldRuntime({ state });
+
+  const response = await entry.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edge?direction=west",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(response.status, 200);
+  const edge = await response.json();
+  assert.equal(edge.regionSummary.occupants, living.length);
+  assert.equal(
+    Object.values(edge.regionSummary.occupantsByFaction ?? {}).reduce((sum, count) => sum + count, 0),
+    living.length,
+    "dead persisted agents must not be advertised as neighbor settlement population",
+  );
+});
+'''
+          if 'halo support summaries expose only living occupants' in halo:
+              raise SystemExit("halo living-occupants regression already exists")
+          halo_test.write_text(halo.rstrip() + halo_append + "\n")
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate product tree
+        run: |
+          set -euo pipefail
+          npm run build
+          git diff --check
+
+      - name: Commit improvement and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          rm .github/workflows/automation-living-migration-occupancy.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "sim: count only living occupants across regions"
+          git push origin HEAD:main
