@@ -1,0 +1,355 @@
+name: MoYo family capacity one-shot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/moyo-family-capacity-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Patch family admission capacity reservation
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('src/autonomy-region.ts')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, found {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+          '''} from "./settlement-migration.js";
+          import { WorldRuntime } from "./runtime.js";''',
+          '''} from "./settlement-migration.js";
+          import {
+            normalizeSettlementFamilyAdmissionReservations,
+            settlementFamilyReservedSlots,
+            upsertSettlementFamilyAdmissionReservation,
+            type SettlementFamilyAdmissionReservation,
+          } from "./settlement-family-reservation.js";
+          import { WorldRuntime } from "./runtime.js";''')
+
+          replace_once(
+          '''const AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";
+          const AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migration:v1";''',
+          '''const AUTONOMOUS_DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";
+          const SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY = "handoff:autonomy:settlement-family-admission:v1";
+          const AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migration:v1";''')
+
+          replace_once(
+          '''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+          // Source simulation ticks can advance much faster than a courier in warm/cold''',
+          '''const DESTINATION_STORAGE_RESERVATION_TTL_MS = 15 * 60 * 1_000;
+          // Family followers can traverse several warm/cold regions after admission.
+          // Keep promised housing/food capacity for a bounded wall-clock day so a
+          // second pioneer cannot overbook the same slots while the first wave is
+          // physically in flight. Arrival reconciliation releases slots immediately.
+          const SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS = 24 * 60 * 60 * 1_000;
+          // Source simulation ticks can advance much faster than a courier in warm/cold''')
+
+          replace_once(
+          '''  private async registerSettlementFamilyFollow(request: Request): Promise<Response> {''',
+          '''  private async activeSettlementFamilyAdmissionReservations(
+            state: WorldState,
+            now = Date.now(),
+          ): Promise<SettlementFamilyAdmissionReservation[]> {
+            const stored = await this.autonomyState.storage.get<unknown>(
+              SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+            );
+            const presentAgentIds = new Set(state.agents.map((agent) => agent.id));
+            const normalized = normalizeSettlementFamilyAdmissionReservations(
+              stored,
+              presentAgentIds,
+              now,
+            );
+            if (normalized.changed) {
+              await this.autonomyState.storage.put(
+                SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+                normalized.reservations,
+              );
+            }
+            return normalized.reservations;
+          }
+
+          private async reserveSettlementFamilyAdmissions(
+            state: WorldState,
+            sourceRegionId: string,
+            pioneerId: string,
+            factionId: string,
+            sourceAgentIds: readonly string[],
+          ): Promise<void> {
+            const agentIds = [...new Set(sourceAgentIds.map((agentId) =>
+              globalHandoffAgentId(agentId, sourceRegionId)
+            ))];
+            if (agentIds.length === 0) return;
+            const reservationId = `family:${sourceRegionId}:${pioneerId}:${state.regionId}`;
+            const now = Date.now();
+            await this.autonomyState.blockConcurrencyWhile(async () => {
+              const stored = await this.autonomyState.storage.get<unknown>(
+                SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+              );
+              const presentAgentIds = new Set(state.agents.map((agent) => agent.id));
+              const normalized = normalizeSettlementFamilyAdmissionReservations(
+                stored,
+                presentAgentIds,
+                now,
+              );
+              const next = upsertSettlementFamilyAdmissionReservation(
+                normalized.reservations,
+                {
+                  reservationId,
+                  sourceRegionId,
+                  pioneerId,
+                  factionId,
+                  agentIds,
+                  expiresAtMs: now + SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS,
+                },
+              );
+              await this.autonomyState.storage.put(
+                SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
+                next,
+              );
+            });
+          }
+
+          private async registerSettlementFamilyFollow(request: Request): Promise<Response> {''')
+
+          replace_once(
+          '''        targetRegionId: body.targetRegionId,
+                candidateCount: result.candidateCount,
+              }), {''',
+          '''        targetRegionId: body.targetRegionId,
+                registeredAgentIds: result.agentIds,
+                candidateCount: result.candidateCount,
+              }), {''')
+
+          replace_once(
+          '''      const familyAdmissionHeadroom = settlementFamilyAdmissionHeadroom(state, pioneer.factionId);
+
+              if (familyAdmissionHeadroom <= 0) continue;''',
+          '''      const familyReservations = await this.activeSettlementFamilyAdmissionReservations(state);
+              const familyAdmissionHeadroom = Math.max(
+                0,
+                settlementFamilyAdmissionHeadroom(state, pioneer.factionId)
+                  - settlementFamilyReservedSlots(familyReservations, pioneer.factionId),
+              );
+
+              if (familyAdmissionHeadroom <= 0) continue;''')
+
+          replace_once(
+          '''        ));
+                if (!response.ok) continue;
+                delete pioneer.settlementMigrationOriginRegionId;''',
+          '''        ));
+                let payload: unknown;
+                try {
+                  payload = await response.clone().json();
+                } catch {
+                  payload = undefined;
+                }
+                const registeredAgentIds = isRecord(payload) && Array.isArray(payload.registeredAgentIds)
+                  ? payload.registeredAgentIds.filter((agentId): agentId is string => typeof agentId === "string")
+                  : [];
+                if (registeredAgentIds.length > 0) {
+                  await this.reserveSettlementFamilyAdmissions(
+                    state,
+                    sourceRegionId,
+                    pioneer.id,
+                    pioneer.factionId,
+                    registeredAgentIds,
+                  );
+                }
+                if (!response.ok) continue;
+                delete pioneer.settlementMigrationOriginRegionId;''')
+
+          path.write_text(text)
+
+          Path('src/settlement-family-reservation.ts').write_text('''export interface SettlementFamilyAdmissionReservation {
+            reservationId: string;
+            sourceRegionId: string;
+            pioneerId: string;
+            factionId: string;
+            agentIds: string[];
+            expiresAtMs: number;
+          }
+
+          function isRecord(value: unknown): value is Record<string, unknown> {
+            return typeof value === "object" && value !== null && !Array.isArray(value);
+          }
+
+          function isReservation(value: unknown): value is SettlementFamilyAdmissionReservation {
+            return isRecord(value)
+              && typeof value.reservationId === "string"
+              && value.reservationId.length > 0
+              && typeof value.sourceRegionId === "string"
+              && value.sourceRegionId.length > 0
+              && typeof value.pioneerId === "string"
+              && value.pioneerId.length > 0
+              && typeof value.factionId === "string"
+              && value.factionId.length > 0
+              && Array.isArray(value.agentIds)
+              && value.agentIds.length > 0
+              && value.agentIds.every((agentId) => typeof agentId === "string" && agentId.length > 0)
+              && typeof value.expiresAtMs === "number"
+              && Number.isFinite(value.expiresAtMs)
+              && value.expiresAtMs > 0;
+          }
+
+          export function normalizeSettlementFamilyAdmissionReservations(
+            stored: unknown,
+            presentAgentIds: ReadonlySet<string>,
+            now: number,
+          ): { reservations: SettlementFamilyAdmissionReservation[]; changed: boolean } {
+            const input = Array.isArray(stored) ? stored : [];
+            let changed = stored !== undefined && !Array.isArray(stored);
+            const reservations: SettlementFamilyAdmissionReservation[] = [];
+            for (const value of input) {
+              if (!isReservation(value) || value.expiresAtMs <= now) {
+                changed = true;
+                continue;
+              }
+              const pendingAgentIds = [...new Set(value.agentIds)]
+                .filter((agentId) => !presentAgentIds.has(agentId));
+              if (pendingAgentIds.length === 0) {
+                changed = true;
+                continue;
+              }
+              if (
+                pendingAgentIds.length !== value.agentIds.length
+                || pendingAgentIds.some((agentId, index) => agentId !== value.agentIds[index])
+              ) {
+                changed = true;
+              }
+              reservations.push({ ...value, agentIds: pendingAgentIds });
+            }
+            return { reservations, changed };
+          }
+
+          export function settlementFamilyReservedSlots(
+            reservations: readonly SettlementFamilyAdmissionReservation[],
+            factionId: string,
+          ): number {
+            const reserved = new Set<string>();
+            for (const reservation of reservations) {
+              if (reservation.factionId !== factionId) continue;
+              for (const agentId of reservation.agentIds) reserved.add(agentId);
+            }
+            return reserved.size;
+          }
+
+          export function upsertSettlementFamilyAdmissionReservation(
+            reservations: readonly SettlementFamilyAdmissionReservation[],
+            incoming: SettlementFamilyAdmissionReservation,
+          ): SettlementFamilyAdmissionReservation[] {
+            const existing = reservations.find((entry) => entry.reservationId === incoming.reservationId);
+            const merged: SettlementFamilyAdmissionReservation = existing === undefined
+              ? { ...incoming, agentIds: [...new Set(incoming.agentIds)] }
+              : {
+                  ...incoming,
+                  agentIds: [...new Set([...existing.agentIds, ...incoming.agentIds])],
+                  expiresAtMs: Math.max(existing.expiresAtMs, incoming.expiresAtMs),
+                };
+            return [
+              ...reservations.filter((entry) => entry.reservationId !== incoming.reservationId),
+              merged,
+            ];
+          }
+          ''')
+
+          Path('tests/settlement-family-reservation.test.mjs').write_text('''import assert from "node:assert/strict";
+          import test from "node:test";
+          import {
+            normalizeSettlementFamilyAdmissionReservations,
+            settlementFamilyReservedSlots,
+            upsertSettlementFamilyAdmissionReservation,
+          } from "../dist-ts/src/settlement-family-reservation.js";
+
+          const reservation = (overrides = {}) => ({
+            reservationId: "family:garden-1:pioneer-1:garden-2",
+            sourceRegionId: "garden-1",
+            pioneerId: "pioneer-1",
+            factionId: "faction-a",
+            agentIds: ["agent-global:garden-1:adult", "agent-global:garden-1:infant"],
+            expiresAtMs: 20_000,
+            ...overrides,
+          });
+
+          test("family admission reservations release arrived followers and expire stale promises", () => {
+            const stored = [
+              reservation(),
+              reservation({
+                reservationId: "expired",
+                agentIds: ["agent-global:garden-1:stale"],
+                expiresAtMs: 9_000,
+              }),
+            ];
+            const normalized = normalizeSettlementFamilyAdmissionReservations(
+              stored,
+              new Set(["agent-global:garden-1:adult"]),
+              10_000,
+            );
+            assert.equal(normalized.changed, true);
+            assert.deepEqual(normalized.reservations, [
+              reservation({ agentIds: ["agent-global:garden-1:infant"] }),
+            ]);
+          });
+
+          test("family admission reservation retries are idempotent and shared capacity counts unique followers", () => {
+            const first = reservation({ agentIds: ["agent-global:garden-1:adult"] });
+            const retried = upsertSettlementFamilyAdmissionReservation([first], reservation({
+              agentIds: ["agent-global:garden-1:adult", "agent-global:garden-1:infant"],
+              expiresAtMs: 30_000,
+            }));
+            const duplicatedByAnotherPioneer = [
+              ...retried,
+              reservation({
+                reservationId: "family:garden-1:pioneer-2:garden-2",
+                pioneerId: "pioneer-2",
+                agentIds: ["agent-global:garden-1:infant"],
+                expiresAtMs: 30_000,
+              }),
+            ];
+            assert.deepEqual(retried[0].agentIds, [
+              "agent-global:garden-1:adult",
+              "agent-global:garden-1:infant",
+            ]);
+            assert.equal(retried[0].expiresAtMs, 30_000);
+            assert.equal(settlementFamilyReservedSlots(duplicatedByAnotherPioneer, "faction-a"), 2);
+            assert.equal(settlementFamilyReservedSlots(duplicatedByAnotherPioneer, "faction-b"), 0);
+          });
+          ''')
+          PY
+      - name: Validate
+        run: |
+          git diff --check
+          npm run build
+      - name: Commit validated improvement
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/autonomy-region.ts src/settlement-family-reservation.ts tests/settlement-family-reservation.test.mjs
+          git rm .github/workflows/moyo-family-capacity-once.yml
+          git commit -m "sim: reserve family capacity while followers travel"
+          git push origin HEAD:main
