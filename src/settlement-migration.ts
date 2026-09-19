@@ -87,6 +87,11 @@ function familyFollowPriority(agent: Agent): number {
   return 1;
 }
 
+function canJoinSettlementFamilyTarget(agent: Agent, targetRegionId: string): boolean {
+  return agent.settlementFamilyTargetRegionId === undefined
+    || sameSettlementRegion(agent.settlementFamilyTargetRegionId, targetRegionId);
+}
+
 export function registerSettlementFamilyFollowers(
   state: WorldState,
   pioneerId: string,
@@ -110,6 +115,7 @@ export function registerSettlementFamilyFollowers(
       || agent.hp <= 0
       || agent.factionId !== factionId
       || sourceResidentMatchesReference(state, agent, pioneerId)
+      || !canJoinSettlementFamilyTarget(agent, targetRegionId)
     ) return;
     const previous = priorities.get(agent.id);
     if (previous === undefined || priority < previous) priorities.set(agent.id, priority);
@@ -138,9 +144,11 @@ export function registerSettlementFamilyFollowers(
       (relative.lifeStage === "infant" || relative.lifeStage === "juvenile")
       && relative.parents?.includes(pioneerId)
     ) {
-      add(relative, 2);
+      if (!canJoinSettlementFamilyTarget(relative, targetRegionId)) continue;
       const caregiverId = dependentCaregiverId(state, relative);
       const caregiver = state.agents.find((agent) => agent.id === caregiverId);
+      if (caregiver !== undefined && !canJoinSettlementFamilyTarget(caregiver, targetRegionId)) continue;
+      add(relative, 2);
       add(caregiver, 0);
       if (caregiver !== undefined) linkFollowers(relative.id, caregiver.id);
       for (const parentId of relative.parents) {
