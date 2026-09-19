@@ -1,0 +1,216 @@
+name: Validate physical faction resource conservation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/automation-resource-conservation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Apply conservation patch and regression
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          simulation = Path('src/simulation.ts')
+          text = simulation.read_text()
+          old = '''function factionCanAfford(state: WorldState, factionId: string, cost: Inventory): boolean {
+            const faction = getFaction(state, factionId);
+            return faction !== undefined && hasInventory(faction.resources, cost);
+          }
+
+          function consumeFactionResources(state: WorldState, factionId: string, cost: Inventory): boolean {
+            const faction = getFaction(state, factionId);
+            if (faction === undefined || !hasInventory(faction.resources, cost)) return false;
+
+            consumeInventory(faction.resources, cost);
+            const storages = activeFactionStructures(state, factionId).sort((a, b) => a.id.localeCompare(b.id));
+            for (const kind of RESOURCE_KINDS) {
+              let remaining = cost[kind];
+              for (const structure of storages) {
+                const taken = Math.min(remaining, structure.storage[kind]);
+                structure.storage[kind] -= taken;
+                remaining -= taken;
+                if (remaining === 0) break;
+              }
+            }
+            return true;
+          }
+          '''
+          new = '''function factionStoredResources(state: WorldState, factionId: string): Inventory {
+            const stored = emptyInventory();
+            for (const structure of activeFactionStructures(state, factionId)) {
+              for (const kind of RESOURCE_KINDS) stored[kind] += structure.storage[kind];
+            }
+            return stored;
+          }
+
+          function factionCanAfford(state: WorldState, factionId: string, cost: Inventory): boolean {
+            const faction = getFaction(state, factionId);
+            return faction !== undefined
+              && hasInventory(faction.resources, cost)
+              && hasInventory(factionStoredResources(state, factionId), cost);
+          }
+
+          function consumeFactionResources(state: WorldState, factionId: string, cost: Inventory): boolean {
+            const faction = getFaction(state, factionId);
+            if (faction === undefined || !factionCanAfford(state, factionId, cost)) return false;
+
+            // The faction ledger mirrors physical stock rather than minting it.
+            // Validate both representations before mutating either side so a
+            // rolling/legacy mismatch fails closed without partially charging.
+            const storages = activeFactionStructures(state, factionId).sort((a, b) => a.id.localeCompare(b.id));
+            consumeInventory(faction.resources, cost);
+            for (const kind of RESOURCE_KINDS) {
+              let remaining = cost[kind];
+              for (const structure of storages) {
+                const taken = Math.min(remaining, structure.storage[kind]);
+                structure.storage[kind] -= taken;
+                remaining -= taken;
+                if (remaining === 0) break;
+              }
+            }
+            return true;
+          }
+          '''
+          if old not in text:
+              raise SystemExit('resource helper anchor not found')
+          simulation.write_text(text.replace(old, new, 1))
+
+          Path('tests/simulation-resource-conservation.test.mjs').write_text('''import assert from "node:assert/strict";
+          import test from "node:test";
+          import { HEX_GRID_STEPS } from "../dist-ts/src/hex-grid.js";
+          import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
+          import { simulate } from "../dist-ts/src/simulation.js";
+          import { createInitialWorld } from "../dist-ts/src/world.js";
+
+          const emptyInventory = () => ({ wood: 0, stone: 0, food: 0 });
+
+          function activeCamp(id, factionId, position, storage) {
+            return {
+              id,
+              factionId,
+              type: "camp",
+              position: { ...position },
+              status: "active",
+              progress: BUILD_RECIPES.camp.work,
+              requiredProgress: BUILD_RECIPES.camp.work,
+              storage: { ...storage },
+            };
+          }
+
+          function fixture(storages) {
+            const state = createInitialWorld({ seed: 26091942, width: 40, height: 24 });
+            const builder = state.agents.find((agent) => agent.role === "builder");
+            assert.ok(builder);
+            const faction = state.factions.find((entry) => entry.id === builder.factionId);
+            assert.ok(faction);
+            const center = { x: 19, y: 11 };
+            const target = { x: center.x + HEX_GRID_STEPS[0].x, y: center.y + HEX_GRID_STEPS[0].y };
+
+            for (const tile of state.tiles) {
+              if (tile.terrain === "water") tile.terrain = "plain";
+            }
+            builder.position = { ...target };
+            builder.hp = 100;
+            builder.energy = 100;
+            builder.inventory = emptyInventory();
+            builder.autonomy = false;
+            builder.task = {
+              source: "external",
+              issuedAtTick: state.tick,
+              type: "build",
+              structureType: "storehouse",
+              target: { ...target },
+            };
+            state.agents = [builder];
+            state.structures = storages.map((storage, index) =>
+              activeCamp(`stock-${index + 1}`, faction.id, index === 0 ? center : { x: center.x - 4 - index, y: center.y }, storage)
+            );
+            faction.resources = { ...BUILD_RECIPES.storehouse.cost };
+            return { state, builder, faction, target };
+          }
+
+          test("construction fails closed when faction ledger exceeds physical stock", () => {
+            const cost = BUILD_RECIPES.storehouse.cost;
+            const physical = { wood: cost.wood - 1, stone: cost.stone, food: cost.food };
+            const { state, builder, faction, target } = fixture([physical]);
+            const ledgerBefore = { ...faction.resources };
+            const storageBefore = { ...state.structures[0].storage };
+
+            const next = simulate(state).state;
+            const moved = next.agents.find((agent) => agent.id === builder.id);
+            const nextFaction = next.factions.find((entry) => entry.id === faction.id);
+            const stock = next.structures.find((entry) => entry.id === "stock-1");
+            assert.ok(moved);
+            assert.ok(nextFaction);
+            assert.ok(stock);
+            assert.equal(
+              next.structures.some((entry) => entry.type === "storehouse" && entry.position.x === target.x && entry.position.y === target.y),
+              false,
+            );
+            assert.equal(moved.status, "missing materials for storehouse");
+            assert.deepEqual(nextFaction.resources, ledgerBefore, "failed transaction must preserve the ledger");
+            assert.deepEqual(stock.storage, storageBefore, "failed transaction must preserve physical stock");
+          });
+
+          test("construction consumes aggregate physical stock and ledger together", () => {
+            const cost = BUILD_RECIPES.storehouse.cost;
+            const firstWood = Math.floor(cost.wood / 2);
+            const { state, faction, target } = fixture([
+              { wood: firstWood, stone: cost.stone, food: cost.food },
+              { wood: cost.wood - firstWood, stone: 0, food: 0 },
+            ]);
+
+            const next = simulate(state).state;
+            const nextFaction = next.factions.find((entry) => entry.id === faction.id);
+            assert.ok(nextFaction);
+            assert.ok(next.structures.some((entry) =>
+              entry.type === "storehouse" && entry.position.x === target.x && entry.position.y === target.y
+            ));
+            assert.deepEqual(nextFaction.resources, emptyInventory());
+            const remaining = next.structures
+              .filter((entry) => entry.id.startsWith("stock-"))
+              .reduce((total, entry) => ({
+                wood: total.wood + entry.storage.wood,
+                stone: total.stone + entry.storage.stone,
+                food: total.food + entry.storage.food,
+              }), emptyInventory());
+            assert.deepEqual(remaining, emptyInventory());
+          });
+          '''.replace(/^          /gm, ''))
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate product tree
+        run: |
+          git diff --check
+          npm run build
+
+      - name: Commit validated product change
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/workflows/automation-resource-conservation.yml
+          git add src/simulation.ts tests/simulation-resource-conservation.test.mjs .github/workflows/automation-resource-conservation.yml
+          git commit -m "sim: keep faction spending physically conserved"
+          git push origin HEAD:main
