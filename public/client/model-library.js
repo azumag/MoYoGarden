@@ -66,6 +66,21 @@ function isAuthoredAgentKey(key) {
   return key.startsWith("authored:agent-");
 }
 
+function connectionModelPolicy(connection = globalThis.navigator?.connection) {
+  const effectiveType = String(connection?.effectiveType ?? "").toLowerCase();
+  if (connection?.saveData) return "core";
+  if (["slow-2g", "2g", "3g"].includes(effectiveType)) return "agents";
+  return "all";
+}
+
+export function modelManifestForConnection(connection = globalThis.navigator?.connection) {
+  const policy = connectionModelPolicy(connection);
+  if (policy === "all") return [...MODEL_MANIFEST];
+  return MODEL_MANIFEST.filter(([key]) =>
+    !isAuthoredKey(key) || (policy === "agents" && isAuthoredAgentKey(key))
+  );
+}
+
 function refreshKeyFor(key) {
   if (key.startsWith("authored:decay-")) return "decay";
   if (key.startsWith("authored:agent-")) return "settler";
@@ -216,11 +231,12 @@ export class ModelLibrary {
     this.skeletonClone = null;
     this.templates = new Map();
     this.animations = new Map();
+    this.manifest = modelManifestForConnection();
     this.lastLoadResult = { loaded: [], failed: [] };
   }
 
   get size() {
-    return MODEL_MANIFEST.length;
+    return this.manifest.length;
   }
 
   has(name) {
@@ -262,7 +278,7 @@ export class ModelLibrary {
   }
 
   async load({ timeoutMs = 8_000, concurrency = 2, onProgress, onModelLoaded } = {}) {
-    const queue = [...MODEL_MANIFEST];
+    const queue = [...this.manifest];
     const results = [];
     let completed = 0;
     const worker = async () => {
@@ -298,11 +314,11 @@ export class ModelLibrary {
           );
         } finally {
           completed += 1;
-          onProgress?.({ key, completed, total: MODEL_MANIFEST.length });
+          onProgress?.({ key, completed, total: this.manifest.length });
         }
       }
     };
-    const workerCount = Math.max(1, Math.min(Number(concurrency) || 1, MODEL_MANIFEST.length));
+    const workerCount = Math.max(1, Math.min(Number(concurrency) || 1, this.manifest.length));
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
     this.lastLoadResult = {
       loaded: results.filter((result) => result.ok).map((result) => result.key),
