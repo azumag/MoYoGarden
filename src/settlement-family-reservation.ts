@@ -48,6 +48,29 @@ function settlementFamilyAgentLeaseExpiry(
     : reservation.expiresAtMs;
 }
 
+function removeSettlementFamilyReservationAgents(
+  reservation: SettlementFamilyAdmissionReservation,
+  agentIdsToRemove: ReadonlySet<string>,
+): SettlementFamilyAdmissionReservation | undefined {
+  const agentIds = reservation.agentIds.filter((agentId) => !agentIdsToRemove.has(agentId));
+  if (agentIds.length === 0) return undefined;
+  const agentExpiresAtMs = reservation.agentExpiresAtMs === undefined
+    ? undefined
+    : Object.fromEntries(agentIds.map((agentId) => [
+        agentId,
+        settlementFamilyAgentLeaseExpiry(reservation, agentId),
+      ]));
+  const expiresAtMs = agentExpiresAtMs === undefined
+    ? reservation.expiresAtMs
+    : Math.max(...Object.values(agentExpiresAtMs));
+  return {
+    ...reservation,
+    agentIds,
+    expiresAtMs,
+    ...(agentExpiresAtMs === undefined ? {} : { agentExpiresAtMs }),
+  };
+}
+
 export function normalizeSettlementFamilyAdmissionReservations(
   stored: unknown,
   presentAgentIds: ReadonlySet<string>,
@@ -127,23 +150,11 @@ export function releaseSettlementFamilyAdmissionAgent(
       !reservation.agentIds.includes(agentId)
       || settlementFamilyAgentLeaseExpiry(reservation, agentId) > expiresAtCutoffMs
     ) return [reservation];
-    const agentIds = reservation.agentIds.filter((entry) => entry !== agentId);
-    if (agentIds.length === 0) return [];
-    const agentExpiresAtMs = reservation.agentExpiresAtMs === undefined
-      ? undefined
-      : Object.fromEntries(agentIds.map((entry) => [
-          entry,
-          settlementFamilyAgentLeaseExpiry(reservation, entry),
-        ]));
-    const expiresAtMs = agentExpiresAtMs === undefined
-      ? reservation.expiresAtMs
-      : Math.max(...Object.values(agentExpiresAtMs));
-    return [{
-      ...reservation,
-      agentIds,
-      expiresAtMs,
-      ...(agentExpiresAtMs === undefined ? {} : { agentExpiresAtMs }),
-    }];
+    const trimmed = removeSettlementFamilyReservationAgents(
+      reservation,
+      new Set([agentId]),
+    );
+    return trimmed === undefined ? [] : [trimmed];
   });
 }
 
@@ -173,5 +184,19 @@ export function upsertSettlementFamilyAdmissionReservation(
     agentExpiresAtMs,
     expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
   };
-  return [...reservations.filter((entry) => entry.reservationId !== incoming.reservationId), merged];
+
+  // One stable follower must have one destination-side admission owner. Multiple
+  // settled pioneers can legitimately retry family registration toward the same
+  // region, and the source-side target marker is region-scoped rather than
+  // pioneer-scoped. Without collapsing old reservation owners, the same follower
+  // can remain attached to several reservation IDs until TTL cleanup. Slot
+  // counting deduplicates that state, but releases and diagnostics then have
+  // ambiguous route ownership. Treat the newest successful registration as the
+  // authoritative owner while preserving unrelated siblings in older families.
+  const preserved = reservations.flatMap((reservation) => {
+    if (reservation.reservationId === incoming.reservationId) return [];
+    const trimmed = removeSettlementFamilyReservationAgents(reservation, incomingAgentIds);
+    return trimmed === undefined ? [] : [trimmed];
+  });
+  return [...preserved, merged];
 }
