@@ -156,6 +156,15 @@ async function requestJson(path, options = {}, timeoutMs = 8_000) {
   }
 }
 
+async function requestOptionalJson(path, options = {}, timeoutMs = 8_000) {
+  try {
+    return await requestJson(path, options, timeoutMs);
+  } catch (error) {
+    console.debug(`MoYoGarden optional request skipped: ${path}`, error);
+    return null;
+  }
+}
+
 function previewTerrainHeight(tile) {
   if (!tile || tile.terrain === "water") return -0.24;
   if (Number.isFinite(tile.elevation)) {
@@ -413,9 +422,9 @@ function updateAgentDetail() {
 async function loadSnapshot() {
   const [state, health] = await Promise.all([
     requestJson("/api/world/snapshot"),
-    requestJson("/api/health"),
+    requestOptionalJson("/api/health"),
   ]);
-  applyEnvelope({ state, paused: health.paused, tickMs: health.tickMs });
+  applyEnvelope({ state, paused: health?.paused, tickMs: health?.tickMs });
 }
 
 function startPolling() {
@@ -514,8 +523,8 @@ async function transitionRegion(regionId) {
   try {
     const [windowPayload, health, terrainPayload] = await Promise.all([
       requestJson("/api/world/window?radius=1&live=1", {}, 10_000),
-      requestJson("/api/health"),
-      requestJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000),
+      requestOptionalJson("/api/health"),
+      requestOptionalJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000),
     ]);
     if (transitionVersion !== regionTransitionVersion || app.region !== targetRegion) return;
 
@@ -537,10 +546,11 @@ async function transitionRegion(regionId) {
     );
     applyEnvelope({ state: center.state, paused: health?.paused, tickMs: health?.tickMs });
 
-    terrainWindowPayload = mergeLiveTerrainWindow(terrainPayload, windowPayload);
+    terrainWindowPayload = mergeLiveTerrainWindow(terrainPayload ?? windowPayload, windowPayload);
     terrainWindowCenter = targetRegion;
-    neighborTerrainUpdatedAt = Date.now();
+    neighborTerrainUpdatedAt = terrainPayload ? Date.now() : 0;
     buildNeighborPreview(terrainWindowPayload);
+    if (!terrainPayload) void loadTerrainWindow(true);
 
     startRegionWindowRefresh();
     connectSocket();

@@ -21,6 +21,7 @@ test("automatic region crossing requests a soft transition instead of clicking r
   assert.doesNotMatch(seamlessSource, /reconnect\.click\(\)/);
   assert.match(appSource, /addEventListener\("moyo:region-transition"/);
 });
+
 test("soft transition keeps the loaded world visible while target state is prepared", () => {
   const body = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
   assert.match(body, /\/api\/world\/window\?radius=1&live=1/);
@@ -34,18 +35,30 @@ test("soft transition keeps the loaded world visible while target state is prepa
   assert.ok(liveSync >= 0 && liveSync < promote, "live neighbors should rebase before center promotion");
 });
 
-test("soft transition waits for target terrain instead of rebuilding old-center staging data", () => {
+test("soft transition requires the live center but treats health and far terrain as best-effort", () => {
   const body = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
-  assert.doesNotMatch(body, /cachedTerrainWindow/);
-  assert.match(body, /radius=\$\{FAR_TERRAIN_RADIUS\}&terrain=1/);
+  assert.match(body, /requestJson\("\/api\/world\/window\?radius=1&live=1", \{\}, 10_000\)/);
+  assert.match(body, /requestOptionalJson\("\/api\/health"\)/);
+  assert.match(
+    body,
+    /requestOptionalJson\(`\/api\/world\/window\?radius=\$\{FAR_TERRAIN_RADIUS\}&terrain=1`, \{\}, 12_000\)/,
+  );
+  assert.match(body, /terrainPayload \?\? windowPayload/);
+  assert.match(body, /if \(!terrainPayload\) void loadTerrainWindow\(true\);/);
   assert.match(body, /buildNeighborPreview\(terrainWindowPayload\)/);
-  assert.doesNotMatch(body, /loadTerrainWindow\(true\)/);
 
-  const fetchTerrain = body.indexOf("terrain=1");
+  const liveWindow = body.indexOf("requestJson(\"/api/world/window?radius=1&live=1\"");
   const promote = body.indexOf("applyEnvelope");
-  const rebuild = body.indexOf("buildNeighborPreview(terrainWindowPayload)");
-  assert.ok(fetchTerrain >= 0 && fetchTerrain < promote, "target terrain must be ready before promotion");
-  assert.ok(promote >= 0 && promote < rebuild, "new center must be active before target terrain is rebuilt");
+  assert.ok(liveWindow >= 0 && liveWindow < promote, "live center remains the transition authority");
+});
+
+test("snapshot startup keeps the world when health is temporarily unavailable", () => {
+  assert.match(appSource, /async function requestOptionalJson/);
+  const body = functionBody(appSource, "loadSnapshot", "function startPolling");
+  assert.match(body, /requestJson\("\/api\/world\/snapshot"\)/);
+  assert.match(body, /requestOptionalJson\("\/api\/health"\)/);
+  assert.match(body, /health\?\.paused/);
+  assert.match(body, /health\?\.tickMs/);
 });
 
 test("same-region re-entry ignores stale terrain and transition responses", () => {
