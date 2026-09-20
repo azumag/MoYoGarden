@@ -154,16 +154,13 @@ function settlementFamilyAggregateExpiry(
 }
 
 function divergentAgentGenerations(
-  reservation: SettlementFamilyAdmissionReservation,
   agentIds: readonly string[],
   agentIssuedAtMs: Record<string, number>,
   issuedAtMs: number,
 ): Record<string, number> | undefined {
-  if (
-    reservation.agentIssuedAtMs === undefined
-    && agentIds.every((agentId) => agentIssuedAtMs[agentId] === issuedAtMs)
-  ) return undefined;
-  return agentIssuedAtMs;
+  return agentIds.every((agentId) => agentIssuedAtMs[agentId] === issuedAtMs)
+    ? undefined
+    : agentIssuedAtMs;
 }
 
 function removeSettlementFamilyReservationAgents(
@@ -171,12 +168,19 @@ function removeSettlementFamilyReservationAgents(
   agentIdsToRemove: ReadonlySet<string>,
 ): SettlementFamilyAdmissionReservation | undefined {
   const agentIds = reservation.agentIds.filter((agentId) => !agentIdsToRemove.has(agentId));
-  const agentIssuedAtMs = agentIds.length === 0 || reservation.agentIssuedAtMs === undefined
+  const nextAgentIssuedAtMs = agentIds.length === 0 || reservation.agentIssuedAtMs === undefined
     ? undefined
     : Object.fromEntries(agentIds.map((agentId) => [
         agentId,
         settlementFamilyAgentIssuedAt(reservation, agentId),
       ]));
+  const agentIssuedAtMs = nextAgentIssuedAtMs === undefined
+    ? undefined
+    : divergentAgentGenerations(
+        agentIds,
+        nextAgentIssuedAtMs,
+        settlementFamilyReservationIssuedAt(reservation),
+      );
   const agentExpiresAtMs = agentIds.length === 0 || reservation.agentExpiresAtMs === undefined
     ? undefined
     : Object.fromEntries(agentIds.map((agentId) => [
@@ -220,12 +224,19 @@ export function normalizeSettlementFamilyAdmissionReservations(
       !presentAgentIds.has(agentId)
       && settlementFamilyAgentLeaseExpiry(value, agentId) > now
     ));
-    const normalizedIssuedAtByAgent = value.agentIssuedAtMs === undefined || pendingAgentIds.length === 0
+    const normalizedIssuedAtByAgentCandidate = value.agentIssuedAtMs === undefined || pendingAgentIds.length === 0
       ? undefined
       : Object.fromEntries(pendingAgentIds.map((agentId) => [
           agentId,
           settlementFamilyAgentIssuedAt(value, agentId),
         ]));
+    const normalizedIssuedAtByAgent = normalizedIssuedAtByAgentCandidate === undefined
+      ? undefined
+      : divergentAgentGenerations(
+          pendingAgentIds,
+          normalizedIssuedAtByAgentCandidate,
+          settlementFamilyReservationIssuedAt(value),
+        );
     const normalizedExpiryByAgent = value.agentExpiresAtMs === undefined || pendingAgentIds.length === 0
       ? undefined
       : Object.fromEntries(pendingAgentIds.map((agentId) => [
@@ -529,7 +540,6 @@ export function upsertSettlementFamilyAdmissionReservation(
       ...Object.values(nextAgentIssuedAtMs),
     );
     const agentIssuedAtMs = divergentAgentGenerations(
-      reservation,
       reservation.agentIds,
       nextAgentIssuedAtMs,
       issuedAtMs,
@@ -576,7 +586,6 @@ export function upsertSettlementFamilyAdmissionReservation(
     ]));
     const issuedAtMs = Math.max(incomingIssuedAtMs, ...Object.values(nextAgentIssuedAtMs));
     const agentIssuedAtMs = divergentAgentGenerations(
-      incoming,
       unownedAgentIds,
       nextAgentIssuedAtMs,
       issuedAtMs,
@@ -620,7 +629,6 @@ export function upsertSettlementFamilyAdmissionReservation(
     ...Object.values(nextAgentIssuedAtMs),
   );
   const agentIssuedAtMs = divergentAgentGenerations(
-    existing,
     agentIds,
     nextAgentIssuedAtMs,
     issuedAtMs,
