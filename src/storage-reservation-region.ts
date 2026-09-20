@@ -226,44 +226,52 @@ function generationStampedEnv(env: StorageReservationEnv): StorageReservationEnv
     lastIssuedAtMs = Math.max(Date.now(), lastIssuedAtMs + 1);
     return lastIssuedAtMs;
   };
-  const regions: DurableObjectNamespace = {
-    idFromName: (name) => env.REGIONS.idFromName(name),
-    get: (id) => {
-      const stub = env.REGIONS.get(id);
-      return {
-        fetch: async (input, init) => {
-          const request = input instanceof Request ? new Request(input, init) : new Request(input, init);
-          const url = new URL(request.url);
-          if (
-            request.method !== "POST"
-            || (url.pathname !== INTERNAL_STORAGE_RESERVE_PATH
-              && url.pathname !== INTERNAL_STORAGE_RELEASE_PATH)
-          ) {
-            return stub.fetch(input, init);
-          }
 
-          let body: unknown;
-          try {
-            body = await request.clone().json() as unknown;
-          } catch {
-            return stub.fetch(input, init);
-          }
-          if (!isRecord(body)) return stub.fetch(input, init);
-          const field = url.pathname === INTERNAL_STORAGE_RESERVE_PATH
-            ? "issuedAtMs"
-            : "releaseIssuedAtMs";
-          if (positiveFinite(body[field]) !== undefined) return stub.fetch(input, init);
-          const headers = new Headers(request.headers);
-          headers.delete("content-length");
-          headers.set("content-type", "application/json");
-          return stub.fetch(new Request(request, {
-            headers,
-            body: JSON.stringify({ ...body, [field]: nextIssuedAtMs() }),
-          }));
-        },
+  const regions = new Proxy(env.REGIONS, {
+    get(target, property, receiver) {
+      if (property !== "get") return Reflect.get(target, property, receiver);
+      return (...getArgs: Parameters<StorageReservationEnv["REGIONS"]["get"]>) => {
+        const stub = target.get(...getArgs);
+        return new Proxy(stub, {
+          get(stubTarget, stubProperty, stubReceiver) {
+            if (stubProperty !== "fetch") {
+              return Reflect.get(stubTarget, stubProperty, stubReceiver);
+            }
+            return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+              const request = new Request(input, init);
+              const url = new URL(request.url);
+              if (
+                request.method !== "POST"
+                || (url.pathname !== INTERNAL_STORAGE_RESERVE_PATH
+                  && url.pathname !== INTERNAL_STORAGE_RELEASE_PATH)
+              ) {
+                return stub.fetch(input, init);
+              }
+
+              let body: unknown;
+              try {
+                body = await request.clone().json() as unknown;
+              } catch {
+                return stub.fetch(input, init);
+              }
+              if (!isRecord(body)) return stub.fetch(input, init);
+              const field = url.pathname === INTERNAL_STORAGE_RESERVE_PATH
+                ? "issuedAtMs"
+                : "releaseIssuedAtMs";
+              if (positiveFinite(body[field]) !== undefined) return stub.fetch(input, init);
+              const headers = new Headers(request.headers);
+              headers.delete("content-length");
+              headers.set("content-type", "application/json");
+              return stub.fetch(new Request(request, {
+                headers,
+                body: JSON.stringify({ ...body, [field]: nextIssuedAtMs() }),
+              }));
+            };
+          },
+        });
       };
     },
-  };
+  });
   return { ...env, REGIONS: regions };
 }
 
@@ -321,10 +329,6 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
         body.claimId,
         positiveFinite(body.issuedAtMs),
       );
-      await this.storageFenceState.storage.put(
-        DESTINATION_STORAGE_GENERATION_FENCES_KEY,
-        decision.records,
-      );
       if (!decision.accepted) {
         return json({
           error: "stale destination storage reservation generation",
@@ -332,7 +336,14 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
           stale: true,
         }, 409);
       }
-      return super.fetch(request);
+      const response = await super.fetch(request);
+      if (response.ok) {
+        await this.storageFenceState.storage.put(
+          DESTINATION_STORAGE_GENERATION_FENCES_KEY,
+          decision.records,
+        );
+      }
+      return response;
     }
 
     const decision = applyDestinationStorageReleaseFence(
@@ -340,10 +351,6 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
       body.sourceRegionId,
       body.claimId,
       positiveFinite(body.releaseIssuedAtMs),
-    );
-    await this.storageFenceState.storage.put(
-      DESTINATION_STORAGE_GENERATION_FENCES_KEY,
-      decision.records,
     );
     if (!decision.accepted) {
       return json({
@@ -353,7 +360,14 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
         stale: true,
       });
     }
-    return super.fetch(request);
+    const response = await super.fetch(request);
+    if (response.ok) {
+      await this.storageFenceState.storage.put(
+        DESTINATION_STORAGE_GENERATION_FENCES_KEY,
+        decision.records,
+      );
+    }
+    return response;
   }
 
   override async fetch(request: Request): Promise<Response> {
