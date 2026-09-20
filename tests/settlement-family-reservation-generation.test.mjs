@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   normalizeSettlementFamilyAdmissionReservations,
   releaseSettlementFamilyAdmissionAgent,
+  settlementFamilyReservedSlots,
   upsertSettlementFamilyAdmissionReservation,
 } from "../dist-ts/src/settlement-family-reservation.js";
 
@@ -73,7 +74,7 @@ test("the first generated retry upgrades a legacy reservation without a generati
   assert.equal(next[0]?.expiresAtMs, 500);
 });
 
-test("a newer release cancels an older generated reservation despite a late receipt lease", () => {
+test("a newer release cancels an older generated reservation and leaves a bounded watermark", () => {
   const current = reservation({
     issuedAtMs: 200,
     expiresAtMs: 800,
@@ -82,7 +83,13 @@ test("a newer release cancels an older generated reservation despite a late rece
 
   const next = releaseSettlementFamilyAdmissionAgent([current], follower, 500, 300);
 
-  assert.deepEqual(next, []);
+  assert.equal(next.length, 1);
+  assert.deepEqual(next[0]?.agentIds, []);
+  assert.deepEqual(next[0]?.releaseWatermarks, {
+    [follower]: { issuedAtMs: 300, expiresAtMs: 500 },
+  });
+  assert.equal(next[0]?.expiresAtMs, 500);
+  assert.equal(settlementFamilyReservedSlots(next, "faction-a"), 0);
 });
 
 test("a stale release cannot cancel a newer generated reservation", () => {
@@ -121,10 +128,67 @@ test("legacy release ordering keeps the lease-expiry fence when generation is ab
     "equal legacy cutoff remains fail-closed",
   );
   assert.deepEqual(
-    releaseSettlementFamilyAdmissionAgent([legacy], follower, 501, 300),
+    releaseSettlementFamilyAdmissionAgent([legacy], follower, 501),
     [],
-    "legacy reservations still release once the lease is definitely older",
+    "legacy releases without a generation keep the old delete behavior",
   );
+});
+
+test("a delayed registration cannot resurrect a follower after a newer generated release", () => {
+  const current = reservation({
+    issuedAtMs: 200,
+    expiresAtMs: 800,
+    agentExpiresAtMs: { [follower]: 800 },
+  });
+  const released = releaseSettlementFamilyAdmissionAgent([current], follower, 500, 300);
+  const delayedOlder = reservation({
+    issuedAtMs: 200,
+    expiresAtMs: 900,
+  });
+
+  const next = upsertSettlementFamilyAdmissionReservation(released, delayedOlder);
+
+  assert.deepEqual(next, released);
+  assert.equal(settlementFamilyReservedSlots(next, "faction-a"), 0);
+});
+
+test("a registration newer than the release watermark can reserve the follower again", () => {
+  const current = reservation({
+    issuedAtMs: 200,
+    expiresAtMs: 800,
+    agentExpiresAtMs: { [follower]: 800 },
+  });
+  const released = releaseSettlementFamilyAdmissionAgent([current], follower, 500, 300);
+  const newer = reservation({
+    issuedAtMs: 400,
+    expiresAtMs: 900,
+  });
+
+  const next = upsertSettlementFamilyAdmissionReservation(released, newer);
+
+  assert.equal(next.length, 1);
+  assert.deepEqual(next[0]?.agentIds, [follower]);
+  assert.equal(next[0]?.issuedAtMs, 400);
+  assert.equal(next[0]?.agentExpiresAtMs?.[follower], 900);
+  assert.equal(next[0]?.releaseWatermarks, undefined);
+  assert.equal(settlementFamilyReservedSlots(next, "faction-a"), 1);
+});
+
+test("release-only tombstones expire during normalization", () => {
+  const current = reservation({
+    issuedAtMs: 200,
+    expiresAtMs: 800,
+    agentExpiresAtMs: { [follower]: 800 },
+  });
+  const released = releaseSettlementFamilyAdmissionAgent([current], follower, 500, 300);
+
+  const stillBounded = normalizeSettlementFamilyAdmissionReservations(released, new Set(), 499);
+  assert.equal(stillBounded.reservations.length, 1);
+  assert.equal(stillBounded.reservations[0]?.agentIds.length, 0);
+
+  const expired = normalizeSettlementFamilyAdmissionReservations(released, new Set(), 500);
+  assert.equal(expired.changed, true);
+  assert.deepEqual(expired.reservations, []);
 });
 
 test("an older same-route response cannot append a follower absent from the newer attempt", () => {
