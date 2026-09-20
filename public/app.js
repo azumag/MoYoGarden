@@ -419,12 +419,24 @@ function updateAgentDetail() {
   updateAgentVitals(ui.agentDetail, agent);
 }
 
+async function refreshHealth(requestedRegion, requestTransitionVersion) {
+  const health = await requestOptionalJson("/api/health");
+  if (
+    !health
+    || requestedRegion !== app.region
+    || requestTransitionVersion !== regionTransitionVersion
+    || !app.state
+  ) return;
+  applyEnvelope({ state: app.state, paused: health.paused, tickMs: health.tickMs });
+}
+
 async function loadSnapshot() {
-  const [state, health] = await Promise.all([
-    requestJson("/api/world/snapshot"),
-    requestOptionalJson("/api/health"),
-  ]);
-  applyEnvelope({ state, paused: health?.paused, tickMs: health?.tickMs });
+  const requestedRegion = app.region;
+  const requestTransitionVersion = regionTransitionVersion;
+  const state = await requestJson("/api/world/snapshot");
+  if (requestedRegion !== app.region || requestTransitionVersion !== regionTransitionVersion) return;
+  applyEnvelope({ state, paused: app.paused, tickMs: app.tickMs });
+  void refreshHealth(requestedRegion, requestTransitionVersion);
 }
 
 function startPolling() {
@@ -521,11 +533,7 @@ async function transitionRegion(regionId) {
   setConnection("", "境界同期中");
 
   try {
-    const [windowPayload, health, terrainPayload] = await Promise.all([
-      requestJson("/api/world/window?radius=1&live=1", {}, 10_000),
-      requestOptionalJson("/api/health"),
-      requestOptionalJson(`/api/world/window?radius=${FAR_TERRAIN_RADIUS}&terrain=1`, {}, 12_000),
-    ]);
+    const windowPayload = await requestJson("/api/world/window?radius=1&live=1", {}, 10_000);
     if (transitionVersion !== regionTransitionVersion || app.region !== targetRegion) return;
 
     const chunks = Array.isArray(windowPayload?.chunks) ? windowPayload.chunks : [];
@@ -539,21 +547,18 @@ async function transitionRegion(regionId) {
 
     app.regions = chunks.map((chunk) => chunk?.regionId).filter(Boolean);
     populateRegions();
-    liveNeighborSimulation?.syncWindow(
-      windowPayload,
-      targetRegion,
-      Number(health?.tickMs) || app.tickMs,
-    );
-    applyEnvelope({ state: center.state, paused: health?.paused, tickMs: health?.tickMs });
+    liveNeighborSimulation?.syncWindow(windowPayload, targetRegion, app.tickMs);
+    applyEnvelope({ state: center.state, paused: app.paused, tickMs: app.tickMs });
 
-    terrainWindowPayload = mergeLiveTerrainWindow(terrainPayload ?? windowPayload, windowPayload);
+    terrainWindowPayload = windowPayload;
     terrainWindowCenter = targetRegion;
-    neighborTerrainUpdatedAt = terrainPayload ? Date.now() : 0;
+    neighborTerrainUpdatedAt = 0;
     buildNeighborPreview(terrainWindowPayload);
-    if (!terrainPayload) void loadTerrainWindow(true);
 
     startRegionWindowRefresh();
     connectSocket();
+    void refreshHealth(targetRegion, transitionVersion);
+    void loadTerrainWindow(true);
   } catch (error) {
     if (transitionVersion !== regionTransitionVersion || app.region !== targetRegion) return;
     app.region = previousRegion;

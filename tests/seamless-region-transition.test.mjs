@@ -35,30 +35,42 @@ test("soft transition keeps the loaded world visible while target state is prepa
   assert.ok(liveSync >= 0 && liveSync < promote, "live neighbors should rebase before center promotion");
 });
 
-test("soft transition requires the live center but treats health and far terrain as best-effort", () => {
+test("soft transition promotes the live center before optional health and far terrain enrichment", () => {
   const body = functionBody(appSource, "transitionRegion", "async function loadHighResolutionModels");
-  assert.match(body, /requestJson\("\/api\/world\/window\?radius=1&live=1", \{\}, 10_000\)/);
-  assert.match(body, /requestOptionalJson\("\/api\/health"\)/);
-  assert.match(
-    body,
-    /requestOptionalJson\(`\/api\/world\/window\?radius=\$\{FAR_TERRAIN_RADIUS\}&terrain=1`, \{\}, 12_000\)/,
-  );
-  assert.match(body, /terrainPayload \?\? windowPayload/);
-  assert.match(body, /if \(!terrainPayload\) void loadTerrainWindow\(true\);/);
+  assert.match(body, /const windowPayload = await requestJson\("\/api\/world\/window\?radius=1&live=1", \{\}, 10_000\);/);
+  assert.doesNotMatch(body, /requestOptionalJson/);
+  assert.doesNotMatch(body, /Promise\.all/);
+  assert.match(body, /terrainWindowPayload = windowPayload;/);
   assert.match(body, /buildNeighborPreview\(terrainWindowPayload\)/);
+  assert.match(body, /void refreshHealth\(targetRegion, transitionVersion\);/);
+  assert.match(body, /void loadTerrainWindow\(true\);/);
 
   const liveWindow = body.indexOf("requestJson(\"/api/world/window?radius=1&live=1\"");
   const promote = body.indexOf("applyEnvelope");
+  const healthRefresh = body.indexOf("void refreshHealth(targetRegion, transitionVersion)");
+  const terrainRefresh = body.indexOf("void loadTerrainWindow(true)");
   assert.ok(liveWindow >= 0 && liveWindow < promote, "live center remains the transition authority");
+  assert.ok(promote < healthRefresh, "health enrichment must not delay center promotion");
+  assert.ok(promote < terrainRefresh, "far terrain enrichment must not delay center promotion");
 });
 
-test("snapshot startup keeps the world when health is temporarily unavailable", () => {
+test("snapshot startup promotes state before optional health and rejects stale enrichment", () => {
   assert.match(appSource, /async function requestOptionalJson/);
+  const healthBody = functionBody(appSource, "refreshHealth", "async function loadSnapshot");
+  assert.match(healthBody, /requestOptionalJson\("\/api\/health"\)/);
+  assert.match(healthBody, /requestedRegion !== app\.region/);
+  assert.match(healthBody, /requestTransitionVersion !== regionTransitionVersion/);
+
   const body = functionBody(appSource, "loadSnapshot", "function startPolling");
-  assert.match(body, /requestJson\("\/api\/world\/snapshot"\)/);
-  assert.match(body, /requestOptionalJson\("\/api\/health"\)/);
-  assert.match(body, /health\?\.paused/);
-  assert.match(body, /health\?\.tickMs/);
+  assert.match(body, /const state = await requestJson\("\/api\/world\/snapshot"\);/);
+  assert.match(body, /requestedRegion !== app\.region \|\| requestTransitionVersion !== regionTransitionVersion/);
+  assert.match(body, /applyEnvelope\(\{ state, paused: app\.paused, tickMs: app\.tickMs \}\);/);
+  assert.match(body, /void refreshHealth\(requestedRegion, requestTransitionVersion\);/);
+  assert.doesNotMatch(body, /Promise\.all/);
+
+  const promote = body.indexOf("applyEnvelope");
+  const healthRefresh = body.indexOf("void refreshHealth(requestedRegion, requestTransitionVersion)");
+  assert.ok(promote >= 0 && promote < healthRefresh, "snapshot should render before optional health");
 });
 
 test("same-region re-entry ignores stale terrain and transition responses", () => {
