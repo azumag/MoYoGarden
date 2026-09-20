@@ -47,6 +47,7 @@ test("auto quality trims high-DPR touch devices without changing the public prof
     assert.equal(quality.shadowSize, 512);
     assert.equal(quality.detailDensity, 0.48);
     assert.equal(quality.lodScale, 0.74);
+    assert.equal(quality.frameRate, 30);
   });
 });
 
@@ -59,6 +60,7 @@ test("auto quality also trims common 2x-DPR touch phones", () => {
     assert.equal(quality.shadowSize, 512);
     assert.equal(quality.environmentSize, 32);
     assert.equal(quality.detailDensity, 0.48);
+    assert.equal(quality.frameRate, 30);
   });
 });
 
@@ -72,6 +74,7 @@ test("auto quality trims narrow touch devices even when DPR is below the high-DP
     assert.equal(quality.environmentSize, 32);
     assert.equal(quality.detailDensity, 0.48);
     assert.equal(quality.lodScale, 0.74);
+    assert.equal(quality.frameRate, 30);
   });
 });
 
@@ -83,6 +86,7 @@ test("auto quality trims wide 2x-DPR touch tablets in landscape", () => {
     assert.equal(quality.antialias, false);
     assert.equal(quality.shadowSize, 512);
     assert.equal(quality.detailDensity, 0.48);
+    assert.equal(quality.frameRate, 30);
   });
 });
 
@@ -93,6 +97,7 @@ test("2x-DPR non-touch desktops keep the normal automatic profile", () => {
     assert.equal(quality.pixelRatioCap, 1.65);
     assert.equal(quality.antialias, true);
     assert.equal(quality.shadowSize, 2048);
+    assert.equal(quality.frameRate, 60);
   });
 });
 
@@ -102,6 +107,7 @@ test("auto quality does not demote capable desktops when deviceMemory is unavail
     assert.equal(quality.id, "high");
     assert.equal(quality.antialias, true);
     assert.equal(quality.shadowSize, 2048);
+    assert.equal(quality.frameRate, 60);
   });
 });
 
@@ -111,6 +117,7 @@ test("auto quality can select ultra from CPU capacity when deviceMemory is unava
     assert.equal(quality.id, "ultra");
     assert.equal(quality.pixelRatioCap, 2);
     assert.equal(quality.detailDensity, 1);
+    assert.equal(quality.frameRate, 60);
   });
 });
 
@@ -120,6 +127,7 @@ test("auto quality honors save-data or slow-network hints even on powerful deskt
     assert.equal(quality.id, "balanced");
     assert.equal(quality.modelTimeoutMs, 12_000);
     assert.equal(quality.environmentSize, 32);
+    assert.equal(quality.frameRate, 30);
   });
 });
 
@@ -131,6 +139,7 @@ test("explicit quality selection remains an override for constrained devices", (
     assert.equal(quality.antialias, true);
     assert.equal(quality.shadowSize, 1024);
     assert.equal(quality.detailDensity, 0.62);
+    assert.equal(quality.frameRate, 60);
   });
 });
 
