@@ -1,5 +1,5 @@
 import { BUILD_BRANCH, BUILD_COMMIT, BUILD_SOURCE } from "./build-meta.js";
-import { RegionDurableObject } from "./pathogen-region.js";
+import { RegionDurableObject } from "./storage-reservation-region.js";
 import { isHexGridCell } from "./hex-grid.js";
 import {
   parseAxialRegionId,
