@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RegionDurableObject } from "../dist-ts/src/move-handoff-region.js";
+import {
+  RegionDurableObject,
+  moveHandoffTransferId,
+} from "../dist-ts/src/move-handoff-region.js";
 import {
   HEX_GRID_DIRECTION_STEPS,
   hexGridBoundaryCells,
 } from "../dist-ts/src/hex-grid.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
+
+const OUTGOING_HANDOFF_KEY = "handoff:outgoing:v1";
 
 class MemoryStorage {
   constructor() {
@@ -32,6 +37,113 @@ class MemoryState {
   acceptWebSocket() {}
   getWebSockets() { return []; }
 }
+
+test("move handoff transfer ids scope one command id to one agent", () => {
+  const commandId = "shared:move";
+  assert.equal(
+    moveHandoffTransferId("agent:a", commandId),
+    moveHandoffTransferId("agent:a", commandId),
+    "same agent/command retry must stay idempotent",
+  );
+  assert.notEqual(
+    moveHandoffTransferId("agent:a", commandId),
+    moveHandoffTransferId("agent:b", commandId),
+    "two agents may legitimately receive the same command id without sharing a journal",
+  );
+  assert.notEqual(
+    moveHandoffTransferId("agent:a", "b:c"),
+    moveHandoffTransferId("agent", "a:b:c"),
+    "encoded components must not become ambiguous when ids contain colons",
+  );
+});
+
+test("two live agents can cross with the same move command id without resuming each other's handoff", async () => {
+  const state = new MemoryState();
+  const env = {
+    WORLD_SEED: "424242",
+    REGION_IDS: "garden-1,garden-2,garden-3",
+    OPEN_COMMANDS: "true",
+    ASSETS: { fetch: async () => new Response("not found", { status: 404 }) },
+    REGIONS: {
+      idFromName(name) { return name; },
+      get(name) {
+        return {
+          async fetch(request) {
+            const path = new URL(request.url).pathname;
+            if (path.endsWith("/resolve")) {
+              const body = await request.json();
+              return Response.json({ targetPosition: body.targetPosition });
+            }
+            if (path.endsWith("/prepare")) return Response.json({ phase: "prepared" });
+            if (path.endsWith("/commit")) {
+              return Response.json({ phase: "committed", agentId: `global:${name}` });
+            }
+            return new Response("unexpected target request", { status: 500 });
+          },
+        };
+      },
+    },
+  };
+  const object = new RegionDurableObject(state, env);
+  await state.ready;
+
+  const assigned = await object.fetch(new Request("https://moyo.example/api/health", {
+    headers: { "x-moyo-region-internal": "garden-1" },
+  }));
+  assert.equal(assigned.status, 200);
+
+  const world = object.runtime.snapshot();
+  const first = world.agents[0];
+  assert.ok(first);
+  const second = structuredClone(first);
+  second.id = `${first.id}-peer`;
+  world.agents.push(second);
+
+  const cells = hexGridBoundaryCells(world, "east").slice(8, 10);
+  assert.equal(cells.length, 2);
+  for (const [agent, cell] of [[first, cells[0]], [second, cells[1]]]) {
+    assert.ok(cell);
+    const sourceTile = world.tiles[cell.y * world.width + cell.x];
+    assert.ok(sourceTile);
+    sourceTile.terrain = "plain";
+    delete sourceTile.resource;
+    agent.position = { ...cell };
+    agent.autonomy = false;
+    delete agent.task;
+  }
+  object.runtime = new WorldRuntime({ state: world });
+
+  const commandId = "shared-crossing";
+  const step = HEX_GRID_DIRECTION_STEPS.east;
+  for (const [agent, cell] of [[first, cells[0]], [second, cells[1]]]) {
+    const response = await object.fetch(new Request(
+      `https://moyo.example/api/agents/${encodeURIComponent(agent.id)}/commands`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-moyo-region-internal": "garden-1",
+        },
+        body: JSON.stringify({
+          id: commandId,
+          type: "move",
+          target: { x: cell.x + step.x, y: cell.y + step.y },
+        }),
+      },
+    ));
+    assert.equal(response.status, 202);
+  }
+
+  const outgoing = await state.storage.get(OUTGOING_HANDOFF_KEY);
+  assert.equal(outgoing.length, 2);
+  assert.deepEqual(
+    new Set(outgoing.map((entry) => entry.envelope.transferId)),
+    new Set([
+      moveHandoffTransferId(first.id, commandId),
+      moveHandoffTransferId(second.id, commandId),
+    ]),
+  );
+});
 
 test("malformed percent encoding in an agent command path returns 400 instead of throwing", async () => {
   const state = new MemoryState();
