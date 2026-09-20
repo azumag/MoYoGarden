@@ -29,7 +29,7 @@ autonomy = autonomy_path.read_text()
 autonomy = replace_once(
     autonomy,
     """    const next = releaseSettlementFamilyAdmissionAgent(\n      normalized.reservations,\n      body.agentId as string,\n      reservationExpiresAtCutoffMs,\n    );\n""",
-    """    const next = releaseSettlementFamilyAdmissionAgent(\n      normalized.reservations,\n      body.agentId as string,\n      reservationExpiresAtCutoffMs,\n      body.releaseIssuedAtMs,\n    );\n""",
+    """    const next = releaseSettlementFamilyAdmissionAgent(\n      normalized.reservations,\n      body.agentId as string,\n      reservationExpiresAtCutoffMs,\n      body.releaseIssuedAtMs as number,\n    );\n""",
     "release call generation",
 )
 autonomy_path.write_text(autonomy)
@@ -87,7 +87,7 @@ tests = tests.replace(anchor, addition + anchor, 1)
 tests = replace_once(
     tests,
     """  assert.match(\n    source,\n    /issuedAtMs,[\\s\\S]*?expiresAtMs: now \\+ SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS/,\n  );\n});\n""",
-    """  assert.match(\n    source,\n    /issuedAtMs,[\\s\\S]*?expiresAtMs: now \\+ SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS/,\n  );\n  assert.match(\n    source,\n    /releaseSettlementFamilyAdmissionAgent\\([\\s\\S]*?reservationExpiresAtCutoffMs,[\\s\\S]*?body\\.releaseIssuedAtMs,[\\s\\S]*?\\);/,\n  );\n});\n""",
+    """  assert.match(\n    source,\n    /issuedAtMs,[\\s\\S]*?expiresAtMs: now \\+ SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS/,\n  );\n  assert.match(\n    source,\n    /releaseSettlementFamilyAdmissionAgent\\([\\s\\S]*?reservationExpiresAtCutoffMs,[\\s\\S]*?body\\.releaseIssuedAtMs as number,[\\s\\S]*?\\);/,\n  );\n});\n""",
     "release source contract",
 )
 test_path.write_text(tests)
