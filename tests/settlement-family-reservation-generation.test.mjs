@@ -109,6 +109,24 @@ test("same-millisecond registration and release keep the reservation fail-closed
   assert.deepEqual(next, [current]);
 });
 
+test("legacy release ordering keeps the lease-expiry fence when generation is absent", () => {
+  const legacy = reservation({
+    expiresAtMs: 500,
+    agentExpiresAtMs: { [follower]: 500 },
+  });
+
+  assert.deepEqual(
+    releaseSettlementFamilyAdmissionAgent([legacy], follower, 500, 300),
+    [legacy],
+    "equal legacy cutoff remains fail-closed",
+  );
+  assert.deepEqual(
+    releaseSettlementFamilyAdmissionAgent([legacy], follower, 501, 300),
+    [],
+    "legacy reservations still release once the lease is definitely older",
+  );
+});
+
 test("an older same-route response cannot append a follower absent from the newer attempt", () => {
   const current = reservation({
     issuedAtMs: 400,
