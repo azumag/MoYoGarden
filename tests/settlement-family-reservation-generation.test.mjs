@@ -55,6 +55,23 @@ test("a newer same-route registration renews the lease and advances its generati
   assert.equal(next[0]?.expiresAtMs, 500);
 });
 
+test("the first generated retry upgrades a legacy reservation without a generation", () => {
+  const legacy = reservation({
+    expiresAtMs: 300,
+    agentExpiresAtMs: { [follower]: 300 },
+  });
+  const generated = reservation({
+    issuedAtMs: 400,
+    expiresAtMs: 500,
+  });
+
+  const next = upsertSettlementFamilyAdmissionReservation([legacy], generated);
+
+  assert.equal(next[0]?.issuedAtMs, 400);
+  assert.equal(next[0]?.agentExpiresAtMs?.[follower], 500);
+  assert.equal(next[0]?.expiresAtMs, 500);
+});
+
 test("an older same-route response cannot append a follower absent from the newer attempt", () => {
   const current = reservation({
     issuedAtMs: 400,
