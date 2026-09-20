@@ -132,6 +132,36 @@ test("normalization repairs duplicate follower ownership left by older writers",
   );
 });
 
+test("normalization persists repaired per-agent lease membership when key count is unchanged", () => {
+  const stored = reservation({
+    reservationId: "family:garden-1:pioneer-a:hex-q1-r0",
+    pioneerId: "pioneer-a",
+    agentIds: [follower, sibling],
+    expiresAtMs: 300,
+    agentExpiresAtMs: {
+      [follower]: 240,
+      [newcomer]: 300,
+    },
+  });
+
+  const normalized = normalizeSettlementFamilyAdmissionReservations(
+    [stored],
+    new Set(),
+    100,
+  );
+
+  assert.equal(
+    normalized.changed,
+    true,
+    "a same-size lease map with the wrong follower key must be written back",
+  );
+  assert.deepEqual(normalized.reservations[0]?.agentExpiresAtMs, {
+    [follower]: 240,
+    [sibling]: 300,
+  });
+  assert.equal(normalized.reservations[0]?.expiresAtMs, 300);
+});
+
 test("normalization resolves equal legacy leases to the later appended owner", () => {
   const first = reservation({
     reservationId: "family:garden-1:pioneer-a:hex-q1-r0",
