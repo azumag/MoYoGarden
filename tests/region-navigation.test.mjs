@@ -100,6 +100,17 @@ test("hex rebase crosses each of the six logical sides using hex origins", () =>
   }
 });
 
+test("hex rebase resolves shared-edge ties independently of layout order", () => {
+  const target = { x: 0, z: -12.5 };
+  const reordered = [hexLayout[0], ...hexLayout.slice(1).reverse()];
+  const canonical = resolveRegionRebase(hexLayout, "garden-c", target);
+  const reversed = resolveRegionRebase(reordered, "garden-c", target);
+  assert.ok(canonical);
+  assert.ok(reversed);
+  assert.equal(canonical.regionId, "garden-ne");
+  assert.deepEqual(reversed, canonical);
+});
+
 test("hex navigation does not depend on legacy physical origins", () => {
   const sparseHexLayout = hexLayout.map(({ origin: _origin, ...entry }) => entry);
   const east = sparseHexLayout.find((entry) => entry.id === "garden-e");
