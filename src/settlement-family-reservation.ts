@@ -38,6 +38,16 @@ function isReservation(value: unknown): value is SettlementFamilyAdmissionReserv
     && (value.agentExpiresAtMs === undefined || isAgentExpiryMap(value.agentExpiresAtMs));
 }
 
+function sameSettlementFamilyReservationIdentity(
+  left: SettlementFamilyAdmissionReservation,
+  right: SettlementFamilyAdmissionReservation,
+): boolean {
+  return left.reservationId === right.reservationId
+    && left.sourceRegionId === right.sourceRegionId
+    && left.pioneerId === right.pioneerId
+    && left.factionId === right.factionId;
+}
+
 function settlementFamilyAgentLeaseExpiry(
   reservation: SettlementFamilyAdmissionReservation,
   agentId: string,
@@ -205,12 +215,14 @@ export function upsertSettlementFamilyAdmissionReservation(
 ): SettlementFamilyAdmissionReservation[] {
   const uniqueIncomingAgentIds = [...new Set(incoming.agentIds)];
 
-  // A follower's admission promise belongs to the stable follower and target
-  // region, not to whichever settled pioneer happened to retry registration.
-  // Keep the current reservation owner stable and treat another pioneer's retry
-  // as a lease refresh. This removes response-order dependence: a delayed older
-  // registration can extend bounded capacity conservatively, but cannot steal
-  // ownership from the route that is already authoritative.
+  // A follower's capacity promise is owned by the reservation that first
+  // admitted it. Another pioneer's delayed registration is not evidence that
+  // the current route is still alive, so it must neither steal ownership nor
+  // refresh the existing lease. Without a source-issued route generation yet,
+  // only an idempotent retry carrying the same full reservation identity may
+  // renew an already-owned follower. This bounds stale cross-route retries to
+  // underbooking until the existing lease/release resolves instead of allowing
+  // them to keep obsolete capacity alive for another full TTL.
   const ownerByAgent = new Map<string, number>();
   for (const [reservationIndex, reservation] of reservations.entries()) {
     for (const agentId of reservation.agentIds) {
@@ -241,7 +253,7 @@ export function upsertSettlementFamilyAdmissionReservation(
       continue;
     }
     const owner = reservations[ownerIndex];
-    if (owner === undefined) continue;
+    if (owner === undefined || !sameSettlementFamilyReservationIdentity(owner, incoming)) continue;
     let updates = leaseUpdatesByReservation.get(ownerIndex);
     if (updates === undefined) {
       updates = new Map<string, number>();
@@ -287,7 +299,10 @@ export function upsertSettlementFamilyAdmissionReservation(
   }
 
   const existing = next[existingIndex];
-  if (existing === undefined) return next;
+  // A reservationId collision with different source/pioneer/faction metadata is
+  // ambiguous persisted/input state. Do not attach newly unowned followers to
+  // it; normalization/TTL can repair or retire the old record safely.
+  if (existing === undefined || !sameSettlementFamilyReservationIdentity(existing, incoming)) return next;
   const agentIds = [...new Set([...existing.agentIds, ...unownedAgentIds])];
   const unownedSet = new Set(unownedAgentIds);
   const agentExpiresAtMs = Object.fromEntries(agentIds.map((agentId) => [
