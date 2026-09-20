@@ -61,8 +61,9 @@ export function graphicsSettingsUrl(href) {
 export function applyGraphicsOverrides(profile, input, lockSafe = false) {
   const settings = normalizeGraphicsSettings(lockSafe ? null : input);
   const light = profile.label === 'SAFE';
+  const profileFrameRate = profile.frameRate === 30 || profile.frameRate === 60 ? profile.frameRate : 60;
   const result = { ...profile, shadowsEnabled: !light, environmentEnabled: !light,
-    loadModels: !light, waterQuality: light ? 'simple' : 'ripples', frameRate: light ? 30 : 60 };
+    loadModels: !light, waterQuality: light ? 'simple' : 'ripples', frameRate: light ? 30 : profileFrameRate };
   if (light) result.detailDensity = 0;
   if (settings.resolution !== 'auto') {
     result.pixelRatioCap = Number(settings.resolution);
