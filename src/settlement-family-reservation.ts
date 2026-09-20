@@ -1,3 +1,8 @@
+export interface SettlementFamilyReleaseWatermark {
+  issuedAtMs: number;
+  expiresAtMs: number;
+}
+
 export interface SettlementFamilyAdmissionReservation {
   reservationId: string;
   sourceRegionId: string;
@@ -15,6 +20,12 @@ export interface SettlementFamilyAdmissionReservation {
   // without keeping canceled siblings reserved for the whole family TTL.
   // Optional for persisted reservations written by older deployments.
   agentExpiresAtMs?: Record<string, number>;
+  // A generated release keeps a bounded tombstone after the last live follower
+  // leaves the reservation. Without it, deleting the final row also deletes the
+  // generation fence and a delayed older registration can resurrect capacity.
+  // The watermark expires at the same bounded wall-clock cutoff as the released
+  // admission promise, so abandoned route history does not grow without bound.
+  releaseWatermarks?: Record<string, SettlementFamilyReleaseWatermark>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,22 +42,43 @@ function isAgentExpiryMap(value: unknown): value is Record<string, number> {
     ));
 }
 
-function isReservation(value: unknown): value is SettlementFamilyAdmissionReservation {
+function isReleaseWatermarkMap(
+  value: unknown,
+): value is Record<string, SettlementFamilyReleaseWatermark> {
   return isRecord(value)
-    && typeof value.reservationId === "string" && value.reservationId.length > 0
-    && typeof value.sourceRegionId === "string" && value.sourceRegionId.length > 0
-    && typeof value.pioneerId === "string" && value.pioneerId.length > 0
-    && typeof value.factionId === "string" && value.factionId.length > 0
-    && Array.isArray(value.agentIds) && value.agentIds.length > 0
-    && value.agentIds.every((agentId) => typeof agentId === "string" && agentId.length > 0)
-    && typeof value.expiresAtMs === "number" && Number.isFinite(value.expiresAtMs)
-    && value.expiresAtMs > 0
-    && (value.issuedAtMs === undefined || (
-      typeof value.issuedAtMs === "number"
-      && Number.isFinite(value.issuedAtMs)
-      && value.issuedAtMs > 0
+    && Object.entries(value).every(([agentId, watermark]) => (
+      agentId.length > 0
+      && isRecord(watermark)
+      && typeof watermark.issuedAtMs === "number"
+      && Number.isFinite(watermark.issuedAtMs)
+      && watermark.issuedAtMs > 0
+      && typeof watermark.expiresAtMs === "number"
+      && Number.isFinite(watermark.expiresAtMs)
+      && watermark.expiresAtMs > watermark.issuedAtMs
+    ));
+}
+
+function isReservation(value: unknown): value is SettlementFamilyAdmissionReservation {
+  if (!isRecord(value)) return false;
+  if (
+    typeof value.reservationId !== "string" || value.reservationId.length === 0
+    || typeof value.sourceRegionId !== "string" || value.sourceRegionId.length === 0
+    || typeof value.pioneerId !== "string" || value.pioneerId.length === 0
+    || typeof value.factionId !== "string" || value.factionId.length === 0
+    || !Array.isArray(value.agentIds)
+    || !value.agentIds.every((agentId) => typeof agentId === "string" && agentId.length > 0)
+    || typeof value.expiresAtMs !== "number" || !Number.isFinite(value.expiresAtMs)
+    || value.expiresAtMs <= 0
+    || (value.issuedAtMs !== undefined && (
+      typeof value.issuedAtMs !== "number"
+      || !Number.isFinite(value.issuedAtMs)
+      || value.issuedAtMs <= 0
     ))
-    && (value.agentExpiresAtMs === undefined || isAgentExpiryMap(value.agentExpiresAtMs));
+    || (value.agentExpiresAtMs !== undefined && !isAgentExpiryMap(value.agentExpiresAtMs))
+    || (value.releaseWatermarks !== undefined && !isReleaseWatermarkMap(value.releaseWatermarks))
+  ) return false;
+  return value.agentIds.length > 0
+    || (isRecord(value.releaseWatermarks) && Object.keys(value.releaseWatermarks).length > 0);
 }
 
 function sameSettlementFamilyReservationIdentity(
@@ -78,27 +110,47 @@ function settlementFamilyAgentLeaseExpiry(
     : reservation.expiresAtMs;
 }
 
+function settlementFamilyAggregateExpiry(
+  reservation: SettlementFamilyAdmissionReservation,
+  agentIds: readonly string[],
+  agentExpiresAtMs: Record<string, number> | undefined,
+  releaseWatermarks: Record<string, SettlementFamilyReleaseWatermark> | undefined,
+): number | undefined {
+  const expiries = agentIds.map((agentId) => (
+    agentExpiresAtMs?.[agentId] ?? settlementFamilyAgentLeaseExpiry(reservation, agentId)
+  ));
+  if (releaseWatermarks !== undefined) {
+    expiries.push(...Object.values(releaseWatermarks).map((watermark) => watermark.expiresAtMs));
+  }
+  return expiries.length === 0 ? undefined : Math.max(...expiries);
+}
+
 function removeSettlementFamilyReservationAgents(
   reservation: SettlementFamilyAdmissionReservation,
   agentIdsToRemove: ReadonlySet<string>,
 ): SettlementFamilyAdmissionReservation | undefined {
   const agentIds = reservation.agentIds.filter((agentId) => !agentIdsToRemove.has(agentId));
-  if (agentIds.length === 0) return undefined;
-  const agentExpiresAtMs = reservation.agentExpiresAtMs === undefined
+  const agentExpiresAtMs = agentIds.length === 0 || reservation.agentExpiresAtMs === undefined
     ? undefined
     : Object.fromEntries(agentIds.map((agentId) => [
         agentId,
         settlementFamilyAgentLeaseExpiry(reservation, agentId),
       ]));
-  const expiresAtMs = agentExpiresAtMs === undefined
-    ? reservation.expiresAtMs
-    : Math.max(...Object.values(agentExpiresAtMs));
-  return {
+  const expiresAtMs = settlementFamilyAggregateExpiry(
+    reservation,
+    agentIds,
+    agentExpiresAtMs,
+    reservation.releaseWatermarks,
+  );
+  if (expiresAtMs === undefined) return undefined;
+  const next = {
     ...reservation,
     agentIds,
     expiresAtMs,
-    ...(agentExpiresAtMs === undefined ? {} : { agentExpiresAtMs }),
   };
+  if (agentExpiresAtMs === undefined) delete next.agentExpiresAtMs;
+  else next.agentExpiresAtMs = agentExpiresAtMs;
+  return next;
 }
 
 export function normalizeSettlementFamilyAdmissionReservations(
@@ -119,49 +171,73 @@ export function normalizeSettlementFamilyAdmissionReservations(
       !presentAgentIds.has(agentId)
       && settlementFamilyAgentLeaseExpiry(value, agentId) > now
     ));
-    if (pendingAgentIds.length === 0) {
-      changed = true;
-      continue;
-    }
-
-    const normalizedExpiryByAgent = value.agentExpiresAtMs === undefined
+    const normalizedExpiryByAgent = value.agentExpiresAtMs === undefined || pendingAgentIds.length === 0
       ? undefined
       : Object.fromEntries(pendingAgentIds.map((agentId) => [
           agentId,
           settlementFamilyAgentLeaseExpiry(value, agentId),
         ]));
-    const expiresAtMs = normalizedExpiryByAgent === undefined
-      ? value.expiresAtMs
-      : Math.max(...Object.values(normalizedExpiryByAgent));
-    const agentExpiryMapChanged = normalizedExpiryByAgent !== undefined && (
-      Object.keys(value.agentExpiresAtMs ?? {}).length !== pendingAgentIds.length
+    const normalizedReleaseWatermarks = value.releaseWatermarks === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(value.releaseWatermarks).filter(([, watermark]) => (
+          watermark.expiresAtMs > now
+        )));
+    const liveReleaseWatermarks = normalizedReleaseWatermarks !== undefined
+      && Object.keys(normalizedReleaseWatermarks).length > 0
+        ? normalizedReleaseWatermarks
+        : undefined;
+    const expiresAtMs = settlementFamilyAggregateExpiry(
+      value,
+      pendingAgentIds,
+      normalizedExpiryByAgent,
+      liveReleaseWatermarks,
+    );
+    if (expiresAtMs === undefined) {
+      changed = true;
+      continue;
+    }
+
+    const agentExpiryMapChanged = value.agentExpiresAtMs !== undefined && (
+      normalizedExpiryByAgent === undefined
+      || Object.keys(value.agentExpiresAtMs).length !== pendingAgentIds.length
       || pendingAgentIds.some((agentId) =>
         value.agentExpiresAtMs?.[agentId] !== normalizedExpiryByAgent[agentId]
       )
+    );
+    const releaseWatermarksChanged = value.releaseWatermarks !== undefined && (
+      liveReleaseWatermarks === undefined
+      || Object.keys(value.releaseWatermarks).length !== Object.keys(liveReleaseWatermarks).length
+      || Object.entries(liveReleaseWatermarks).some(([agentId, watermark]) => (
+        value.releaseWatermarks?.[agentId]?.issuedAtMs !== watermark.issuedAtMs
+        || value.releaseWatermarks?.[agentId]?.expiresAtMs !== watermark.expiresAtMs
+      ))
     );
     if (
       pendingAgentIds.length !== value.agentIds.length
       || pendingAgentIds.some((agentId, index) => agentId !== value.agentIds[index])
       || expiresAtMs !== value.expiresAtMs
       || agentExpiryMapChanged
+      || releaseWatermarksChanged
     ) changed = true;
-    reservations.push({
+    const normalizedReservation: SettlementFamilyAdmissionReservation = {
       ...value,
       agentIds: pendingAgentIds,
       expiresAtMs,
-      ...(normalizedExpiryByAgent === undefined
-        ? {}
-        : { agentExpiresAtMs: normalizedExpiryByAgent }),
-    });
+    };
+    if (normalizedExpiryByAgent === undefined) delete normalizedReservation.agentExpiresAtMs;
+    else normalizedReservation.agentExpiresAtMs = normalizedExpiryByAgent;
+    if (liveReleaseWatermarks === undefined) delete normalizedReservation.releaseWatermarks;
+    else normalizedReservation.releaseWatermarks = liveReleaseWatermarks;
+    reservations.push(normalizedReservation);
   }
 
   // Rolling deployments can leave duplicate follower ownership persisted by an
   // older writer even after new registrations have switched to single-owner
   // upserts. Repair that state during ordinary normalization instead of waiting
   // for another registration or the 24h TTL. Prefer the strongest still-live
-  // per-agent lease; equal leases prefer the later array entry because upserts
-  // append the newest owner. Unrelated siblings stay attached to their original
-  // reservation and have their aggregate expiry recomputed by the trim helper.
+  // route generation, then per-agent lease; equal leases prefer the later array
+  // entry because upserts append the newest owner. Unrelated siblings and any
+  // bounded release watermarks stay attached to their original reservation.
   const ownerByAgent = new Map<string, {
     reservationIndex: number;
     issuedAtMs: number;
@@ -222,10 +298,8 @@ export function releaseSettlementFamilyAdmissionAgent(
   // admission lease. Fence at the follower lease rather than the family-wide
   // max expiry so renewing one sibling cannot keep an abandoned sibling slot.
   // The release cutoff is `releaseIssuedAtMs + leaseTtl`. Treat an exactly equal
-  // lease as concurrent with the release, not older than it: Date.now() only has
-  // millisecond resolution, so deleting equality can erase a fresh registration
-  // that was accepted in the same millisecond as an old route was canceled.
-  // Keeping that ambiguous slot until its bounded TTL is the fail-closed choice.
+  // registration generation as concurrent with the release, not older than it:
+  // Date.now() only has millisecond resolution, so equality stays fail-closed.
   if (agentId.length === 0 || !Number.isFinite(expiresAtCutoffMs)) return [...reservations];
   const releaseGeneration = typeof releaseIssuedAtMs === "number"
     && Number.isFinite(releaseIssuedAtMs)
@@ -233,21 +307,49 @@ export function releaseSettlementFamilyAdmissionAgent(
       ? releaseIssuedAtMs
       : undefined;
   return reservations.flatMap((reservation) => {
-    if (!reservation.agentIds.includes(agentId)) return [reservation];
+    const existingWatermark = reservation.releaseWatermarks?.[agentId];
+    if (!reservation.agentIds.includes(agentId)) {
+      if (
+        existingWatermark === undefined
+        || releaseGeneration === undefined
+        || releaseGeneration <= existingWatermark.issuedAtMs
+      ) return [reservation];
+      const releaseWatermarks = {
+        ...reservation.releaseWatermarks,
+        [agentId]: { issuedAtMs: releaseGeneration, expiresAtMs: expiresAtCutoffMs },
+      };
+      return [{
+        ...reservation,
+        releaseWatermarks,
+        expiresAtMs: Math.max(
+          reservation.expiresAtMs,
+          ...Object.values(releaseWatermarks).map((watermark) => watermark.expiresAtMs),
+        ),
+      }];
+    }
     const reservationGeneration = settlementFamilyReservationIssuedAt(reservation);
     if (releaseGeneration !== undefined && reservationGeneration > 0) {
       // When both sides carry generations, compare the route attempts directly.
       // This fixes the case where an old registration response arrives late and
       // receives a destination-local lease that looks newer than the cancel.
-      // Equality is concurrent at Date.now() resolution and stays fail-closed.
       if (reservationGeneration >= releaseGeneration) return [reservation];
     } else if (settlementFamilyAgentLeaseExpiry(reservation, agentId) >= expiresAtCutoffMs) {
       // Rolling compatibility for legacy reservations/releases without a
       // generation keeps the existing lease-expiry fence.
       return [reservation];
     }
+
+    const withWatermark = releaseGeneration === undefined
+      ? reservation
+      : {
+          ...reservation,
+          releaseWatermarks: {
+            ...reservation.releaseWatermarks,
+            [agentId]: { issuedAtMs: releaseGeneration, expiresAtMs: expiresAtCutoffMs },
+          },
+        };
     const trimmed = removeSettlementFamilyReservationAgents(
-      reservation,
+      withWatermark,
       new Set([agentId]),
     );
     return trimmed === undefined ? [] : [trimmed];
@@ -264,11 +366,8 @@ export function upsertSettlementFamilyAdmissionReservation(
   // A follower's capacity promise is owned by the reservation that first
   // admitted it. Another pioneer's delayed registration is not evidence that
   // the current route is still alive, so it must neither steal ownership nor
-  // refresh the existing lease. Without a source-issued route generation yet,
-  // only an idempotent retry carrying the same full reservation identity may
-  // renew an already-owned follower. This bounds stale cross-route retries to
-  // underbooking until the existing lease/release resolves instead of allowing
-  // them to keep obsolete capacity alive for another full TTL.
+  // refresh the existing lease. Generated retries additionally respect any
+  // bounded release watermark retained after a live reservation was removed.
   const ownerByAgent = new Map<string, number>();
   for (const [reservationIndex, reservation] of reservations.entries()) {
     for (const agentId of reservation.agentIds) {
@@ -290,9 +389,25 @@ export function upsertSettlementFamilyAdmissionReservation(
     }
   }
 
+  const watermarkByAgent = new Map<string, SettlementFamilyReleaseWatermark>();
+  for (const reservation of reservations) {
+    if (!sameSettlementFamilyReservationIdentity(reservation, incoming)) continue;
+    for (const [agentId, watermark] of Object.entries(reservation.releaseWatermarks ?? {})) {
+      const current = watermarkByAgent.get(agentId);
+      if (current === undefined || watermark.issuedAtMs > current.issuedAtMs) {
+        watermarkByAgent.set(agentId, watermark);
+      }
+    }
+  }
+
   const leaseUpdatesByReservation = new Map<number, Map<string, number>>();
   const unownedAgentIds: string[] = [];
   for (const agentId of uniqueIncomingAgentIds) {
+    const watermark = watermarkByAgent.get(agentId);
+    if (watermark !== undefined && (
+      incomingIssuedAtMs === 0 || incomingIssuedAtMs <= watermark.issuedAtMs
+    )) continue;
+
     const ownerIndex = ownerByAgent.get(agentId);
     if (ownerIndex === undefined) {
       unownedAgentIds.push(agentId);
@@ -331,12 +446,30 @@ export function upsertSettlementFamilyAdmissionReservation(
       settlementFamilyReservationIssuedAt(reservation),
       incomingIssuedAtMs,
     );
-    return {
+    const releaseWatermarks = reservation.releaseWatermarks === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(reservation.releaseWatermarks).filter(([agentId]) => (
+          !updates.has(agentId)
+        )));
+    const liveReleaseWatermarks = releaseWatermarks !== undefined
+      && Object.keys(releaseWatermarks).length > 0
+        ? releaseWatermarks
+        : undefined;
+    const expiresAtMs = settlementFamilyAggregateExpiry(
+      reservation,
+      reservation.agentIds,
+      agentExpiresAtMs,
+      liveReleaseWatermarks,
+    );
+    const updated: SettlementFamilyAdmissionReservation = {
       ...reservation,
       ...(issuedAtMs > 0 ? { issuedAtMs } : {}),
       agentExpiresAtMs,
-      expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
+      expiresAtMs: expiresAtMs ?? reservation.expiresAtMs,
     };
+    if (liveReleaseWatermarks === undefined) delete updated.releaseWatermarks;
+    else updated.releaseWatermarks = liveReleaseWatermarks;
+    return updated;
   });
 
   if (unownedAgentIds.length === 0) return next;
@@ -347,12 +480,14 @@ export function upsertSettlementFamilyAdmissionReservation(
       agentId,
       settlementFamilyAgentLeaseExpiry(incoming, agentId),
     ]));
-    return [...next, {
+    const created: SettlementFamilyAdmissionReservation = {
       ...incoming,
       agentIds: unownedAgentIds,
       agentExpiresAtMs,
       expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
-    }];
+    };
+    delete created.releaseWatermarks;
+    return [...next, created];
   }
 
   const existing = next[existingIndex];
@@ -373,12 +508,29 @@ export function upsertSettlementFamilyAdmissionReservation(
     settlementFamilyReservationIssuedAt(existing),
     incomingIssuedAtMs,
   );
+  const releaseWatermarks = existing.releaseWatermarks === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(existing.releaseWatermarks).filter(([agentId]) => (
+        !unownedSet.has(agentId)
+      )));
+  const liveReleaseWatermarks = releaseWatermarks !== undefined
+    && Object.keys(releaseWatermarks).length > 0
+      ? releaseWatermarks
+      : undefined;
+  const expiresAtMs = settlementFamilyAggregateExpiry(
+    existing,
+    agentIds,
+    agentExpiresAtMs,
+    liveReleaseWatermarks,
+  );
   next[existingIndex] = {
     ...existing,
     ...(issuedAtMs > 0 ? { issuedAtMs } : {}),
     agentIds,
     agentExpiresAtMs,
-    expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
+    expiresAtMs: expiresAtMs ?? existing.expiresAtMs,
   };
+  if (liveReleaseWatermarks === undefined) delete next[existingIndex].releaseWatermarks;
+  else next[existingIndex].releaseWatermarks = liveReleaseWatermarks;
   return next;
 }
