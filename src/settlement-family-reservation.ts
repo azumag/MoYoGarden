@@ -103,14 +103,17 @@ export function normalizeSettlementFamilyAdmissionReservations(
     const expiresAtMs = normalizedExpiryByAgent === undefined
       ? value.expiresAtMs
       : Math.max(...Object.values(normalizedExpiryByAgent));
+    const agentExpiryMapChanged = normalizedExpiryByAgent !== undefined && (
+      Object.keys(value.agentExpiresAtMs ?? {}).length !== pendingAgentIds.length
+      || pendingAgentIds.some((agentId) =>
+        value.agentExpiresAtMs?.[agentId] !== normalizedExpiryByAgent[agentId]
+      )
+    );
     if (
       pendingAgentIds.length !== value.agentIds.length
       || pendingAgentIds.some((agentId, index) => agentId !== value.agentIds[index])
       || expiresAtMs !== value.expiresAtMs
-      || (
-        value.agentExpiresAtMs !== undefined
-        && Object.keys(value.agentExpiresAtMs).length !== pendingAgentIds.length
-      )
+      || agentExpiryMapChanged
     ) changed = true;
     reservations.push({
       ...value,
