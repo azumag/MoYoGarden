@@ -121,7 +121,40 @@ export function normalizeSettlementFamilyAdmissionReservations(
         : { agentExpiresAtMs: normalizedExpiryByAgent }),
     });
   }
-  return { reservations, changed };
+
+  // Rolling deployments can leave duplicate follower ownership persisted by an
+  // older writer even after new registrations have switched to single-owner
+  // upserts. Repair that state during ordinary normalization instead of waiting
+  // for another registration or the 24h TTL. Prefer the strongest still-live
+  // per-agent lease; equal leases prefer the later array entry because upserts
+  // append the newest owner. Unrelated siblings stay attached to their original
+  // reservation and have their aggregate expiry recomputed by the trim helper.
+  const ownerByAgent = new Map<string, { reservationIndex: number; expiresAtMs: number }>();
+  for (const [reservationIndex, reservation] of reservations.entries()) {
+    for (const agentId of reservation.agentIds) {
+      const expiresAtMs = settlementFamilyAgentLeaseExpiry(reservation, agentId);
+      const current = ownerByAgent.get(agentId);
+      if (
+        current === undefined
+        || expiresAtMs > current.expiresAtMs
+        || (expiresAtMs === current.expiresAtMs && reservationIndex > current.reservationIndex)
+      ) {
+        ownerByAgent.set(agentId, { reservationIndex, expiresAtMs });
+      }
+    }
+  }
+
+  const singleOwnerReservations = reservations.flatMap((reservation, reservationIndex) => {
+    const duplicateAgentIds = new Set(reservation.agentIds.filter((agentId) =>
+      ownerByAgent.get(agentId)?.reservationIndex !== reservationIndex
+    ));
+    if (duplicateAgentIds.size === 0) return [reservation];
+    changed = true;
+    const trimmed = removeSettlementFamilyReservationAgents(reservation, duplicateAgentIds);
+    return trimmed === undefined ? [] : [trimmed];
+  });
+
+  return { reservations: singleOwnerReservations, changed };
 }
 
 export function settlementFamilyReservedSlots(

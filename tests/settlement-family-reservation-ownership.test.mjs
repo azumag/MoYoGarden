@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  normalizeSettlementFamilyAdmissionReservations,
   releaseSettlementFamilyAdmissionAgent,
   settlementFamilyReservedSlots,
   upsertSettlementFamilyAdmissionReservation,
@@ -60,6 +61,73 @@ test("new family registration gives each follower one authoritative reservation 
   assert.deepEqual(newOwner?.agentIds, [follower]);
   assert.equal(newOwner?.agentExpiresAtMs?.[follower], 300);
   assert.equal(settlementFamilyReservedSlots(next, "faction-a"), 2);
+});
+
+test("normalization repairs duplicate follower ownership left by older writers", () => {
+  const oldOwner = reservation({
+    reservationId: "family:garden-1:pioneer-a:hex-q1-r0",
+    pioneerId: "pioneer-a",
+    agentIds: [follower, sibling],
+    expiresAtMs: 260,
+    agentExpiresAtMs: {
+      [follower]: 240,
+      [sibling]: 260,
+    },
+  });
+  const newerOwner = reservation({
+    reservationId: "family:garden-1:pioneer-b:hex-q1-r0",
+    pioneerId: "pioneer-b",
+    agentIds: [follower],
+    expiresAtMs: 300,
+  });
+
+  const normalized = normalizeSettlementFamilyAdmissionReservations(
+    [oldOwner, newerOwner],
+    new Set(),
+    100,
+  );
+
+  assert.equal(normalized.changed, true);
+  assert.equal(
+    normalized.reservations.flatMap((entry) => entry.agentIds)
+      .filter((agentId) => agentId === follower).length,
+    1,
+  );
+  const repairedOldOwner = normalized.reservations.find(
+    (entry) => entry.reservationId === oldOwner.reservationId,
+  );
+  assert.deepEqual(repairedOldOwner?.agentIds, [sibling]);
+  assert.equal(repairedOldOwner?.expiresAtMs, 260);
+  assert.deepEqual(repairedOldOwner?.agentExpiresAtMs, { [sibling]: 260 });
+  assert.equal(
+    normalized.reservations.find((entry) => entry.reservationId === newerOwner.reservationId)
+      ?.agentExpiresAtMs?.[follower],
+    300,
+  );
+});
+
+test("normalization resolves equal legacy leases to the later appended owner", () => {
+  const first = reservation({
+    reservationId: "family:garden-1:pioneer-a:hex-q1-r0",
+    pioneerId: "pioneer-a",
+    agentIds: [follower],
+    expiresAtMs: 300,
+  });
+  const second = reservation({
+    reservationId: "family:garden-1:pioneer-b:hex-q1-r0",
+    pioneerId: "pioneer-b",
+    agentIds: [follower],
+    expiresAtMs: 300,
+  });
+
+  const normalized = normalizeSettlementFamilyAdmissionReservations(
+    [first, second],
+    new Set(),
+    100,
+  );
+
+  assert.equal(normalized.changed, true);
+  assert.deepEqual(normalized.reservations.map((entry) => entry.reservationId), [second.reservationId]);
 });
 
 test("stale release from the previous pioneer cannot delete the newer follower lease", () => {
