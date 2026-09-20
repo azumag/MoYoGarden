@@ -1,0 +1,128 @@
+name: automation housing split once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/automation-housing-split-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply focused settlement split fix and regression
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('src/simulation.ts')
+          text = source.read_text()
+          old = '''      if (factionCanAfford(state, agent.factionId, BUILD_RECIPES.camp.cost)) {
+        // Housing-pressure camps should expand the settlement footprint instead
+        // of repeatedly filling the immediately adjacent ring. Keep the normal
+        // site ranking inside the eligible set, and fall back to the legacy
+        // selector on constrained terrain so growth cannot deadlock behind a
+        // spacing preference.
+        const target =
+          findBuildSite(
+            state,
+            camp.position,
+            agent.factionId,
+            SETTLEMENT_CAMP_MIN_SPACING,
+          ) ?? findBuildSite(state, camp.position, agent.factionId);
+        if (target !== undefined) return { ...base, type: "build", structureType: "camp", target };
+      }
+'''
+          new = '''      if (factionCanAfford(state, agent.factionId, BUILD_RECIPES.camp.cost)) {
+        // Housing pressure may expand the local settlement only while a genuinely
+        // spaced camp site remains. Once that local geometry is exhausted, leave
+        // the builder available for the region-level settlement migration planner
+        // instead of packing another camp into the inner ring and erasing the
+        // demographic pressure that should produce a new settlement.
+        const target = findBuildSite(
+          state,
+          camp.position,
+          agent.factionId,
+          SETTLEMENT_CAMP_MIN_SPACING,
+        );
+        if (target !== undefined) return { ...base, type: "build", structureType: "camp", target };
+        return undefined;
+      }
+'''
+          if old not in text:
+              raise SystemExit('simulation housing-pressure block did not match expected main')
+          source.write_text(text.replace(old, new, 1))
+
+          test_file = Path('tests/settlement-migration.test.mjs')
+          tests = test_file.read_text()
+          import_anchor = 'import { createInitialWorld } from "../dist-ts/src/world.js";\n'
+          import_line = 'import { simulate } from "../dist-ts/src/simulation.js";\n'
+          if import_line not in tests:
+              if import_anchor not in tests:
+                  raise SystemExit('settlement migration test import anchor missing')
+              tests = tests.replace(import_anchor, import_anchor + import_line, 1)
+
+          regression = r'''
+
+test("full housing with no spaced local camp site stays available for settlement splitting", () => {
+  const { state, builder, blockers } = fixture();
+  delete builder.task;
+
+  assert.ok(blockers.length >= 3);
+  blockers[0].type = "storehouse";
+  blockers[1].type = "market";
+  // The remaining workshop blockers occupy every valid radius-2..5 expansion
+  // hex, while radius-1 cells deliberately remain open. The old fallback would
+  // pack a second camp into that inner ring and erase migration pressure.
+  assert.equal(settlementMigrationPressure(state, builder.factionId), true);
+  const campCountBefore = state.structures.filter((structure) =>
+    structure.factionId === builder.factionId && structure.type === "camp"
+  ).length;
+
+  const { state: next } = simulate(state);
+  const nextBuilder = next.agents.find((agent) => agent.id === builder.id);
+  assert.ok(nextBuilder);
+  assert.equal(
+    next.structures.filter((structure) =>
+      structure.factionId === builder.factionId && structure.type === "camp"
+    ).length,
+    campCountBefore,
+    "local autonomy must not start a cramped fallback camp when spaced expansion is exhausted",
+  );
+  assert.notEqual(nextBuilder.task?.type === "build" && nextBuilder.task.structureType, "camp");
+  assert.equal(
+    settlementMigrationPressure(next, builder.factionId),
+    true,
+    "housing pressure must survive until the region-level migration planner can split the settlement",
+  );
+});
+'''
+          if 'full housing with no spaced local camp site stays available for settlement splitting' not in tests:
+              tests += regression
+          test_file.write_text(tests)
+
+          workflow = Path('.github/workflows/automation-housing-split-once.yml')
+          workflow.unlink()
+          PY
+      - run: npm ci
+      - name: Validate
+        run: |
+          git diff --check
+          npm run build
+      - name: Commit product change
+        run: |
+          git config user.name "Tsubasa Azumagakito"
+          git config user.email "azumag@users.noreply.github.com"
+          git add -A
+          git commit -m "sim: split settlements when local housing is exhausted"
+          git push origin HEAD:main
