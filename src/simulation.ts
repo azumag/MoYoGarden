@@ -872,19 +872,19 @@ function autonomyTask(state: WorldState, agent: Agent): AgentTask | undefined {
       if (campBuildReserved) return undefined;
 
       if (factionCanAfford(state, agent.factionId, BUILD_RECIPES.camp.cost)) {
-        // Housing-pressure camps should expand the settlement footprint instead
-        // of repeatedly filling the immediately adjacent ring. Keep the normal
-        // site ranking inside the eligible set, and fall back to the legacy
-        // selector on constrained terrain so growth cannot deadlock behind a
-        // spacing preference.
-        const target =
-          findBuildSite(
-            state,
-            camp.position,
-            agent.factionId,
-            SETTLEMENT_CAMP_MIN_SPACING,
-          ) ?? findBuildSite(state, camp.position, agent.factionId);
+        // Housing pressure may expand the local settlement only while a genuinely
+        // spaced camp site remains. Once that local geometry is exhausted, leave
+        // the builder available for the region-level settlement migration planner
+        // instead of packing another camp into the inner ring and erasing the
+        // demographic pressure that should produce a new settlement.
+        const target = findBuildSite(
+          state,
+          camp.position,
+          agent.factionId,
+          SETTLEMENT_CAMP_MIN_SPACING,
+        );
         if (target !== undefined) return { ...base, type: "build", structureType: "camp", target };
+        return undefined;
       }
       if (inventoryAmount > 0 && hasAvailableStorage) return { ...base, type: "deposit" };
       const resource = factionMissingForRecipe(state, agent.factionId, "camp");

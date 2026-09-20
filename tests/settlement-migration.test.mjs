@@ -8,6 +8,7 @@ import {
   shouldScoutSettlementMigration,
 } from "../dist-ts/src/settlement-migration.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
+import { simulate } from "../dist-ts/src/simulation.js";
 
 function fixture() {
   const state = createInitialWorld({ seed: 260912, width: 40, height: 24 });
@@ -392,4 +393,38 @@ test("dead residents do not create settlement migration pressure", () => {
   );
   assert.equal(settlementMigrationPressure(state, builder.factionId), false);
   assert.equal(planAutonomousSettlementMigration(state, eastHalo()), undefined);
+});
+
+
+test("full housing with no spaced local camp site stays available for settlement splitting", () => {
+  const { state, builder, blockers } = fixture();
+  delete builder.task;
+
+  assert.ok(blockers.length >= 3);
+  blockers[0].type = "storehouse";
+  blockers[1].type = "market";
+  // The remaining workshop blockers occupy every valid radius-2..5 expansion
+  // hex, while radius-1 cells deliberately remain open. The old fallback would
+  // pack a second camp into that inner ring and erase migration pressure.
+  assert.equal(settlementMigrationPressure(state, builder.factionId), true);
+  const campCountBefore = state.structures.filter((structure) =>
+    structure.factionId === builder.factionId && structure.type === "camp"
+  ).length;
+
+  const { state: next } = simulate(state);
+  const nextBuilder = next.agents.find((agent) => agent.id === builder.id);
+  assert.ok(nextBuilder);
+  assert.equal(
+    next.structures.filter((structure) =>
+      structure.factionId === builder.factionId && structure.type === "camp"
+    ).length,
+    campCountBefore,
+    "local autonomy must not start a cramped fallback camp when spaced expansion is exhausted",
+  );
+  assert.notEqual(nextBuilder.task?.type === "build" && nextBuilder.task.structureType, "camp");
+  assert.equal(
+    settlementMigrationPressure(next, builder.factionId),
+    true,
+    "housing pressure must survive until the region-level migration planner can split the settlement",
+  );
 });
