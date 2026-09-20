@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   normalizeSettlementFamilyAdmissionReservations,
+  releaseSettlementFamilyAdmissionAgent,
   upsertSettlementFamilyAdmissionReservation,
 } from "../dist-ts/src/settlement-family-reservation.js";
 
@@ -72,6 +73,42 @@ test("the first generated retry upgrades a legacy reservation without a generati
   assert.equal(next[0]?.expiresAtMs, 500);
 });
 
+test("a newer release cancels an older generated reservation despite a late receipt lease", () => {
+  const current = reservation({
+    issuedAtMs: 200,
+    expiresAtMs: 800,
+    agentExpiresAtMs: { [follower]: 800 },
+  });
+
+  const next = releaseSettlementFamilyAdmissionAgent([current], follower, 500, 300);
+
+  assert.deepEqual(next, []);
+});
+
+test("a stale release cannot cancel a newer generated reservation", () => {
+  const current = reservation({
+    issuedAtMs: 300,
+    expiresAtMs: 500,
+    agentExpiresAtMs: { [follower]: 500 },
+  });
+
+  const next = releaseSettlementFamilyAdmissionAgent([current], follower, 900, 200);
+
+  assert.deepEqual(next, [current]);
+});
+
+test("same-millisecond registration and release keep the reservation fail-closed", () => {
+  const current = reservation({
+    issuedAtMs: 300,
+    expiresAtMs: 500,
+    agentExpiresAtMs: { [follower]: 500 },
+  });
+
+  const next = releaseSettlementFamilyAdmissionAgent([current], follower, 900, 300);
+
+  assert.deepEqual(next, [current]);
+});
+
 test("an older same-route response cannot append a follower absent from the newer attempt", () => {
   const current = reservation({
     issuedAtMs: 400,
@@ -124,5 +161,9 @@ test("the destination issues registration generation before the cross-region req
   assert.match(
     source,
     /issuedAtMs,[\s\S]*?expiresAtMs: now \+ SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS/,
+  );
+  assert.match(
+    source,
+    /releaseSettlementFamilyAdmissionAgent\([\s\S]*?reservationExpiresAtCutoffMs,[\s\S]*?body\.releaseIssuedAtMs as number,[\s\S]*?\);/,
   );
 });

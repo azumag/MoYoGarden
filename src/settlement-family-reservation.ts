@@ -216,6 +216,7 @@ export function releaseSettlementFamilyAdmissionAgent(
   reservations: readonly SettlementFamilyAdmissionReservation[],
   agentId: string,
   expiresAtCutoffMs: number,
+  releaseIssuedAtMs?: number,
 ): SettlementFamilyAdmissionReservation[] {
   // A release can cross a retry that refreshes the same stable follower's
   // admission lease. Fence at the follower lease rather than the family-wide
@@ -226,11 +227,25 @@ export function releaseSettlementFamilyAdmissionAgent(
   // that was accepted in the same millisecond as an old route was canceled.
   // Keeping that ambiguous slot until its bounded TTL is the fail-closed choice.
   if (agentId.length === 0 || !Number.isFinite(expiresAtCutoffMs)) return [...reservations];
+  const releaseGeneration = typeof releaseIssuedAtMs === "number"
+    && Number.isFinite(releaseIssuedAtMs)
+    && releaseIssuedAtMs > 0
+      ? releaseIssuedAtMs
+      : undefined;
   return reservations.flatMap((reservation) => {
-    if (
-      !reservation.agentIds.includes(agentId)
-      || settlementFamilyAgentLeaseExpiry(reservation, agentId) >= expiresAtCutoffMs
-    ) return [reservation];
+    if (!reservation.agentIds.includes(agentId)) return [reservation];
+    const reservationGeneration = settlementFamilyReservationIssuedAt(reservation);
+    if (releaseGeneration !== undefined && reservationGeneration > 0) {
+      // When both sides carry generations, compare the route attempts directly.
+      // This fixes the case where an old registration response arrives late and
+      // receives a destination-local lease that looks newer than the cancel.
+      // Equality is concurrent at Date.now() resolution and stays fail-closed.
+      if (reservationGeneration >= releaseGeneration) return [reservation];
+    } else if (settlementFamilyAgentLeaseExpiry(reservation, agentId) >= expiresAtCutoffMs) {
+      // Rolling compatibility for legacy reservations/releases without a
+      // generation keeps the existing lease-expiry fence.
+      return [reservation];
+    }
     const trimmed = removeSettlementFamilyReservationAgents(
       reservation,
       new Set([agentId]),

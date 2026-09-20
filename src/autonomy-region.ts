@@ -1629,6 +1629,7 @@ private async releaseSettlementFamilyAdmissionSlot(request: Request): Promise<Re
       normalized.reservations,
       body.agentId as string,
       reservationExpiresAtCutoffMs,
+      body.releaseIssuedAtMs as number,
     );
     if (normalized.changed || released) {
       await this.autonomyState.storage.put(
