@@ -200,41 +200,104 @@ export function upsertSettlementFamilyAdmissionReservation(
   reservations: readonly SettlementFamilyAdmissionReservation[],
   incoming: SettlementFamilyAdmissionReservation,
 ): SettlementFamilyAdmissionReservation[] {
-  const existing = reservations.find((entry) => entry.reservationId === incoming.reservationId);
-  const agentIds = existing === undefined
-    ? [...new Set(incoming.agentIds)]
-    : [...new Set([...existing.agentIds, ...incoming.agentIds])];
-  const existingAgentIds = new Set(existing?.agentIds ?? []);
-  const incomingAgentIds = new Set(incoming.agentIds);
-  const agentExpiresAtMs = Object.fromEntries(agentIds.map((agentId) => {
-    const expiries: number[] = [];
-    if (existing !== undefined && existingAgentIds.has(agentId)) {
-      expiries.push(settlementFamilyAgentLeaseExpiry(existing, agentId));
+  const uniqueIncomingAgentIds = [...new Set(incoming.agentIds)];
+
+  // A follower's admission promise belongs to the stable follower and target
+  // region, not to whichever settled pioneer happened to retry registration.
+  // Keep the current reservation owner stable and treat another pioneer's retry
+  // as a lease refresh. This removes response-order dependence: a delayed older
+  // registration can extend bounded capacity conservatively, but cannot steal
+  // ownership from the route that is already authoritative.
+  const ownerByAgent = new Map<string, number>();
+  for (const [reservationIndex, reservation] of reservations.entries()) {
+    for (const agentId of reservation.agentIds) {
+      const currentIndex = ownerByAgent.get(agentId);
+      if (currentIndex === undefined) {
+        ownerByAgent.set(agentId, reservationIndex);
+        continue;
+      }
+      const current = reservations[currentIndex];
+      if (current === undefined) continue;
+      const currentExpiry = settlementFamilyAgentLeaseExpiry(current, agentId);
+      const candidateExpiry = settlementFamilyAgentLeaseExpiry(reservation, agentId);
+      if (
+        candidateExpiry > currentExpiry
+        || (candidateExpiry === currentExpiry && reservationIndex > currentIndex)
+      ) {
+        ownerByAgent.set(agentId, reservationIndex);
+      }
     }
-    if (incomingAgentIds.has(agentId)) {
-      expiries.push(settlementFamilyAgentLeaseExpiry(incoming, agentId));
+  }
+
+  const leaseUpdatesByReservation = new Map<number, Map<string, number>>();
+  const unownedAgentIds: string[] = [];
+  for (const agentId of uniqueIncomingAgentIds) {
+    const ownerIndex = ownerByAgent.get(agentId);
+    if (ownerIndex === undefined) {
+      unownedAgentIds.push(agentId);
+      continue;
     }
-    return [agentId, Math.max(...expiries)];
-  }));
-  const merged: SettlementFamilyAdmissionReservation = {
-    ...incoming,
+    const owner = reservations[ownerIndex];
+    if (owner === undefined) continue;
+    let updates = leaseUpdatesByReservation.get(ownerIndex);
+    if (updates === undefined) {
+      updates = new Map<string, number>();
+      leaseUpdatesByReservation.set(ownerIndex, updates);
+    }
+    updates.set(
+      agentId,
+      Math.max(
+        settlementFamilyAgentLeaseExpiry(owner, agentId),
+        settlementFamilyAgentLeaseExpiry(incoming, agentId),
+      ),
+    );
+  }
+
+  const next = reservations.map((reservation, reservationIndex) => {
+    const updates = leaseUpdatesByReservation.get(reservationIndex);
+    if (updates === undefined || updates.size === 0) return reservation;
+    const agentExpiresAtMs = Object.fromEntries(reservation.agentIds.map((agentId) => [
+      agentId,
+      updates.get(agentId) ?? settlementFamilyAgentLeaseExpiry(reservation, agentId),
+    ]));
+    return {
+      ...reservation,
+      agentExpiresAtMs,
+      expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
+    };
+  });
+
+  if (unownedAgentIds.length === 0) return next;
+
+  const existingIndex = next.findIndex((entry) => entry.reservationId === incoming.reservationId);
+  if (existingIndex < 0) {
+    const agentExpiresAtMs = Object.fromEntries(unownedAgentIds.map((agentId) => [
+      agentId,
+      settlementFamilyAgentLeaseExpiry(incoming, agentId),
+    ]));
+    return [...next, {
+      ...incoming,
+      agentIds: unownedAgentIds,
+      agentExpiresAtMs,
+      expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
+    }];
+  }
+
+  const existing = next[existingIndex];
+  if (existing === undefined) return next;
+  const agentIds = [...new Set([...existing.agentIds, ...unownedAgentIds])];
+  const unownedSet = new Set(unownedAgentIds);
+  const agentExpiresAtMs = Object.fromEntries(agentIds.map((agentId) => [
+    agentId,
+    unownedSet.has(agentId)
+      ? settlementFamilyAgentLeaseExpiry(incoming, agentId)
+      : settlementFamilyAgentLeaseExpiry(existing, agentId),
+  ]));
+  next[existingIndex] = {
+    ...existing,
     agentIds,
     agentExpiresAtMs,
     expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
   };
-
-  // One stable follower must have one destination-side admission owner. Multiple
-  // settled pioneers can legitimately retry family registration toward the same
-  // region, and the source-side target marker is region-scoped rather than
-  // pioneer-scoped. Without collapsing old reservation owners, the same follower
-  // can remain attached to several reservation IDs until TTL cleanup. Slot
-  // counting deduplicates that state, but releases and diagnostics then have
-  // ambiguous route ownership. Treat the newest successful registration as the
-  // authoritative owner while preserving unrelated siblings in older families.
-  const preserved = reservations.flatMap((reservation) => {
-    if (reservation.reservationId === incoming.reservationId) return [];
-    const trimmed = removeSettlementFamilyReservationAgents(reservation, incomingAgentIds);
-    return trimmed === undefined ? [] : [trimmed];
-  });
-  return [...preserved, merged];
+  return next;
 }
