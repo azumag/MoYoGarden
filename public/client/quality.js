@@ -88,6 +88,7 @@ function tuneAutomaticBalancedProfile(profile, requested) {
     environmentSize: Math.min(profile.environmentSize, 32),
     modelTimeoutMs: networkIsConstrained() ? Math.max(profile.modelTimeoutMs, 12_000) : profile.modelTimeoutMs,
     detailDensity: Math.min(profile.detailDensity, 0.48), lodScale: Math.min(profile.lodScale, 0.74),
+    frameRate: 30,
   };
 }
 
