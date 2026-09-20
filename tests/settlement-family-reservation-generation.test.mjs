@@ -152,6 +152,59 @@ test("a delayed registration cannot resurrect a follower after a newer generated
   assert.equal(settlementFamilyReservedSlots(next, "faction-a"), 0);
 });
 
+test("normalization lets a separate release tombstone fence a stale persisted live row", () => {
+  const tombstone = reservation({
+    agentIds: [],
+    issuedAtMs: 200,
+    expiresAtMs: 500,
+    releaseWatermarks: {
+      [follower]: { issuedAtMs: 300, expiresAtMs: 500 },
+    },
+  });
+  const stalePersisted = reservation({
+    issuedAtMs: 200,
+    expiresAtMs: 450,
+    agentExpiresAtMs: { [follower]: 450 },
+  });
+
+  const normalized = normalizeSettlementFamilyAdmissionReservations(
+    [tombstone, stalePersisted],
+    new Set(),
+    100,
+  );
+
+  assert.equal(normalized.changed, true);
+  assert.equal(settlementFamilyReservedSlots(normalized.reservations, "faction-a"), 0);
+  assert.equal(normalized.reservations.length, 1);
+  assert.deepEqual(normalized.reservations[0]?.agentIds, []);
+  assert.deepEqual(normalized.reservations[0]?.releaseWatermarks, tombstone.releaseWatermarks);
+});
+
+test("normalization preserves a live follower newer than a separate release tombstone", () => {
+  const tombstone = reservation({
+    agentIds: [],
+    issuedAtMs: 200,
+    expiresAtMs: 500,
+    releaseWatermarks: {
+      [follower]: { issuedAtMs: 300, expiresAtMs: 500 },
+    },
+  });
+  const reacquired = reservation({
+    issuedAtMs: 400,
+    expiresAtMs: 700,
+    agentExpiresAtMs: { [follower]: 700 },
+  });
+
+  const normalized = normalizeSettlementFamilyAdmissionReservations(
+    [tombstone, reacquired],
+    new Set(),
+    100,
+  );
+
+  assert.equal(settlementFamilyReservedSlots(normalized.reservations, "faction-a"), 1);
+  assert.ok(normalized.reservations.some((entry) => entry.agentIds.includes(follower)));
+});
+
 test("a registration newer than the release watermark can reserve the follower again", () => {
   const current = reservation({
     issuedAtMs: 200,
