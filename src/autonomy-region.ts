@@ -1719,6 +1719,7 @@ private async reserveSettlementFamilyAdmissions(
   pioneerId: string,
   factionId: string,
   sourceAgentIds: readonly string[],
+  registrationIssuedAtMs: number,
 ): Promise<void> {
   const agentIds = [...new Set(sourceAgentIds.map((agentId) =>
     globalHandoffAgentId(agentId, sourceRegionId)
@@ -1726,6 +1727,9 @@ private async reserveSettlementFamilyAdmissions(
   if (agentIds.length === 0) return;
   const reservationId = `family:${sourceRegionId}:${pioneerId}:${state.regionId}`;
   const now = Date.now();
+  const issuedAtMs = Number.isFinite(registrationIssuedAtMs) && registrationIssuedAtMs > 0
+    ? registrationIssuedAtMs
+    : now;
   await this.autonomyState.blockConcurrencyWhile(async () => {
     const stored = await this.autonomyState.storage.get<unknown>(
       SETTLEMENT_FAMILY_ADMISSION_RESERVATIONS_KEY,
@@ -1740,6 +1744,7 @@ private async reserveSettlementFamilyAdmissions(
         pioneerId,
         factionId,
         agentIds,
+        issuedAtMs,
         expiresAtMs: now + SETTLEMENT_FAMILY_ADMISSION_RESERVATION_TTL_MS,
       },
     );
@@ -1822,6 +1827,7 @@ const familyAdmissionHeadroom = Math.max(
 );
 
       if (familyAdmissionHeadroom <= 0) continue;
+      const registrationIssuedAtMs = Date.now();
       try {
         const response = await this.autonomyStub(sourceRegionId).fetch(new Request(
           `https://moyo.internal${INTERNAL_SETTLEMENT_FAMILY_REGISTER_PATH}`,
@@ -1858,6 +1864,7 @@ if (registeredAgentIds.length > 0) {
     pioneer.id,
     pioneer.factionId,
     registeredAgentIds,
+    registrationIssuedAtMs,
   );
 }
 if (!response.ok) continue;
