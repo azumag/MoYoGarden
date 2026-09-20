@@ -177,11 +177,16 @@ export function releaseSettlementFamilyAdmissionAgent(
   // A release can cross a retry that refreshes the same stable follower's
   // admission lease. Fence at the follower lease rather than the family-wide
   // max expiry so renewing one sibling cannot keep an abandoned sibling slot.
+  // The release cutoff is `releaseIssuedAtMs + leaseTtl`. Treat an exactly equal
+  // lease as concurrent with the release, not older than it: Date.now() only has
+  // millisecond resolution, so deleting equality can erase a fresh registration
+  // that was accepted in the same millisecond as an old route was canceled.
+  // Keeping that ambiguous slot until its bounded TTL is the fail-closed choice.
   if (agentId.length === 0 || !Number.isFinite(expiresAtCutoffMs)) return [...reservations];
   return reservations.flatMap((reservation) => {
     if (
       !reservation.agentIds.includes(agentId)
-      || settlementFamilyAgentLeaseExpiry(reservation, agentId) > expiresAtCutoffMs
+      || settlementFamilyAgentLeaseExpiry(reservation, agentId) >= expiresAtCutoffMs
     ) return [reservation];
     const trimmed = removeSettlementFamilyReservationAgents(
       reservation,

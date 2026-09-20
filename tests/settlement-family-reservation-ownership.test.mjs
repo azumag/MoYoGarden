@@ -156,6 +156,9 @@ test("stale release from the previous pioneer cannot delete the newer follower l
   assert.equal(afterStaleRelease.length, 1);
   assert.deepEqual(afterStaleRelease[0]?.agentIds, [follower]);
 
-  const afterCurrentRelease = releaseSettlementFamilyAdmissionAgent(rerouted, follower, 300);
+  const afterConcurrentRelease = releaseSettlementFamilyAdmissionAgent(rerouted, follower, 300);
+  assert.equal(afterConcurrentRelease.length, 1, "an equal cutoff is ambiguous and must preserve the current lease");
+
+  const afterCurrentRelease = releaseSettlementFamilyAdmissionAgent(rerouted, follower, 301);
   assert.deepEqual(afterCurrentRelease, []);
 });
