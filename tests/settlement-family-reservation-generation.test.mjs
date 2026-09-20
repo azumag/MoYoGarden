@@ -208,6 +208,37 @@ test("an older same-route response cannot append a follower absent from the newe
   assert.deepEqual(next, [current]);
 });
 
+test("a retry for one sibling does not advance another sibling's release generation", () => {
+  const current = reservation({
+    agentIds: [follower, newcomer],
+    issuedAtMs: 200,
+    expiresAtMs: 500,
+    agentExpiresAtMs: { [follower]: 500, [newcomer]: 500 },
+  });
+  const followerRetry = reservation({
+    agentIds: [follower],
+    issuedAtMs: 400,
+    expiresAtMs: 900,
+  });
+
+  const renewed = upsertSettlementFamilyAdmissionReservation([current], followerRetry);
+
+  assert.equal(renewed[0]?.issuedAtMs, 400);
+  assert.deepEqual(renewed[0]?.agentIssuedAtMs, {
+    [follower]: 400,
+    [newcomer]: 200,
+  });
+
+  const released = releaseSettlementFamilyAdmissionAgent(renewed, newcomer, 800, 300);
+
+  assert.deepEqual(released[0]?.agentIds, [follower]);
+  assert.equal(released[0]?.agentExpiresAtMs?.[follower], 900);
+  assert.deepEqual(released[0]?.releaseWatermarks?.[newcomer], {
+    issuedAtMs: 300,
+    expiresAtMs: 800,
+  });
+});
+
 test("duplicate repair prefers route generation over a later destination lease", () => {
   const newerGeneration = reservation({
     issuedAtMs: 400,
