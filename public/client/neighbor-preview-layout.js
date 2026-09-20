@@ -23,21 +23,52 @@ function axialKey(q, r) {
   return `${q},${r}`;
 }
 
+function originKey(origin) {
+  return `${origin.x},${origin.y}`;
+}
+
 export function buildNeighborPreviewPlacements(regions, centerRegionId) {
   if (!Array.isArray(regions) || typeof centerRegionId !== "string") return [];
-  const center = regions.find((entry) => entry?.id === centerRegionId);
-  if (!center || !finiteOrigin(center.physicalOrigin) || !finiteOrigin(center.hexOrigin)) return [];
 
-  return regions.flatMap((entry) => {
+  // Hex preview placement is an all-or-nothing topology contract. Rendering a
+  // partially described region can leave it unstitched, while two distinct
+  // region IDs claiming the same axial/origin slot can put whole preview chunks
+  // on top of each other. Keep the legacy rectangular preview intact instead of
+  // upgrading from ambiguous metadata during rolling deploys or partial reads.
+  const seenRegionIds = new Set();
+  const seenAxial = new Set();
+  const seenPhysicalOrigins = new Set();
+  const seenHexOrigins = new Set();
+  for (const entry of regions) {
     if (
       !entry
-      || entry.id === centerRegionId
       || typeof entry.id !== "string"
+      || entry.id.length === 0
+      || !finiteAxial(entry.axial)
       || !finiteOrigin(entry.physicalOrigin)
       || !finiteOrigin(entry.hexOrigin)
-    ) {
-      return [];
-    }
+    ) return [];
+
+    const axial = axialKey(entry.axial.q, entry.axial.r);
+    const physicalOrigin = originKey(entry.physicalOrigin);
+    const hexOrigin = originKey(entry.hexOrigin);
+    if (
+      seenRegionIds.has(entry.id)
+      || seenAxial.has(axial)
+      || seenPhysicalOrigins.has(physicalOrigin)
+      || seenHexOrigins.has(hexOrigin)
+    ) return [];
+    seenRegionIds.add(entry.id);
+    seenAxial.add(axial);
+    seenPhysicalOrigins.add(physicalOrigin);
+    seenHexOrigins.add(hexOrigin);
+  }
+
+  const center = regions.find((entry) => entry.id === centerRegionId);
+  if (!center) return [];
+
+  return regions.flatMap((entry) => {
+    if (entry.id === centerRegionId) return [];
     return [{
       regionId: entry.id,
       axial: entry.axial,

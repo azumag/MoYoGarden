@@ -109,3 +109,46 @@ test("preview seam discovery stays bounded for a radius-4 far-terrain window", (
     `axial metadata should be indexed once per preview instead of rescanned pairwise; reads=${fixture.axialReads()}`,
   );
 });
+
+test("hex preview upgrade fails closed when a region is missing axial identity", () => {
+  const malformed = topology.map((entry) => ({
+    ...entry,
+    axial: entry.id === "garden-3" ? undefined : entry.axial,
+  }));
+
+  assert.deepEqual(
+    buildNeighborPreviewPlacements(malformed, "garden-1"),
+    [],
+    "partial topology must keep the legacy preview instead of rendering an unstitched hex chunk",
+  );
+});
+
+test("hex preview upgrade rejects two region IDs claiming the same axial slot", () => {
+  const ambiguous = [
+    ...topology,
+    {
+      id: "hex-q1-r0",
+      axial: { q: 1, r: 0 },
+      physicalOrigin: { x: 120, y: 0 },
+      hexOrigin: { x: regularHexWidth * 2, y: 0 },
+    },
+  ];
+
+  assert.deepEqual(
+    buildNeighborPreviewPlacements(ambiguous, "garden-1"),
+    [],
+    "ambiguous axial ownership must not create overlapping or contradictory preview chunks",
+  );
+});
+
+test("hex preview upgrade rejects ambiguous physical staging slots", () => {
+  const ambiguous = topology.map((entry) => entry.id === "garden-3"
+    ? { ...entry, physicalOrigin: { ...topology[1].physicalOrigin } }
+    : entry);
+
+  assert.deepEqual(
+    buildNeighborPreviewPlacements(ambiguous, "garden-1"),
+    [],
+    "two chunks sharing one rectangular staging slot cannot be assigned safely before hex placement",
+  );
+});
