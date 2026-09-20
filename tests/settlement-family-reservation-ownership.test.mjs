@@ -9,6 +9,7 @@ import {
 
 const follower = "agent-global:garden-1:follower";
 const sibling = "agent-global:garden-1:sibling";
+const newcomer = "agent-global:garden-1:newcomer";
 
 function reservation({
   reservationId,
@@ -28,7 +29,7 @@ function reservation({
   };
 }
 
-test("new family registration gives each follower one authoritative reservation owner", () => {
+test("another pioneer retry refreshes the follower lease without changing its reservation owner", () => {
   const existing = reservation({
     reservationId: "family:garden-1:pioneer-a:hex-q1-r0",
     pioneerId: "pioneer-a",
@@ -48,18 +49,39 @@ test("new family registration gives each follower one authoritative reservation 
 
   const next = upsertSettlementFamilyAdmissionReservation([existing], incoming);
 
-  assert.equal(
-    next.flatMap((entry) => entry.agentIds).filter((agentId) => agentId === follower).length,
-    1,
-    "the same stable follower must not remain owned by two pioneer reservations",
-  );
+  assert.equal(next.length, 1, "a retry must not create a second reservation owner for the follower");
+  assert.equal(next[0]?.reservationId, existing.reservationId);
+  assert.deepEqual(next[0]?.agentIds, [follower, sibling]);
+  assert.deepEqual(next[0]?.agentExpiresAtMs, {
+    [follower]: 300,
+    [sibling]: 210,
+  });
+  assert.equal(next[0]?.expiresAtMs, 300);
+  assert.equal(settlementFamilyReservedSlots(next, "faction-a"), 2);
+});
+
+test("a retry can still reserve an unowned follower while keeping an existing owner stable", () => {
+  const existing = reservation({
+    reservationId: "family:garden-1:pioneer-a:hex-q1-r0",
+    pioneerId: "pioneer-a",
+    agentIds: [follower],
+    expiresAtMs: 240,
+  });
+  const incoming = reservation({
+    reservationId: "family:garden-1:pioneer-b:hex-q1-r0",
+    pioneerId: "pioneer-b",
+    agentIds: [follower, newcomer],
+    expiresAtMs: 300,
+  });
+
+  const next = upsertSettlementFamilyAdmissionReservation([existing], incoming);
+
   const oldOwner = next.find((entry) => entry.reservationId === existing.reservationId);
-  assert.deepEqual(oldOwner?.agentIds, [sibling]);
-  assert.equal(oldOwner?.expiresAtMs, 210, "removing the moved follower should recompute sibling lease expiry");
-  assert.deepEqual(oldOwner?.agentExpiresAtMs, { [sibling]: 210 });
   const newOwner = next.find((entry) => entry.reservationId === incoming.reservationId);
-  assert.deepEqual(newOwner?.agentIds, [follower]);
-  assert.equal(newOwner?.agentExpiresAtMs?.[follower], 300);
+  assert.deepEqual(oldOwner?.agentIds, [follower]);
+  assert.equal(oldOwner?.agentExpiresAtMs?.[follower], 300);
+  assert.deepEqual(newOwner?.agentIds, [newcomer]);
+  assert.equal(newOwner?.agentExpiresAtMs?.[newcomer], 300);
   assert.equal(settlementFamilyReservedSlots(next, "faction-a"), 2);
 });
 
@@ -134,7 +156,7 @@ test("normalization resolves equal legacy leases to the later appended owner", (
   assert.deepEqual(normalized.reservations.map((entry) => entry.reservationId), [second.reservationId]);
 });
 
-test("stale release from the previous pioneer cannot delete the newer follower lease", () => {
+test("stale release from a previous pioneer cannot delete a follower lease refreshed by another retry", () => {
   const oldOwner = reservation({
     reservationId: "family:garden-1:pioneer-a:hex-q1-r0",
     pioneerId: "pioneer-a",
@@ -148,17 +170,18 @@ test("stale release from the previous pioneer cannot delete the newer follower l
     expiresAtMs: 300,
   });
 
-  const rerouted = upsertSettlementFamilyAdmissionReservation([oldOwner], incoming);
-  assert.equal(rerouted.length, 1, "the old empty reservation should be removed during ownership transfer");
-  assert.equal(rerouted[0]?.reservationId, incoming.reservationId);
+  const refreshed = upsertSettlementFamilyAdmissionReservation([oldOwner], incoming);
+  assert.equal(refreshed.length, 1);
+  assert.equal(refreshed[0]?.reservationId, oldOwner.reservationId);
+  assert.equal(refreshed[0]?.agentExpiresAtMs?.[follower], 300);
 
-  const afterStaleRelease = releaseSettlementFamilyAdmissionAgent(rerouted, follower, 240);
+  const afterStaleRelease = releaseSettlementFamilyAdmissionAgent(refreshed, follower, 240);
   assert.equal(afterStaleRelease.length, 1);
   assert.deepEqual(afterStaleRelease[0]?.agentIds, [follower]);
 
-  const afterConcurrentRelease = releaseSettlementFamilyAdmissionAgent(rerouted, follower, 300);
+  const afterConcurrentRelease = releaseSettlementFamilyAdmissionAgent(refreshed, follower, 300);
   assert.equal(afterConcurrentRelease.length, 1, "an equal cutoff is ambiguous and must preserve the current lease");
 
-  const afterCurrentRelease = releaseSettlementFamilyAdmissionAgent(rerouted, follower, 301);
+  const afterCurrentRelease = releaseSettlementFamilyAdmissionAgent(refreshed, follower, 301);
   assert.deepEqual(afterCurrentRelease, []);
 });
