@@ -70,6 +70,12 @@ test('custom settings affect actual rendering budgets without mutating the profi
   assert.equal(baseline.pixelRatioCap, 1.65);
 });
 
+test('automatic frame-rate budgets survive graphics overrides unless the user explicitly overrides fps', () => {
+  const constrained = { ...baseline, frameRate: 30 };
+  assert.equal(applyGraphicsOverrides(constrained, {}).frameRate, 30);
+  assert.equal(applyGraphicsOverrides(constrained, { fps: '60' }).frameRate, 60);
+});
+
 test('safe URL cannot be made heavy by saved advanced overrides', () => {
   const low = { ...baseline, id: 'balanced', label: 'SAFE', pixelRatioCap: 1 };
   const value = applyGraphicsOverrides(low, { resolution: '2', shadows: '2048', water: 'ripples', vegetation: 'full', fps: '60' }, true);
