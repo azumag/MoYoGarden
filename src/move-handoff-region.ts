@@ -22,6 +22,20 @@ interface RuntimeAccess {
 const COMMAND_PATH = /^\/api\/agents\/([^/]+)\/commands$/;
 const STABLE_COMMAND_ID = /^[a-z0-9][a-z0-9:._-]{0,119}$/i;
 
+/**
+ * Scope the idempotent handoff journal to both the moving BOT and command.
+ * Command IDs are only required to be stable per command stream, so two BOTs
+ * can legitimately receive the same command ID. Encoding both components keeps
+ * those independent crossings from resuming the same outgoing journal record.
+ */
+export function moveHandoffTransferId(agentId: string, commandId: string): string {
+  return `move:${encodeURIComponent(agentId)}:${encodeURIComponent(commandId)}`;
+}
+
+function legacyMoveHandoffTransferId(commandId: string): string {
+  return `move:${commandId}`;
+}
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -162,23 +176,29 @@ export class RegionDurableObject extends HandoffRegionDurableObject {
     if (assignmentError !== undefined) return assignmentError;
     const access = runtimeAccess(this);
     const state: WorldState = access.runtime.snapshot();
-    const transferId = `move:${commandId}`;
+    const transferId = moveHandoffTransferId(agentId, commandId);
     const agent = state.agents.find((entry) => entry.id === agentId);
 
     if (agent === undefined) {
       // Successful handoff removes the source agent before the client receives
-      // the response. Retrying the same command therefore resumes by transfer
-      // ID before falling back to the ordinary "unknown agent" response.
-      const resumed = await super.fetch(this.localHandoffRequest(request, { transferId }));
-      if (resumed.ok) {
-        return json({
-          accepted: true,
-          commandId,
-          tick: state.tick,
-          handoff: await resumed.json() as unknown,
-        }, 202);
+      // the response. Retrying the same command therefore resumes by the new
+      // agent-scoped transfer ID. During a rolling deployment, fall back to the
+      // legacy command-only ID so handoffs already reserved by an older worker
+      // can still finish instead of stranding a detached BOT.
+      for (const resumeTransferId of [transferId, legacyMoveHandoffTransferId(commandId)]) {
+        const resumed = await super.fetch(this.localHandoffRequest(request, {
+          transferId: resumeTransferId,
+        }));
+        if (resumed.ok) {
+          return json({
+            accepted: true,
+            commandId,
+            tick: state.tick,
+            handoff: await resumed.json() as unknown,
+          }, 202);
+        }
+        if (resumed.status !== 400) return resumed;
       }
-      if (resumed.status !== 400) return resumed;
       return undefined;
     }
 
