@@ -107,6 +107,17 @@ function sameSettlementFamilyReservationIdentity(
     && left.factionId === right.factionId;
 }
 
+function settlementFamilyReservationIdentityKey(
+  reservation: SettlementFamilyAdmissionReservation,
+): string {
+  return JSON.stringify([
+    reservation.reservationId,
+    reservation.sourceRegionId,
+    reservation.pioneerId,
+    reservation.factionId,
+  ]);
+}
+
 function settlementFamilyReservationIssuedAt(
   reservation: SettlementFamilyAdmissionReservation,
 ): number {
@@ -307,6 +318,46 @@ export function normalizeSettlementFamilyAdmissionReservations(
     reservations.push(normalizedReservation);
   }
 
+  // A release-only tombstone can legitimately be persisted as a separate row
+  // from a stale live row during rolling deployments or recovery. Upsert already
+  // consults release watermarks, but ordinary startup normalization used to leave
+  // that stale live row untouched because it had no duplicate live owner. Apply
+  // the same generation fence across rows of one route identity so a delayed
+  // persisted registration cannot resurrect a released capacity slot.
+  const strongestReleaseWatermarkByAgent = new Map<string, SettlementFamilyReleaseWatermark>();
+  for (const reservation of reservations) {
+    const identityKey = settlementFamilyReservationIdentityKey(reservation);
+    for (const [agentId, watermark] of Object.entries(reservation.releaseWatermarks ?? {})) {
+      const key = `${identityKey}\u0000${agentId}`;
+      const current = strongestReleaseWatermarkByAgent.get(key);
+      if (
+        current === undefined
+        || watermark.issuedAtMs > current.issuedAtMs
+        || (
+          watermark.issuedAtMs === current.issuedAtMs
+          && watermark.expiresAtMs > current.expiresAtMs
+        )
+      ) {
+        strongestReleaseWatermarkByAgent.set(key, watermark);
+      }
+    }
+  }
+
+  const releaseFencedReservations = reservations.flatMap((reservation) => {
+    if (reservation.agentIds.length === 0) return [reservation];
+    const identityKey = settlementFamilyReservationIdentityKey(reservation);
+    const staleAgentIds = new Set(reservation.agentIds.filter((agentId) => {
+      const watermark = strongestReleaseWatermarkByAgent.get(`${identityKey}\u0000${agentId}`);
+      if (watermark === undefined) return false;
+      const issuedAtMs = settlementFamilyAgentIssuedAt(reservation, agentId);
+      return issuedAtMs === 0 || issuedAtMs <= watermark.issuedAtMs;
+    }));
+    if (staleAgentIds.size === 0) return [reservation];
+    changed = true;
+    const trimmed = removeSettlementFamilyReservationAgents(reservation, staleAgentIds);
+    return trimmed === undefined ? [] : [trimmed];
+  });
+
   // Rolling deployments can leave duplicate follower ownership persisted by an
   // older writer even after new registrations have switched to single-owner
   // upserts. Repair that state during ordinary normalization instead of waiting
@@ -319,7 +370,7 @@ export function normalizeSettlementFamilyAdmissionReservations(
     issuedAtMs: number;
     expiresAtMs: number;
   }>();
-  for (const [reservationIndex, reservation] of reservations.entries()) {
+  for (const [reservationIndex, reservation] of releaseFencedReservations.entries()) {
     for (const agentId of reservation.agentIds) {
       const issuedAtMs = settlementFamilyAgentIssuedAt(reservation, agentId);
       const expiresAtMs = settlementFamilyAgentLeaseExpiry(reservation, agentId);
@@ -339,7 +390,7 @@ export function normalizeSettlementFamilyAdmissionReservations(
     }
   }
 
-  const singleOwnerReservations = reservations.flatMap((reservation, reservationIndex) => {
+  const singleOwnerReservations = releaseFencedReservations.flatMap((reservation, reservationIndex) => {
     const duplicateAgentIds = new Set(reservation.agentIds.filter((agentId) =>
       ownerByAgent.get(agentId)?.reservationIndex !== reservationIndex
     ));
