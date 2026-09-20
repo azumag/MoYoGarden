@@ -164,7 +164,10 @@
     window.__MOYO_PBR_BOOT__ = Object.freeze({ version: VERSION, startedAt: performance.now() });
     refreshShellStyle();
     preloadRuntime();
-    await loadShellUi();
+    // Sidebar/popover helpers are progressive shell UX. A slow helper fetch must
+    // never consume the renderer's startup watchdog or delay the core module
+    // graph, so start them with the same commit cache key but do not gate boot.
+    void loadShellUi();
 
     if (compatibilityRequested) {
       setMessage("軽量セーフモードで起動しています", "描画負荷を抑えて3Dワールドを起動します");
