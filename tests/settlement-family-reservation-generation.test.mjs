@@ -239,6 +239,48 @@ test("a retry for one sibling does not advance another sibling's release generat
   });
 });
 
+test("per-follower generations compact after sibling retries reconverge", () => {
+  const divergent = reservation({
+    agentIds: [follower, newcomer],
+    issuedAtMs: 400,
+    agentIssuedAtMs: { [follower]: 400, [newcomer]: 200 },
+    expiresAtMs: 600,
+    agentExpiresAtMs: { [follower]: 600, [newcomer]: 500 },
+  });
+  const siblingRetry = reservation({
+    agentIds: [newcomer],
+    issuedAtMs: 400,
+    expiresAtMs: 700,
+  });
+
+  const next = upsertSettlementFamilyAdmissionReservation([divergent], siblingRetry);
+
+  assert.equal(next[0]?.issuedAtMs, 400);
+  assert.equal(next[0]?.agentIssuedAtMs, undefined);
+  assert.equal(next[0]?.agentExpiresAtMs?.[follower], 600);
+  assert.equal(next[0]?.agentExpiresAtMs?.[newcomer], 700);
+});
+
+test("normalization removes persisted generation maps once all live followers match the route generation", () => {
+  const redundant = reservation({
+    agentIds: [follower, newcomer],
+    issuedAtMs: 400,
+    agentIssuedAtMs: { [follower]: 400, [newcomer]: 400 },
+    expiresAtMs: 700,
+    agentExpiresAtMs: { [follower]: 600, [newcomer]: 700 },
+  });
+
+  const normalized = normalizeSettlementFamilyAdmissionReservations(
+    [redundant],
+    new Set(),
+    100,
+  );
+
+  assert.equal(normalized.changed, true);
+  assert.equal(normalized.reservations[0]?.agentIssuedAtMs, undefined);
+  assert.deepEqual(normalized.reservations[0]?.agentIds, [follower, newcomer]);
+});
+
 test("duplicate repair prefers route generation over a later destination lease", () => {
   const newerGeneration = reservation({
     issuedAtMs: 400,
