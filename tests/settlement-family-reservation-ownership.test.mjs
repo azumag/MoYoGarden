@@ -99,10 +99,14 @@ test("normalization repairs duplicate follower ownership left by older writers",
   assert.deepEqual(repairedOldOwner?.agentIds, [sibling]);
   assert.equal(repairedOldOwner?.expiresAtMs, 260);
   assert.deepEqual(repairedOldOwner?.agentExpiresAtMs, { [sibling]: 260 });
+  const repairedNewOwner = normalized.reservations.find(
+    (entry) => entry.reservationId === newerOwner.reservationId,
+  );
+  assert.equal(repairedNewOwner?.expiresAtMs, 300);
   assert.equal(
-    normalized.reservations.find((entry) => entry.reservationId === newerOwner.reservationId)
-      ?.agentExpiresAtMs?.[follower],
-    300,
+    repairedNewOwner?.agentExpiresAtMs,
+    undefined,
+    "legacy reservations should keep using family-wide expiry as the per-agent fallback",
   );
 });
 
