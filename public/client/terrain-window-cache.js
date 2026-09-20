@@ -145,16 +145,30 @@ export function mergeLiveTerrainWindow(terrainPayload, livePayload) {
 export function terrainWindowTilesChanged(previousPayload, nextPayload, centerRegionId) {
   if (previousPayload === nextPayload) return false;
   if (!Array.isArray(previousPayload?.chunks) || !Array.isArray(nextPayload?.chunks)) return true;
+  const previousVisible = previousPayload.chunks.filter((chunk) => chunk?.regionId !== centerRegionId);
+  const nextVisible = nextPayload.chunks.filter((chunk) => chunk?.regionId !== centerRegionId);
   const previousByRegion = new Map(
-    previousPayload.chunks
+    previousVisible
       .filter((chunk) => typeof chunk?.regionId === "string")
       .map((chunk) => [chunk.regionId, chunk]),
   );
-  const nextVisible = nextPayload.chunks.filter((chunk) => chunk?.regionId !== centerRegionId);
-  const previousVisibleCount = previousPayload.chunks.filter((chunk) => chunk?.regionId !== centerRegionId).length;
-  if (nextVisible.length !== previousVisibleCount) return true;
-  return nextVisible.some((chunk) => {
-    const previous = previousByRegion.get(chunk?.regionId);
-    return !previous || previous.state?.tiles !== chunk?.state?.tiles;
-  });
+  const nextByRegion = new Map(
+    nextVisible
+      .filter((chunk) => typeof chunk?.regionId === "string")
+      .map((chunk) => [chunk.regionId, chunk]),
+  );
+  // Neighbor preview identity is the region set, not the raw chunk count. A
+  // malformed window can replace one missing neighbor with a duplicate of
+  // another and keep the same array length. Rebuild fail-closed in that case so
+  // a stale preview for the vanished region cannot stay rendered indefinitely.
+  if (
+    previousByRegion.size !== previousVisible.length
+    || nextByRegion.size !== nextVisible.length
+    || nextByRegion.size !== previousByRegion.size
+  ) return true;
+  for (const [regionId, chunk] of nextByRegion) {
+    const previous = previousByRegion.get(regionId);
+    if (!previous || previous.state?.tiles !== chunk?.state?.tiles) return true;
+  }
+  return false;
 }

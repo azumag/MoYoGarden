@@ -305,3 +305,20 @@ test("unchanged newer live terrain reuses cached tiles and can skip a far terrai
   assert.notEqual(changed.chunks[1].state.tiles, neighborTiles);
   assert.equal(module.terrainWindowTilesChanged(merged, changed, "garden-1"), true);
 });
+
+test("duplicate neighbor chunks cannot hide a missing region from the redraw detector", async () => {
+  const module = await import("../public/client/terrain-window-cache.js");
+  const eastTiles = [{ x: 8, y: 8, terrain: "forest", elevation: 0.61 }];
+  const northEastTiles = [{ x: 9, y: 8, terrain: "plain", elevation: 0.44 }];
+  const center = { regionId: "garden-1", state: { tiles: [] } };
+  const east = { regionId: "hex-q1-r0", state: { tiles: eastTiles } };
+  const northEast = { regionId: "hex-q1-r-1", state: { tiles: northEastTiles } };
+  const previous = { chunks: [center, east, northEast] };
+  const malformedNext = { chunks: [center, east, { ...east }] };
+
+  assert.equal(
+    module.terrainWindowTilesChanged(previous, malformedNext, "garden-1"),
+    true,
+    "same-length duplicate chunks must rebuild so a vanished hex neighbor cannot remain rendered",
+  );
+});
