@@ -5,10 +5,24 @@ export interface SettlementFamilyAdmissionReservation {
   factionId: string;
   agentIds: string[];
   expiresAtMs: number;
+  // Per-follower lease expiry lets one retry renew its own capacity promise
+  // without keeping canceled siblings reserved for the whole family TTL.
+  // Optional for persisted reservations written by older deployments.
+  agentExpiresAtMs?: Record<string, number>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAgentExpiryMap(value: unknown): value is Record<string, number> {
+  return isRecord(value)
+    && Object.entries(value).every(([agentId, expiresAtMs]) => (
+      agentId.length > 0
+      && typeof expiresAtMs === "number"
+      && Number.isFinite(expiresAtMs)
+      && expiresAtMs > 0
+    ));
 }
 
 function isReservation(value: unknown): value is SettlementFamilyAdmissionReservation {
@@ -20,7 +34,18 @@ function isReservation(value: unknown): value is SettlementFamilyAdmissionReserv
     && Array.isArray(value.agentIds) && value.agentIds.length > 0
     && value.agentIds.every((agentId) => typeof agentId === "string" && agentId.length > 0)
     && typeof value.expiresAtMs === "number" && Number.isFinite(value.expiresAtMs)
-    && value.expiresAtMs > 0;
+    && value.expiresAtMs > 0
+    && (value.agentExpiresAtMs === undefined || isAgentExpiryMap(value.agentExpiresAtMs));
+}
+
+function settlementFamilyAgentLeaseExpiry(
+  reservation: SettlementFamilyAdmissionReservation,
+  agentId: string,
+): number {
+  const perAgentExpiry = reservation.agentExpiresAtMs?.[agentId];
+  return typeof perAgentExpiry === "number" && Number.isFinite(perAgentExpiry) && perAgentExpiry > 0
+    ? perAgentExpiry
+    : reservation.expiresAtMs;
 }
 
 export function normalizeSettlementFamilyAdmissionReservations(
@@ -32,21 +57,46 @@ export function normalizeSettlementFamilyAdmissionReservations(
   let changed = stored !== undefined && !Array.isArray(stored);
   const reservations: SettlementFamilyAdmissionReservation[] = [];
   for (const value of input) {
-    if (!isReservation(value) || value.expiresAtMs <= now) {
+    if (!isReservation(value)) {
       changed = true;
       continue;
     }
-    const pendingAgentIds = [...new Set(value.agentIds)]
-      .filter((agentId) => !presentAgentIds.has(agentId));
+    const uniqueAgentIds = [...new Set(value.agentIds)];
+    const pendingAgentIds = uniqueAgentIds.filter((agentId) => (
+      !presentAgentIds.has(agentId)
+      && settlementFamilyAgentLeaseExpiry(value, agentId) > now
+    ));
     if (pendingAgentIds.length === 0) {
       changed = true;
       continue;
     }
+
+    const normalizedExpiryByAgent = value.agentExpiresAtMs === undefined
+      ? undefined
+      : Object.fromEntries(pendingAgentIds.map((agentId) => [
+          agentId,
+          settlementFamilyAgentLeaseExpiry(value, agentId),
+        ]));
+    const expiresAtMs = normalizedExpiryByAgent === undefined
+      ? value.expiresAtMs
+      : Math.max(...Object.values(normalizedExpiryByAgent));
     if (
       pendingAgentIds.length !== value.agentIds.length
       || pendingAgentIds.some((agentId, index) => agentId !== value.agentIds[index])
+      || expiresAtMs !== value.expiresAtMs
+      || (
+        value.agentExpiresAtMs !== undefined
+        && Object.keys(value.agentExpiresAtMs).length !== pendingAgentIds.length
+      )
     ) changed = true;
-    reservations.push({ ...value, agentIds: pendingAgentIds });
+    reservations.push({
+      ...value,
+      agentIds: pendingAgentIds,
+      expiresAtMs,
+      ...(normalizedExpiryByAgent === undefined
+        ? {}
+        : { agentExpiresAtMs: normalizedExpiryByAgent }),
+    });
   }
   return { reservations, changed };
 }
@@ -69,17 +119,31 @@ export function releaseSettlementFamilyAdmissionAgent(
   expiresAtCutoffMs: number,
 ): SettlementFamilyAdmissionReservation[] {
   // A release can cross a retry that refreshes the same stable follower's
-  // admission lease. Refuse to erase any promise renewed after the source
-  // issued this release; a bounded stale reservation is safer than silently
-  // overbooking destination housing/food capacity.
+  // admission lease. Fence at the follower lease rather than the family-wide
+  // max expiry so renewing one sibling cannot keep an abandoned sibling slot.
   if (agentId.length === 0 || !Number.isFinite(expiresAtCutoffMs)) return [...reservations];
   return reservations.flatMap((reservation) => {
     if (
       !reservation.agentIds.includes(agentId)
-      || reservation.expiresAtMs > expiresAtCutoffMs
+      || settlementFamilyAgentLeaseExpiry(reservation, agentId) > expiresAtCutoffMs
     ) return [reservation];
     const agentIds = reservation.agentIds.filter((entry) => entry !== agentId);
-    return agentIds.length > 0 ? [{ ...reservation, agentIds }] : [];
+    if (agentIds.length === 0) return [];
+    const agentExpiresAtMs = reservation.agentExpiresAtMs === undefined
+      ? undefined
+      : Object.fromEntries(agentIds.map((entry) => [
+          entry,
+          settlementFamilyAgentLeaseExpiry(reservation, entry),
+        ]));
+    const expiresAtMs = agentExpiresAtMs === undefined
+      ? reservation.expiresAtMs
+      : Math.max(...Object.values(agentExpiresAtMs));
+    return [{
+      ...reservation,
+      agentIds,
+      expiresAtMs,
+      ...(agentExpiresAtMs === undefined ? {} : { agentExpiresAtMs }),
+    }];
   });
 }
 
@@ -88,12 +152,26 @@ export function upsertSettlementFamilyAdmissionReservation(
   incoming: SettlementFamilyAdmissionReservation,
 ): SettlementFamilyAdmissionReservation[] {
   const existing = reservations.find((entry) => entry.reservationId === incoming.reservationId);
-  const merged = existing === undefined
-    ? { ...incoming, agentIds: [...new Set(incoming.agentIds)] }
-    : {
-        ...incoming,
-        agentIds: [...new Set([...existing.agentIds, ...incoming.agentIds])],
-        expiresAtMs: Math.max(existing.expiresAtMs, incoming.expiresAtMs),
-      };
+  const agentIds = existing === undefined
+    ? [...new Set(incoming.agentIds)]
+    : [...new Set([...existing.agentIds, ...incoming.agentIds])];
+  const existingAgentIds = new Set(existing?.agentIds ?? []);
+  const incomingAgentIds = new Set(incoming.agentIds);
+  const agentExpiresAtMs = Object.fromEntries(agentIds.map((agentId) => {
+    const expiries: number[] = [];
+    if (existing !== undefined && existingAgentIds.has(agentId)) {
+      expiries.push(settlementFamilyAgentLeaseExpiry(existing, agentId));
+    }
+    if (incomingAgentIds.has(agentId)) {
+      expiries.push(settlementFamilyAgentLeaseExpiry(incoming, agentId));
+    }
+    return [agentId, Math.max(...expiries)];
+  }));
+  const merged: SettlementFamilyAdmissionReservation = {
+    ...incoming,
+    agentIds,
+    agentExpiresAtMs,
+    expiresAtMs: Math.max(...Object.values(agentExpiresAtMs)),
+  };
   return [...reservations.filter((entry) => entry.reservationId !== incoming.reservationId), merged];
 }

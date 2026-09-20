@@ -51,6 +51,46 @@ test("family reservation retries are idempotent and shared capacity counts uniqu
     "agent-global:garden-1:infant",
   ]);
   assert.equal(retried[0].expiresAtMs, 30_000);
+  assert.deepEqual(retried[0].agentExpiresAtMs, {
+    "agent-global:garden-1:adult": 30_000,
+    "agent-global:garden-1:infant": 30_000,
+  });
   assert.equal(settlementFamilyReservedSlots(duplicated, "faction-a"), 2);
   assert.equal(settlementFamilyReservedSlots(duplicated, "faction-b"), 0);
+});
+
+test("retrying one follower renews only that follower lease", () => {
+  const adult = "agent-global:garden-1:adult";
+  const infant = "agent-global:garden-1:infant";
+  const retried = upsertSettlementFamilyAdmissionReservation(
+    [reservation({ expiresAtMs: 20_000 })],
+    reservation({ agentIds: [adult], expiresAtMs: 30_000 }),
+  );
+  assert.deepEqual(retried[0].agentExpiresAtMs, {
+    [adult]: 30_000,
+    [infant]: 20_000,
+  });
+  assert.equal(retried[0].expiresAtMs, 30_000);
+});
+
+test("normalization expires stale followers independently within one family reservation", () => {
+  const adult = "agent-global:garden-1:adult";
+  const infant = "agent-global:garden-1:infant";
+  const normalized = normalizeSettlementFamilyAdmissionReservations(
+    [reservation({
+      expiresAtMs: 20_000,
+      agentExpiresAtMs: {
+        [adult]: 9_000,
+        [infant]: 20_000,
+      },
+    })],
+    new Set(),
+    10_000,
+  );
+  assert.equal(normalized.changed, true);
+  assert.deepEqual(normalized.reservations, [reservation({
+    agentIds: [infant],
+    expiresAtMs: 20_000,
+    agentExpiresAtMs: { [infant]: 20_000 },
+  })]);
 });
