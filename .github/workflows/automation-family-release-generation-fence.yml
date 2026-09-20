@@ -1,5 +1,6 @@
 name: Apply family release generation fence
 
+# One-shot bounded product patch; removed by the successful job.
 on:
   push:
     branches:
