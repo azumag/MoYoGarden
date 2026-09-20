@@ -27,13 +27,14 @@ test("bootstrap loader refreshes shell and runtime assets from deployed commit",
   const resolve = boot.indexOf("VERSION = await resolveAssetVersion()");
   const shell = boot.indexOf("refreshShellStyle();", resolve);
   const preload = boot.indexOf("preloadRuntime();", resolve);
-  const shellUi = boot.indexOf("await loadShellUi();", resolve);
+  const shellUi = boot.indexOf("void loadShellUi();", resolve);
   const app = boot.indexOf("moduleScript.src = `/app.js?v=${VERSION}`", resolve);
   assert.ok(resolve >= 0);
   assert.ok(shell > resolve, "shell CSS refresh must wait for deployed commit lookup");
   assert.ok(preload > shell, "runtime preloads must use the deployed commit cache key");
-  assert.ok(shellUi > preload, "shell UI helpers must load from the same deployed commit");
+  assert.ok(shellUi > preload, "shell UI helpers must start with the same deployed commit");
   assert.ok(app > shellUi, "app module must use the same resolved commit cache key");
+  assert.doesNotMatch(boot, /await loadShellUi\(\)/, "progressive shell helpers must not gate renderer startup");
 });
 
 test("commit lookup fails soft to the packaged release key", () => {
