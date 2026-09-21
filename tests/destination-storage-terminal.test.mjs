@@ -121,3 +121,36 @@ test("expired reservation does not get mistaken for local completion", () => {
 
   assert.deepEqual(fences, []);
 });
+
+test("reservation expiring during a slow alarm is not mistaken for local completion", () => {
+  const completedAtMs = NOW + 1_500;
+  const fences = deriveLocallyCompletedDestinationStorageFences(
+    [reservation({ expiresAtMs: NOW + 1_000 })],
+    [],
+    [arrival()],
+    [agent(0)],
+    NOW,
+    completedAtMs,
+  );
+
+  assert.deepEqual(fences, []);
+});
+
+test("completion time, not alarm start, anchors a newly minted terminal fence", () => {
+  const completedAtMs = NOW + 1_500;
+  const fences = deriveLocallyCompletedDestinationStorageFences(
+    [reservation({ expiresAtMs: NOW + 60_000 })],
+    [],
+    [arrival()],
+    [agent(0)],
+    NOW,
+    completedAtMs,
+  );
+
+  assert.deepEqual(fences, [{
+    claimId: "claim-1",
+    sourceRegionId: "garden-1",
+    completedAtMs,
+    expiresAtMs: completedAtMs + DESTINATION_STORAGE_TERMINAL_FENCE_TTL_MS,
+  }]);
+});
