@@ -245,20 +245,20 @@ function generationStampedEnv(env: StorageReservationEnv): StorageReservationEnv
                 || (url.pathname !== INTERNAL_STORAGE_RESERVE_PATH
                   && url.pathname !== INTERNAL_STORAGE_RELEASE_PATH)
               ) {
-                return stub.fetch(input, init);
+                return stub.fetch(request);
               }
 
               let body: unknown;
               try {
                 body = await request.clone().json() as unknown;
               } catch {
-                return stub.fetch(input, init);
+                return stub.fetch(request);
               }
-              if (!isRecord(body)) return stub.fetch(input, init);
+              if (!isRecord(body)) return stub.fetch(request);
               const field = url.pathname === INTERNAL_STORAGE_RESERVE_PATH
                 ? "issuedAtMs"
                 : "releaseIssuedAtMs";
-              if (positiveFinite(body[field]) !== undefined) return stub.fetch(input, init);
+              if (positiveFinite(body[field]) !== undefined) return stub.fetch(request);
               const headers = new Headers(request.headers);
               headers.delete("content-length");
               headers.set("content-type", "application/json");
