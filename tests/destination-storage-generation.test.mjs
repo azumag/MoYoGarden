@@ -104,6 +104,42 @@ test("an older release cannot delete a newer reservation generation", () => {
   assert.equal(newerRelease.records[0].releaseIssuedAtMs, 401);
 });
 
+test("an already-recorded release generation can retry its idempotent capacity delete", () => {
+  const reserved = applyDestinationStorageReserveFence([], SOURCE, CLAIM, 400, NOW);
+  const released = applyDestinationStorageReleaseFence(
+    reserved.records,
+    SOURCE,
+    CLAIM,
+    401,
+    NOW + 1,
+  );
+  assert.equal(released.accepted, true);
+
+  // The production path persists this release watermark before deleting the
+  // capacity row. A retry with the exact same generation must therefore be
+  // admitted so it can finish the delete after a crash between those writes.
+  const retry = applyDestinationStorageReleaseFence(
+    released.records,
+    SOURCE,
+    CLAIM,
+    401,
+    NOW + 2,
+  );
+  assert.equal(retry.accepted, true);
+  assert.equal(retry.stale, false);
+  assert.deepEqual(retry.records, released.records);
+
+  const older = applyDestinationStorageReleaseFence(
+    released.records,
+    SOURCE,
+    CLAIM,
+    400,
+    NOW + 3,
+  );
+  assert.equal(older.accepted, false);
+  assert.equal(older.stale, true);
+});
+
 test("rolling legacy requests remain compatible only before generated ordering exists", () => {
   const legacyReserve = applyDestinationStorageReserveFence([], SOURCE, CLAIM, undefined, NOW);
   assert.equal(legacyReserve.accepted, true);

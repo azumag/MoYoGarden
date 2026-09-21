@@ -195,11 +195,25 @@ export function applyDestinationStorageReleaseFence(
     return { records, accepted: false, stale: true };
   }
   const effectiveReleaseIssuedAtMs = releaseIssuedAtMs ?? now;
+
+  // Release fences are written before the capacity mutation. If a Worker dies
+  // after recording the watermark but before deleting the reservation, the
+  // exact same release generation must be allowed to retry the idempotent
+  // delete. Older releases still fail closed, and a release equal to the latest
+  // reserve generation is never allowed to delete that reservation.
+  if (
+    existing?.releaseIssuedAtMs === effectiveReleaseIssuedAtMs
+    && (existing.latestReserveIssuedAtMs === undefined
+      || existing.latestReserveIssuedAtMs < effectiveReleaseIssuedAtMs)
+  ) {
+    return { records, accepted: true, stale: false };
+  }
+
   if (
     (existing?.latestReserveIssuedAtMs !== undefined
       && existing.latestReserveIssuedAtMs >= effectiveReleaseIssuedAtMs)
     || (existing?.releaseIssuedAtMs !== undefined
-      && existing.releaseIssuedAtMs >= effectiveReleaseIssuedAtMs)
+      && existing.releaseIssuedAtMs > effectiveReleaseIssuedAtMs)
   ) {
     return { records, accepted: false, stale: true };
   }
@@ -326,11 +340,12 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
       DESTINATION_STORAGE_GENERATION_FENCES_KEY,
     );
     if (url.pathname === INTERNAL_STORAGE_RESERVE_PATH) {
+      const issuedAtMs = positiveFinite(body.issuedAtMs);
       const decision = applyDestinationStorageReserveFence(
         stored,
         body.sourceRegionId,
         body.claimId,
-        positiveFinite(body.issuedAtMs),
+        issuedAtMs,
       );
       if (!decision.accepted) {
         return json({
@@ -339,14 +354,18 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
           stale: true,
         }, 409);
       }
-      const response = await super.fetch(request);
-      if (response.ok) {
+
+      // Persist the generation before mutating the shorter-lived capacity row.
+      // A crash can now at worst consume one generated attempt without granting
+      // capacity; it can no longer grant capacity and lose the fence, which used
+      // to let that old attempt resurrect after the 15-minute lease expired.
+      if (issuedAtMs !== undefined) {
         await this.storageFenceState.storage.put(
           DESTINATION_STORAGE_GENERATION_FENCES_KEY,
           decision.records,
         );
       }
-      return response;
+      return super.fetch(request);
     }
 
     const decision = applyDestinationStorageReleaseFence(
@@ -363,14 +382,15 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
         stale: true,
       });
     }
-    const response = await super.fetch(request);
-    if (response.ok) {
-      await this.storageFenceState.storage.put(
-        DESTINATION_STORAGE_GENERATION_FENCES_KEY,
-        decision.records,
-      );
-    }
-    return response;
+
+    // Record the release watermark first. If the Worker dies before the
+    // reservation row is deleted, an exact same-generation retry is explicitly
+    // allowed above to finish the idempotent delete; older reserves stay fenced.
+    await this.storageFenceState.storage.put(
+      DESTINATION_STORAGE_GENERATION_FENCES_KEY,
+      decision.records,
+    );
+    return super.fetch(request);
   }
 
   override async fetch(request: Request): Promise<Response> {
