@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "moyo-garden",
-  "main": "src/region-window-reliability-entry.ts",
+  "main": "src/arrival-registration-reliability-entry.ts",
   "compatibility_date": "2026-08-28",
   "upload_source_maps": true,
   "build": {
