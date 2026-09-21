@@ -111,9 +111,15 @@ test("arrival owner lookup throttle bounds repeated directory reads without dela
     "a retargeted owner uses a new throttle key so a long proven forwarding chain can advance next alarm",
   );
 
-  throttle.forget(current);
+  throttle.retainOnly([forwarded]);
   assert.equal(
     throttle.shouldLookup(current, NOW + 20_000),
+    true,
+    "completed or expired claims must not leak throttle keys for the lifetime of the DO",
+  );
+  throttle.forget(current);
+  assert.equal(
+    throttle.shouldLookup(current, NOW + 30_000),
     true,
     "terminal cleanup can forget a stale target immediately",
   );
