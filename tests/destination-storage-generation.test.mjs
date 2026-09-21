@@ -46,6 +46,31 @@ test("release tombstone rejects an older delayed reserve but permits a newer ret
   assert.equal(reacquired.records[0].releaseIssuedAtMs, 300);
 });
 
+test("a reserve generation is single-use and cannot replay after its capacity lease disappears", () => {
+  const reserved = applyDestinationStorageReserveFence([], SOURCE, CLAIM, 200, NOW);
+  assert.equal(reserved.accepted, true);
+
+  const replayed = applyDestinationStorageReserveFence(
+    reserved.records,
+    SOURCE,
+    CLAIM,
+    200,
+    NOW + 15 * 60 * 1_000 + 1,
+  );
+  assert.equal(replayed.accepted, false);
+  assert.equal(replayed.stale, true);
+
+  const freshRetry = applyDestinationStorageReserveFence(
+    reserved.records,
+    SOURCE,
+    CLAIM,
+    201,
+    NOW + 15 * 60 * 1_000 + 2,
+  );
+  assert.equal(freshRetry.accepted, true);
+  assert.equal(freshRetry.records[0].latestReserveIssuedAtMs, 201);
+});
+
 test("an older release cannot delete a newer reservation generation", () => {
   const reserved = applyDestinationStorageReserveFence([], SOURCE, CLAIM, 400, NOW);
   const staleRelease = applyDestinationStorageReleaseFence(
