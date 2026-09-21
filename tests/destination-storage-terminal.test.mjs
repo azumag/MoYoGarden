@@ -32,6 +32,16 @@ function arrival(overrides = {}) {
   };
 }
 
+function generationFence(overrides = {}) {
+  return {
+    claimId: "claim-1",
+    sourceRegionId: "garden-1",
+    latestReserveIssuedAtMs: NOW - 500,
+    expiresAtMs: NOW + 60_000,
+    ...overrides,
+  };
+}
+
 function agent(wood = 0) {
   return {
     id: "agent-global:scout-1",
@@ -56,6 +66,83 @@ test("local cargo completion creates a terminal sink fence", () => {
   }]);
   assert.equal(
     destinationStorageTerminalBlocksReserve(fences, "garden-1", "claim-1", NOW),
+    true,
+  );
+});
+
+test("local completion records the reserve generation that owned sink capacity", () => {
+  const completedReserveIssuedAtMs = NOW - 500;
+  const fences = deriveLocallyCompletedDestinationStorageFences(
+    [reservation()],
+    [],
+    [arrival()],
+    [agent(0)],
+    NOW,
+    NOW,
+    [generationFence({ latestReserveIssuedAtMs: completedReserveIssuedAtMs })],
+  );
+
+  assert.deepEqual(fences, [{
+    claimId: "claim-1",
+    sourceRegionId: "garden-1",
+    completedAtMs: NOW,
+    expiresAtMs: NOW + DESTINATION_STORAGE_TERMINAL_FENCE_TTL_MS,
+    completedReserveIssuedAtMs,
+  }]);
+});
+
+test("terminal sink blocks delayed generations but allows a strictly newer ownership generation", () => {
+  const completedReserveIssuedAtMs = NOW - 500;
+  const fences = [{
+    claimId: "claim-1",
+    sourceRegionId: "garden-1",
+    completedAtMs: NOW,
+    expiresAtMs: NOW + DESTINATION_STORAGE_TERMINAL_FENCE_TTL_MS,
+    completedReserveIssuedAtMs,
+  }];
+
+  assert.equal(
+    destinationStorageTerminalBlocksReserve(
+      fences,
+      "garden-1",
+      "claim-1",
+      NOW,
+      completedReserveIssuedAtMs - 1,
+    ),
+    true,
+  );
+  assert.equal(
+    destinationStorageTerminalBlocksReserve(
+      fences,
+      "garden-1",
+      "claim-1",
+      NOW,
+      completedReserveIssuedAtMs,
+    ),
+    true,
+  );
+  assert.equal(
+    destinationStorageTerminalBlocksReserve(
+      fences,
+      "garden-1",
+      "claim-1",
+      NOW,
+      completedReserveIssuedAtMs + 1,
+    ),
+    false,
+  );
+});
+
+test("legacy terminal sink remains fail-closed even for a generated retry", () => {
+  const fences = [{
+    claimId: "claim-1",
+    sourceRegionId: "garden-1",
+    completedAtMs: NOW,
+    expiresAtMs: NOW + DESTINATION_STORAGE_TERMINAL_FENCE_TTL_MS,
+  }];
+
+  assert.equal(
+    destinationStorageTerminalBlocksReserve(fences, "garden-1", "claim-1", NOW, NOW + 1),
     true,
   );
 });
