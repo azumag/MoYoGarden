@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker from "../dist-ts/src/region-window-reliability-entry.js";
+import worker, {
+  readSnapshotBodyWithinDeadline,
+} from "../dist-ts/src/region-window-reliability-entry.js";
 
 function snapshot(regionId) {
   return {
@@ -73,6 +75,47 @@ test("malformed neighbor JSON stays an error chunk instead of aborting the live 
   assert.equal(failed.error, "snapshot HTTP 503");
   assert.equal("state" in failed, false);
   assert.equal(payload.chunks.find((chunk) => chunk.regionId === "garden-1")?.state?.regionId, "garden-1");
+});
+
+test("neighbor body stream failure stays an error chunk instead of aborting the live window", async () => {
+  const env = envWithSnapshotBehavior((regionId) => (
+    regionId === "garden-2"
+      ? new Response(new ReadableStream({
+          start(controller) {
+            controller.error(new Error("snapshot body failed"));
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      : healthySnapshot(regionId)
+  ));
+  const response = await worker.fetch(
+    new Request("https://moyo.example/api/world/window?region=garden-1&radius=1&live=1"),
+    env,
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  const failed = payload.chunks.find((chunk) => chunk.regionId === "garden-2");
+  assert.ok(failed);
+  assert.equal(failed.error, "snapshot HTTP 503");
+  assert.equal("state" in failed, false);
+  assert.equal(payload.chunks.find((chunk) => chunk.regionId === "garden-1")?.state?.regionId, "garden-1");
+});
+
+test("snapshot body reads are bounded even after headers arrive", async () => {
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+  }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  await assert.rejects(
+    readSnapshotBodyWithinDeadline(response, 20),
+    /snapshot body read timed out/,
+  );
 });
 
 test("malformed center JSON rejects the live window", async () => {
