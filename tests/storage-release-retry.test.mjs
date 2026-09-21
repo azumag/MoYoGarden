@@ -7,7 +7,7 @@ import {
   isRetryableDestinationStorageReleaseStatus,
   normalizePendingDestinationStorageReleases,
   upsertPendingDestinationStorageRelease,
-} from "../dist-ts/storage-release-retry-region.js";
+} from "../dist-ts/src/storage-release-retry-region.js";
 
 const BASE_RELEASE = {
   claimId: "claim-a",
