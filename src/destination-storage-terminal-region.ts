@@ -1,6 +1,9 @@
 import baseWorker, {
   RegionDurableObject as DestinationStorageReconciliationRegionDurableObject,
 } from "./destination-storage-reconciliation-region.js";
+import {
+  normalizeDestinationStorageGenerationFences,
+} from "./storage-reservation-region.js";
 
 interface DestinationStorageTerminalEnv {
   REGIONS: DurableObjectNamespace;
@@ -41,10 +44,16 @@ export interface DestinationStorageTerminalFence {
   sourceRegionId: string;
   completedAtMs: number;
   expiresAtMs: number;
+  // The target-side reserve generation that owned capacity when local cargo
+  // completed. Optional for rolling compatibility with terminal fences written
+  // before generation-aware completion tracking existed.
+  completedReserveIssuedAtMs?: number;
 }
 
 const DESTINATION_STORAGE_RESERVATIONS_KEY = "handoff:autonomy:destination-storage:v1";
 const AUTONOMOUS_ARRIVAL_CLAIMS_KEY = "handoff:autonomy:arrival-claims:v1";
+const DESTINATION_STORAGE_GENERATION_FENCES_KEY =
+  "handoff:autonomy:destination-storage-generation:v1";
 const DESTINATION_STORAGE_TERMINAL_FENCES_KEY =
   "handoff:autonomy:destination-storage-terminal:v1";
 const INTERNAL_STORAGE_RESERVE_PATH = "/api/internal/autonomy/storage/reserve";
@@ -120,7 +129,14 @@ function terminalFenceValue(value: unknown): DestinationStorageTerminalFence | u
     || completedAtMs === undefined
     || expiresAtMs === undefined
   ) return undefined;
-  return { claimId, sourceRegionId, completedAtMs, expiresAtMs };
+  const completedReserveIssuedAtMs = positiveFinite(value.completedReserveIssuedAtMs);
+  return {
+    claimId,
+    sourceRegionId,
+    completedAtMs,
+    expiresAtMs,
+    ...(completedReserveIssuedAtMs === undefined ? {} : { completedReserveIssuedAtMs }),
+  };
 }
 
 function inventoryAmountForResource(
@@ -196,10 +212,22 @@ export function destinationStorageTerminalBlocksReserve(
   sourceRegionId: string,
   claimId: string,
   now = Date.now(),
+  reserveIssuedAtMs?: number,
 ): boolean {
-  return normalizeDestinationStorageTerminalFences(value, now).some((entry) =>
+  const fence = normalizeDestinationStorageTerminalFences(value, now).find((entry) =>
     entry.sourceRegionId === sourceRegionId && entry.claimId === claimId
   );
+  if (fence === undefined) return false;
+
+  // Legacy/unversioned attempts cannot prove that they represent ownership
+  // acquired after the completed sink. Likewise, terminal fences written by an
+  // older deployment have no generation watermark, so retain their old strict
+  // blocking behavior. Only an explicitly newer generated reserve can reopen
+  // capacity for the same logical claim.
+  if (reserveIssuedAtMs === undefined || fence.completedReserveIssuedAtMs === undefined) {
+    return true;
+  }
+  return reserveIssuedAtMs <= fence.completedReserveIssuedAtMs;
 }
 
 /**
@@ -217,6 +245,11 @@ export function destinationStorageTerminalBlocksReserve(
  * not proof of local completion. Compare its original wall-clock lease against
  * the actual post-Alarm observation time so a slow Alarm cannot turn TTL cleanup
  * into a 24-hour terminal fence for cargo that was never deposited.
+ *
+ * When the destination generation ledger knows which reserve generation owned
+ * the completed capacity, retain that watermark in the terminal fence. This
+ * keeps delayed duplicates blocked while allowing a strictly newer ownership
+ * generation to reacquire the same logical claim without waiting 24 hours.
  */
 export function deriveLocallyCompletedDestinationStorageFences(
   reservationsBefore: unknown,
@@ -225,6 +258,7 @@ export function deriveLocallyCompletedDestinationStorageFences(
   agentsAfter: readonly unknown[],
   observedAtMs = Date.now(),
   completedAtMs = observedAtMs,
+  generationFences?: unknown,
 ): DestinationStorageTerminalFence[] {
   const before = Array.isArray(reservationsBefore)
     ? reservationsBefore.flatMap((entry) => {
@@ -248,6 +282,12 @@ export function deriveLocallyCompletedDestinationStorageFences(
         : [[terminalKey(claim.sourceRegionId, claim.claimId), claim] as const];
     }),
   );
+  const reserveGenerations = new Map(
+    normalizeDestinationStorageGenerationFences(generationFences, completedAtMs)
+      .flatMap((fence) => fence.latestReserveIssuedAtMs === undefined
+        ? []
+        : [[terminalKey(fence.sourceRegionId, fence.claimId), fence.latestReserveIssuedAtMs] as const]),
+  );
   const agents = new Map<string, unknown>();
   for (const agent of agentsAfter) {
     if (!isRecord(agent)) continue;
@@ -269,11 +309,13 @@ export function deriveLocallyCompletedDestinationStorageFences(
     if (agent === undefined) continue;
     const remaining = inventoryAmountForResource(agent, claim.resource);
     if (remaining === undefined || remaining > 0) continue;
+    const completedReserveIssuedAtMs = reserveGenerations.get(key);
     completed.set(key, {
       claimId: reservation.claimId,
       sourceRegionId: reservation.sourceRegionId,
       completedAtMs,
       expiresAtMs: completedAtMs + DESTINATION_STORAGE_TERMINAL_FENCE_TTL_MS,
+      ...(completedReserveIssuedAtMs === undefined ? {} : { completedReserveIssuedAtMs }),
     });
   }
   return [...completed.values()].sort((a, b) =>
@@ -336,8 +378,15 @@ export class RegionDurableObject extends DestinationStorageReconciliationRegionD
     const claimId = nonEmptyString(body.claimId);
     const sourceRegionId = nonEmptyString(body.sourceRegionId);
     if (claimId === undefined || sourceRegionId === undefined) return undefined;
-    const fences = await this.normalizedTerminalFences();
-    if (!destinationStorageTerminalBlocksReserve(fences, sourceRegionId, claimId)) {
+    const now = Date.now();
+    const fences = await this.normalizedTerminalFences(now);
+    if (!destinationStorageTerminalBlocksReserve(
+      fences,
+      sourceRegionId,
+      claimId,
+      now,
+      positiveFinite(body.issuedAtMs),
+    )) {
       return undefined;
     }
     return json({
@@ -356,12 +405,15 @@ export class RegionDurableObject extends DestinationStorageReconciliationRegionD
 
   override async alarm(): Promise<void> {
     const observedAtMs = Date.now();
-    const [reservationsBefore, arrivalClaimsBefore] = await Promise.all([
+    const [reservationsBefore, arrivalClaimsBefore, generationFencesBefore] = await Promise.all([
       this.destinationStorageTerminalState.storage.get<unknown>(
         DESTINATION_STORAGE_RESERVATIONS_KEY,
       ),
       this.destinationStorageTerminalState.storage.get<unknown>(
         AUTONOMOUS_ARRIVAL_CLAIMS_KEY,
+      ),
+      this.destinationStorageTerminalState.storage.get<unknown>(
+        DESTINATION_STORAGE_GENERATION_FENCES_KEY,
       ),
     ]);
 
@@ -379,6 +431,7 @@ export class RegionDurableObject extends DestinationStorageReconciliationRegionD
         runtimeAccess(this).runtime.snapshot().agents,
         observedAtMs,
         completedAtMs,
+        generationFencesBefore,
       );
       const stored = await this.destinationStorageTerminalState.storage.get<unknown>(
         DESTINATION_STORAGE_TERMINAL_FENCES_KEY,
