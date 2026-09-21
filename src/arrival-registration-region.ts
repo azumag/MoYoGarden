@@ -73,6 +73,15 @@ export class ArrivalOwnerLookupThrottle {
   ): void {
     this.nextLookupAtMs.delete(arrivalOwnerLookupKey(registration));
   }
+
+  retainOnly(
+    registrations: readonly Pick<PendingArrivalRegistration, "claimId" | "targetRegionId">[],
+  ): void {
+    const activeKeys = new Set(registrations.map((entry) => arrivalOwnerLookupKey(entry)));
+    for (const key of this.nextLookupAtMs.keys()) {
+      if (!activeKeys.has(key)) this.nextLookupAtMs.delete(key);
+    }
+  }
 }
 
 export function arrivalOwnerLookupStep(
@@ -182,6 +191,7 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
       PENDING_ARRIVAL_REGISTRATIONS_KEY,
     );
     const pending = normalizePendingArrivalRegistrations(stored, now);
+    this.arrivalOwnerLookupThrottle.retainOnly(pending);
 
     for (const registration of pending) {
       // Registration retry itself remains on the normal alarm cadence. Directory
