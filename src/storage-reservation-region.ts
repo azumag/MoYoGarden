@@ -30,6 +30,8 @@ const INTERNAL_STORAGE_RESERVE_PATH = "/api/internal/autonomy/storage/reserve";
 const INTERNAL_STORAGE_RELEASE_PATH = "/api/internal/autonomy/storage/release";
 const DESTINATION_STORAGE_GENERATION_FENCES_KEY =
   "handoff:autonomy:destination-storage-generation:v1";
+const DESTINATION_STORAGE_SOURCE_GENERATION_KEY =
+  "handoff:autonomy:destination-storage-source-generation:v1";
 export const DESTINATION_STORAGE_GENERATION_FENCE_TTL_MS = 24 * 60 * 60 * 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -40,6 +42,14 @@ function positiveFinite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : undefined;
+}
+
+export function nextDestinationStorageIssuedAtMs(
+  stored: unknown,
+  now = Date.now(),
+): number {
+  const previous = positiveFinite(stored) ?? 0;
+  return Math.max(now, previous + 1);
 }
 
 function fenceKey(sourceRegionId: string, claimId: string): string {
@@ -237,11 +247,25 @@ export function applyDestinationStorageReleaseFence(
   };
 }
 
-function generationStampedEnv(env: StorageReservationEnv): StorageReservationEnv {
-  let lastIssuedAtMs = 0;
-  const nextIssuedAtMs = (): number => {
-    lastIssuedAtMs = Math.max(Date.now(), lastIssuedAtMs + 1);
-    return lastIssuedAtMs;
+function generationStampedEnv(
+  env: StorageReservationEnv,
+  state: DurableObjectState,
+): StorageReservationEnv {
+  let lastIssuedAtMs: number | undefined;
+  let generationQueue: Promise<void> = Promise.resolve();
+  const nextIssuedAtMs = (): Promise<number> => {
+    const operation = generationQueue.then(async () => {
+      if (lastIssuedAtMs === undefined) {
+        const stored = await state.storage.get<unknown>(DESTINATION_STORAGE_SOURCE_GENERATION_KEY);
+        lastIssuedAtMs = positiveFinite(stored) ?? 0;
+      }
+      const next = nextDestinationStorageIssuedAtMs(lastIssuedAtMs);
+      lastIssuedAtMs = next;
+      await state.storage.put(DESTINATION_STORAGE_SOURCE_GENERATION_KEY, next);
+      return next;
+    });
+    generationQueue = operation.then(() => undefined, () => undefined);
+    return operation;
   };
 
   const regions = new Proxy(env.REGIONS, {
@@ -279,9 +303,10 @@ function generationStampedEnv(env: StorageReservationEnv): StorageReservationEnv
               const headers = new Headers(request.headers);
               headers.delete("content-length");
               headers.set("content-type", "application/json");
+              const issuedAtMs = await nextIssuedAtMs();
               return stub.fetch(new Request(request, {
                 headers,
-                body: JSON.stringify({ ...body, [field]: nextIssuedAtMs() }),
+                body: JSON.stringify({ ...body, [field]: issuedAtMs }),
               }));
             };
           },
@@ -309,7 +334,7 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
     private readonly storageFenceState: DurableObjectState,
     env: StorageReservationEnv,
   ) {
-    super(storageFenceState, generationStampedEnv(env));
+    super(storageFenceState, generationStampedEnv(env, storageFenceState));
   }
 
   private withStorageFence<T>(operation: () => Promise<T>): Promise<T> {
