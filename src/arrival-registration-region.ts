@@ -29,6 +29,7 @@ const PENDING_ARRIVAL_REGISTRATIONS_KEY =
   "handoff:autonomy:arrival-registration-retry:v1";
 const INTERNAL_AGENT_LOOKUP_PATH = "/api/internal/autonomy/agent/lookup";
 export const MAX_ARRIVAL_OWNER_FORWARD_HOPS = 6;
+export const ARRIVAL_OWNER_LOOKUP_INTERVAL_MS = 60 * 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -45,6 +46,33 @@ function pendingArrivalAgentId(registration: PendingArrivalRegistration): string
   return typeof agentId === "string" && agentId.startsWith("agent-global:")
     ? agentId
     : undefined;
+}
+
+function arrivalOwnerLookupKey(
+  registration: Pick<PendingArrivalRegistration, "claimId" | "targetRegionId">,
+): string {
+  return `${registration.targetRegionId}\u0000${registration.claimId}`;
+}
+
+export class ArrivalOwnerLookupThrottle {
+  private readonly nextLookupAtMs = new Map<string, number>();
+
+  shouldLookup(
+    registration: Pick<PendingArrivalRegistration, "claimId" | "targetRegionId">,
+    now = Date.now(),
+  ): boolean {
+    const key = arrivalOwnerLookupKey(registration);
+    const nextLookupAtMs = this.nextLookupAtMs.get(key) ?? 0;
+    if (nextLookupAtMs > now) return false;
+    this.nextLookupAtMs.set(key, now + ARRIVAL_OWNER_LOOKUP_INTERVAL_MS);
+    return true;
+  }
+
+  forget(
+    registration: Pick<PendingArrivalRegistration, "claimId" | "targetRegionId">,
+  ): void {
+    this.nextLookupAtMs.delete(arrivalOwnerLookupKey(registration));
+  }
 }
 
 export function arrivalOwnerLookupStep(
@@ -120,6 +148,8 @@ export function retargetPendingArrivalRegistrations(
 }
 
 export class RegionDurableObject extends StorageReservationRegionDurableObject {
+  private readonly arrivalOwnerLookupThrottle = new ArrivalOwnerLookupThrottle();
+
   constructor(
     private readonly arrivalReconciliationState: DurableObjectState,
     private readonly arrivalReconciliationEnv: ArrivalReconciliationEnv,
@@ -154,6 +184,13 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
     const pending = normalizePendingArrivalRegistrations(stored, now);
 
     for (const registration of pending) {
+      // Registration retry itself remains on the normal alarm cadence. Directory
+      // chasing is only needed when ownership may have moved, so cap unchanged
+      // target lookups to once per minute. Active regions otherwise doubled the
+      // cross-DO failure traffic (lookup + retry) every 10 seconds for up to 6h.
+      // Retargeting forgets the old key so long forwarding chains can still make
+      // another bounded hop-budget of progress on the very next alarm.
+      if (!this.arrivalOwnerLookupThrottle.shouldLookup(registration, now)) continue;
       const ownerRegionId = await this.resolveArrivalOwner(registration);
       if (ownerRegionId === undefined) continue;
 
@@ -161,6 +198,7 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
         PENDING_ARRIVAL_REGISTRATIONS_KEY,
       );
       if (ownerRegionId === null) {
+        this.arrivalOwnerLookupThrottle.forget(registration);
         const next = clearPendingArrivalRegistration(
           latest,
           registration.targetRegionId,
@@ -174,6 +212,7 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
       }
       if (ownerRegionId === registration.targetRegionId) continue;
 
+      this.arrivalOwnerLookupThrottle.forget(registration);
       const next = retargetPendingArrivalRegistrations(
         latest,
         registration.claimId,
