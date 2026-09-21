@@ -5,12 +5,27 @@ import {
   DESTINATION_STORAGE_GENERATION_FENCE_TTL_MS,
   applyDestinationStorageReleaseFence,
   applyDestinationStorageReserveFence,
+  nextDestinationStorageIssuedAtMs,
   normalizeDestinationStorageGenerationFences,
 } from "../dist-ts/src/storage-reservation-region.js";
 
 const SOURCE = "garden-1";
 const CLAIM = "claim-1";
 const NOW = 1_000_000;
+
+test("source-issued generations stay monotonic across restart and clock rollback", () => {
+  const first = nextDestinationStorageIssuedAtMs(undefined, 1_000);
+  assert.equal(first, 1_000);
+
+  const sameClockAfterRestart = nextDestinationStorageIssuedAtMs(first, 1_000);
+  assert.equal(sameClockAfterRestart, 1_001);
+
+  const rollbackAfterRestart = nextDestinationStorageIssuedAtMs(sameClockAfterRestart, 900);
+  assert.equal(rollbackAfterRestart, 1_002);
+
+  const normalAdvance = nextDestinationStorageIssuedAtMs(rollbackAfterRestart, 2_000);
+  assert.equal(normalAdvance, 2_000);
+});
 
 test("release tombstone rejects an older delayed reserve but permits a newer retry", () => {
   const reserved = applyDestinationStorageReserveFence([], SOURCE, CLAIM, 200, NOW);
