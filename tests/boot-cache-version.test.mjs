@@ -43,3 +43,16 @@ test("commit lookup fails soft to the packaged release key", () => {
   assert.match(boot, /return VERSION/);
   assert.match(boot, /AbortController/);
 });
+
+test("startup failure retries with the existing lightweight safe profile", () => {
+  const start = boot.indexOf("const stableFallback");
+  const end = boot.indexOf("const compatibilityRequested", start);
+  assert.ok(start >= 0 && end > start);
+  const fallback = boot.slice(start, end);
+
+  assert.match(fallback, /destination\.searchParams\.set\("quality", "low"\)/);
+  assert.doesNotMatch(fallback, /destination\.searchParams\.set\("quality", "balanced"\)/);
+  assert.match(fallback, /軽量セーフモードで再読み込み/);
+  assert.match(fallback, /destination\.searchParams\.delete\("safe"\)/);
+  assert.match(fallback, /destination\.searchParams\.delete\("renderer"\)/);
+});
