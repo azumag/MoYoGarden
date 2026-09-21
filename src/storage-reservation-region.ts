@@ -26,13 +26,25 @@ export interface DestinationStorageFenceDecision {
   stale: boolean;
 }
 
+export interface PendingArrivalRegistration {
+  claimId: string;
+  targetRegionId: string;
+  payload: Record<string, unknown>;
+  expiresAtMs: number;
+}
+
 const INTERNAL_STORAGE_RESERVE_PATH = "/api/internal/autonomy/storage/reserve";
 const INTERNAL_STORAGE_RELEASE_PATH = "/api/internal/autonomy/storage/release";
+const INTERNAL_CLAIM_REGISTER_PATH = "/api/internal/autonomy/claim/register";
+const INTERNAL_CLAIM_RELEASE_PATH = "/api/internal/autonomy/claim/release";
 const DESTINATION_STORAGE_GENERATION_FENCES_KEY =
   "handoff:autonomy:destination-storage-generation:v1";
 const DESTINATION_STORAGE_SOURCE_GENERATION_KEY =
   "handoff:autonomy:destination-storage-source-generation:v1";
+const PENDING_ARRIVAL_REGISTRATIONS_KEY =
+  "handoff:autonomy:arrival-registration-retry:v1";
 export const DESTINATION_STORAGE_GENERATION_FENCE_TTL_MS = 24 * 60 * 60 * 1_000;
+export const ARRIVAL_REGISTRATION_RETRY_TTL_MS = 6 * 60 * 60 * 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -247,6 +259,104 @@ export function applyDestinationStorageReleaseFence(
   };
 }
 
+function isPendingArrivalRegistration(value: unknown): value is PendingArrivalRegistration {
+  if (
+    !isRecord(value)
+    || typeof value.claimId !== "string"
+    || value.claimId.length === 0
+    || typeof value.targetRegionId !== "string"
+    || value.targetRegionId.length === 0
+    || !isRecord(value.payload)
+    || value.payload.claimId !== value.claimId
+    || positiveFinite(value.expiresAtMs) === undefined
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function pendingArrivalKey(entry: Pick<PendingArrivalRegistration, "claimId" | "targetRegionId">): string {
+  return `${entry.targetRegionId}\u0000${entry.claimId}`;
+}
+
+export function normalizePendingArrivalRegistrations(
+  value: unknown,
+  now = Date.now(),
+): PendingArrivalRegistration[] {
+  if (!Array.isArray(value)) return [];
+  const pending = new Map<string, PendingArrivalRegistration>();
+  for (const candidate of value) {
+    if (!isPendingArrivalRegistration(candidate) || candidate.expiresAtMs <= now) continue;
+    const key = pendingArrivalKey(candidate);
+    const current = pending.get(key);
+    if (current === undefined || current.expiresAtMs < candidate.expiresAtMs) {
+      pending.set(key, {
+        claimId: candidate.claimId,
+        targetRegionId: candidate.targetRegionId,
+        payload: { ...candidate.payload },
+        expiresAtMs: candidate.expiresAtMs,
+      });
+    }
+  }
+  return [...pending.values()].sort((a, b) =>
+    a.targetRegionId.localeCompare(b.targetRegionId) || a.claimId.localeCompare(b.claimId)
+  );
+}
+
+export function upsertPendingArrivalRegistration(
+  value: unknown,
+  registration: Omit<PendingArrivalRegistration, "expiresAtMs">,
+  now = Date.now(),
+): PendingArrivalRegistration[] {
+  const records = normalizePendingArrivalRegistrations(value, now);
+  const next: PendingArrivalRegistration = {
+    ...registration,
+    payload: { ...registration.payload },
+    expiresAtMs: now + ARRIVAL_REGISTRATION_RETRY_TTL_MS,
+  };
+  const key = pendingArrivalKey(next);
+  return [
+    ...records.filter((entry) => pendingArrivalKey(entry) !== key),
+    next,
+  ].sort((a, b) =>
+    a.targetRegionId.localeCompare(b.targetRegionId) || a.claimId.localeCompare(b.claimId)
+  );
+}
+
+export function clearPendingArrivalRegistration(
+  value: unknown,
+  targetRegionId: string,
+  claimId: string,
+  now = Date.now(),
+): PendingArrivalRegistration[] {
+  return normalizePendingArrivalRegistrations(value, now).filter((entry) =>
+    entry.targetRegionId !== targetRegionId || entry.claimId !== claimId
+  );
+}
+
+export function pendingArrivalRegistrationBlocksClaimRelease(
+  value: unknown,
+  claimId: string,
+  now = Date.now(),
+): boolean {
+  return normalizePendingArrivalRegistrations(value, now).some((entry) => entry.claimId === claimId);
+}
+
+function pendingArrivalRegistrationFromRequest(
+  request: Request,
+  body: Record<string, unknown>,
+  now = Date.now(),
+): Omit<PendingArrivalRegistration, "expiresAtMs"> | undefined {
+  const targetRegionId = request.headers.get("x-moyo-region-internal")?.trim();
+  const claimId = typeof body.claimId === "string" ? body.claimId.trim() : "";
+  if (targetRegionId === undefined || targetRegionId === "" || claimId === "") return undefined;
+  return {
+    claimId,
+    targetRegionId,
+    payload: { ...body },
+  };
+}
+
 function generationStampedEnv(
   env: StorageReservationEnv,
   state: DurableObjectState,
@@ -317,6 +427,110 @@ function generationStampedEnv(
   return { ...env, REGIONS: regions };
 }
 
+function reliableArrivalRegistrationEnv(
+  env: StorageReservationEnv,
+  state: DurableObjectState,
+): StorageReservationEnv {
+  let registrationQueue: Promise<void> = Promise.resolve();
+  const updatePending = <T>(operation: () => Promise<T>): Promise<T> => {
+    const run = registrationQueue.then(operation, operation);
+    registrationQueue = run.then(() => undefined, () => undefined);
+    return run;
+  };
+
+  const rememberFailure = async (
+    request: Request,
+    body: Record<string, unknown>,
+  ): Promise<void> => {
+    const registration = pendingArrivalRegistrationFromRequest(request, body);
+    if (registration === undefined) return;
+    await updatePending(async () => {
+      const stored = await state.storage.get<unknown>(PENDING_ARRIVAL_REGISTRATIONS_KEY);
+      await state.storage.put(
+        PENDING_ARRIVAL_REGISTRATIONS_KEY,
+        upsertPendingArrivalRegistration(stored, registration),
+      );
+    });
+  };
+
+  const acknowledge = async (
+    request: Request,
+    body: Record<string, unknown>,
+  ): Promise<void> => {
+    const registration = pendingArrivalRegistrationFromRequest(request, body);
+    if (registration === undefined) return;
+    await updatePending(async () => {
+      const stored = await state.storage.get<unknown>(PENDING_ARRIVAL_REGISTRATIONS_KEY);
+      const next = clearPendingArrivalRegistration(
+        stored,
+        registration.targetRegionId,
+        registration.claimId,
+      );
+      if (!Array.isArray(stored) || next.length !== stored.length) {
+        await state.storage.put(PENDING_ARRIVAL_REGISTRATIONS_KEY, next);
+      }
+    });
+  };
+
+  const regions = new Proxy(env.REGIONS, {
+    get(target, property, receiver) {
+      if (property !== "get") return Reflect.get(target, property, receiver);
+      return (...getArgs: Parameters<StorageReservationEnv["REGIONS"]["get"]>) => {
+        const stub = target.get(...getArgs);
+        return new Proxy(stub, {
+          get(stubTarget, stubProperty, stubReceiver) {
+            if (stubProperty !== "fetch") {
+              return Reflect.get(stubTarget, stubProperty, stubReceiver);
+            }
+            return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+              const request = new Request(input, init);
+              const url = new URL(request.url);
+              if (
+                request.method !== "POST"
+                || (url.pathname !== INTERNAL_CLAIM_REGISTER_PATH
+                  && url.pathname !== INTERNAL_CLAIM_RELEASE_PATH)
+              ) {
+                return stub.fetch(request);
+              }
+
+              let body: unknown;
+              try {
+                body = await request.clone().json() as unknown;
+              } catch {
+                return stub.fetch(request);
+              }
+              if (!isRecord(body) || typeof body.claimId !== "string") return stub.fetch(request);
+
+              if (url.pathname === INTERNAL_CLAIM_RELEASE_PATH) {
+                const stored = await state.storage.get<unknown>(PENDING_ARRIVAL_REGISTRATIONS_KEY);
+                if (pendingArrivalRegistrationBlocksClaimRelease(stored, body.claimId)) {
+                  return json({
+                    error: "arrival claim registration is still pending",
+                    claimId: body.claimId,
+                    retryable: true,
+                  }, 503);
+                }
+                return stub.fetch(request);
+              }
+
+              try {
+                const response = await stub.fetch(request);
+                if (response.ok) await acknowledge(request, body);
+                else await rememberFailure(request, body);
+                return response;
+              } catch (error) {
+                await rememberFailure(request, body);
+                throw error;
+              }
+            };
+          },
+        });
+      };
+    },
+  });
+  return { ...env, REGIONS: regions };
+}
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -329,18 +543,68 @@ function json(value: unknown, status = 200): Response {
 
 export class RegionDurableObject extends PathogenRegionDurableObject {
   private storageFenceQueue: Promise<void> = Promise.resolve();
+  private readonly directEnv: StorageReservationEnv;
 
   constructor(
     private readonly storageFenceState: DurableObjectState,
     env: StorageReservationEnv,
   ) {
-    super(storageFenceState, generationStampedEnv(env, storageFenceState));
+    super(
+      storageFenceState,
+      generationStampedEnv(reliableArrivalRegistrationEnv(env, storageFenceState), storageFenceState),
+    );
+    this.directEnv = env;
   }
 
   private withStorageFence<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.storageFenceQueue.then(operation, operation);
     this.storageFenceQueue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  private async retryPendingArrivalRegistrations(): Promise<void> {
+    const now = Date.now();
+    const stored = await this.storageFenceState.storage.get<unknown>(
+      PENDING_ARRIVAL_REGISTRATIONS_KEY,
+    );
+    const pending = normalizePendingArrivalRegistrations(stored, now);
+    if (pending.length === 0) {
+      if (Array.isArray(stored) && stored.length > 0) {
+        await this.storageFenceState.storage.put(PENDING_ARRIVAL_REGISTRATIONS_KEY, []);
+      }
+      return;
+    }
+
+    const keep: PendingArrivalRegistration[] = [];
+    for (const registration of pending) {
+      try {
+        const stub = this.directEnv.REGIONS.get(
+          this.directEnv.REGIONS.idFromName(registration.targetRegionId),
+        );
+        const response = await stub.fetch(new Request(
+          `https://moyo.internal${INTERNAL_CLAIM_REGISTER_PATH}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-moyo-region-internal": registration.targetRegionId,
+            },
+            body: JSON.stringify(registration.payload),
+          },
+        ));
+        if (!response.ok) keep.push(registration);
+      } catch {
+        keep.push(registration);
+      }
+    }
+
+    if (
+      !Array.isArray(stored)
+      || keep.length !== stored.length
+      || pending.length !== stored.length
+    ) {
+      await this.storageFenceState.storage.put(PENDING_ARRIVAL_REGISTRATIONS_KEY, keep);
+    }
   }
 
   private async handleDestinationStorageFence(request: Request): Promise<Response> {
@@ -428,5 +692,15 @@ export class RegionDurableObject extends PathogenRegionDurableObject {
       return this.withStorageFence(() => this.handleDestinationStorageFence(request));
     }
     return super.fetch(request);
+  }
+
+  override async alarm(): Promise<void> {
+    // Ownership handoff can commit before the destination installs its arrival
+    // claim. Retry that metadata ACK first, and keep upstream claim release
+    // fenced until the destination confirms it. This lets multi-hop couriers
+    // survive a transient/non-2xx registration failure without resurrecting or
+    // prematurely dropping the ultimate source reservation.
+    await this.retryPendingArrivalRegistrations();
+    await super.alarm();
   }
 }
