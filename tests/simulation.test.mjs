@@ -392,6 +392,57 @@ test("conception is not directly gated by settlement resident capacity", () => {
   assert.equal(conceivedParent.pregnancy?.partnerId, partner.id);
 });
 
+test("postpartum recovery spaces repeated births without resource fertility gates", () => {
+  const state = createInitialWorld({ seed: 2032 });
+  const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);
+  const members = state.agents.filter((agent) => agent.factionId === faction.id);
+  assert.ok(members.length >= 2);
+  const parent = members[0]; assert.ok(parent);
+  const partner = members[1]; assert.ok(partner);
+
+  parent.hp = partner.hp = 100;
+  parent.energy = partner.energy = 100;
+  parent.autonomy = partner.autonomy = false;
+  parent.reproductiveRole = "gestational";
+  partner.reproductiveRole = "partner";
+  parent.position = { ...partner.position };
+  parent.socialMemory = [{ agentId: partner.id, familiarity: 3, lastInteractionTick: 1 }];
+  partner.socialMemory = [{ agentId: parent.id, familiarity: 3, lastInteractionTick: 1 }];
+  delete parent.pregnancy;
+  delete partner.pregnancy;
+  parent.lastBirthTick = 8_640;
+  delete partner.lastBirthTick;
+  delete parent.task;
+  delete partner.task;
+
+  faction.resources.food = 100;
+  state.structures.push({
+    id: "postpartum-recovery-camp",
+    factionId: faction.id,
+    type: "camp",
+    position: { ...parent.position },
+    status: "active",
+    progress: 6,
+    requiredProgress: 6,
+    storage: { wood: 0, stone: 0, food: 100 },
+  });
+
+  // One day after giving birth is deliberately too soon even though all other
+  // biological and relationship conditions pass.
+  state.tick = 17_279;
+  const tooSoon = new WorldRuntime({ state }).tick().state;
+  const recoveringParent = tooSoon.agents.find((agent) => agent.id === parent.id); assert.ok(recoveringParent);
+  assert.equal(recoveringParent.pregnancy, undefined);
+
+  // Five compressed days after the previous birth, fertility can resume without
+  // consulting settlement food stock or housing capacity as direct gates.
+  tooSoon.tick = 51_839;
+  const recovered = new WorldRuntime({ state: tooSoon }).tick().state;
+  const conceivedParent = recovered.agents.find((agent) => agent.id === parent.id); assert.ok(conceivedParent);
+  assert.equal(conceivedParent.pregnancy?.partnerId, partner.id);
+  assert.equal(conceivedParent.pregnancy?.conceivedAtTick, 51_840);
+});
+
 test("population growth requires conception, gestation, and biological parentage", () => {
   const state = createInitialWorld({ seed: 2029 });
   const faction = state.factions.find((entry) => entry.id === "ember"); assert.ok(faction);

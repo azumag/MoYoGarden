@@ -58,7 +58,11 @@ const POPULATION_REPRODUCTION_INTERVAL = 8_640;
 const POPULATION_GESTATION_TICKS = POPULATION_REPRODUCTION_INTERVAL;
 const POPULATION_INFANCY_TICKS = POPULATION_REPRODUCTION_INTERVAL;
 const POPULATION_MATURITY_TICKS = POPULATION_REPRODUCTION_INTERVAL * 3;
-const POPULATION_POSTPARTUM_COOLDOWN_TICKS = POPULATION_REPRODUCTION_INTERVAL;
+// A successful birth is followed by a longer biological recovery window. Keeping
+// this separate from food/housing avoids turning settlement capacity into a direct
+// fertility switch while preventing every healthy pair from producing a child every
+// other simulation day.
+const POPULATION_POSTPARTUM_COOLDOWN_TICKS = POPULATION_REPRODUCTION_INTERVAL * 5;
 const POPULATION_BIRTH_FOOD_COST = 6;
 const POPULATION_HEALTH_THRESHOLD = 70;
 const POPULATION_ENERGY_THRESHOLD = 35;
