@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "moyo-garden",
-  "main": "src/storage-release-retry-region.ts",
+  "main": "src/destination-storage-reconciliation-region.ts",
   "compatibility_date": "2026-08-28",
   "upload_source_maps": true,
   "build": {
