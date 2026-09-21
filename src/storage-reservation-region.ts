@@ -149,10 +149,13 @@ export function applyDestinationStorageReserveFence(
     return { records, accepted: !fenced, stale: fenced };
   }
 
+  // A generated reserve attempt is single-use. Accepting the same generation
+  // again would let a delayed duplicate recreate a reservation after its
+  // shorter capacity lease expired, effectively extending stale ownership.
   if (
     (existing?.releaseIssuedAtMs !== undefined && existing.releaseIssuedAtMs >= issuedAtMs)
     || (existing?.latestReserveIssuedAtMs !== undefined
-      && existing.latestReserveIssuedAtMs > issuedAtMs)
+      && existing.latestReserveIssuedAtMs >= issuedAtMs)
   ) {
     return { records, accepted: false, stale: true };
   }
