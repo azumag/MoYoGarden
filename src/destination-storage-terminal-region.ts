@@ -212,23 +212,29 @@ export function destinationStorageTerminalBlocksReserve(
  * to another region during this Alarm, the agent is absent here and we must not
  * terminally fence the claim. That forwarded cargo still needs a later owner to
  * decide where its sink responsibility belongs.
+ *
+ * A reservation that merely expires while the parent Alarm is running is also
+ * not proof of local completion. Compare its original wall-clock lease against
+ * the actual post-Alarm observation time so a slow Alarm cannot turn TTL cleanup
+ * into a 24-hour terminal fence for cargo that was never deposited.
  */
 export function deriveLocallyCompletedDestinationStorageFences(
   reservationsBefore: unknown,
   reservationsAfter: unknown,
   arrivalClaimsBefore: unknown,
   agentsAfter: readonly unknown[],
-  now = Date.now(),
+  observedAtMs = Date.now(),
+  completedAtMs = observedAtMs,
 ): DestinationStorageTerminalFence[] {
   const before = Array.isArray(reservationsBefore)
     ? reservationsBefore.flatMap((entry) => {
-        const reservation = reservationValue(entry, now);
+        const reservation = reservationValue(entry, observedAtMs);
         return reservation === undefined ? [] : [reservation];
       })
     : [];
   const afterKeys = new Set(
     (Array.isArray(reservationsAfter) ? reservationsAfter : []).flatMap((entry) => {
-      const reservation = reservationValue(entry, now);
+      const reservation = reservationValue(entry, completedAtMs);
       return reservation === undefined
         ? []
         : [terminalKey(reservation.sourceRegionId, reservation.claimId)];
@@ -253,6 +259,10 @@ export function deriveLocallyCompletedDestinationStorageFences(
   for (const reservation of before) {
     const key = terminalKey(reservation.sourceRegionId, reservation.claimId);
     if (afterKeys.has(key)) continue;
+    // If the lease itself became stale during the Alarm, disappearance is
+    // ambiguous: active reservation normalization may have pruned it without
+    // any deposit commit. Fail closed by declining to mint a terminal fence.
+    if (reservation.expiresAtMs <= completedAtMs) continue;
     const claim = claims.get(key);
     if (claim === undefined) continue;
     const agent = agents.get(claim.agentId);
@@ -262,8 +272,8 @@ export function deriveLocallyCompletedDestinationStorageFences(
     completed.set(key, {
       claimId: reservation.claimId,
       sourceRegionId: reservation.sourceRegionId,
-      completedAtMs: now,
-      expiresAtMs: now + DESTINATION_STORAGE_TERMINAL_FENCE_TTL_MS,
+      completedAtMs,
+      expiresAtMs: completedAtMs + DESTINATION_STORAGE_TERMINAL_FENCE_TTL_MS,
     });
   }
   return [...completed.values()].sort((a, b) =>
@@ -357,6 +367,7 @@ export class RegionDurableObject extends DestinationStorageReconciliationRegionD
 
     await super.alarm();
 
+    const completedAtMs = Date.now();
     await this.destinationStorageTerminalState.blockConcurrencyWhile(async () => {
       const reservationsAfter = await this.destinationStorageTerminalState.storage.get<unknown>(
         DESTINATION_STORAGE_RESERVATIONS_KEY,
@@ -367,12 +378,13 @@ export class RegionDurableObject extends DestinationStorageReconciliationRegionD
         arrivalClaimsBefore,
         runtimeAccess(this).runtime.snapshot().agents,
         observedAtMs,
+        completedAtMs,
       );
       const stored = await this.destinationStorageTerminalState.storage.get<unknown>(
         DESTINATION_STORAGE_TERMINAL_FENCES_KEY,
       );
-      const next = upsertDestinationStorageTerminalFences(stored, completions, Date.now());
-      const current = normalizeDestinationStorageTerminalFences(stored, Date.now());
+      const next = upsertDestinationStorageTerminalFences(stored, completions, completedAtMs);
+      const current = normalizeDestinationStorageTerminalFences(stored, completedAtMs);
       if (
         !Array.isArray(stored)
         || JSON.stringify(next) !== JSON.stringify(current)
