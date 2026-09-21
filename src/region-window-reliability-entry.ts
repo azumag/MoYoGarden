@@ -1,6 +1,6 @@
 import baseWorker, {
   RegionDurableObject,
-} from "./destination-storage-reconciliation-region.js";
+} from "./destination-storage-terminal-region.js";
 import { configuredDefaultRegionId } from "./worker-entry.js";
 
 interface RegionWindowReliabilityEnv {
