@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   arrivalOwnerLookupStep,
+  MAX_ARRIVAL_OWNER_FORWARD_HOPS,
+  resolveArrivalOwnerRegion,
   retargetPendingArrivalRegistrations,
 } from "../dist-ts/src/arrival-registration-region.js";
 import {
@@ -44,6 +46,45 @@ test("arrival owner lookup follows committed handoff forwarding but waits on in-
   assert.deepEqual(
     arrivalOwnerLookupStep("garden-2", { present: false }),
     { kind: "absent" },
+  );
+});
+
+test("arrival owner resolution advances long forwarding chains without exceeding one alarm budget", async () => {
+  const chainLength = MAX_ARRIVAL_OWNER_FORWARD_HOPS + 3;
+  const lookups = [];
+  const lookup = async (regionId) => {
+    lookups.push(regionId);
+    const index = Number(regionId.slice("hex-q".length).split("-r")[0]);
+    if (index >= chainLength) return { present: true };
+    return { present: false, forwardedRegionId: `hex-q${index + 1}-r0` };
+  };
+
+  const first = await resolveArrivalOwnerRegion("hex-q0-r0", lookup);
+  assert.equal(first, `hex-q${MAX_ARRIVAL_OWNER_FORWARD_HOPS}-r0`);
+  assert.equal(lookups.length, MAX_ARRIVAL_OWNER_FORWARD_HOPS);
+
+  lookups.length = 0;
+  const second = await resolveArrivalOwnerRegion(first, lookup);
+  assert.equal(second, `hex-q${chainLength}-r0`);
+  assert.ok(lookups.length <= MAX_ARRIVAL_OWNER_FORWARD_HOPS);
+});
+
+test("arrival owner resolution fails closed on cyclic or ambiguous forwarding", async () => {
+  const cycle = new Map([
+    ["garden-2", { present: false, forwardedRegionId: "garden-3" }],
+    ["garden-3", { present: false, forwardedRegionId: "garden-2" }],
+  ]);
+  assert.equal(
+    await resolveArrivalOwnerRegion("garden-2", async (regionId) => cycle.get(regionId)),
+    undefined,
+  );
+  assert.equal(
+    await resolveArrivalOwnerRegion("garden-2", async () => ({ present: false, handoffPending: true })),
+    undefined,
+  );
+  assert.equal(
+    await resolveArrivalOwnerRegion("garden-2", async () => ({ present: false })),
+    null,
   );
 });
 

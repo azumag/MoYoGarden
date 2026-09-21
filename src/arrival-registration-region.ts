@@ -18,7 +18,7 @@ interface ArrivalReconciliationEnv {
   ADMIN_TOKEN?: string;
 }
 
-type ArrivalOwnerLookupStep =
+export type ArrivalOwnerLookupStep =
   | { kind: "owned"; regionId: string }
   | { kind: "forwarded"; regionId: string }
   | { kind: "absent" }
@@ -28,7 +28,7 @@ type ArrivalOwnerLookupStep =
 const PENDING_ARRIVAL_REGISTRATIONS_KEY =
   "handoff:autonomy:arrival-registration-retry:v1";
 const INTERNAL_AGENT_LOOKUP_PATH = "/api/internal/autonomy/agent/lookup";
-const MAX_ARRIVAL_OWNER_FORWARD_HOPS = 6;
+export const MAX_ARRIVAL_OWNER_FORWARD_HOPS = 6;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -58,6 +58,46 @@ export function arrivalOwnerLookupStep(
   if (forwardedRegionId === undefined) return { kind: "absent" };
   if (forwardedRegionId === currentRegionId) return { kind: "unknown" };
   return { kind: "forwarded", regionId: forwardedRegionId };
+}
+
+export async function resolveArrivalOwnerRegion(
+  initialRegionId: string,
+  lookup: (regionId: string) => Promise<unknown>,
+  maxForwardHops = MAX_ARRIVAL_OWNER_FORWARD_HOPS,
+): Promise<string | null | undefined> {
+  const hopLimit = Number.isFinite(maxForwardHops)
+    ? Math.max(0, Math.floor(maxForwardHops))
+    : MAX_ARRIVAL_OWNER_FORWARD_HOPS;
+  if (hopLimit <= 0) return undefined;
+
+  let regionId = initialRegionId;
+  const visited = new Set<string>();
+  for (let hop = 0; hop < hopLimit; hop += 1) {
+    if (visited.has(regionId)) return undefined;
+    visited.add(regionId);
+
+    let value: unknown;
+    try {
+      value = await lookup(regionId);
+    } catch {
+      return undefined;
+    }
+
+    const step = arrivalOwnerLookupStep(regionId, value);
+    if (step.kind === "owned") return step.regionId;
+    if (step.kind === "absent") return null;
+    if (step.kind !== "forwarded") return undefined;
+    if (visited.has(step.regionId)) return undefined;
+    regionId = step.regionId;
+  }
+
+  // Keep cross-DO work bounded per alarm, but do not stall a valid courier that
+  // moved farther than the lookup budget before its arrival claim was ACKed.
+  // Every forwarding hop above was proven by the crash-safe handoff directory,
+  // so moving the retry cursor to the last proven region is safe even when that
+  // region has itself already forwarded the agent. The next alarm can continue
+  // from there instead of replaying the same first six hops until the lease dies.
+  return regionId === initialRegionId ? undefined : regionId;
 }
 
 export function retargetPendingArrivalRegistrations(
@@ -93,35 +133,17 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
     const agentId = pendingArrivalAgentId(registration);
     if (agentId === undefined) return undefined;
 
-    let regionId = registration.targetRegionId;
-    for (let hop = 0; hop < MAX_ARRIVAL_OWNER_FORWARD_HOPS; hop += 1) {
-      let response: Response;
-      try {
-        const stub = this.arrivalReconciliationEnv.REGIONS.get(
-          this.arrivalReconciliationEnv.REGIONS.idFromName(regionId),
-        );
-        response = await stub.fetch(new Request(
-          `https://moyo.internal${INTERNAL_AGENT_LOOKUP_PATH}?agentId=${encodeURIComponent(agentId)}`,
-          { headers: { "x-moyo-region-internal": regionId } },
-        ));
-      } catch {
-        return undefined;
-      }
-      if (!response.ok) return undefined;
-
-      let body: unknown;
-      try {
-        body = await response.json() as unknown;
-      } catch {
-        return undefined;
-      }
-      const step = arrivalOwnerLookupStep(regionId, body);
-      if (step.kind === "owned") return step.regionId;
-      if (step.kind === "absent") return null;
-      if (step.kind !== "forwarded") return undefined;
-      regionId = step.regionId;
-    }
-    return undefined;
+    return resolveArrivalOwnerRegion(registration.targetRegionId, async (regionId) => {
+      const stub = this.arrivalReconciliationEnv.REGIONS.get(
+        this.arrivalReconciliationEnv.REGIONS.idFromName(regionId),
+      );
+      const response = await stub.fetch(new Request(
+        `https://moyo.internal${INTERNAL_AGENT_LOOKUP_PATH}?agentId=${encodeURIComponent(agentId)}`,
+        { headers: { "x-moyo-region-internal": regionId } },
+      ));
+      if (!response.ok) throw new Error(`arrival owner lookup HTTP ${response.status}`);
+      return response.json() as Promise<unknown>;
+    });
   }
 
   private async reconcilePendingArrivalTargets(): Promise<void> {
@@ -170,7 +192,8 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
     // If that courier moves onward before the retry succeeds, the old target will
     // correctly answer 409 forever because it no longer owns the BOT. Follow the
     // crash-safe handoff directory first, retarget the bounded retry to the
-    // current owner, then let the existing registration retry/release fence run.
+    // current owner (or the farthest owner proven within this alarm's hop budget),
+    // then let the existing registration retry/release fence run.
     await this.reconcilePendingArrivalTargets();
     await super.alarm();
   }
