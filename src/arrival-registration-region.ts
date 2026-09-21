@@ -38,6 +38,7 @@ const ARRIVAL_TERMINAL_RECONCILIATIONS_KEY =
 const INTERNAL_AGENT_LOOKUP_PATH = "/api/internal/autonomy/agent/lookup";
 export const MAX_ARRIVAL_OWNER_FORWARD_HOPS = 6;
 export const ARRIVAL_OWNER_LOOKUP_INTERVAL_MS = 60 * 1_000;
+export const ARRIVAL_OWNER_LOOKUP_TIMEOUT_MS = 5_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -60,6 +61,42 @@ function arrivalOwnerLookupKey(
   registration: Pick<PendingArrivalRegistration, "claimId" | "targetRegionId">,
 ): string {
   return `${registration.targetRegionId}\u0000${registration.claimId}`;
+}
+
+/**
+ * Bound both the cross-DO owner lookup and consumption of its response body.
+ *
+ * Arrival reconciliation is fail-closed: a timeout keeps the existing retry /
+ * release fence instead of guessing that the courier disappeared. The deadline
+ * prevents one unavailable region in a forwarding chain from pinning an Alarm
+ * indefinitely while preserving the existing bounded hop budget.
+ */
+export async function readArrivalOwnerJsonWithDeadline(
+  operation: (signal: AbortSignal) => Promise<Response>,
+  timeoutMs = ARRIVAL_OWNER_LOOKUP_TIMEOUT_MS,
+): Promise<unknown> {
+  const boundedTimeout = Math.max(1, Math.min(60_000, Math.floor(timeoutMs)));
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`arrival owner lookup exceeded ${boundedTimeout}ms`);
+      error.name = "TimeoutError";
+      controller.abort(error);
+      reject(error);
+    }, boundedTimeout);
+  });
+  try {
+    return await Promise.race([
+      operation(controller.signal).then(async (response) => {
+        if (!response.ok) throw new Error(`arrival owner lookup HTTP ${response.status}`);
+        return await response.json() as unknown;
+      }),
+      deadline,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export class ArrivalOwnerLookupThrottle {
@@ -184,12 +221,15 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
       const stub = this.arrivalReconciliationEnv.REGIONS.get(
         this.arrivalReconciliationEnv.REGIONS.idFromName(regionId),
       );
-      const response = await stub.fetch(new Request(
-        `https://moyo.internal${INTERNAL_AGENT_LOOKUP_PATH}?agentId=${encodeURIComponent(agentId)}`,
-        { headers: { "x-moyo-region-internal": regionId } },
-      ));
-      if (!response.ok) throw new Error(`arrival owner lookup HTTP ${response.status}`);
-      return response.json() as Promise<unknown>;
+      return readArrivalOwnerJsonWithDeadline((signal) =>
+        stub.fetch(new Request(
+          `https://moyo.internal${INTERNAL_AGENT_LOOKUP_PATH}?agentId=${encodeURIComponent(agentId)}`,
+          {
+            headers: { "x-moyo-region-internal": regionId },
+            signal,
+          },
+        ))
+      );
     });
   }
 
