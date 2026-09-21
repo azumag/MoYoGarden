@@ -14,11 +14,14 @@ interface StorageReleaseRetryEnv {
   ADMIN_TOKEN?: string;
 }
 
-export interface PendingDestinationStorageRelease {
+export interface DestinationStorageReleaseIntent {
   claimId: string;
   sourceRegionId: string;
   targetRegionId: string;
   releaseIssuedAtMs: number;
+}
+
+export interface PendingDestinationStorageRelease extends DestinationStorageReleaseIntent {
   expiresAtMs: number;
 }
 
@@ -47,7 +50,7 @@ function validRegionId(value: unknown): string | undefined {
 }
 
 function releaseKey(
-  entry: Pick<PendingDestinationStorageRelease, "claimId" | "sourceRegionId" | "targetRegionId">,
+  entry: Pick<DestinationStorageReleaseIntent, "claimId" | "sourceRegionId" | "targetRegionId">,
 ): string {
   return `${entry.targetRegionId}\u0000${entry.sourceRegionId}\u0000${entry.claimId}`;
 }
@@ -95,7 +98,7 @@ export function normalizePendingDestinationStorageReleases(
 
 export function upsertPendingDestinationStorageRelease(
   value: unknown,
-  release: Omit<PendingDestinationStorageRelease, "expiresAtMs">,
+  release: DestinationStorageReleaseIntent,
   now = Date.now(),
 ): PendingDestinationStorageRelease[] {
   const records = normalizePendingDestinationStorageReleases(value, now);
@@ -164,7 +167,7 @@ export async function withDestinationStorageReleaseDeadline<T>(
 function pendingReleaseFromRequest(
   request: Request,
   body: Record<string, unknown>,
-): Omit<PendingDestinationStorageRelease, "expiresAtMs"> | undefined {
+): DestinationStorageReleaseIntent | undefined {
   const targetRegionId = validRegionId(request.headers.get("x-moyo-region-internal"));
   const sourceRegionId = validRegionId(body.sourceRegionId);
   const claimId = typeof body.claimId === "string" ? body.claimId.trim() : "";
@@ -197,7 +200,7 @@ class DestinationStorageReleaseRetryJournal {
   }
 
   async remember(
-    release: Omit<PendingDestinationStorageRelease, "expiresAtMs">,
+    release: DestinationStorageReleaseIntent,
     now = Date.now(),
   ): Promise<void> {
     await this.run(async () => {
@@ -211,7 +214,7 @@ class DestinationStorageReleaseRetryJournal {
   }
 
   async acknowledge(
-    release: Omit<PendingDestinationStorageRelease, "expiresAtMs">,
+    release: DestinationStorageReleaseIntent,
     now = Date.now(),
   ): Promise<void> {
     await this.run(async () => {
@@ -233,11 +236,12 @@ class DestinationStorageReleaseRetryJournal {
   }
 
   async reconcile(
-    completed: readonly Omit<PendingDestinationStorageRelease, "expiresAtMs">[],
+    completed: readonly DestinationStorageReleaseIntent[],
     now = Date.now(),
   ): Promise<PendingDestinationStorageRelease[]> {
     return this.run(async () => {
       const stored = await this.state.storage.get<unknown>(PENDING_DESTINATION_STORAGE_RELEASES_KEY);
+      if (stored === undefined && completed.length === 0) return [];
       let next: unknown = stored;
       for (const release of completed) {
         next = clearPendingDestinationStorageRelease(
@@ -347,38 +351,40 @@ export class RegionDurableObject extends ArrivalRegistrationRegionDurableObject 
     }
 
     const attempts = pending.slice(0, DESTINATION_STORAGE_RELEASE_RETRY_ATTEMPT_BUDGET);
-    const completed = (
-      await Promise.all(attempts.map(async (release) => {
-        try {
-          const stub = this.releaseRetryDirectEnv.REGIONS.get(
-            this.releaseRetryDirectEnv.REGIONS.idFromName(release.targetRegionId),
-          );
-          const response = await withDestinationStorageReleaseDeadline((signal) =>
-            stub.fetch(new Request(
-              `https://moyo.internal${INTERNAL_STORAGE_RELEASE_PATH}`,
-              {
-                method: "POST",
-                headers: {
-                  "content-type": "application/json",
-                  "x-moyo-region-internal": release.targetRegionId,
-                },
-                body: JSON.stringify({
-                  claimId: release.claimId,
-                  sourceRegionId: release.sourceRegionId,
-                  releaseIssuedAtMs: release.releaseIssuedAtMs,
-                }),
-                signal,
+    const outcomes = await Promise.all(attempts.map(async (release) => {
+      try {
+        const stub = this.releaseRetryDirectEnv.REGIONS.get(
+          this.releaseRetryDirectEnv.REGIONS.idFromName(release.targetRegionId),
+        );
+        const response = await withDestinationStorageReleaseDeadline((signal) =>
+          stub.fetch(new Request(
+            `https://moyo.internal${INTERNAL_STORAGE_RELEASE_PATH}`,
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-moyo-region-internal": release.targetRegionId,
               },
-            ))
-          );
-          return response.ok || !isRetryableDestinationStorageReleaseStatus(response.status)
-            ? release
-            : undefined;
-        } catch {
-          return undefined;
-        }
-      }))
-    ).filter((entry): entry is PendingDestinationStorageRelease => entry !== undefined);
+              body: JSON.stringify({
+                claimId: release.claimId,
+                sourceRegionId: release.sourceRegionId,
+                releaseIssuedAtMs: release.releaseIssuedAtMs,
+              }),
+              signal,
+            },
+          ))
+        );
+        return {
+          release,
+          completed: response.ok || !isRetryableDestinationStorageReleaseStatus(response.status),
+        };
+      } catch {
+        return { release, completed: false };
+      }
+    }));
+    const completed = outcomes
+      .filter((outcome) => outcome.completed)
+      .map((outcome) => outcome.release);
 
     const remaining = await this.releaseRetryJournal.reconcile(completed, Date.now());
     if (remaining.length > 0) {
@@ -386,14 +392,21 @@ export class RegionDurableObject extends ArrivalRegistrationRegionDurableObject 
     }
   }
 
+  private async ensureDestinationStorageReleaseRetryAlarm(): Promise<void> {
+    const now = Date.now();
+    const pending = await this.releaseRetryJournal.pending(now);
+    if (pending.length > 0) {
+      await this.releaseRetryJournal.ensureRetryAlarm(now);
+    }
+  }
+
   override async alarm(): Promise<void> {
-    // Drain releases that failed before this Alarm first, then run the normal
-    // simulation. Retry once more afterwards because source-claim cleanup inside
-    // super.alarm() can create a new failed remote release and the parent may
-    // deep-idle the region before another Alarm would otherwise be scheduled.
+    // Retry old failures once per Alarm. Failures created by the parent simulation
+    // already schedule their own retry Alarm through journal.remember(); the final
+    // re-arm protects that schedule if the parent changes/deep-idles its Alarm.
     await this.retryPendingDestinationStorageReleases();
     await super.alarm();
-    await this.retryPendingDestinationStorageReleases();
+    await this.ensureDestinationStorageReleaseRetryAlarm();
   }
 }
 
