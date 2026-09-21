@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 
 import {
   ARRIVAL_OWNER_LOOKUP_INTERVAL_MS,
+  ARRIVAL_OWNER_LOOKUP_TIMEOUT_MS,
   ArrivalOwnerLookupThrottle,
   arrivalOwnerLookupStep,
   MAX_ARRIVAL_OWNER_FORWARD_HOPS,
+  readArrivalOwnerJsonWithDeadline,
   resolveArrivalOwnerRegion,
   retargetPendingArrivalRegistrations,
 } from "../dist-ts/src/arrival-registration-region.js";
@@ -87,6 +89,41 @@ test("arrival owner resolution fails closed on cyclic or ambiguous forwarding", 
   assert.equal(
     await resolveArrivalOwnerRegion("garden-2", async () => ({ present: false })),
     null,
+  );
+});
+
+test("arrival owner directory reads abort stalled fetches within the bounded deadline", async () => {
+  let aborted = false;
+  const timeoutMs = 10;
+  await assert.rejects(
+    readArrivalOwnerJsonWithDeadline(
+      (signal) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true });
+      }),
+      timeoutMs,
+    ),
+    /arrival owner lookup exceeded 10ms/,
+  );
+  assert.equal(aborted, true);
+  assert.equal(ARRIVAL_OWNER_LOOKUP_TIMEOUT_MS, 5_000);
+});
+
+test("arrival owner directory deadline includes stalled response bodies", async () => {
+  const timeoutMs = 10;
+  const stream = new ReadableStream({
+    start() {
+      // Deliberately never enqueue or close: headers arrive but JSON does not.
+    },
+  });
+  await assert.rejects(
+    readArrivalOwnerJsonWithDeadline(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }), timeoutMs),
+    /arrival owner lookup exceeded 10ms/,
   );
 });
 
