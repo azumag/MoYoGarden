@@ -27,7 +27,7 @@
     fallingBack = true;
     const message = reason instanceof Error ? reason.message : String(reason || "unknown startup failure");
     console.error("MoYoGarden PBR startup fallback:", message);
-    setMessage("3Dレンダラーを起動できませんでした", "Balanced品質で再読み込みできます");
+    setMessage("3Dレンダラーを起動できませんでした", "軽量セーフモードで再読み込みできます");
 
     const productionHost = new URL(PRODUCTION_URL).host;
     if (location.host !== productionHost) {
@@ -41,12 +41,12 @@
     if (progress) progress.hidden = true;
     if (detail) {
       const destination = new URL(location.href);
-      destination.searchParams.set("quality", "balanced");
+      destination.searchParams.set("quality", "low");
       destination.searchParams.delete("safe");
       destination.searchParams.delete("renderer");
       const link = document.createElement("a");
       link.href = destination.href;
-      link.textContent = "Balancedで再読み込み";
+      link.textContent = "軽量セーフモードで再読み込み";
       link.className = "loading-fallback-link";
       detail.replaceChildren(document.createTextNode(`${message} — `), link);
     }
