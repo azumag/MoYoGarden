@@ -15,6 +15,8 @@ interface RegionWindowReliabilityEnv {
   ADMIN_TOKEN?: string;
 }
 
+export const REGION_WINDOW_SNAPSHOT_BODY_TIMEOUT_MS = 5_000;
+
 function unavailableRegionSnapshot(): Response {
   return new Response(JSON.stringify({ error: "snapshot unavailable" }), {
     status: 503,
@@ -39,6 +41,72 @@ function routedSnapshotRegionId(input: RequestInfo | URL): string | undefined {
   return input.headers.get("x-moyo-region-internal")?.trim() || undefined;
 }
 
+function readChunkWithinTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      reject(new Error("snapshot body read timed out"));
+    }, timeoutMs);
+    reader.read().then(
+      (result) => {
+        globalThis.clearTimeout(timeoutId);
+        resolve(result);
+      },
+      (error: unknown) => {
+        globalThis.clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
+}
+
+export async function readSnapshotBodyWithinDeadline(
+  response: Response,
+  timeoutMs = REGION_WINDOW_SNAPSHOT_BODY_TIMEOUT_MS,
+): Promise<ArrayBuffer> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("snapshot body timeout must be positive");
+  }
+  if (response.body === null) return new ArrayBuffer(0);
+
+  const reader = response.body.getReader();
+  const deadlineAtMs = Date.now() + timeoutMs;
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const remainingMs = deadlineAtMs - Date.now();
+      if (remainingMs <= 0) throw new Error("snapshot body read timed out");
+      const result = await readChunkWithinTimeout(reader, remainingMs);
+      if (result.done) break;
+      if (result.value === undefined || result.value.byteLength === 0) continue;
+      chunks.push(result.value);
+      totalBytes += result.value.byteLength;
+    }
+  } catch (error) {
+    void reader.cancel(error).catch(() => undefined);
+    throw error;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // A timed-out read may still be settling cancellation. The response is no
+      // longer used, so retaining the lock briefly is preferable to blocking the
+      // window request on a broken neighbor body.
+    }
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body.buffer;
+}
+
 async function validatedSnapshotResponse(
   response: Response,
   routedRegionId: string | undefined,
@@ -51,7 +119,16 @@ async function validatedSnapshotResponse(
     return response;
   }
 
-  const body = await response.arrayBuffer();
+  let body: ArrayBuffer;
+  try {
+    body = await readSnapshotBodyWithinDeadline(response);
+  } catch {
+    if (routedRegionId === centerRegionId) {
+      throw new Error("center snapshot body unavailable");
+    }
+    return unavailableRegionSnapshot();
+  }
+
   try {
     JSON.parse(new TextDecoder().decode(body));
   } catch {
