@@ -5,6 +5,12 @@ import {
   RegionDurableObject as StorageReservationRegionDurableObject,
   type PendingArrivalRegistration,
 } from "./storage-reservation-region.js";
+import {
+  beginArrivalTerminalGrace,
+  finishArrivalTerminalReconciliation,
+  normalizeArrivalTerminalMarkers,
+  pendingArrivalRegistrationsIncludingExpired,
+} from "./arrival-terminal-reconciliation.js";
 
 interface ArrivalReconciliationEnv {
   REGIONS: DurableObjectNamespace;
@@ -27,6 +33,8 @@ export type ArrivalOwnerLookupStep =
 
 const PENDING_ARRIVAL_REGISTRATIONS_KEY =
   "handoff:autonomy:arrival-registration-retry:v1";
+const ARRIVAL_TERMINAL_RECONCILIATIONS_KEY =
+  "handoff:autonomy:arrival-terminal-reconciliation:v1";
 const INTERNAL_AGENT_LOOKUP_PATH = "/api/internal/autonomy/agent/lookup";
 export const MAX_ARRIVAL_OWNER_FORWARD_HOPS = 6;
 export const ARRIVAL_OWNER_LOOKUP_INTERVAL_MS = 60 * 1_000;
@@ -185,6 +193,96 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
     });
   }
 
+  private async reconcileExpiredPendingArrivals(): Promise<void> {
+    const now = Date.now();
+    const storedPending = await this.arrivalReconciliationState.storage.get<unknown>(
+      PENDING_ARRIVAL_REGISTRATIONS_KEY,
+    );
+    const allPending = pendingArrivalRegistrationsIncludingExpired(storedPending);
+    const storedMarkers = await this.arrivalReconciliationState.storage.get<unknown>(
+      ARRIVAL_TERMINAL_RECONCILIATIONS_KEY,
+    );
+    let markers = normalizeArrivalTerminalMarkers(storedMarkers);
+    let pendingValue: unknown = storedPending;
+    let pendingChanged = false;
+    let markersChanged = false;
+
+    const pendingClaimIds = new Set(allPending.map((entry) => entry.claimId));
+    const prunedMarkers = markers.filter((entry) => pendingClaimIds.has(entry.claimId));
+    if (JSON.stringify(prunedMarkers) !== JSON.stringify(markers)) {
+      markers = prunedMarkers;
+      markersChanged = true;
+    }
+
+    for (const registration of allPending) {
+      if (registration.expiresAtMs > now) continue;
+      const terminalMarker = markers.find((entry) => entry.claimId === registration.claimId);
+
+      // One terminal grace has already been consumed. Do not turn a transient
+      // recovery fence into a permanent reservation leak; let the normal claim
+      // cleanup proceed after this bounded final window.
+      if (terminalMarker !== undefined) {
+        const next = finishArrivalTerminalReconciliation(
+          pendingValue,
+          markers,
+          registration.claimId,
+          now,
+        );
+        pendingValue = next.pending;
+        markers = next.markers;
+        pendingChanged = true;
+        markersChanged = true;
+        continue;
+      }
+
+      // Before the six-hour retry fence disappears, consult the crash-safe
+      // ownership directory one final time. A proven absence can be abandoned
+      // immediately. Proven ownership (or an inconclusive/transient lookup)
+      // receives exactly one short grace window so claim/register can verify the
+      // material intent on the actual owner rather than dropping live cargo.
+      const ownerRegionId = await this.resolveArrivalOwner(registration);
+      if (ownerRegionId === null) {
+        const next = finishArrivalTerminalReconciliation(
+          pendingValue,
+          markers,
+          registration.claimId,
+          now,
+        );
+        pendingValue = next.pending;
+        markers = next.markers;
+        pendingChanged = true;
+        markersChanged = true;
+        continue;
+      }
+
+      const next = beginArrivalTerminalGrace(
+        pendingValue,
+        markers,
+        registration,
+        ownerRegionId ?? registration.targetRegionId,
+        now,
+      );
+      pendingValue = next.pending;
+      markers = next.markers;
+      pendingChanged = true;
+      markersChanged = true;
+      this.arrivalOwnerLookupThrottle.forget(registration);
+    }
+
+    if (pendingChanged) {
+      await this.arrivalReconciliationState.storage.put(
+        PENDING_ARRIVAL_REGISTRATIONS_KEY,
+        pendingValue,
+      );
+    }
+    if (markersChanged) {
+      await this.arrivalReconciliationState.storage.put(
+        ARRIVAL_TERMINAL_RECONCILIATIONS_KEY,
+        markers,
+      );
+    }
+  }
+
   private async reconcilePendingArrivalTargets(): Promise<void> {
     const now = Date.now();
     const stored = await this.arrivalReconciliationState.storage.get<unknown>(
@@ -237,6 +335,11 @@ export class RegionDurableObject extends StorageReservationRegionDurableObject {
   }
 
   override async alarm(): Promise<void> {
+    // Give an about-to-expire arrival fence one bounded terminal reconciliation
+    // before normalization can discard it. The existing retry path below then
+    // validates claim/register against the current owner during that final grace.
+    await this.reconcileExpiredPendingArrivals();
+
     // A material handoff can commit and then fail to install its arrival claim.
     // If that courier moves onward before the retry succeeds, the old target will
     // correctly answer 409 forever because it no longer owns the BOT. Follow the
