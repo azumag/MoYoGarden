@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ARRIVAL_OWNER_LOOKUP_INTERVAL_MS,
+  ArrivalOwnerLookupThrottle,
   arrivalOwnerLookupStep,
   MAX_ARRIVAL_OWNER_FORWARD_HOPS,
   resolveArrivalOwnerRegion,
@@ -85,6 +87,35 @@ test("arrival owner resolution fails closed on cyclic or ambiguous forwarding", 
   assert.equal(
     await resolveArrivalOwnerRegion("garden-2", async () => ({ present: false })),
     null,
+  );
+});
+
+test("arrival owner lookup throttle bounds repeated directory reads without delaying retarget progress", () => {
+  const throttle = new ArrivalOwnerLookupThrottle();
+  const current = failedRegistration("garden-2");
+  assert.equal(throttle.shouldLookup(current, NOW), true);
+  assert.equal(throttle.shouldLookup(current, NOW + 10_000), false);
+  assert.equal(
+    throttle.shouldLookup(current, NOW + ARRIVAL_OWNER_LOOKUP_INTERVAL_MS - 1),
+    false,
+  );
+  assert.equal(
+    throttle.shouldLookup(current, NOW + ARRIVAL_OWNER_LOOKUP_INTERVAL_MS),
+    true,
+  );
+
+  const forwarded = failedRegistration("hex-q2-r0");
+  assert.equal(
+    throttle.shouldLookup(forwarded, NOW + 10_000),
+    true,
+    "a retargeted owner uses a new throttle key so a long proven forwarding chain can advance next alarm",
+  );
+
+  throttle.forget(current);
+  assert.equal(
+    throttle.shouldLookup(current, NOW + 20_000),
+    true,
+    "terminal cleanup can forget a stale target immediately",
   );
 });
 
