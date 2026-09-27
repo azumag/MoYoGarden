@@ -1,3 +1,4 @@
+import { cloudflareHostObjectMember } from "./cloudflare-host-object.js";
 import { RegionDurableObject as PathogenRegionDurableObject } from "./pathogen-region.js";
 
 interface StorageReservationEnv {
@@ -380,13 +381,13 @@ function generationStampedEnv(
 
   const regions = new Proxy(env.REGIONS, {
     get(target, property, receiver) {
-      if (property !== "get") return Reflect.get(target, property, receiver);
+      if (property !== "get") return cloudflareHostObjectMember(target, property);
       return (...getArgs: Parameters<StorageReservationEnv["REGIONS"]["get"]>) => {
         const stub = target.get(...getArgs);
         return new Proxy(stub, {
           get(stubTarget, stubProperty, stubReceiver) {
             if (stubProperty !== "fetch") {
-              return Reflect.get(stubTarget, stubProperty, stubReceiver);
+              return cloudflareHostObjectMember(stubTarget, stubProperty);
             }
             return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
               const request = new Request(input, init);
@@ -474,13 +475,13 @@ function reliableArrivalRegistrationEnv(
 
   const regions = new Proxy(env.REGIONS, {
     get(target, property, receiver) {
-      if (property !== "get") return Reflect.get(target, property, receiver);
+      if (property !== "get") return cloudflareHostObjectMember(target, property);
       return (...getArgs: Parameters<StorageReservationEnv["REGIONS"]["get"]>) => {
         const stub = target.get(...getArgs);
         return new Proxy(stub, {
           get(stubTarget, stubProperty, stubReceiver) {
             if (stubProperty !== "fetch") {
-              return Reflect.get(stubTarget, stubProperty, stubReceiver);
+              return cloudflareHostObjectMember(stubTarget, stubProperty);
             }
             return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
               const request = new Request(input, init);
