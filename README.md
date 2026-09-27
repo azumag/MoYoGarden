@@ -53,19 +53,19 @@ npm run verify
 
 ## Cloudflareへ自動デプロイ
 
-GitHub Actionsは使いません。Cloudflareダッシュボードで `azumag/MoYoGarden` を一度だけWorkers Buildsへ接続すると、以後は`main`へのpushをCloudflare自身が検出してデプロイします。
+`main`は開発正本、`deploy`は本番反映用ブランチです。GitHub ActionsはPR/main/deployのbuild/testを検証し、Cloudflare Workers Buildsは`deploy`への対象変更を検出して本番へ反映します。**mainへのpushやPR作成だけでは本番へ反映されません。** 定期実行は作業ブランチとPRまでとし、merge・`deploy`更新・production deployは行いません。
 
-設定値は次のとおりです。
+確認済みの本番Build実行値は次のとおりです。接続・設定変更・本番反映は別途明示承認された実行でのみ行います。
 
 ```text
 Worker name:       moyo-garden
-Production branch: main
+Production branch: deploy
 Root directory:    /
-Build command:     npm run build
+Build command:     npm run check
 Deploy command:    npx wrangler deploy
 ```
 
-`npm run build`は、TypeScript型検査、4つのGLB生成、固定バージョンのThree.jsランタイム配置、ブラウザJavaScript構文検査、GLB/PBR/LOD/影設定の静的検査を行います。
+`npm run check`はTypeScript型検査です。その後の`wrangler deploy`は`wrangler.jsonc`のcustom build hookから`build:web`を実行し、テスト、モデル生成、Three.js配置、ブラウザJavaScript・資産の検査を行います。同一Workers Build commitで資産が生成済みの場合のみ、既存markerで重複buildを省きます。
 
 本番のSecretとして、異なる長い値を設定します。
 
@@ -74,7 +74,7 @@ COMMAND_TOKEN
 ADMIN_TOKEN
 ```
 
-詳細手順は [`docs/CLOUDFLARE_DEPLOY.md`](docs/CLOUDFLARE_DEPLOY.md) にあります。
+詳細手順と本番反映の完了条件は [`docs/CLOUDFLARE_DEPLOY.md`](docs/CLOUDFLARE_DEPLOY.md) と [`AGENTS.md`](AGENTS.md) にあります。productionの`build.commit`は対象`deploy` SHAと比較し、未リリースの最新main SHAとは比較しません。
 
 ## ランニングコスト
 
