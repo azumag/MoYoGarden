@@ -122,6 +122,73 @@ test("negative snapshot revision or tick fails closed", () => {
   }
 });
 
+test("malformed snapshot version poisons the edge key independent of input order", () => {
+  const link = dynamicLinks[0];
+  assert.ok(link);
+  const [source, neighbor] = snapshotsForLink(link);
+  assert.ok(source);
+  assert.ok(neighbor);
+
+  for (const field of ["revision", "tick"]) {
+    const malformed = {
+      ...structuredClone(neighbor),
+      [field]: -1,
+    };
+
+    for (const observations of [
+      [source, neighbor, malformed],
+      [malformed, source, neighbor],
+    ]) {
+      assert.deepEqual(
+        buildReciprocalHexSeamConnectivity(extent, [link], observations),
+        [],
+        `malformed ${field} must poison the edge key regardless of input order`,
+      );
+    }
+  }
+});
+
+test("malformed snapshot tiles fail closed without throwing", () => {
+  const link = dynamicLinks[0];
+  assert.ok(link);
+  const [source, neighbor] = snapshotsForLink(link);
+  assert.ok(source);
+  assert.ok(neighbor);
+
+  const malformedNeighbors = [
+    { ...structuredClone(neighbor), tiles: null },
+    { ...structuredClone(neighbor), tiles: [null] },
+    { ...structuredClone(neighbor), tiles: [{}] },
+    {
+      ...structuredClone(neighbor),
+      tiles: [{ position: {}, passableComponent: 17 }],
+    },
+    {
+      ...structuredClone(neighbor),
+      tiles: [{
+        position: { x: link.neighborPosition.x + 0.5, y: link.neighborPosition.y },
+        passableComponent: 17,
+      }],
+    },
+    {
+      ...structuredClone(neighbor),
+      tiles: [{
+        position: { ...link.neighborPosition },
+        passableComponent: -1,
+      }],
+    },
+  ];
+
+  for (const malformed of malformedNeighbors) {
+    assert.doesNotThrow(() => {
+      assert.deepEqual(
+        buildReciprocalHexSeamConnectivity(extent, [link], [source, malformed]),
+        [],
+      );
+    });
+  }
+});
+
 test("freshest edge snapshot wins and can invalidate a stale component label", () => {
   const link = dynamicLinks[0];
   assert.ok(link);
