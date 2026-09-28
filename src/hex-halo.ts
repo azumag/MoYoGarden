@@ -66,7 +66,7 @@ export interface HexHaloEdgeSnapshot {
   // Optional during rolling deploys; old edge snapshots remain valid and
   // consumers fall back to exact boundary-cell observations.
   regionSummary?: HexHaloRegionSummary;
-  tiles: Array<{ position: HexGridPosition; tile: Tile; occupants?: number }>;
+  tiles: Array<{ position: HexGridPosition; tile: Tile; occupants?: number; passableComponent?: number }>;
 }
 
 function cloneHaloLink(link: HexHaloLink): HexHaloLink {
