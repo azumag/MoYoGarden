@@ -156,6 +156,33 @@ test("same-version conflicting duplicate observations fail closed independent of
   }
 });
 
+test("same-version duplicate missing the seam cell fails closed", () => {
+  const link = dynamicLinks[0];
+  assert.ok(link);
+  const [source, neighbor] = snapshotsForLink(link);
+  assert.ok(source);
+  assert.ok(neighbor);
+  const incomplete = snapshot(
+    link.neighborRegionId,
+    link.neighborDirection,
+    neighbor.revision,
+    neighbor.tick,
+    [{
+      position: { x: link.neighborPosition.x + 1, y: link.neighborPosition.y },
+      component: 17,
+    }],
+  );
+
+  assert.deepEqual(
+    buildReciprocalHexSeamConnectivity(
+      extent,
+      [link],
+      [source, neighbor, incomplete],
+    ),
+    [],
+  );
+});
+
 test("historical side-pair fallback is rejected when it is not the exact global-cell owner", () => {
   const fallbackLinks = buildHexHaloLinks(
     extent,
