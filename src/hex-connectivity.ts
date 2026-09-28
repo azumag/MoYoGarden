@@ -13,8 +13,8 @@ function positionKey(position: HexGridPosition): string {
 export function passableHexComponentByPosition(
   state: Pick<WorldState, "width" | "height" | "tiles">,
 ): Map<string, number> {
-  const tileByPosition = new Map(
-    state.tiles.map((tile) => [`${tile.x},${tile.y}`, tile] as const),
+  const tileByPosition = new Map<string, (typeof state.tiles)[number]>(
+    state.tiles.map((tile) => [`${tile.x},${tile.y}`, tile]),
   );
   const passable = state.tiles
     .filter((tile) => isHexGridCell(state, tile) && tile.terrain !== "water")
