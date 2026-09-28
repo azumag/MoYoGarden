@@ -52,18 +52,43 @@ function versionIsNewer(
     || (revision === current.revision && tick > current.tick);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isHexGridDirection(value: unknown): value is HexGridDirection {
+  return typeof value === "string"
+    && (HEX_GRID_DIRECTIONS as readonly string[]).includes(value);
+}
+
 function freshestSnapshotBuckets(
   snapshots: readonly HexHaloEdgeSnapshot[],
 ): Map<string, SnapshotBucket> {
   const buckets = new Map<string, SnapshotBucket>();
-  for (const snapshot of snapshots) {
+  const poisoned = new Set<string>();
+
+  for (const candidate of snapshots as readonly unknown[]) {
+    if (!isRecord(candidate)) continue;
+    const { regionId, direction } = candidate;
+    if (typeof regionId !== "string" || !isHexGridDirection(direction)) continue;
+
+    const key = snapshotKey(regionId, direction);
     if (
-      !Number.isSafeInteger(snapshot.revision)
-      || snapshot.revision < 0
-      || !Number.isSafeInteger(snapshot.tick)
-      || snapshot.tick < 0
-    ) continue;
-    const key = snapshotKey(snapshot.regionId, snapshot.direction);
+      typeof candidate.revision !== "number"
+      || !Number.isSafeInteger(candidate.revision)
+      || candidate.revision < 0
+      || typeof candidate.tick !== "number"
+      || !Number.isSafeInteger(candidate.tick)
+      || candidate.tick < 0
+      || !Array.isArray(candidate.tiles)
+    ) {
+      poisoned.add(key);
+      buckets.delete(key);
+      continue;
+    }
+    if (poisoned.has(key)) continue;
+
+    const snapshot = candidate as unknown as HexHaloEdgeSnapshot;
     const current = buckets.get(key);
     if (current === undefined || versionIsNewer(snapshot.revision, snapshot.tick, current)) {
       buckets.set(key, {
@@ -91,20 +116,43 @@ function componentObservation(
 
   let componentId: number | undefined;
   for (const snapshot of bucket.snapshots) {
-    const matches = snapshot.tiles.filter((entry) => positionEquals(entry.position, position));
-    if (matches.length !== 1) return undefined;
-    const entry = matches[0];
-    if (
-      entry === undefined
-      || entry.passableComponent === undefined
-      || !Number.isSafeInteger(entry.passableComponent)
-      || entry.passableComponent < 0
-    ) {
-      return undefined;
+    let matchedComponent: number | undefined;
+    let matchCount = 0;
+
+    for (const candidate of snapshot.tiles as readonly unknown[]) {
+      if (!isRecord(candidate) || !isRecord(candidate.position)) return undefined;
+      const { x, y } = candidate.position;
+      if (
+        typeof x !== "number"
+        || !Number.isSafeInteger(x)
+        || typeof y !== "number"
+        || !Number.isSafeInteger(y)
+      ) {
+        return undefined;
+      }
+
+      if (
+        candidate.passableComponent !== undefined
+        && (
+          typeof candidate.passableComponent !== "number"
+          || !Number.isSafeInteger(candidate.passableComponent)
+          || candidate.passableComponent < 0
+        )
+      ) {
+        return undefined;
+      }
+
+      if (x === position.x && y === position.y) {
+        matchCount += 1;
+        if (matchCount > 1 || candidate.passableComponent === undefined) return undefined;
+        matchedComponent = candidate.passableComponent as number;
+      }
     }
+
+    if (matchCount !== 1 || matchedComponent === undefined) return undefined;
     if (componentId === undefined) {
-      componentId = entry.passableComponent;
-    } else if (componentId !== entry.passableComponent) {
+      componentId = matchedComponent;
+    } else if (componentId !== matchedComponent) {
       return undefined;
     }
   }
