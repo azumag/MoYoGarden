@@ -85,27 +85,26 @@ function componentObservation(
   if (bucket === undefined) return undefined;
 
   let componentId: number | undefined;
-  let sawPosition = false;
   for (const snapshot of bucket.snapshots) {
-    for (const entry of snapshot.tiles) {
-      if (!positionEquals(entry.position, position)) continue;
-      sawPosition = true;
-      if (
-        entry.passableComponent === undefined
-        || !Number.isSafeInteger(entry.passableComponent)
-        || entry.passableComponent < 0
-      ) {
-        return undefined;
-      }
-      if (componentId === undefined) {
-        componentId = entry.passableComponent;
-      } else if (componentId !== entry.passableComponent) {
-        return undefined;
-      }
+    const matches = snapshot.tiles.filter((entry) => positionEquals(entry.position, position));
+    if (matches.length !== 1) return undefined;
+    const entry = matches[0];
+    if (
+      entry === undefined
+      || entry.passableComponent === undefined
+      || !Number.isSafeInteger(entry.passableComponent)
+      || entry.passableComponent < 0
+    ) {
+      return undefined;
+    }
+    if (componentId === undefined) {
+      componentId = entry.passableComponent;
+    } else if (componentId !== entry.passableComponent) {
+      return undefined;
     }
   }
 
-  if (!sawPosition || componentId === undefined) return undefined;
+  if (componentId === undefined) return undefined;
   return {
     regionId,
     revision: bucket.revision,
