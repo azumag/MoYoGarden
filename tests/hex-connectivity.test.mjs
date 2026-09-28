@@ -5,7 +5,7 @@ import { hexGridCells } from "../dist-ts/src/hex-grid.js";
 import { createInitialWorld } from "../dist-ts/src/world.js";
 
 function plainWorld() {
-  const state = createInitialWorld({ seed: 424242, regionId: "garden-1" });
+  const state = createInitialWorld({ seed: 424242, regionId: "garden-1", width: 40, height: 24 });
   for (const tile of state.tiles) {
     if (hexGridCells(state).some((cell) => cell.x === tile.x && cell.y === tile.y)) {
       tile.terrain = "plain";
