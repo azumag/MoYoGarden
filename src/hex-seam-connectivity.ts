@@ -57,7 +57,12 @@ function freshestSnapshotBuckets(
 ): Map<string, SnapshotBucket> {
   const buckets = new Map<string, SnapshotBucket>();
   for (const snapshot of snapshots) {
-    if (!Number.isSafeInteger(snapshot.revision) || !Number.isSafeInteger(snapshot.tick)) continue;
+    if (
+      !Number.isSafeInteger(snapshot.revision)
+      || snapshot.revision < 0
+      || !Number.isSafeInteger(snapshot.tick)
+      || snapshot.tick < 0
+    ) continue;
     const key = snapshotKey(snapshot.regionId, snapshot.direction);
     const current = buckets.get(key);
     if (current === undefined || versionIsNewer(snapshot.revision, snapshot.tick, current)) {
