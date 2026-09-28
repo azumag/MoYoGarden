@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
+import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";
 
 class MemoryStorage {
   constructor() { this.values = new Map(); this.alarm = null; }
@@ -250,4 +251,48 @@ test("halo support summaries expose only living occupants", async () => {
     Object.values(edge.regionSummary.occupantsByFaction ?? {}).reduce((sum, count) => sum + count, 0),
     living.length,
   );
+});
+
+
+test("internal halo edge labels passable boundary components without changing water tiles", async () => {
+  const env = environment();
+  await call(env, "/api/world/snapshot?region=garden-2");
+  const entry = env.REGIONS.entries.get("garden-2");
+  assert.ok(entry);
+  await entry.state.ready;
+
+  const state = entry.object.runtime.snapshot();
+  const boundary = hexGridBoundaryCells(state, "west");
+  assert.ok(boundary.length > 1);
+  for (const position of boundary) {
+    const tile = state.tiles[position.y * state.width + position.x];
+    assert.ok(tile);
+    tile.terrain = "plain";
+  }
+  const blocked = boundary[0];
+  assert.ok(blocked);
+  state.tiles[blocked.y * state.width + blocked.x].terrain = "water";
+  state.revision += 1;
+  entry.object.runtime = new WorldRuntime({ state });
+
+  const response = await entry.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edge?direction=west",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(response.status, 200);
+  const edge = await response.json();
+  const blockedEntry = edge.tiles.find(
+    (candidate) => candidate.position.x === blocked.x && candidate.position.y === blocked.y,
+  );
+  assert.ok(blockedEntry);
+  assert.equal("passableComponent" in blockedEntry, false);
+
+  const passableEntries = edge.tiles.filter((candidate) =>
+    candidate.position.x !== blocked.x || candidate.position.y !== blocked.y
+  );
+  assert.ok(passableEntries.length > 0);
+  assert.ok(passableEntries.every((candidate) => Number.isInteger(candidate.passableComponent)));
 });
