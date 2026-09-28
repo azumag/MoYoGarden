@@ -107,6 +107,21 @@ test("missing passable component label fails closed", () => {
   );
 });
 
+test("negative snapshot revision or tick fails closed", () => {
+  const link = dynamicLinks[0];
+  assert.ok(link);
+
+  for (const field of ["revision", "tick"]) {
+    const observations = snapshotsForLink(link);
+    observations[0][field] = -1;
+    assert.deepEqual(
+      buildReciprocalHexSeamConnectivity(extent, [link], observations),
+      [],
+      `negative ${field} must be rejected`,
+    );
+  }
+});
+
 test("freshest edge snapshot wins and can invalidate a stale component label", () => {
   const link = dynamicLinks[0];
   assert.ok(link);
