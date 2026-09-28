@@ -18,6 +18,7 @@ import {
   isHexGridCell,
   type HexGridDirection,
 } from "./hex-grid.js";
+import { passableHexComponentByPosition } from "./hex-connectivity.js";
 import { RegionDurableObject as MoveRegionDurableObject } from "./move-handoff-region.js";
 import {
   BUILD_RECIPES,
@@ -267,6 +268,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     tick: number;
     regionSummary: NonNullable<HexHaloEdgeSnapshot["regionSummary"]>;
     occupantsByPosition: Map<string, number>;
+    passableComponentByPosition: Map<string, number>;
   } | undefined;
   private haloEdgeMutationDepth = 0;
 
@@ -430,6 +432,8 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       }
     }
 
+    const passableComponentByPosition = passableHexComponentByPosition(state);
+
     const next = {
       revision: state.revision,
       tick: state.tick,
@@ -443,6 +447,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         occupants: livingOccupants,
       },
       occupantsByPosition,
+      passableComponentByPosition,
     };
     this.haloEdgeSupportCache = next;
     return next;
@@ -450,15 +455,18 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {
     const state = runtimeAccess(this).runtime.snapshot();
-    const { regionSummary, occupantsByPosition } = this.edgeSupport(state);
+    const { regionSummary, occupantsByPosition, passableComponentByPosition } = this.edgeSupport(state);
     const tiles = hexGridBoundaryCells(state, direction).flatMap((position) => {
       const tile = getTile(state, position);
       if (tile === undefined) return [];
-      const occupants = occupantsByPosition.get(`${position.x},${position.y}`) ?? 0;
+      const key = `${position.x},${position.y}`;
+      const occupants = occupantsByPosition.get(key) ?? 0;
+      const passableComponent = passableComponentByPosition.get(key);
       return [{
         position: { ...position },
         tile: structuredClone(tile),
         ...(occupants > 0 ? { occupants } : {}),
+        ...(passableComponent === undefined ? {} : { passableComponent }),
       }];
     });
     return {
