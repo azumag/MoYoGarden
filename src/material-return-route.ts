@@ -78,10 +78,14 @@ function regionDistance(aRegionId: string, bRegionId: string): number | undefine
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(dq + dr)) / 2;
 }
 
+function compareDeterministicString(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function compareCost(a: RouteCost, b: RouteCost): number {
   return a.equalDistanceHops - b.equalDistanceHops
     || a.hops - b.hops
-    || a.pathKey.localeCompare(b.pathKey);
+    || compareDeterministicString(a.pathKey, b.pathKey);
 }
 
 function stepEqualDistance(
@@ -211,7 +215,7 @@ export function planMaterialReturnDetour(
 
     const currentKey = componentKey(current.node);
     const neighbors = [...(adjacency.get(currentKey)?.values() ?? [])]
-      .sort((a, b) => componentKey(a).localeCompare(componentKey(b)));
+      .sort((a, b) => compareDeterministicString(componentKey(a), componentKey(b)));
 
     if (current.hops >= budget.maxHops) {
       if (neighbors.some((neighbor) =>
