@@ -12,7 +12,14 @@ Base URL例: `https://moyo-garden.YOUR_SUBDOMAIN.workers.dev`
 
 ### `GET /api/health`
 
-現在tick、pause、接続数、未処理Command数、tick間隔を返します。
+現在tick、pause、接続数、未処理Command数、tick間隔に加え、activity tierとAlarm状態を返します。
+
+- `tickMode`: `active / warm / cold`
+- `deepIdle`: coldかつ次回Alarm未登録なら`true`
+- `alarmScheduled`: Durable Objectに次回Alarmが登録済みか
+- `nextAlarmAt`: 次回Alarmのepoch milliseconds。未登録なら`null`
+
+deep-idleではAlarmが0件でも正常です。停止疑いの判定は、`deepIdle` / `alarmScheduled` / `nextAlarmAt` と `virtualTicksDue` を合わせて行います。
 
 ### `GET /api/rules`
 
