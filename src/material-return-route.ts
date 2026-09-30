@@ -218,10 +218,25 @@ export function planMaterialReturnDetour(
       .sort((a, b) => compareDeterministicString(componentKey(a), componentKey(b)));
 
     if (current.hops >= budget.maxHops) {
-      if (neighbors.some((neighbor) =>
-        stepEqualDistance(current.node.regionId, neighbor.regionId, targetRegionId) !== undefined
-      )) {
-        hopBudgetHit = true;
+      for (const neighbor of neighbors) {
+        const equalDistance = stepEqualDistance(
+          current.node.regionId,
+          neighbor.regionId,
+          targetRegionId,
+        );
+        if (equalDistance === undefined) continue;
+
+        const neighborKey = componentKey(neighbor);
+        const candidate: RouteCost = {
+          hops: current.hops + 1,
+          equalDistanceHops: current.equalDistanceHops + (equalDistance ? 1 : 0),
+          pathKey: `${current.pathKey}\\u0000${neighborKey}`,
+        };
+        const previous = best.get(neighborKey);
+        if (previous === undefined || compareCost(candidate, previous) < 0) {
+          hopBudgetHit = true;
+          break;
+        }
       }
       continue;
     }
