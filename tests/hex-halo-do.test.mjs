@@ -265,13 +265,25 @@ test("halo support summaries expose storage reachability independently from head
 
   const state = entry.object.runtime.snapshot();
   const components = passableHexComponentByPosition(state);
-  const structure = state.structures.find((candidate) =>
-    candidate.status === "active" &&
-    components.has(`${candidate.position.x},${candidate.position.y}`)
-  );
-  assert.ok(structure);
-  const componentId = components.get(`${structure.position.x},${structure.position.y}`);
+  const firstPassable = components.entries().next().value;
+  assert.ok(firstPassable);
+  const [positionKey, componentId] = firstPassable;
   assert.ok(Number.isInteger(componentId));
+  const [x, y] = positionKey.split(",").map(Number);
+  assert.ok(Number.isInteger(x) && Number.isInteger(y));
+  const factionId = state.factions[0]?.id;
+  assert.ok(factionId);
+  const structure = {
+    id: "storage-reachability-fixture",
+    factionId,
+    type: "storehouse",
+    position: { x, y },
+    status: "active",
+    progress: BUILD_RECIPES.storehouse.work,
+    requiredProgress: BUILD_RECIPES.storehouse.work,
+    storage: { wood: 0, stone: 0, food: 0 },
+  };
+  state.structures.push(structure);
 
   entry.object.runtime = new WorldRuntime({ state });
   let response = await entry.object.fetch(new Request(
