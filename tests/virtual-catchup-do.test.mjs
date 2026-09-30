@@ -76,6 +76,63 @@ test("cold alarm catches up bounded virtual ticks without skipping simulation ca
 });
 
 
+test("virtual catch-up is deterministic across different batch partitions", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_001_500_000;
+  Date.now = () => now;
+  try {
+    const defaultCtx = new MemoryState();
+    const defaultBatches = new RegionDurableObject(defaultCtx, env);
+    await defaultCtx.ready;
+    await defaultBatches.fetch(request("/api/world/snapshot"));
+
+    const partitionedCtx = new MemoryState();
+    const partitionedBatches = new RegionDurableObject(partitionedCtx, env);
+    await partitionedCtx.ready;
+    await partitionedBatches.fetch(request("/api/world/snapshot"));
+
+    assert.deepEqual(
+      partitionedBatches.runtime.snapshot(),
+      defaultBatches.runtime.snapshot(),
+      "same seed and activation time should start from the same world",
+    );
+    assert.equal(
+      partitionedCtx.storage.values.get("region").lastSimulatedAt,
+      defaultCtx.storage.values.get("region").lastSimulatedAt,
+    );
+
+    const defaultVirtualTicksForAlarm = defaultBatches.virtualTicksForAlarm.bind(defaultBatches);
+    const partitionedVirtualTicksForAlarm = partitionedBatches.virtualTicksForAlarm.bind(partitionedBatches);
+    partitionedBatches.virtualTicksForAlarm = (at = Date.now()) =>
+      Math.min(6, partitionedVirtualTicksForAlarm(at));
+
+    now += 600_000;
+    for (let batch = 0; batch < 5; batch += 1) await defaultBatches.alarm();
+    for (let batch = 0; batch < 10; batch += 1) await partitionedBatches.alarm();
+
+    const defaultState = defaultBatches.runtime.snapshot();
+    const partitionedState = partitionedBatches.runtime.snapshot();
+    assert.equal(defaultVirtualTicksForAlarm(now), 1, "default runner should be caught up");
+    assert.equal(partitionedVirtualTicksForAlarm(now), 1, "partitioned runner should be caught up");
+    assert.equal(defaultState.tick, 60);
+    assert.equal(partitionedState.tick, 60);
+    assert.deepEqual(
+      partitionedState,
+      defaultState,
+      "batch partitioning must not change the simulated world",
+    );
+    assert.equal(
+      partitionedCtx.storage.values.get("region").lastSimulatedAt,
+      defaultCtx.storage.values.get("region").lastSimulatedAt,
+    );
+    assert.equal(defaultCtx.storage.values.get("region").lastSimulatedAt, now);
+    assert.equal(defaultCtx.storage.alarm, null);
+    assert.equal(partitionedCtx.storage.alarm, null);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("capped catch-up preserves remaining debt and schedules a prompt retry", async () => {
   const originalNow = Date.now;
   let now = 1_800_002_000_000;
