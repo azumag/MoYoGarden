@@ -76,6 +76,139 @@ test("cold alarm catches up bounded virtual ticks without skipping simulation ca
 });
 
 
+test("virtual catch-up is deterministic across different batch partitions", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_001_500_000;
+  Date.now = () => now;
+  try {
+    const defaultCtx = new MemoryState();
+    const defaultBatches = new RegionDurableObject(defaultCtx, env);
+    await defaultCtx.ready;
+    await defaultBatches.fetch(request("/api/world/snapshot"));
+
+    const partitionedCtx = new MemoryState();
+    const partitionedBatches = new RegionDurableObject(partitionedCtx, env);
+    await partitionedCtx.ready;
+    await partitionedBatches.fetch(request("/api/world/snapshot"));
+
+    assert.deepEqual(
+      partitionedBatches.runtime.snapshot(),
+      defaultBatches.runtime.snapshot(),
+      "same seed and activation time should start from the same world",
+    );
+    assert.equal(
+      partitionedCtx.storage.values.get("region").lastSimulatedAt,
+      defaultCtx.storage.values.get("region").lastSimulatedAt,
+    );
+
+    const defaultVirtualTicksForAlarm = defaultBatches.virtualTicksForAlarm.bind(defaultBatches);
+    const partitionedVirtualTicksForAlarm = partitionedBatches.virtualTicksForAlarm.bind(partitionedBatches);
+    partitionedBatches.virtualTicksForAlarm = (at = Date.now()) =>
+      Math.min(6, partitionedVirtualTicksForAlarm(at));
+
+    now += 600_000;
+    for (let batch = 0; batch < 5; batch += 1) await defaultBatches.alarm();
+    for (let batch = 0; batch < 10; batch += 1) await partitionedBatches.alarm();
+
+    const defaultState = defaultBatches.runtime.snapshot();
+    const partitionedState = partitionedBatches.runtime.snapshot();
+    assert.equal(defaultVirtualTicksForAlarm(now), 1, "default runner should be caught up");
+    assert.equal(partitionedVirtualTicksForAlarm(now), 1, "partitioned runner should be caught up");
+    assert.equal(defaultState.tick, 60);
+    assert.equal(partitionedState.tick, 60);
+    assert.deepEqual(
+      partitionedState,
+      defaultState,
+      "batch partitioning must not change the simulated world",
+    );
+    assert.equal(
+      partitionedCtx.storage.values.get("region").lastSimulatedAt,
+      defaultCtx.storage.values.get("region").lastSimulatedAt,
+    );
+    assert.equal(defaultCtx.storage.values.get("region").lastSimulatedAt, now);
+    assert.equal(defaultCtx.storage.alarm, null);
+    assert.equal(partitionedCtx.storage.alarm, null);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("virtual catch-up remains deterministic across Durable Object rehydration", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_001_750_000;
+  Date.now = () => now;
+  try {
+    const capAtSixTicks = (object) => {
+      const baseVirtualTicksForAlarm = object.virtualTicksForAlarm.bind(object);
+      object.virtualTicksForAlarm = (at = Date.now()) =>
+        Math.min(6, baseVirtualTicksForAlarm(at));
+    };
+
+    const continuousCtx = new MemoryState();
+    const continuous = new RegionDurableObject(continuousCtx, env);
+    await continuousCtx.ready;
+    await continuous.fetch(request("/api/world/snapshot"));
+    capAtSixTicks(continuous);
+
+    const rehydratedCtx = new MemoryState();
+    const beforeReload = new RegionDurableObject(rehydratedCtx, env);
+    await rehydratedCtx.ready;
+    await beforeReload.fetch(request("/api/world/snapshot"));
+    capAtSixTicks(beforeReload);
+
+    assert.deepEqual(
+      beforeReload.runtime.snapshot(),
+      continuous.runtime.snapshot(),
+      "both paths should start from the same deterministic world",
+    );
+
+    now += 600_000;
+    for (let batch = 0; batch < 10; batch += 1) await continuous.alarm();
+
+    for (let batch = 0; batch < 5; batch += 1) await beforeReload.alarm();
+    assert.equal(beforeReload.runtime.snapshot().tick, 30);
+    const halfwaySimulatedAt = rehydratedCtx.storage.values.get("region").lastSimulatedAt;
+    assert.equal(halfwaySimulatedAt, now - 300_000);
+
+    const restoredCtx = new MemoryState(rehydratedCtx.storage);
+    const afterReload = new RegionDurableObject(restoredCtx, env);
+    await restoredCtx.ready;
+    capAtSixTicks(afterReload);
+    assert.equal(afterReload.runtime.snapshot().tick, 30);
+    assert.equal(
+      restoredCtx.storage.values.get("region").lastSimulatedAt,
+      halfwaySimulatedAt,
+      "rehydration must resume from persisted virtual time without rebasing",
+    );
+
+    for (let batch = 0; batch < 5; batch += 1) await afterReload.alarm();
+
+    const continuousState = continuous.runtime.snapshot();
+    const restoredState = afterReload.runtime.snapshot();
+    assert.equal(continuousState.tick, 60);
+    assert.equal(restoredState.tick, 60);
+    assert.deepEqual(
+      restoredState,
+      continuousState,
+      "rehydration must not change the final simulated world",
+    );
+    assert.deepEqual(
+      restoredCtx.storage.values.get("region").state,
+      continuousCtx.storage.values.get("region").state,
+      "persisted WorldState must match the uninterrupted path",
+    );
+    assert.equal(
+      restoredCtx.storage.values.get("region").lastSimulatedAt,
+      continuousCtx.storage.values.get("region").lastSimulatedAt,
+    );
+    assert.equal(continuousCtx.storage.values.get("region").lastSimulatedAt, now);
+    assert.equal(continuousCtx.storage.alarm, null);
+    assert.equal(restoredCtx.storage.alarm, null);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("capped catch-up preserves remaining debt and schedules a prompt retry", async () => {
   const originalNow = Date.now;
   let now = 1_800_002_000_000;
