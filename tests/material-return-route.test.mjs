@@ -115,6 +115,19 @@ test("equal-distance cycles terminate without revisiting a more expensive compon
   assert.ok(plan.expandedEdges <= 2);
 });
 
+test("does not report hop budget exhaustion when only a dominated equal-distance cycle remains", () => {
+  const start = ref("hex-q2-r0", 10);
+  const peer = ref("hex-q2-r-1", 20);
+  const plan = planMaterialReturnDetour(
+    start,
+    "garden-1",
+    [edge(start, peer)],
+    { maxHops: 1, maxExpandedEdges: 64 },
+  );
+
+  assert.deepEqual(plan, { status: "noKnownRoute", expandedEdges: 1 });
+});
+
 test("reports hop budget exhaustion without inventing a partial route", () => {
   const start = ref("hex-q2-r0", 10);
   const middle = ref("garden-2", 20);
