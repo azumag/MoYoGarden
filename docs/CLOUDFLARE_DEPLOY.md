@@ -6,6 +6,12 @@
 
 定期実行は読み取り・レビュー・Issue更新・作業ブランチとPRまでです。merge、`deploy`更新、production deploy、Cloudflare設定変更、Secret操作は行いません。以下の接続・設定・リリース手順は、別途明示承認された実行だけを対象とします。
 
+### cf-first 移行中の操作面
+
+Cloudflare 操作は Issue #46 を正本として、今後は `cf` CLI / `cloudflare.config.ts` を優先して移行します。ただし、**現在の production 経路は parity 確認が完了するまで `wrangler.jsonc` / `npx wrangler deploy` を維持**します。
+
+特に Durable Object bindings / migrations、`moyo-garden-pbr-preview` の isolation、custom build hook、Workers Builds の build/deploy 契約は、`cf` 側で同等性を確認する前に置換しません。残る Wrangler 利用は移行期間中の明示的 fallback とし、理由と撤去条件は Issue #46 で管理します。
+
 ## 1. GitHubリポジトリを接続
 
 新規接続時はCloudflare Dashboardの**Workers & Pages**からGit連携を設定し、`azumag/MoYoGarden`を選びます。既存接続を再作成する必要はありません。
