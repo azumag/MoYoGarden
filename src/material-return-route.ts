@@ -230,7 +230,7 @@ export function planMaterialReturnDetour(
         const candidate: RouteCost = {
           hops: current.hops + 1,
           equalDistanceHops: current.equalDistanceHops + (equalDistance ? 1 : 0),
-          pathKey: `${current.pathKey}\\u0000${neighborKey}`,
+          pathKey: `${current.pathKey}\u0000${neighborKey}`,
         };
         const previous = best.get(neighborKey);
         if (previous === undefined || compareCost(candidate, previous) < 0) {
