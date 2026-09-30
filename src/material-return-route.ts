@@ -1,4 +1,9 @@
+import {
+  HEX_GRID_DIRECTIONS,
+  type HexGridDirection,
+} from "./hex-grid.js";
 import type {
+  HexSeamComponentPort,
   HexSeamComponentRef,
   HexSeamConnectivityEdge,
 } from "./hex-seam-connectivity.js";
@@ -54,6 +59,27 @@ function validComponentRef(value: unknown): value is HexSeamComponentRef {
     && (value.tick as number) >= 0
     && Number.isSafeInteger(value.componentId)
     && (value.componentId as number) >= 0;
+}
+
+function isHexGridDirection(value: unknown): value is HexGridDirection {
+  return typeof value === "string"
+    && (HEX_GRID_DIRECTIONS as readonly string[]).includes(value);
+}
+
+function validPort(
+  value: unknown,
+  component: HexSeamComponentRef,
+): value is HexSeamComponentPort {
+  if (!isRecord(value) || value.regionId !== component.regionId || !isRecord(value.position)) {
+    return false;
+  }
+  const { x, y } = value.position;
+  return typeof x === "number"
+    && Number.isSafeInteger(x)
+    && typeof y === "number"
+    && Number.isSafeInteger(y)
+    && isHexGridDirection(value.stepDirection)
+    && isHexGridDirection(value.snapshotDirection);
 }
 
 function cloneRef(ref: HexSeamComponentRef): HexSeamComponentRef {
@@ -175,7 +201,13 @@ export function planMaterialReturnDetour(
   };
 
   for (const candidate of edges as readonly unknown[]) {
-    if (!isRecord(candidate) || !validComponentRef(candidate.a) || !validComponentRef(candidate.b)) {
+    if (
+      !isRecord(candidate)
+      || !validComponentRef(candidate.a)
+      || !validComponentRef(candidate.b)
+      || !validPort(candidate.aPort, candidate.a)
+      || !validPort(candidate.bPort, candidate.b)
+    ) {
       continue;
     }
     if (candidate.a.regionId === candidate.b.regionId) continue;

@@ -208,6 +208,36 @@ test("route selection is invariant to input edge order", () => {
   assert.deepEqual(reversed, forward);
 });
 
+test("malformed seam ports fail closed without mutating the input", () => {
+  const start = ref("garden-2", 10);
+  const target = ref("garden-1", 20);
+  const valid = edge(start, target);
+  const cases = [
+    { ...valid, aPort: undefined },
+    { ...valid, bPort: undefined },
+    { ...valid, aPort: { ...valid.aPort, regionId: "garden-3" } },
+    {
+      ...valid,
+      aPort: {
+        ...valid.aPort,
+        position: { ...valid.aPort.position, x: 0.5 },
+      },
+    },
+    { ...valid, aPort: { ...valid.aPort, stepDirection: "north" } },
+    { ...valid, bPort: { ...valid.bPort, snapshotDirection: "south" } },
+  ];
+
+  for (const candidate of cases) {
+    const edges = [candidate];
+    const before = structuredClone(edges);
+    assert.doesNotThrow(() => {
+      const plan = planMaterialReturnDetour(start, "garden-1", edges, generous);
+      assert.deepEqual(plan, { status: "noKnownRoute", expandedEdges: 0 });
+    });
+    assert.deepEqual(edges, before);
+  }
+});
+
 test("malformed graph observations fail closed without mutating the input", () => {
   const start = ref("hex-q2-r0", 10);
   const middle = ref("garden-2", 20);
