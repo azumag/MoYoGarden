@@ -401,6 +401,12 @@ export function materializeHexHalo(
           ...(observed.regionSummary.storageHeadroomByFaction === undefined ? {} : {
             storageHeadroomByFaction: { ...observed.regionSummary.storageHeadroomByFaction },
           }),
+          ...(observed.regionSummary.storageComponentsByFaction === undefined ? {} : {
+            storageComponentsByFaction: Object.fromEntries(
+              Object.entries(observed.regionSummary.storageComponentsByFaction)
+                .map(([factionId, componentIds]) => [factionId, [...componentIds]]),
+            ),
+          }),
           ...(observed.regionSummary.occupantsByFaction === undefined ? {} : {
             occupantsByFaction: { ...observed.regionSummary.occupantsByFaction },
           }),
