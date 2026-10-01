@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { RegionDurableObject } from "../dist-ts/src/worker-entry.js";
 import { WorldRuntime } from "../dist-ts/src/runtime.js";
+import { passableHexComponentByPosition } from "../dist-ts/src/hex-connectivity.js";
 import { hexGridBoundaryCells } from "../dist-ts/src/hex-grid.js";
+import { BUILD_RECIPES } from "../dist-ts/src/protocol.js";
 
 class MemoryStorage {
   constructor() { this.values = new Map(); this.alarm = null; }
@@ -250,6 +252,74 @@ test("halo support summaries expose only living occupants", async () => {
   assert.equal(
     Object.values(edge.regionSummary.occupantsByFaction ?? {}).reduce((sum, count) => sum + count, 0),
     living.length,
+  );
+});
+
+
+test("halo support summaries expose storage reachability independently from headroom", async () => {
+  const env = environment();
+  await call(env, "/api/world/snapshot?region=garden-2");
+  const entry = env.REGIONS.entries.get("garden-2");
+  assert.ok(entry);
+  await entry.state.ready;
+
+  const state = entry.object.runtime.snapshot();
+  const components = passableHexComponentByPosition(state);
+  const firstPassable = components.entries().next().value;
+  assert.ok(firstPassable);
+  const [positionKey, componentId] = firstPassable;
+  assert.ok(Number.isInteger(componentId));
+  const [x, y] = positionKey.split(",").map(Number);
+  assert.ok(Number.isInteger(x) && Number.isInteger(y));
+  const factionId = state.factions[0]?.id;
+  assert.ok(factionId);
+  const structure = {
+    id: "storage-reachability-fixture",
+    factionId,
+    type: "storehouse",
+    position: { x, y },
+    status: "active",
+    progress: BUILD_RECIPES.storehouse.work,
+    requiredProgress: BUILD_RECIPES.storehouse.work,
+    storage: { wood: 0, stone: 0, food: 0 },
+  };
+  state.structures.push(structure);
+
+  entry.object.runtime = new WorldRuntime({ state });
+  let response = await entry.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edge?direction=west",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(response.status, 200);
+  let edge = await response.json();
+  assert.ok(
+    edge.regionSummary.storageComponentsByFaction?.[structure.factionId]?.includes(componentId),
+  );
+
+  for (const candidate of state.structures) {
+    if (candidate.status !== "active" || candidate.factionId !== structure.factionId) continue;
+    const capacity = BUILD_RECIPES[candidate.type].storageCapacity;
+    candidate.storage = { wood: capacity, stone: 0, food: 0 };
+  }
+  state.revision += 1;
+  entry.object.runtime = new WorldRuntime({ state });
+
+  response = await entry.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edge?direction=west",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(response.status, 200);
+  edge = await response.json();
+  assert.equal(edge.regionSummary.storageHeadroomByFaction?.[structure.factionId], 0);
+  assert.ok(
+    edge.regionSummary.storageComponentsByFaction?.[structure.factionId]?.includes(componentId),
+    "full storage must remain physically reachable even when headroom is zero",
   );
 });
 

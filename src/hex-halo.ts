@@ -39,6 +39,11 @@ export interface HexHaloRegionSummary {
   // contain zero for a faction whose active storage is known to be full. An
   // omitted faction stays unknown (for example after top-N truncation).
   storageHeadroomByFaction?: Record<string, number>;
+  // Optional rolling-compat physical reachability hint. Component IDs refer to
+  // this snapshot's passable-component labels and list only active structures
+  // that can physically receive stored material. Consumers must use positive
+  // membership only: an omitted faction/component is unknown, not unreachable.
+  storageComponentsByFaction?: Record<string, number[]>;
   // Optional bounded population composition. Counts are whole-region residents,
   // not remote Agent snapshots. Consumers must treat a missing faction as
   // unknown unless the summarized counts add up to `occupants`, because top-N
@@ -395,6 +400,12 @@ export function materializeHexHalo(
           }),
           ...(observed.regionSummary.storageHeadroomByFaction === undefined ? {} : {
             storageHeadroomByFaction: { ...observed.regionSummary.storageHeadroomByFaction },
+          }),
+          ...(observed.regionSummary.storageComponentsByFaction === undefined ? {} : {
+            storageComponentsByFaction: Object.fromEntries(
+              Object.entries(observed.regionSummary.storageComponentsByFaction)
+                .map(([factionId, componentIds]) => [factionId, [...componentIds]]),
+            ),
           }),
           ...(observed.regionSummary.occupantsByFaction === undefined ? {} : {
             occupantsByFaction: { ...observed.regionSummary.occupantsByFaction },

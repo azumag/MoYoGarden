@@ -26,6 +26,12 @@ test("materialized halo stays detached from edge snapshots and link coordinates"
     direction: "west",
     revision: 9,
     tick: 42,
+    regionSummary: {
+      resources: { wood: 12, stone: 3, food: 4 },
+      storageComponentsByFaction: { "faction-1": [2, 7] },
+      passableCells: 42,
+      occupants: 3,
+    },
     tiles: [{ position: { x: 8, y: 11 }, tile }],
   };
 
@@ -36,24 +42,47 @@ test("materialized halo stays detached from edge snapshots and link coordinates"
   assert.notStrictEqual(ghost.tile, tile);
   assert.notStrictEqual(ghost.tile.flowTo, tile.flowTo);
   assert.notStrictEqual(ghost.tile.resource, tile.resource);
+  assert.deepEqual(
+    ghost.neighborRegionSummary?.storageComponentsByFaction,
+    { "faction-1": [2, 7] },
+  );
+  assert.notStrictEqual(ghost.neighborRegionSummary, snapshot.regionSummary);
+  assert.notStrictEqual(
+    ghost.neighborRegionSummary.storageComponentsByFaction,
+    snapshot.regionSummary.storageComponentsByFaction,
+  );
+  assert.notStrictEqual(
+    ghost.neighborRegionSummary.storageComponentsByFaction["faction-1"],
+    snapshot.regionSummary.storageComponentsByFaction["faction-1"],
+  );
 
   ghost.sourcePosition.x = -1;
   ghost.neighborPosition.y = -1;
   ghost.tile.elevation = 0.99;
   ghost.tile.flowTo.x = -1;
   ghost.tile.resource.amount = 0;
+  ghost.neighborRegionSummary.storageComponentsByFaction["faction-1"].push(9);
 
   assert.deepEqual(link.sourcePosition, { x: 30, y: 11 });
   assert.deepEqual(link.neighborPosition, { x: 8, y: 11 });
   assert.equal(tile.elevation, 0.42);
   assert.deepEqual(tile.flowTo, { x: 7, y: 11 });
   assert.deepEqual(tile.resource, { kind: "wood", amount: 12, maxAmount: 20 });
+  assert.deepEqual(
+    snapshot.regionSummary.storageComponentsByFaction,
+    { "faction-1": [2, 7] },
+  );
 
   link.sourcePosition.y = 99;
   tile.flowTo.y = 99;
   tile.resource.maxAmount = 99;
+  snapshot.regionSummary.storageComponentsByFaction["faction-1"].push(11);
 
   assert.deepEqual(ghost.sourcePosition, { x: -1, y: 11 });
   assert.deepEqual(ghost.tile.flowTo, { x: -1, y: 11 });
   assert.deepEqual(ghost.tile.resource, { kind: "wood", amount: 0, maxAmount: 20 });
+  assert.deepEqual(
+    ghost.neighborRegionSummary.storageComponentsByFaction,
+    { "faction-1": [2, 7, 9] },
+  );
 });
