@@ -60,11 +60,15 @@ test("production region activity tiers map direct, hex-window prefetch, and cold
   const coldHealth = await (await object.fetch(request("/api/health"))).json();
   assert.equal(coldHealth.tickMode, "cold");
   assert.equal(coldHealth.effectiveTickMs, 600000);
+  assert.equal(coldHealth.alarmScheduled, true);
+  assert.equal(coldHealth.nextAlarmAt, ctx.storage.alarm);
 
   await object.alarm();
   assert.equal(ctx.storage.alarm, null, "caught-up cold regions should deep-idle without another alarm");
   const deepIdleHealth = await (await object.fetch(request("/api/health"))).json();
   assert.equal(deepIdleHealth.deepIdle, true);
+  assert.equal(deepIdleHealth.alarmScheduled, false);
+  assert.equal(deepIdleHealth.nextAlarmAt, null);
 
   const warmResponse = await object.fetch(request("/api/world/snapshot", {
     method: "HEAD",
@@ -75,11 +79,15 @@ test("production region activity tiers map direct, hex-window prefetch, and cold
   const warmHealth = await (await object.fetch(request("/api/health"))).json();
   assert.equal(warmHealth.tickMode, "warm");
   assert.equal(warmHealth.effectiveTickMs, 60000);
+  assert.equal(warmHealth.alarmScheduled, true);
+  assert.equal(warmHealth.nextAlarmAt, ctx.storage.alarm);
   assertAlarmNear(ctx.storage.alarm, 60000);
 
   await object.fetch(request("/api/world/snapshot"));
   const activeHealth = await (await object.fetch(request("/api/health"))).json();
   assert.equal(activeHealth.tickMode, "active");
   assert.equal(activeHealth.effectiveTickMs, 10000);
+  assert.equal(activeHealth.alarmScheduled, true);
+  assert.equal(activeHealth.nextAlarmAt, ctx.storage.alarm);
   assertAlarmNear(ctx.storage.alarm, 10000);
 });

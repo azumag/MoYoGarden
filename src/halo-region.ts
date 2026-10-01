@@ -689,12 +689,15 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       const payload = await response.json() as unknown;
       if (!isRecord(payload)) return response;
       const tier = this.activityTier();
-      const alarmScheduled = (await this.activityState.storage.getAlarm()) !== null;
+      const nextAlarmAt = await this.activityState.storage.getAlarm();
+      const alarmScheduled = nextAlarmAt !== null;
       return json({
         ...payload,
         effectiveTickMs: activityDelayMs(this.activityTickMs, tier),
         tickMode: tier,
         deepIdle: tier === "cold" && !alarmScheduled,
+        alarmScheduled,
+        nextAlarmAt,
       });
     }
     return response;
