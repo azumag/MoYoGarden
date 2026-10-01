@@ -84,6 +84,7 @@ const HALO_REGROWTH_BOUNDARY_DEPTH = 3;
 // Keep the whole-region logistics hint constant-size even if future worlds
 // contain many factions. Missing entries remain neutral to remote planners.
 const MAX_SUMMARIZED_STORAGE_FACTIONS = 8;
+const MAX_SUMMARIZED_STORAGE_COMPONENTS_PER_FACTION = 8;
 const MAX_SUMMARIZED_OCCUPANT_FACTIONS = 8;
 const DEFAULT_WORLD_SEED = 424_242;
 const PERSISTED_LEGACY_REGION_IDS = ["garden-1", "garden-2", "garden-3"] as const;
@@ -384,23 +385,45 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     const resources: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     const resourceCapacity: Record<ResourceKind, number> = { wood: 0, stone: 0, food: 0 };
     const activeStructures = { camp: 0, storehouse: 0, market: 0, workshop: 0 };
+    const passableComponentByPosition = passableHexComponentByPosition(state);
     const storageHeadroom = new Map<string, number>();
+    const storageComponents = new Map<string, Set<number>>();
     for (const structure of state.structures) {
       if (structure.status !== "active") continue;
       activeStructures[structure.type] += 1;
+      const storageCapacity = BUILD_RECIPES[structure.type].storageCapacity;
       const headroom = Math.max(
         0,
-        BUILD_RECIPES[structure.type].storageCapacity - inventoryTotal(structure.storage),
+        storageCapacity - inventoryTotal(structure.storage),
       );
       storageHeadroom.set(
         structure.factionId,
         (storageHeadroom.get(structure.factionId) ?? 0) + headroom,
       );
+      if (storageCapacity <= 0) continue;
+      const componentId = passableComponentByPosition.get(
+        `${structure.position.x},${structure.position.y}`,
+      );
+      if (componentId === undefined) continue;
+      const components = storageComponents.get(structure.factionId) ?? new Set<number>();
+      components.add(componentId);
+      storageComponents.set(structure.factionId, components);
     }
-    const storageHeadroomByFaction = Object.fromEntries(
-      [...storageHeadroom.entries()]
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .slice(0, MAX_SUMMARIZED_STORAGE_FACTIONS),
+    const rankedStorageFactions = [...storageHeadroom.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, MAX_SUMMARIZED_STORAGE_FACTIONS);
+    const storageHeadroomByFaction = Object.fromEntries(rankedStorageFactions);
+    const storageComponentsByFaction = Object.fromEntries(
+      rankedStorageFactions.flatMap(([factionId]) => {
+        const components = storageComponents.get(factionId);
+        if (components === undefined || components.size === 0) return [];
+        return [[
+          factionId,
+          [...components]
+            .sort((a, b) => a - b)
+            .slice(0, MAX_SUMMARIZED_STORAGE_COMPONENTS_PER_FACTION),
+        ]];
+      }),
     );
 
     const occupantCounts = new Map<string, number>();
@@ -432,8 +455,6 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       }
     }
 
-    const passableComponentByPosition = passableHexComponentByPosition(state);
-
     const next = {
       revision: state.revision,
       tick: state.tick,
@@ -442,6 +463,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
         resourceCapacity,
         activeStructures,
         storageHeadroomByFaction,
+        storageComponentsByFaction,
         occupantsByFaction,
         passableCells,
         occupants: livingOccupants,
