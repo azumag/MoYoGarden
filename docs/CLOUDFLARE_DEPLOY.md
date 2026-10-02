@@ -1,43 +1,48 @@
-# Cloudflare Workers Buildsによる自動デプロイ
+# Cloudflare Workers Buildsによる本番反映
 
-`main` へのpushは Cloudflare の GitHub App / Workers Builds が検知して `moyo-garden` を本番へデプロイする。同時に GitHub Actions は build/test と本番commit確認を行う。
+`main`は開発正本、`deploy`は本番反映用ブランチです。Cloudflare Workers Buildsは`deploy`への対象変更を検知して`moyo-garden`を本番へデプロイします。GitHub ActionsはPR/main/deployのbuild/testを行い、`deploy`へのpush時だけ本番commitも確認します。
 
-**Cloudflareのbuild成功だけ、またはGitHub Actionsのbuild成功だけでは本番反映完了とみなさない。** 完了条件は `AGENTS.md` の「本番反映の必須手順」を正本とする。
+**mainのCI成功、Cloudflareのbuild成功、GitHub Actionsのbuild成功を、それぞれ単独で本番反映完了とみなさないでください。** 完了条件は`AGENTS.md`の「本番反映の必須手順」を正本とします。productionは対象`deploy` SHAと比較し、未リリースの最新main SHAとは比較しません。
+
+定期実行は読み取り・レビュー・Issue更新・作業ブランチとPRまでです。merge、`deploy`更新、production deploy、Cloudflare設定変更、Secret操作は行いません。以下の接続・設定・リリース手順は、別途明示承認された実行だけを対象とします。
+
+### cf-first 移行中の操作面
+
+Cloudflare 操作は Issue #46 を正本として、今後は `cf` CLI / `cloudflare.config.ts` を優先して移行します。ただし、**現在の production 経路は parity 確認が完了するまで `wrangler.jsonc` / `npx wrangler deploy` を維持**します。
+
+特に Durable Object bindings / migrations、`moyo-garden-pbr-preview` の isolation、custom build hook、Workers Builds の build/deploy 契約は、`cf` 側で同等性を確認する前に置換しません。残る Wrangler 利用は移行期間中の明示的 fallback とし、理由と撤去条件は Issue #46 で管理します。
 
 ## 1. GitHubリポジトリを接続
 
-1. Cloudflare Dashboardで **Workers & Pages** を開く。
-2. **Create application** からGit連携でWorkerを作成する。
-3. GitHubアカウントを接続し、`azumag/MoYoGarden`だけへのアクセスを許可する。
-4. 対象リポジトリとして `azumag/MoYoGarden` を選ぶ。
+新規接続時はCloudflare Dashboardの**Workers & Pages**からGit連携を設定し、`azumag/MoYoGarden`を選びます。既存接続を再作成する必要はありません。
 
-CloudflareアカウントへのGitHub App認可は、リポジトリから自動化できない一度だけの操作です。
+CloudflareアカウントへのGitHub App認可は、一度だけ必要な管理操作です。定期タスクは接続・権限を変更しません。
 
-## 2. Build設定
+## 2. Build設定と確認済み実行値
 
-Workers Buildsへ以下を設定します。
+2026-09-27 UTCの本番Build `0af8085e-5855-48dc-bb3f-a9bc8f887adc`は、`deploy`の`a7bf9a1d25ac08d567922fb27d78fe5d1446794d`について次のコマンドで成功しています。
 
 ```text
 Worker name:       moyo-garden
-Production branch: main
+Production branch: deploy
 Root directory:    /
-Build command:     npm run build
+Build command:     npm run check
 Deploy command:    npx wrangler deploy
 ```
 
-`npm run build`はTypeScript型検査に加え、ブラウザ3Dクライアントと詳細モデル拡張の構文・静的検査を行います。Worker名は`wrangler.jsonc`の`name`と同じ `moyo-garden` にします。Cloudflareは通常、Workers Builds用API tokenを自動生成します。
+実行コマンドはWorkers BuildsのBuild詳細で確認します。Worker名とcustom build hookは`wrangler.jsonc`、各npm scriptは`package.json`を参照してください。文書を直しただけでCloudflare設定が変更されるわけではありません。
 
-### Build Minutes のコスト制御
+### Build Minutesのコスト制御
 
-`moyo-garden` は Durable Objects を持つため、feature branchをWorkers Buildsで毎回デプロイしても通常のpreview URLは得られません。Cloudflare Dashboardの **Settings > Build** は次を正本とします。
+不要なfeature branch buildを避ける運用上の設定は次のとおりです。Dashboardの現状値を確認できない実行では、これらを確認済みと報告しないでください。
 
 ```text
-Production branch:                  main
+Production branch:                  deploy
 Builds for non-production branches: OFF
 Build cache:                        ON
 ```
 
-Build watch paths では、少なくともdeploy artifactを変えない次の変更を除外します。
+Build watch pathsでは、deploy artifactを変えない次の変更を除外する方針です。
 
 ```text
 .github/*
@@ -47,33 +52,33 @@ AGENTS.md
 README.md
 ```
 
-`src/`、`scripts/`、`public/`、`package*.json`、`wrangler*.jsonc`、TypeScript設定はdeploy内容またはbuild生成物へ影響するため除外しません。複数種類のファイルを同じpushで変更した場合、除外対象外のファイルが1つでもあれば通常どおりbuildします。
+`src/`、`scripts/`、`public/`、`package*.json`、`wrangler*.jsonc`、TypeScript設定はdeploy内容またはbuild生成物へ影響するため除外しません。除外対象外のファイルが同じpushに含まれれば、通常のbuild対象になります。watch paths、cache、branch controlの変更は自動で行わず、現状確認と提案に留めます。
 
-### Cloudflare内の二重buildを防ぐ
+### custom build hookと重複build防止
 
-Workers BuildsはDashboardのBuild commandを実行した後にDeploy commandを実行します。一方、`wrangler.jsonc`にもcustom build hookがあります。従来は、
+確認済みの本番経路は次の順序です。
 
-1. `npm run build` → `build:web`
-2. `npx wrangler deploy` → `wrangler.jsonc` の `build.command` → `build:web`
+1. Dashboardの`npm run check`でTypeScript型検査を行う。
+2. `npx wrangler deploy`が`wrangler.jsonc`の`node scripts/wrangler-build.mjs`を呼ぶ。
+3. 同一Workers Build commitの有効なmarkerがなければ、hookが`npm run build:web`を実行する。
+4. `build:web`はbuild metadata、テスト、モデル生成、Three.js/各資産配置、ブラウザ構文・資産検査を行い、完了時にmarkerを記録する。
 
-となり、同じCloudflare Build内でテスト・モデル生成・asset vendoring・検証をほぼ二重実行していました。
+`npm run check`だけでは資産を生成しません。以前のようにDashboardで`npm run build`を実行した場合や、同一Workers Build commitで既に資産を生成済みの場合は、markerによってhook側の二重`build:web`を省けます。markerが無い、commitが違う、Workers Builds外の場合は再buildするfail-safe設計です。
 
-現在は最初の`build:web`完了時にCloudflareの`WORKERS_CI_COMMIT_SHA`だけをmarkerへ記録し、同じcommitの`wrangler deploy`では`node scripts/wrangler-build.mjs`が二度目の`build:web`をskipします。markerが無い、commitが違う、またはWorkers Builds外では従来どおり再buildするfail-safe設計です。
+この重複防止はbranch controlの代替ではありません。feature branch buildそのものの抑制はnon-production branch builds設定で行います。
 
-このdeduplicationはBranch controlの代替ではありません。feature branch buildそのものを起動しない一次対策は、引き続き **non-production branch builds=OFF** です。
+## 3. Runtime Secretsと通常設定
 
-## 3. Runtime Secrets
-
-Worker作成後、**Settings > Variables & Secrets** で次をSecretとして追加します。
+承認済みの初期設定で、異なる十分に長い値をRuntime Secretとして設定します。
 
 ```text
 COMMAND_TOKEN = BOT・人間の通常コマンド用
 ADMIN_TOKEN   = pause/reset/manual tick等の管理用
 ```
 
-2つは異なる、十分に長いランダム値にしてください。これらはBuild variableではなくRuntime Secretです。
+Build variableと混同しないでください。定期実行でSecretを作成・取得・変更したり、値を出力したりしません。
 
-通常設定は`wrangler.jsonc`に入っています。
+通常設定は`wrangler.jsonc`にあります。
 
 ```text
 DEFAULT_REGION_ID = garden-1
@@ -83,52 +88,37 @@ TICK_MS            = 10000
 OPEN_COMMANDS      = false
 ```
 
-`OPEN_COMMANDS=true`は誰でもBOTへ命令できる公開実験向けです。通常運用ではfalseのままにします。
+`REGION_IDS`は段階移行中のlegacy互換設定です。canonical axial regionを含む連続世界の現行仕様はIssue #3 / #27と現在実装を確認してください。`OPEN_COMMANDS=true`は公開実験向けで、通常運用ではfalseのままにします。
 
-## 4. `main` push後の実行経路
+## 4. PR/mainとdeployの実行経路
 
-`main`へpushすると、少なくとも次の2系統が動く。
+### PR / main
 
-### Cloudflare Workers Builds
+`.github/workflows/ci.yml`の`Validate build`がdependency installと`npm run build`を実行します。TypeScript、テスト、ブラウザJavaScript、authored/PBR/Quaternius資産の検査を含みます。
 
-```text
-install dependencies
-npm run build
-npx wrangler deploy
-```
+`Verify production commit`はskipされます。これは意図した動作であり、PR/mainの検証のためにproduction deployを起動する必要はありません。
 
-`npm run build`で生成済みのartifactは同じWorkers Build commit内で再利用されるため、`wrangler deploy`のcustom build hookは同一commitの`build:web`を重複実行しない。
+### deploy push
 
-成功時は GitHub check `Workers Builds: moyo-garden` が success になり、Cloudflare Build ID / Version ID が記録される。
+承認済みの`deploy`更新後は、対象変更に対するCloudflare Workers BuildsとGitHub Actionsを別々に確認します。
 
-### GitHub Actions CI
+Cloudflare側は上記の`npm run check` → `npx wrangler deploy` → custom build hookを実行します。GitHub側は`Validate build`の後に、`Verify production commit`がcache-bust付きで`/api/meta`をpollします。`build.commit`がそのdeploy workflowのSHAと一致した後、`garden-1`のhealthを確認します。
 
-`.github/workflows/ci.yml` が次を行う。
-
-1. `Validate build`
-   - dependency install
-   - TypeScript
-   - tests
-   - browser JavaScript syntax
-   - authored / PBR / Quaternius validation
-2. `Verify production commit`
-   - `https://moyo.bluemoon.works/api/meta` をcache-bust付きでpollする
-   - `build.commit` がそのworkflowの最終SHAと一致するまで待つ
-   - 一致後、`garden-1` のhealthを確認する
+watch paths等でCloudflare buildが起動しなかった場合も、GitHub CIの成功だけからproductionの更新を推測しないでください。対象commitのBuild有無とproduction commitを確認します。
 
 ## 5. 本番反映の完了条件
 
-最終 `main` commit について、以下がすべて必要。
+本番へ反映する**対象deploy commit**について、次のすべてを確認します。
 
 1. `Validate build` = success
-2. `Workers Builds: moyo-garden` = success
-3. `/api/meta` の `build.commit` = 最終 `main` SHA
+2. 対象commitのWorkers Builds = success
+3. `Verify production commit` = success、かつ`/api/meta`の`build.commit` = 対象deploy SHA
 4. `/api/health?region=garden-1` = success
-5. **描画/UX/LOD/model/streaming変更の場合は、本番実表示または本番配信assetでも変更を確認**
+5. 描画/UX/LOD/model/streaming変更では、本番実表示または本番配信assetでも変更を確認
 
-5を確認できない環境では「deploy済み・実表示確認待ち」とし、「直った」「修正完了」と断定しない。
+5を確認できない場合は「deploy済み・実表示確認待ち」とし、「直った」「修正完了」と断定しません。報告にはmain/deploy SHA、GitHub run、Cloudflare Build ID / Version ID（取得できる場合）、production commit、health、Observabilityの確認時刻と範囲を残します。観測データ不足とエラー0件を混同しないでください。
 
-手動確認例:
+承認済みリリース後の読み取り確認例:
 
 ```bash
 curl -H 'cache-control: no-cache' \
@@ -138,15 +128,17 @@ curl -H 'cache-control: no-cache' \
   'https://moyo.bluemoon.works/api/health?region=garden-1&verify=manual'
 ```
 
-ブラウザ表示の変更では、必要に応じてhard reload / cache-bustを行い、古い静的assetを見ていないことも確認する。
+ブラウザ表示の変更では、必要に応じてhard reload/cache-bustを行い、古い静的assetを見ていないことも確認します。
+
+`deploy`が24時間以上更新されずmainより遅れている場合、定期実行では両SHA、CI、Workers Builds、Observabilityを読み取り確認します。条件が揃えば「手動deploy可能」と報告するだけにし、自動追従・merge・deployは行いません。未確認・失敗があればその条件も明記します。
 
 ## 6. カスタムドメイン
 
-`wrangler.jsonc`のCustom Domain routeに `moyo.bluemoon.works` を設定しています。Static AssetsとAPIを同じオリジンで提供するため、CORSやWebSocket URLを追加変更する必要はありません。
+`wrangler.jsonc`のCustom Domain routeは`moyo.bluemoon.works`です。Static AssetsとAPIを同じオリジンで提供します。既存route、binding、CORS、WebSocket設定を文書更新に伴って変更しません。
 
 ## 7. ロールバック
 
-Cloudflare DashboardのWorkerから過去deploymentを選び、ロールバックできます。世界状態はDurable Object SQLiteに残り、Workerコードのロールバックとは分離されています。ただし将来schema migrationを追加する場合は、後方互換性を保つ必要があります。
+承認済みの本番対応ではCloudflare Dashboardから過去deploymentへのロールバックを検討できます。Durable Object SQLiteの世界状態はWorkerコードのロールバックとは別なので、コードを戻してもstateまで戻るとはみなしません。schema互換性と進行中handoff等への影響を確認し、定期実行ではロールバックも行いません。
 
 ## 公式資料
 
