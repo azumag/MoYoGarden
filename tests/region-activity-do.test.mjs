@@ -97,6 +97,8 @@ test("passive internal halo edge batch keeps a caught-up cold region in deep idl
   const object = new RegionDurableObject(ctx, env);
   await ctx.ready;
 
+  const initialHealth = await (await object.fetch(request("/api/health"))).json();
+  assert.equal(initialHealth.tickMode, "cold");
   await object.alarm();
   assert.equal(ctx.storage.alarm, null, "precondition: caught-up cold region is deep-idle");
 
