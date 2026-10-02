@@ -631,50 +631,63 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     }
 
     const now = Date.now();
-    const missing: HexGridDirection[] = [];
-    for (const direction of uniqueDirections) {
-      const cacheKey = `${neighborRegionId}:${direction}:full-edge`;
-      const cached = this.haloEdgeReadCache.get(cacheKey);
+    const cachedEntries = uniqueDirections.map((direction) =>
+      this.haloEdgeReadCache?.get(`${neighborRegionId}:${direction}:full-edge`)
+    );
+    const allReusable = cachedEntries.every((cached) =>
+      cached !== undefined && (
+        !cached.settled
+        || cached.failed
+        || (now >= cached.startedAt && now - cached.startedAt < HALO_EDGE_OBSERVATION_MS)
+      )
+    );
+    if (allReusable) {
+      const cachedSnapshots = await Promise.all(
+        cachedEntries.map((entry) => entry?.pending ?? Promise.resolve(undefined)),
+      );
+      const available = cachedSnapshots.filter(
+        (value): value is HexHaloEdgeSnapshot => value !== undefined,
+      );
       if (
-        cached === undefined
-        || (
-          cached.settled
-          && !cached.failed
-          && !(now >= cached.startedAt && now - cached.startedAt < HALO_EDGE_OBSERVATION_MS)
+        available.length <= 1
+        || available.every((edge) =>
+          edge.regionId === available[0]?.regionId
+          && edge.revision === available[0]?.revision
+          && edge.tick === available[0]?.tick
         )
       ) {
-        missing.push(direction);
+        return available;
       }
+      // Directional cache entries may have originated from separate historical
+      // single-edge reads. Re-observe the complete requested set atomically
+      // instead of mixing revisions in one multi-direction result.
     }
 
-    if (missing.length > 0) {
-      const batch = this.fetchNeighborEdgesUncached(neighborRegionId, missing);
-      for (const direction of missing) {
-        const entry: HaloEdgeReadCacheEntry = {
-          startedAt: now,
-          settled: false,
-          failed: false,
-          pending: Promise.resolve(undefined),
-        };
-        entry.pending = batch.then((edges) =>
-          edges.find((edge) => edge.direction === direction)
-        ).then((snapshot) => {
-          entry.settled = true;
-          entry.failed = snapshot === undefined;
-          return snapshot;
-        });
-        this.haloEdgeReadCache.set(
-          `${neighborRegionId}:${direction}:full-edge`,
-          entry,
-        );
-      }
+    const batch = this.fetchNeighborEdgesUncached(neighborRegionId, uniqueDirections);
+    for (const direction of uniqueDirections) {
+      const entry: HaloEdgeReadCacheEntry = {
+        startedAt: now,
+        settled: false,
+        failed: false,
+        pending: Promise.resolve(undefined),
+      };
+      entry.pending = batch.then((edges) =>
+        edges.find((edge) => edge.direction === direction)
+      ).then((snapshot) => {
+        entry.settled = true;
+        entry.failed = snapshot === undefined;
+        return snapshot;
+      });
+      this.haloEdgeReadCache.set(
+        `${neighborRegionId}:${direction}:full-edge`,
+        entry,
+      );
     }
-
     const snapshots = await Promise.all(uniqueDirections.map((direction) =>
       this.haloEdgeReadCache?.get(
         `${neighborRegionId}:${direction}:full-edge`,
       )?.pending
-      ?? this.fetchNeighborEdgeUncached(neighborRegionId, direction)
+      ?? Promise.resolve(undefined)
     ));
     return snapshots.filter((value): value is HexHaloEdgeSnapshot => value !== undefined);
   }
