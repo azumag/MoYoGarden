@@ -621,7 +621,9 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     );
     if (uniqueDirections.length === 0) return [];
     if (uniqueDirections.length === 1) {
-      const edge = await this.fetchNeighborEdge(neighborRegionId, uniqueDirections[0]);
+      const onlyDirection = uniqueDirections[0];
+      if (onlyDirection === undefined) return [];
+      const edge = await this.fetchNeighborEdge(neighborRegionId, onlyDirection);
       return edge === undefined ? [] : [edge];
     }
     if (this.haloEdgeMutationDepth > 0 || this.haloEdgeReadCache === undefined) {
