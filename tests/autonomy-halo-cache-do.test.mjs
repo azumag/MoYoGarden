@@ -174,20 +174,30 @@ async function activeLegacyAutonomyScenario() {
   return { env, source };
 }
 
-test("same-region multi-direction edge reads dedupe into one batch with one revision/tick", async () => {
+test("same-region multi-direction edge reads dedupe into one coherent batch", async () => {
   const env = environment();
   const source = await assignRegion(env, "garden-1");
-  await assignRegion(env, "garden-2");
+  const destination = await assignRegion(env, "garden-2");
   env.REGIONS.edgeFetches.length = 0;
   env.REGIONS.edgeBatchFetches.length = 0;
 
   const owner = source.object.beginHaloEdgeReadBatch();
   try {
+    const primed = await source.object.fetchNeighborEdge("garden-2", "east");
+    assert.ok(primed);
+    assert.equal(env.REGIONS.edgeFetches.length, 1);
+
+    const advanced = destination.object.runtime.snapshot();
+    advanced.tick += 1;
+    advanced.revision += 1;
+    destination.object.runtime = new WorldRuntime({ state: advanced });
+    await destination.object.persist();
+
     const edges = await source.object.fetchNeighborEdges(
       "garden-2",
       ["east", "west", "east"],
     );
-    assert.equal(env.REGIONS.edgeFetches.length, 0);
+    assert.equal(env.REGIONS.edgeFetches.length, 1, "multi-direction read must not issue another single read");
     assert.equal(env.REGIONS.edgeBatchFetches.length, 1);
     assert.deepEqual(env.REGIONS.edgeBatchFetches[0], {
       regionId: "garden-2",
@@ -195,13 +205,19 @@ test("same-region multi-direction edge reads dedupe into one batch with one revi
     });
     assert.deepEqual(edges.map((edge) => edge.direction), ["east", "west"]);
     assert.equal(new Set(edges.map((edge) => `${edge.revision}:${edge.tick}`)).size, 1);
+    assert.notEqual(
+      edges[0].tick,
+      primed.tick,
+      "a partially primed cache must be replaced by one coherent batch snapshot",
+    );
 
     const cached = await source.object.fetchNeighborEdges(
       "garden-2",
       ["west", "east"],
     );
-    assert.equal(env.REGIONS.edgeBatchFetches.length, 1, "batch cache must reuse both directional edges");
+    assert.equal(env.REGIONS.edgeBatchFetches.length, 1, "coherent batch cache must reuse both directional edges");
     assert.deepEqual(cached.map((edge) => edge.direction), ["west", "east"]);
+    assert.equal(new Set(cached.map((edge) => `${edge.revision}:${edge.tick}`)).size, 1);
   } finally {
     source.object.endHaloEdgeReadBatch(owner);
   }
