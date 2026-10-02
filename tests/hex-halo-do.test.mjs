@@ -87,9 +87,43 @@ async function call(env, path, init = {}) {
 
 test("public Worker never proxies internal halo edge routes", async () => {
   const env = environment();
-  const result = await call(env, "/api/internal/halo/edge?region=garden-1&direction=east");
-  assert.equal(result.response.status, 404);
+  const single = await call(env, "/api/internal/halo/edge?region=garden-1&direction=east");
+  assert.equal(single.response.status, 404);
+  const batch = await call(env, "/api/internal/halo/edges?region=garden-1&directions=east,west");
+  assert.equal(batch.response.status, 404);
   assert.equal(env.REGIONS.entries.size, 0);
+});
+
+test("direct internal halo edge batch samples multiple directions from one passive snapshot", async () => {
+  const env = environment();
+  const response = await env.REGIONS.get("garden-1").fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edges?directions=east,northEast,west,east",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-1" },
+    },
+  ));
+  assert.equal(response.status, 200);
+  const batch = await response.json();
+  assert.deepEqual(
+    batch.edges.map((edge) => edge.direction),
+    ["east", "northEast", "west"],
+  );
+  assert.ok(batch.edges.every((edge) =>
+    edge.regionId === batch.regionId
+    && edge.revision === batch.revision
+    && edge.tick === batch.tick
+  ));
+
+  const health = await env.REGIONS.get("garden-1").fetch(new Request(
+    "https://moyo.internal/api/health",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-1" },
+    },
+  ));
+  const healthBody = await health.json();
+  assert.equal(healthBody.tickMode, "cold", "internal batch sampling must remain passive");
 });
 
 test("active legacy world halo expands to the full six-neighbor dynamic ring", async () => {

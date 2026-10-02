@@ -475,6 +475,33 @@ test("destination storage admission is shared across source regions and releases
     "halo summary must advertise headroom after active destination reservations",
   );
 
+  const edgeBatchResponse = await destination.object.fetch(new Request(
+    "https://moyo.internal/api/internal/halo/edges?directions=west,east",
+    {
+      method: "GET",
+      headers: { "x-moyo-region-internal": "garden-2" },
+    },
+  ));
+  assert.equal(edgeBatchResponse.status, 200);
+  const edgeBatch = await edgeBatchResponse.json();
+  assert.ok(edgeBatch.edges.every((entry) =>
+    entry.regionId === edgeBatch.regionId
+    && entry.revision === edgeBatch.revision
+    && entry.tick === edgeBatch.tick
+  ));
+  for (const entry of edgeBatch.edges) {
+    assert.equal(
+      entry.regionSummary.storageHeadroomByFaction[factionId],
+      edge.regionSummary.storageHeadroomByFaction[factionId],
+      "single and batch reads must apply identical destination reservation headroom",
+    );
+    assert.deepEqual(
+      entry.regionSummary.storageComponentsByFaction,
+      edge.regionSummary.storageComponentsByFaction,
+      "reservation adjustment must preserve physical storage reachability metadata",
+    );
+  }
+
   const release = await destination.object.fetch(new Request(
     "https://moyo.internal/api/internal/autonomy/storage/release",
     {

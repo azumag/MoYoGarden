@@ -64,6 +64,7 @@ interface HaloEdgeReadCacheEntry {
 export type RegionActivityTier = "active" | "warm" | "cold";
 
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
+const INTERNAL_EDGE_BATCH_PATH = "/api/internal/halo/edges";
 const PUBLIC_HALO_PATH = "/api/world/halo";
 const ACTIVE_GRACE_MULTIPLIER = 6;
 const WARM_GRACE_MULTIPLIER = 12;
@@ -137,6 +138,19 @@ function directionValue(value: string | null): HexGridDirection | undefined {
     : undefined;
 }
 
+function directionValues(value: string | null): HexGridDirection[] | undefined {
+  if (value === null) return undefined;
+  const directions: HexGridDirection[] = [];
+  for (const raw of value.split(",")) {
+    const direction = directionValue(raw.trim());
+    if (direction === undefined) return undefined;
+    if (!directions.includes(direction)) directions.push(direction);
+  }
+  return directions.length > 0 && directions.length <= HEX_GRID_DIRECTIONS.length
+    ? directions
+    : undefined;
+}
+
 function runtimeAccess(instance: RegionDurableObject): RuntimeAccess {
   return instance as unknown as RuntimeAccess;
 }
@@ -152,6 +166,42 @@ function isEdgeSnapshot(value: unknown): value is HexHaloEdgeSnapshot {
     && Number.isInteger(value.revision)
     && Number.isInteger(value.tick)
     && Array.isArray(value.tiles);
+}
+
+function edgeSnapshotsFromBatch(
+  value: unknown,
+  expectedRegionId: string,
+  expectedDirections: readonly HexGridDirection[],
+): HexHaloEdgeSnapshot[] | undefined {
+  if (
+    !isRecord(value)
+    || value.regionId !== expectedRegionId
+    || !Number.isInteger(value.revision)
+    || !Number.isInteger(value.tick)
+    || !Array.isArray(value.edges)
+    || value.edges.length !== expectedDirections.length
+  ) {
+    return undefined;
+  }
+  const byDirection = new Map<HexGridDirection, HexHaloEdgeSnapshot>();
+  for (const edge of value.edges) {
+    if (
+      !isEdgeSnapshot(edge)
+      || edge.regionId !== value.regionId
+      || edge.revision !== value.revision
+      || edge.tick !== value.tick
+      || !HEX_GRID_DIRECTIONS.includes(edge.direction as HexGridDirection)
+    ) {
+      return undefined;
+    }
+    const direction = edge.direction as HexGridDirection;
+    if (byDirection.has(direction)) return undefined;
+    byDirection.set(direction, edge);
+  }
+  const ordered = expectedDirections.map((direction) => byDirection.get(direction));
+  return ordered.every((edge): edge is HexHaloEdgeSnapshot => edge !== undefined)
+    ? ordered
+    : undefined;
 }
 
 function tickMsValue(value: string | undefined): number {
@@ -320,7 +370,8 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     if (
       url.pathname === "/api/health" ||
       url.pathname === "/api/rules" ||
-      url.pathname === INTERNAL_EDGE_PATH
+      url.pathname === INTERNAL_EDGE_PATH ||
+      url.pathname === INTERNAL_EDGE_BATCH_PATH
     ) {
       return false;
     }
@@ -356,7 +407,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private async ensureHaloAssigned(request: Request): Promise<Response | undefined> {
     const url = new URL(request.url);
-    if (url.pathname === INTERNAL_EDGE_PATH) {
+    if (url.pathname === INTERNAL_EDGE_PATH || url.pathname === INTERNAL_EDGE_BATCH_PATH) {
       try {
         await this.ensureRegion(request, { activate: false });
         return undefined;
@@ -475,8 +526,10 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     return next;
   }
 
-  private edgeSnapshot(direction: HexGridDirection): HexHaloEdgeSnapshot {
-    const state = runtimeAccess(this).runtime.snapshot();
+  private edgeSnapshotFromState(
+    state: WorldState,
+    direction: HexGridDirection,
+  ): HexHaloEdgeSnapshot {
     const { regionSummary, occupantsByPosition, passableComponentByPosition } = this.edgeSupport(state);
     const tiles = hexGridBoundaryCells(state, direction).flatMap((position) => {
       const tile = getTile(state, position);
@@ -559,6 +612,107 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     return entry.pending;
   }
 
+  protected async fetchNeighborEdges(
+    neighborRegionId: string,
+    directions: readonly HexGridDirection[],
+  ): Promise<HexHaloEdgeSnapshot[]> {
+    const uniqueDirections = directions.filter(
+      (direction, index) => directions.indexOf(direction) === index,
+    );
+    if (uniqueDirections.length === 0) return [];
+    if (uniqueDirections.length === 1) {
+      const onlyDirection = uniqueDirections[0];
+      if (onlyDirection === undefined) return [];
+      const edge = await this.fetchNeighborEdge(neighborRegionId, onlyDirection);
+      return edge === undefined ? [] : [edge];
+    }
+    if (this.haloEdgeMutationDepth > 0 || this.haloEdgeReadCache === undefined) {
+      return this.fetchNeighborEdgesUncached(neighborRegionId, uniqueDirections);
+    }
+
+    const now = Date.now();
+    const cachedEntries = uniqueDirections.map((direction) =>
+      this.haloEdgeReadCache?.get(`${neighborRegionId}:${direction}:full-edge`)
+    );
+    const allReusable = cachedEntries.every((cached) =>
+      cached !== undefined && (
+        !cached.settled
+        || cached.failed
+        || (now >= cached.startedAt && now - cached.startedAt < HALO_EDGE_OBSERVATION_MS)
+      )
+    );
+    if (allReusable) {
+      const cachedSnapshots = await Promise.all(
+        cachedEntries.map((entry) => entry?.pending ?? Promise.resolve(undefined)),
+      );
+      const available = cachedSnapshots.filter(
+        (value): value is HexHaloEdgeSnapshot => value !== undefined,
+      );
+      if (
+        available.length <= 1
+        || available.every((edge) =>
+          edge.regionId === available[0]?.regionId
+          && edge.revision === available[0]?.revision
+          && edge.tick === available[0]?.tick
+        )
+      ) {
+        return available;
+      }
+      // Directional cache entries may have originated from separate historical
+      // single-edge reads. Re-observe the complete requested set atomically
+      // instead of mixing revisions in one multi-direction result.
+    }
+
+    const batch = this.fetchNeighborEdgesUncached(neighborRegionId, uniqueDirections);
+    for (const direction of uniqueDirections) {
+      const entry: HaloEdgeReadCacheEntry = {
+        startedAt: now,
+        settled: false,
+        failed: false,
+        pending: Promise.resolve(undefined),
+      };
+      entry.pending = batch.then((edges) =>
+        edges.find((edge) => edge.direction === direction)
+      ).then((snapshot) => {
+        entry.settled = true;
+        entry.failed = snapshot === undefined;
+        return snapshot;
+      });
+      this.haloEdgeReadCache.set(
+        `${neighborRegionId}:${direction}:full-edge`,
+        entry,
+      );
+    }
+    const snapshots = await Promise.all(uniqueDirections.map((direction) =>
+      this.haloEdgeReadCache?.get(
+        `${neighborRegionId}:${direction}:full-edge`,
+      )?.pending
+      ?? Promise.resolve(undefined)
+    ));
+    return snapshots.filter((value): value is HexHaloEdgeSnapshot => value !== undefined);
+  }
+
+  private async fetchNeighborEdgesUncached(
+    neighborRegionId: string,
+    directions: readonly HexGridDirection[],
+  ): Promise<HexHaloEdgeSnapshot[]> {
+    const url = new URL("https://moyo.internal/api/internal/halo/edges");
+    url.searchParams.set("directions", directions.join(","));
+    try {
+      const value = await readHaloEdgeJsonWithDeadline((signal) =>
+        this.haloStub(neighborRegionId).fetch(new Request(url, {
+          method: "GET",
+          headers: { "x-moyo-region-internal": neighborRegionId },
+          signal,
+        }))
+      );
+      return edgeSnapshotsFromBatch(value, neighborRegionId, directions) ?? [];
+    } catch (error) {
+      console.debug("MoYoGarden halo edge batch unavailable", neighborRegionId, directions, error);
+      return [];
+    }
+  }
+
   private async fetchNeighborEdgeUncached(
     neighborRegionId: string,
     direction: HexGridDirection,
@@ -621,22 +775,20 @@ export class RegionDurableObject extends MoveRegionDurableObject {
             state.regionId,
             tier,
           );
-    const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
+    const requested = new Map<string, HexGridDirection[]>();
     for (const link of links) {
-      const direction = link.neighborDirection;
-      requested.set(`${link.neighborRegionId}:${direction}`, {
-        regionId: link.neighborRegionId,
-        direction,
-      });
+      const directions = requested.get(link.neighborRegionId) ?? [];
+      if (!directions.includes(link.neighborDirection)) directions.push(link.neighborDirection);
+      requested.set(link.neighborRegionId, directions);
     }
 
     const edges = (
       await Promise.all(
-        [...requested.values()].map(({ regionId, direction }) =>
-          this.fetchNeighborEdge(regionId, direction)
+        [...requested].map(([regionId, directions]) =>
+          this.fetchNeighborEdges(regionId, directions)
         ),
       )
-    ).filter((value): value is HexHaloEdgeSnapshot => value !== undefined);
+    ).flat();
     return { links, edges, halo: materializeHexHalo(links, edges) };
   }
 
@@ -679,6 +831,7 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       request.headers.get("x-moyo-prefetch") === "1";
     if (
       url.pathname === INTERNAL_EDGE_PATH ||
+      url.pathname === INTERNAL_EDGE_BATCH_PATH ||
       url.pathname === PUBLIC_HALO_PATH ||
       bodylessPassivePrefetch
     ) {
@@ -698,7 +851,20 @@ export class RegionDurableObject extends MoveRegionDurableObject {
       const direction = directionValue(url.searchParams.get("direction"));
       response = direction === undefined
         ? json({ error: "valid hex direction is required" }, 400)
-        : json(this.edgeSnapshot(direction));
+        : json(this.edgeSnapshotFromState(runtimeAccess(this).runtime.snapshot(), direction));
+    } else if (request.method === "GET" && url.pathname === INTERNAL_EDGE_BATCH_PATH) {
+      const directions = directionValues(url.searchParams.get("directions"));
+      if (directions === undefined) {
+        response = json({ error: "one to six valid hex directions are required" }, 400);
+      } else {
+        const state = runtimeAccess(this).runtime.snapshot();
+        response = json({
+          regionId: state.regionId,
+          revision: state.revision,
+          tick: state.tick,
+          edges: directions.map((direction) => this.edgeSnapshotFromState(state, direction)),
+        });
+      }
     } else if (request.method === "GET" && url.pathname === PUBLIC_HALO_PATH) {
       response = await this.haloSnapshot();
     } else {
