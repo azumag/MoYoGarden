@@ -36,6 +36,7 @@ class MemoryNamespace {
     this.env = env;
     this.entries = new Map();
     this.edgeFetches = [];
+    this.edgeBatchFetches = [];
     this.edgeFailure = null;
   }
   idFromName(name) { return name; }
@@ -51,9 +52,19 @@ class MemoryNamespace {
       fetch: async (request) => {
         await entry.state.ready;
         const url = new URL(request.url);
-        if (url.pathname === "/api/internal/halo/edge") {
-          const direction = url.searchParams.get("direction");
-          this.edgeFetches.push({ regionId: id, direction });
+        if (
+          url.pathname === "/api/internal/halo/edge"
+          || url.pathname === "/api/internal/halo/edges"
+        ) {
+          if (url.pathname === "/api/internal/halo/edge") {
+            const direction = url.searchParams.get("direction");
+            this.edgeFetches.push({ regionId: id, direction });
+          } else {
+            this.edgeBatchFetches.push({
+              regionId: id,
+              directions: url.searchParams.get("directions")?.split(",") ?? [],
+            });
+          }
           if (this.edgeFailure?.regionId === id) {
             if (this.edgeFailure.mode === "transport") {
               throw new Error(`simulated autonomy edge transport failure for ${id}`);
@@ -162,6 +173,39 @@ async function activeLegacyAutonomyScenario() {
   env.REGIONS.edgeFetches.length = 0;
   return { env, source };
 }
+
+test("same-region multi-direction edge reads dedupe into one batch with one revision/tick", async () => {
+  const env = environment();
+  const source = await assignRegion(env, "garden-1");
+  await assignRegion(env, "garden-2");
+  env.REGIONS.edgeFetches.length = 0;
+  env.REGIONS.edgeBatchFetches.length = 0;
+
+  const owner = source.object.beginHaloEdgeReadBatch();
+  try {
+    const edges = await source.object.fetchNeighborEdges(
+      "garden-2",
+      ["east", "west", "east"],
+    );
+    assert.equal(env.REGIONS.edgeFetches.length, 0);
+    assert.equal(env.REGIONS.edgeBatchFetches.length, 1);
+    assert.deepEqual(env.REGIONS.edgeBatchFetches[0], {
+      regionId: "garden-2",
+      directions: ["east", "west"],
+    });
+    assert.deepEqual(edges.map((edge) => edge.direction), ["east", "west"]);
+    assert.equal(new Set(edges.map((edge) => `${edge.revision}:${edge.tick}`)).size, 1);
+
+    const cached = await source.object.fetchNeighborEdges(
+      "garden-2",
+      ["west", "east"],
+    );
+    assert.equal(env.REGIONS.edgeBatchFetches.length, 1, "batch cache must reuse both directional edges");
+    assert.deepEqual(cached.map((edge) => edge.direction), ["west", "east"]);
+  } finally {
+    source.object.endHaloEdgeReadBatch(owner);
+  }
+});
 
 test("active legacy autonomy reuses one six-direction halo read when an interior scout follows", async () => {
   const { env, source } = await activeLegacyAutonomyScenario();
