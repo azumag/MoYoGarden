@@ -30,6 +30,7 @@ const DESTINATION_STORAGE_GENERATION_FENCES_KEY =
 const INTERNAL_STORAGE_RESERVE_PATH = "/api/internal/autonomy/storage/reserve";
 const INTERNAL_CLAIM_REGISTER_PATH = "/api/internal/autonomy/claim/register";
 const INTERNAL_HALO_EDGE_PATH = "/api/internal/halo/edge";
+const INTERNAL_HALO_EDGE_BATCH_PATH = "/api/internal/halo/edges";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -84,7 +85,8 @@ export function reconcileReleasedDestinationStorageReservations(
 function requestConsumesDestinationStorageCapacity(request: Request): boolean {
   const path = new URL(request.url).pathname;
   return (
-    request.method === "GET" && path === INTERNAL_HALO_EDGE_PATH
+    request.method === "GET"
+    && (path === INTERNAL_HALO_EDGE_PATH || path === INTERNAL_HALO_EDGE_BATCH_PATH)
   ) || (
     request.method === "POST"
     && (path === INTERNAL_STORAGE_RESERVE_PATH || path === INTERNAL_CLAIM_REGISTER_PATH)
