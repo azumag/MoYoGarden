@@ -14,7 +14,7 @@ AIエージェントや機械BOTが住民として行動し、集落・物流・
 
 ## 現在できること
 
-3勢力12体のBOTが、木材・石材・食料を集め、キャンプ、倉庫、市場、工房を自律建築します。人間・ルールBOT・LLM・MCPクライアントは、すべて同じCommand APIから移動、採集、建築、運搬、取引、目標変更を指示します。
+初期状態では3勢力12体のBOTから始まり、木材・石材・食料を集め、キャンプ、倉庫、市場、工房を自律建築します。人口は受胎・出生・成長・老化・死亡という低レベルな人口動態で増減し、家族単位の移住やリージョン境界越えも既存のhandoff基盤を使います。人間・ルールBOT・LLM・MCPクライアントは、すべて同じCommand APIから移動、採集、建築、運搬、取引、目標変更を指示します。
 
 ブラウザ版では、自己完結型GLBの住民・樹木・岩・建物、metallic-roughness PBRマテリアル、環境光、ソフトシャドウ、水面、3段階LODを使って永続ワールドを描画します。BOTの職業装備や歩行アニメーションも表示し、左クリックで選択、右クリックで移動命令を送れます。
 
@@ -53,19 +53,19 @@ npm run verify
 
 ## Cloudflareへ自動デプロイ
 
-GitHub Actionsは使いません。Cloudflareダッシュボードで `azumag/MoYoGarden` を一度だけWorkers Buildsへ接続すると、以後は`main`へのpushをCloudflare自身が検出してデプロイします。
+`main`は開発正本、`deploy`は本番反映用ブランチです。GitHub ActionsはPR/main/deployのbuild/testを検証し、Cloudflare Workers Buildsは`deploy`への対象変更を検出して本番へ反映します。**mainへのpushやPR作成だけでは本番へ反映されません。** 定期実行は作業ブランチとPRまでとし、merge・`deploy`更新・production deployは行いません。
 
-設定値は次のとおりです。
+確認済みの本番Build実行値は次のとおりです。接続・設定変更・本番反映は別途明示承認された実行でのみ行います。
 
 ```text
 Worker name:       moyo-garden
-Production branch: main
+Production branch: deploy
 Root directory:    /
-Build command:     npm run build
+Build command:     npm run check
 Deploy command:    npx wrangler deploy
 ```
 
-`npm run build`は、TypeScript型検査、4つのGLB生成、固定バージョンのThree.jsランタイム配置、ブラウザJavaScript構文検査、GLB/PBR/LOD/影設定の静的検査を行います。
+`npm run check`はTypeScript型検査です。その後の`wrangler deploy`は`wrangler.jsonc`のcustom build hookから`build:web`を実行し、テスト、モデル生成、Three.js配置、ブラウザJavaScript・資産の検査を行います。同一Workers Build commitで資産が生成済みの場合のみ、既存markerで重複buildを省きます。
 
 本番のSecretとして、異なる長い値を設定します。
 
@@ -74,7 +74,7 @@ COMMAND_TOKEN
 ADMIN_TOKEN
 ```
 
-詳細手順は [`docs/CLOUDFLARE_DEPLOY.md`](docs/CLOUDFLARE_DEPLOY.md) にあります。
+詳細手順と本番反映の完了条件は [`docs/CLOUDFLARE_DEPLOY.md`](docs/CLOUDFLARE_DEPLOY.md) と [`AGENTS.md`](AGENTS.md) にあります。productionの`build.commit`は対象`deploy` SHAと比較し、未リリースの最新main SHAとは比較しません。
 
 ## ランニングコスト
 
@@ -144,7 +144,7 @@ node tools/mcp.mjs
 
 ## 現在のMVP外
 
-戦闘・負傷・死亡、複数領域間の移動、契約・雇用・融資、政治・法律、プレイヤーアカウント、BOT別capability token、差分同期、世界新聞は次段階です。
+戦闘・負傷、契約・雇用・融資、政治・法律、プレイヤーアカウント、BOT別capability token、差分同期、世界新聞は次段階です。複数リージョン間の移動・物流・交易・家族移住は段階実装中で、現状と残課題はIssue #3を正本とします。
 
 ## License
 
