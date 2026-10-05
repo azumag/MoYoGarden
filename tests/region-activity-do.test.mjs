@@ -91,3 +91,33 @@ test("production region activity tiers map direct, hex-window prefetch, and cold
   assert.equal(activeHealth.nextAlarmAt, ctx.storage.alarm);
   assertAlarmNear(ctx.storage.alarm, 10000);
 });
+
+test("passive internal halo edge batch keeps a caught-up cold region in deep idle", async () => {
+  const ctx = new MemoryState();
+  const object = new RegionDurableObject(ctx, env);
+  await ctx.ready;
+
+  const initialHealth = await (await object.fetch(request("/api/health"))).json();
+  assert.equal(initialHealth.tickMode, "cold");
+  await object.alarm();
+  assert.equal(ctx.storage.alarm, null, "precondition: caught-up cold region is deep-idle");
+
+  const response = await object.fetch(request(
+    "/api/internal/halo/edges?directions=east,west,east",
+  ));
+  assert.equal(response.status, 200);
+  const batch = await response.json();
+  assert.deepEqual(batch.edges.map((edge) => edge.direction), ["east", "west"]);
+  assert.ok(batch.edges.every((edge) =>
+    edge.regionId === batch.regionId
+    && edge.revision === batch.revision
+    && edge.tick === batch.tick
+  ));
+  assert.equal(ctx.storage.alarm, null, "passive batch sampling must not re-arm the Alarm");
+
+  const health = await (await object.fetch(request("/api/health"))).json();
+  assert.equal(health.tickMode, "cold");
+  assert.equal(health.deepIdle, true);
+  assert.equal(health.alarmScheduled, false);
+});
+

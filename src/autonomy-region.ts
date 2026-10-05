@@ -167,6 +167,7 @@ const AUTONOMOUS_SETTLEMENT_MIGRATION_KEY = "handoff:autonomy:settlement-migrati
 // crash-safe journal to resolve the current owner of a world-global BOT.
 const OUTGOING_HANDOFF_KEY = "handoff:outgoing:v1";
 const INTERNAL_EDGE_PATH = "/api/internal/halo/edge";
+const INTERNAL_EDGE_BATCH_PATH = "/api/internal/halo/edges";
 const INTERNAL_AUTONOMY_PREFIX = "/api/internal/autonomy/";
 const INTERNAL_CLAIM_REGISTER_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/register`;
 const INTERNAL_CLAIM_SETTLE_PATH = `${INTERNAL_AUTONOMY_PREFIX}claim/settle`;
@@ -257,6 +258,55 @@ export function isAutonomyClaimSourceRegionId(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function reservationAwareRegionSummary(
+  summary: Record<string, unknown>,
+  reservations: readonly AutonomousDestinationStorageReservation[],
+): Record<string, unknown> {
+  if (!isRecord(summary.storageHeadroomByFaction) || reservations.length === 0) return summary;
+  const reservedByFaction = new Map<string, number>();
+  for (const reservation of reservations) {
+    reservedByFaction.set(
+      reservation.factionId,
+      (reservedByFaction.get(reservation.factionId) ?? 0) + reservation.amount,
+    );
+  }
+  const storageHeadroomByFaction = { ...summary.storageHeadroomByFaction };
+  for (const [factionId, reserved] of reservedByFaction) {
+    const observed = storageHeadroomByFaction[factionId];
+    if (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0) continue;
+    storageHeadroomByFaction[factionId] = Math.max(0, observed - reserved);
+  }
+  return {
+    ...summary,
+    storageHeadroomByFaction,
+  };
+}
+
+function reservationAwareHaloPayload(
+  payload: unknown,
+  reservations: readonly AutonomousDestinationStorageReservation[],
+): unknown {
+  if (!isRecord(payload) || reservations.length === 0) return payload;
+  if (isRecord(payload.regionSummary)) {
+    return {
+      ...payload,
+      regionSummary: reservationAwareRegionSummary(payload.regionSummary, reservations),
+    };
+  }
+  if (!Array.isArray(payload.edges)) return payload;
+  return {
+    ...payload,
+    edges: payload.edges.map((edge) =>
+      isRecord(edge) && isRecord(edge.regionSummary)
+        ? {
+            ...edge,
+            regionSummary: reservationAwareRegionSummary(edge.regionSummary, reservations),
+          }
+        : edge
+    ),
+  };
 }
 
 function isEdgeSnapshot(value: unknown): value is HexHaloEdgeSnapshot {
@@ -1273,21 +1323,19 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       state.regionId,
       this.activityTier(),
     ).filter((link) => needed.has(link.direction));
-    const requested = new Map<string, { regionId: string; direction: HexGridDirection }>();
+    const requested = new Map<string, HexGridDirection[]>();
     for (const link of links) {
-      const direction = link.neighborDirection;
-      requested.set(`${link.neighborRegionId}:${direction}`, {
-        regionId: link.neighborRegionId,
-        direction,
-      });
+      const directions = requested.get(link.neighborRegionId) ?? [];
+      if (!directions.includes(link.neighborDirection)) directions.push(link.neighborDirection);
+      requested.set(link.neighborRegionId, directions);
     }
     const edges = (
       await Promise.all(
-        [...requested.values()].map(({ regionId, direction }) =>
-          this.fetchNeighborEdge(regionId, direction)
+        [...requested].map(([regionId, directions]) =>
+          this.fetchNeighborEdges(regionId, directions)
         ),
       )
-    ).filter((value): value is HexHaloEdgeSnapshot => value !== undefined);
+    ).flat();
     return materializeHexHalo(links, edges);
   }
 
@@ -3085,7 +3133,7 @@ private async resumeOrPlanAutonomousTradeHandoff(state: WorldState): Promise<boo
     );
   }
 
-  private async fetchReservationAwareHaloEdge(request: Request): Promise<Response> {
+  private async fetchReservationAwareHaloRead(request: Request): Promise<Response> {
     const response = await super.fetch(request);
     if (!response.ok || request.method !== "GET") return response;
 
@@ -3095,33 +3143,19 @@ private async resumeOrPlanAutonomousTradeHandoff(state: WorldState): Promise<boo
     } catch {
       return response;
     }
-    if (!isRecord(payload) || !isRecord(payload.regionSummary)) return response;
-    const summary = payload.regionSummary;
-    if (!isRecord(summary.storageHeadroomByFaction)) return response;
+    const hasSummary = isRecord(payload) && (
+      isRecord(payload.regionSummary)
+      || (
+        Array.isArray(payload.edges)
+        && payload.edges.some((edge) => isRecord(edge) && isRecord(edge.regionSummary))
+      )
+    );
+    if (!hasSummary) return response;
 
     const reservations = await this.activeDestinationStorageReservations();
     if (reservations.length === 0) return response;
-    const reservedByFaction = new Map<string, number>();
-    for (const reservation of reservations) {
-      reservedByFaction.set(
-        reservation.factionId,
-        (reservedByFaction.get(reservation.factionId) ?? 0) + reservation.amount,
-      );
-    }
-    const storageHeadroomByFaction = { ...summary.storageHeadroomByFaction };
-    for (const [factionId, reserved] of reservedByFaction) {
-      const observed = storageHeadroomByFaction[factionId];
-      if (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0) continue;
-      storageHeadroomByFaction[factionId] = Math.max(0, observed - reserved);
-    }
-
-    return new Response(JSON.stringify({
-      ...payload,
-      regionSummary: {
-        ...summary,
-        storageHeadroomByFaction,
-      },
-    }), {
+    const adjusted = reservationAwareHaloPayload(payload, reservations);
+    return new Response(JSON.stringify(adjusted), {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,
@@ -3135,8 +3169,11 @@ private async resumeOrPlanAutonomousTradeHandoff(state: WorldState): Promise<boo
         ? this.fetchAutonomyRequest(request)
         : this.withHaloEdgeMutation(() => this.fetchAutonomyRequest(request));
     }
-    if (request.method === "GET" && url.pathname === INTERNAL_EDGE_PATH) {
-      return this.fetchReservationAwareHaloEdge(request);
+    if (
+      request.method === "GET"
+      && (url.pathname === INTERNAL_EDGE_PATH || url.pathname === INTERNAL_EDGE_BATCH_PATH)
+    ) {
+      return this.fetchReservationAwareHaloRead(request);
     }
     return super.fetch(request);
   }
