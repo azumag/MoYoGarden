@@ -115,7 +115,8 @@ function environmentMetrics(state) {
       ? null
       : { kind: tile.resource.kind, amount: tile.resource.amount, maxAmount: tile.resource.maxAmount },
   })));
-la return {
+
+  return {
     factionResources: [...state.factions]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((faction) => ({
