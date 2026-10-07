@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MoYoGarden evolution canary artifact v1",
+  "oneOf": [{"$ref": "#/$defs/snapshot"}, {"$ref": "#/$defs/summary"}],
+  "$defs": {
+    "distribution": {
+      "type": "object", "required": ["count", "mean", "min", "max", "variance", "p10", "p50", "p90"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "mean": {"type": ["number", "null"]}, "min": {"type": ["number", "null"]},
+        "max": {"type": ["number", "null"]}, "variance": {"type": ["number", "null"]},
+        "p10": {"type": ["number", "null"]}, "p50": {"type": ["number", "null"]}, "p90": {"type": ["number", "null"]}
+      }, "additionalProperties": false
+    },
+    "inventory": {
+      "type": "object", "required": ["food", "stone", "wood"],
+      "properties": {"food": {"type": "number"}, "stone": {"type": "number"}, "wood": {"type": "number"}},
+      "additionalProperties": false
+    },
+    "traits": {
+      "type": "object", "required": ["founderCount", "lineageBornCount", "vitality", "carryingCapacity"],
+      "properties": {
+        "founderCount": {"type": "integer", "minimum": 0}, "lineageBornCount": {"type": "integer", "minimum": 0},
+        "vitality": {"$ref": "#/$defs/distribution"}, "carryingCapacity": {"$ref": "#/$defs/distribution"}
+      }, "additionalProperties": false
+    },
+    "population": {
+      "type": "object", "required": ["living", "infant", "juvenile", "adult", "elder", "birthsCumulative", "deathsCumulative", "extinct"],
+      "properties": {
+        "living": {"type": "integer", "minimum": 0}, "infant": {"type": "integer", "minimum": 0},
+        "juvenile": {"type": "integer", "minimum": 0}, "adult": {"type": "integer", "minimum": 0},
+        "elder": {"type": "integer", "minimum": 0}, "birthsCumulative": {"type": "integer", "minimum": 0},
+        "deathsCumulative": {"type": "integer", "minimum": 0}, "extinct": {"type": "boolean"}
+      }, "additionalProperties": false
+    },
+    "environment": {
+      "type": "object", "required": ["factionResources", "tileDeposits", "structuresByType", "livingAgentsByRole"],
+      "properties": {
+        "factionResources": {"type": "array", "items": {
+          "type": "object", "required": ["factionId", "food", "stone", "wood"],
+          "properties": {"factionId": {"type": "string"}, "food": {"type": "number"}, "stone": {"type": "number"}, "wood": {"type": "number"}},
+          "additionalProperties": false
+        }},
+        "tileDeposits": {
+          "type": "object", "required": ["resourceLayoutHash", "amountByKind", "activeByKind", "depleted"],
+          "properties": {
+            "resourceLayoutHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "amountByKind": {"$ref": "#/$defs/inventory"}, "activeByKind": {"$ref": "#/$defs/inventory"},
+            "depleted": {"type": "integer", "minimum": 0}
+          }, "additionalProperties": false
+        },
+        "structuresByType": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "livingAgentsByRole": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }, "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object", "required": ["schemaVersion", "tick", "population", "traits", "environment"],
+      "properties": {
+        "schemaVersion": {"const": 1}, "tick": {"type": "integer", "minimum": 0},
+        "population": {"$ref": "#/$defs/population"}, "traits": {"$ref": "#/$defs/traits"}, "environment": {"$ref": "#/$defs/environment"}
+      }, "additionalProperties": false
+    },
+    "lineage": {
+      "type": "object",
+      "required": ["observedAgents", "founders", "lineageBorn", "births", "deaths", "extinctionTick", "maxGeneration", "completedLifespan", "unknownBirthDateDeaths", "rightCensoredKnownLifetimes", "topFounderConcentration", "topFounders", "generations"],
+      "properties": {
+        "observedAgents": {"type": "integer", "minimum": 0}, "founders": {"type": "integer", "minimum": 0},
+        "lineageBorn": {"type": "integer", "minimum": 0}, "births": {"type": "integer", "minimum": 0}, "deaths": {"type": "integer", "minimum": 0},
+        "extinctionTick": {"type": ["integer", "null"], "minimum": 0}, "maxGeneration": {"type": "integer", "minimum": 0},
+        "completedLifespan": {"$ref": "#/$defs/distribution"}, "unknownBirthDateDeaths": {"type": "integer", "minimum": 0},
+        "rightCensoredKnownLifetimes": {"type": "integer", "minimum": 0}, "topFounderConcentration": {"type": ["number", "null"]},
+        "topFounders": {"type": "array", "items": {
+          "type": "object", "required": ["agentId", "descendants", "livingDescendants", "livingAncestryShare"],
+          "properties": {
+            "agentId": {"type": "string"}, "descendants": {"type": "integer", "minimum": 0},
+            "livingDescendants": {"type": "integer", "minimum": 0}, "livingAncestryShare": {"type": ["number", "null"]}
+          }, "additionalProperties": false
+        }},
+        "generations": {"type": "array", "items": {
+          "type": "object", "required": ["generation", "observed", "living", "deaths", "children", "vitalityAtBirth", "carryingCapacityAtBirth"],
+          "properties": {
+            "generation": {"type": "integer", "minimum": 0}, "observed": {"type": "integer", "minimum": 0},
+            "living": {"type": "integer", "minimum": 0}, "deaths": {"type": "integer", "minimum": 0},
+            "children": {"$ref": "#/$defs/distribution"}, "vitalityAtBirth": {"$ref": "#/$defs/distribution"},
+            "carryingCapacityAtBirth": {"$ref": "#/$defs/distribution"}
+          }, "additionalProperties": false
+        }}
+      }, "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": ["schemaVersion", "run", "snapshotCount", "snapshotSeriesHash", "finalStateHash", "initialPopulation", "finalPopulation", "lineage", "initialTraits", "finalTraits", "traitDelta", "finalEnvironment", "deterministicResultHash", "durationMs", "runtimeLimitMs"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "run": {
+          "type": "object", "required": ["commit", "seed", "requestedTicks", "completedTicks", "sampleEvery", "simulationConfig", "world", "completed", "stopReason", "populationDayTicks", "elderAgeTicks", "neutralLifespanTicks", "engineHash"],
+          "properties": {
+            "commit": {"type": ["string", "null"]}, "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+            "requestedTicks": {"type": "integer", "minimum": 1}, "completedTicks": {"type": "integer", "minimum": 0},
+            "sampleEvery": {"type": "integer", "minimum": 1},
+            "simulationConfig": {
+              "type": "object", "required": ["eventLimit", "commandHistoryLimit", "resourceRegrowthInterval", "externalTaskTtl"],
+              "properties": {
+                "eventLimit": {"type": "integer", "minimum": 1}, "commandHistoryLimit": {"type": "integer", "minimum": 1},
+                "resourceRegrowthInterval": {"type": "integer", "minimum": 1}, "externalTaskTtl": {"type": "integer", "minimum": 1}
+              }, "additionalProperties": false
+            },
+            "world": {
+              "type": "object", "required": ["width", "height", "regionId"],
+              "properties": {"width": {"type": "integer", "minimum": 1}, "height": {"type": "integer", "minimum": 1}, "regionId": {"type": "string"}},
+              "additionalProperties": false
+            },
+            "completed": {"type": "boolean"}, "stopReason": {"enum": [null, "max-runtime-ms"]},
+            "populationDayTicks": {"type": "integer", "minimum": 1}, "elderAgeTicks": {"type": "integer", "minimum": 1},
+            "neutralLifespanTicks": {
+              "type": "object", "required": ["min", "max"],
+              "properties": {"min": {"type": "integer", "minimum": 1}, "max": {"type": "integer", "minimum": 1}},
+              "additionalProperties": false
+            },
+            "engineHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }, "additionalProperties": false
+        },
+        "snapshotCount": {"type": "integer", "minimum": 1}, "snapshotSeriesHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "finalStateHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "initialPopulation": {"type": "integer", "minimum": 0},
+        "finalPopulation": {"type": "integer", "minimum": 0}, "lineage": {"$ref": "#/$defs/lineage"},
+        "initialTraits": {"$ref": "#/$defs/traits"}, "finalTraits": {"$ref": "#/$defs/traits"},
+        "traitDelta": {
+          "type": "object", "required": ["vitalityMean", "vitalityVariance", "carryingCapacityMean", "carryingCapacityVariance"],
+          "properties": {
+            "vitalityMean": {"type": ["number", "null"]}, "vitalityVariance": {"type": ["number", "null"]},
+            "carryingCapacityMean": {"type": ["number", "null"]}, "carryingCapacityVariance": {"type": ["number", "null"]}
+          }, "additionalProperties": false
+        },
+        "finalEnvironment": {"$ref": "#/$defs/environment"}, "deterministicResultHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "durationMs": {"type": "number", "minimum": 0}, "runtimeLimitMs": {"type": ["integer", "null"], "minimum": 0}
+      }, "additionalProperties": false
+    }
+  }
+}
