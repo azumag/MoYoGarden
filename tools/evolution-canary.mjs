@@ -1,32 +1,40 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { closeSync, lstatSync, mkdirSync, openSync, writeSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { normalizedHeritableTraits } from "../dist-ts/src/demography.js";
-import { DEFAULT_SIMULATION_CONFIG } from "../dist-ts/src/protocol.js";
-import { WorldRuntime } from "../dist-ts/src/runtime.js";
-import { createInitialWorld } from "../dist-ts/src/world.js";
+import { auditEvolutionEngine, withProductionIoGuard } from "./evolution-isolation.mjs";
+export { withProductionIoGuard } from "./evolution-isolation.mjs";
+
+const engine = auditEvolutionEngine();
+const [{ normalizedHeritableTraits, POPULATION_TRAIT_MIN, POPULATION_TRAIT_MAX, POPULATION_DAY_TICKS,
+  POPULATION_ELDER_AGE_TICKS, POPULATION_MIN_LIFESPAN_TICKS, POPULATION_MAX_LIFESPAN_TICKS },
+  { DEFAULT_SIMULATION_CONFIG }, { WorldRuntime }, { createInitialWorld }] = await withProductionIoGuard(() => Promise.all([
+  import("../dist-ts/src/demography.js"), import("../dist-ts/src/protocol.js"),
+  import("../dist-ts/src/runtime.js"), import("../dist-ts/src/world.js"),
+]));
 
 const ARTIFACT_SCHEMA_VERSION = 1;
 const DEFAULT_SEED = 3902;
 const DEFAULT_TICKS = 100_000;
 const DEFAULT_SAMPLE_EVERY = 8_640;
-const BLOCKED_GLOBALS = ["fetch", "WebSocket", "EventSource", "XMLHttpRequest"];
 
-function finiteInteger(value, name, { min = 0 } = {}) {
-  const parsed = Number.parseInt(String(value), 10);
-  if (!Number.isSafeInteger(parsed) || parsed < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
+
+function finiteInteger(value, name, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = typeof value === "number" ? value
+    : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer in [${min}, ${max}]`);
   }
   return parsed;
 }
 
-function rounded(value, digits = 8) {
-  if (!Number.isFinite(value)) return 0;
+function rounded(value, digits = 12) {
+  if (value === null) return null;
+  if (!Number.isFinite(value)) throw new Error("non-finite canary metric");
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 }
@@ -36,7 +44,7 @@ function stableValue(value) {
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([key, entry]) => [key, stableValue(entry)]),
     );
   }
@@ -59,7 +67,7 @@ function percentile(sortedValues, quantile) {
 
 function distribution(values) {
   if (values.length === 0) {
-    return { count: 0, mean: 0, min: 0, max: 0, variance: 0, p10: 0, p50: 0, p90: 0 };
+    return { count: 0, mean: null, min: null, max: null, variance: null, p10: null, p50: null, p90: null };
   }
   const sorted = [...values].sort((a, b) => a - b);
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -79,7 +87,7 @@ function distribution(values) {
 function countBy(values) {
   const counts = new Map();
   for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
-  return Object.fromEntries([...counts].sort(([left], [right]) => left.localeCompare(right)));
+  return Object.fromEntries([...counts].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
 }
 
 function stageOf(agent) {
@@ -158,212 +166,181 @@ export function buildSnapshot(state, counters = {}) {
   };
 }
 
-function initializeLineage(state) {
-  const records = new Map();
-  for (const agent of state.agents) {
-    records.set(agent.id, {
-      id: agent.id,
-      founder: true,
-      parents: agent.parents === undefined ? [] : [...agent.parents],
-      birthTick: agent.birthTick ?? state.tick,
-      deathTick: null,
-    });
+function lineageRecord(agent, tick, records, founder) {
+  if (!founder && (!agent.parents || agent.birthTick !== tick)) {
+    throw new Error("unexpected entrant into isolated world");
+  }
+  if (agent.heritableTraits !== undefined) {
+    for (const key of ["vitality", "carryingCapacity"]) {
+      const value = agent.heritableTraits[key];
+      if (!Number.isFinite(value) || value < POPULATION_TRAIT_MIN || value > POPULATION_TRAIT_MAX) {
+        throw new Error(`out-of-bounds inherited trait: ${key}`);
+      }
+    }
+  }
+  const parents = agent.parents ?? [];
+  if (!founder && parents.some((id) => !records.has(id))) throw new Error("unobserved parent");
+  const ancestry = new Map();
+  if (founder) ancestry.set(agent.id, 1);
+  else for (const id of parents) {
+    for (const [ancestor, weight] of records.get(id).ancestry) {
+      ancestry.set(ancestor, (ancestry.get(ancestor) ?? 0) + weight / parents.length);
+    }
   }
   return {
-    records,
-    previousLiving: new Set(state.agents.map((agent) => agent.id)),
-    births: 0,
-    deaths: 0,
+    id: agent.id, founder, parents: [...parents], birthTick: agent.birthTick ?? null,
+    firstSeenTick: tick, deathTick: null, traits: normalizedHeritableTraits(agent),
+    generation: founder ? 0 : Math.max(...parents.map((id) => records.get(id).generation)) + 1,
+    ancestry, children: 0,
+  };
+}
+
+export function initializeLineage(state) {
+  const records = new Map();
+  for (const agent of state.agents) records.set(agent.id, lineageRecord(agent, state.tick, records, true));
+  return {
+    records, previousLiving: new Set(records.keys()), births: 0, deaths: 0,
     extinctionTick: state.agents.length === 0 ? state.tick : null,
   };
 }
 
-function observeLineage(tracker, state) {
+export function observeLineage(tracker, state) {
   const currentLiving = new Set(state.agents.map((agent) => agent.id));
+  if (currentLiving.size !== state.agents.length) throw new Error("duplicate agent identity");
   for (const agent of state.agents) {
     if (tracker.previousLiving.has(agent.id)) continue;
+    if (tracker.records.has(agent.id)) throw new Error("dead agent identity reused");
+    const record = lineageRecord(agent, state.tick, tracker.records, false);
+    tracker.records.set(agent.id, record);
     tracker.births += 1;
-    tracker.records.set(agent.id, {
-      id: agent.id,
-      founder: false,
-      parents: agent.parents === undefined ? [] : [...agent.parents],
-      birthTick: agent.birthTick ?? state.tick,
-      deathTick: null,
-    });
+    for (const id of new Set(record.parents)) tracker.records.get(id).children += 1;
   }
-  for (const agentId of tracker.previousLiving) {
-    if (currentLiving.has(agentId)) continue;
+  for (const id of tracker.previousLiving) {
+    if (currentLiving.has(id)) continue;
     tracker.deaths += 1;
-    const record = tracker.records.get(agentId);
-    if (record !== undefined && record.deathTick === null) record.deathTick = state.tick;
+    tracker.records.get(id).deathTick = state.tick;
   }
   if (tracker.extinctionTick === null && currentLiving.size === 0) tracker.extinctionTick = state.tick;
   tracker.previousLiving = currentLiving;
 }
 
-function descendantsFor(rootId, childrenByParent, cache, visiting = new Set()) {
-  const cached = cache.get(rootId);
-  if (cached !== undefined) return cached;
-  if (visiting.has(rootId)) return new Set();
-  const nextVisiting = new Set(visiting);
-  nextVisiting.add(rootId);
-  const descendants = new Set();
-  for (const childId of childrenByParent.get(rootId) ?? []) {
-    descendants.add(childId);
-    for (const nestedId of descendantsFor(childId, childrenByParent, cache, nextVisiting)) {
-      descendants.add(nestedId);
-    }
-  }
-  cache.set(rootId, descendants);
-  return descendants;
-}
-
-function lineageSummary(tracker, finalTick) {
-  const childrenByParent = new Map();
-  for (const record of tracker.records.values()) {
-    for (const parentId of record.parents) {
-      const children = childrenByParent.get(parentId) ?? [];
-      children.push(record.id);
-      childrenByParent.set(parentId, children);
-    }
-  }
-  for (const children of childrenByParent.values()) children.sort((left, right) => left.localeCompare(right));
-
-  const cache = new Map();
-  const founders = [...tracker.records.values()]
-    .filter((record) => record.founder)
-    .map((record) => {
-      const descendants = descendantsFor(record.id, childrenByParent, cache);
-      return {
-        agentId: record.id,
-        descendants: descendants.size,
-        livingDescendants: [...descendants].filter((agentId) => tracker.previousLiving.has(agentId)).length,
-      };
-    })
-    .sort((left, right) => right.descendants - left.descendants || left.agentId.localeCompare(right.agentId));
-  const lineageBorn = [...tracker.records.values()].filter((record) => !record.founder).length;
-  const lifespans = [...tracker.records.values()]
-    .filter((record) => record.deathTick !== null)
-    .map((record) => (record.deathTick ?? finalTick) - record.birthTick);
-
+export function lineageSummary(tracker) {
+  const records = [...tracker.records.values()];
+  const alive = (record) => tracker.previousLiving.has(record.id);
+  const knownDead = records.filter((record) => record.deathTick !== null && record.birthTick !== null);
+  const founders = records.filter((record) => record.founder).map((record) => {
+    const descendants = records.filter((entry) => entry.id !== record.id && entry.ancestry.has(record.id));
+    const contribution = records.filter(alive).reduce((sum, entry) => sum + (entry.ancestry.get(record.id) ?? 0), 0);
+    return {
+      agentId: record.id, descendants: descendants.length,
+      livingDescendants: descendants.filter(alive).length,
+      livingAncestryShare: tracker.previousLiving.size === 0 ? null : rounded(contribution / tracker.previousLiving.size),
+    };
+  }).sort((a, b) => (b.livingAncestryShare ?? 0) - (a.livingAncestryShare ?? 0)
+    || (a.agentId < b.agentId ? -1 : 1));
+  const generations = [...new Set(records.map((entry) => entry.generation))].sort((a, b) => a - b);
   return {
-    observedAgents: tracker.records.size,
-    founders: tracker.records.size - lineageBorn,
-    lineageBorn,
-    births: tracker.births,
-    deaths: tracker.deaths,
-    extinctionTick: tracker.extinctionTick,
-    completedLifespan: distribution(lifespans),
-    topFounderConcentration: lineageBorn === 0 ? 0 : rounded((founders[0]?.descendants ?? 0) / lineageBorn),
+    observedAgents: records.length, founders: founders.length,
+    lineageBorn: records.length - founders.length,
+    births: tracker.births, deaths: tracker.deaths, extinctionTick: tracker.extinctionTick,
+    maxGeneration: Math.max(0, ...generations),
+    completedLifespan: distribution(knownDead.map((record) => record.deathTick - record.birthTick)),
+    unknownBirthDateDeaths: records.filter((record) => record.deathTick !== null && record.birthTick === null).length,
+    rightCensoredKnownLifetimes: records.filter((record) => alive(record) && record.birthTick !== null).length,
+    topFounderConcentration: founders[0]?.livingAncestryShare ?? null,
     topFounders: founders.slice(0, 8),
+    generations: generations.map((generation) => {
+      const cohort = records.filter((record) => record.generation === generation);
+      return {
+        generation, observed: cohort.length, living: cohort.filter(alive).length,
+        deaths: cohort.filter((record) => !alive(record)).length,
+        children: distribution(cohort.map((record) => record.children)),
+        vitalityAtBirth: distribution(cohort.map((record) => record.traits.vitality)),
+        carryingCapacityAtBirth: distribution(cohort.map((record) => record.traits.carryingCapacity)),
+      };
+    }),
   };
 }
 
 function traitDelta(initial, final) {
+  const delta = (a, b) => a === null || b === null ? null : rounded(b - a);
   return {
-    vitalityMean: rounded(final.vitality.mean - initial.vitality.mean),
-    vitalityVariance: rounded(final.vitality.variance - initial.vitality.variance),
-    carryingCapacityMean: rounded(final.carryingCapacity.mean - initial.carryingCapacity.mean),
-    carryingCapacityVariance: rounded(final.carryingCapacity.variance - initial.carryingCapacity.variance),
+    vitalityMean: delta(initial.vitality.mean, final.vitality.mean),
+    vitalityVariance: delta(initial.vitality.variance, final.vitality.variance),
+    carryingCapacityMean: delta(initial.carryingCapacity.mean, final.carryingCapacity.mean),
+    carryingCapacityVariance: delta(initial.carryingCapacity.variance, final.carryingCapacity.variance),
   };
 }
 
-function patchBlockedGlobal(name, restore) {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
-  if (descriptor !== undefined && descriptor.configurable === false) return;
-  restore.push({ name, descriptor });
-  Object.defineProperty(globalThis, name, {
-    configurable: true,
-    writable: true,
-    value: function blockedProductionIo() {
-      throw new Error(`evolution canary blocked external I/O via ${name}`);
-    },
-  });
-}
-
-export async function withProductionIoGuard(callback) {
-  const restore = [];
-  for (const name of BLOCKED_GLOBALS) patchBlockedGlobal(name, restore);
-  try {
-    return await callback();
-  } finally {
-    for (const { name, descriptor } of restore.reverse()) {
-      if (descriptor === undefined) delete globalThis[name];
-      else Object.defineProperty(globalThis, name, descriptor);
-    }
-  }
-}
-
 export async function runEvolutionCanary(options = {}) {
-  const seed = finiteInteger(options.seed ?? DEFAULT_SEED, "seed");
+  const seed = finiteInteger(options.seed ?? DEFAULT_SEED, "seed", { max: 0xffff_ffff });
   const ticks = finiteInteger(options.ticks ?? DEFAULT_TICKS, "ticks", { min: 1 });
   const sampleEvery = finiteInteger(options.sampleEvery ?? DEFAULT_SAMPLE_EVERY, "sampleEvery", { min: 1 });
-  const maxRuntimeMs = options.maxRuntimeMs === undefined
-    ? undefined
+  const maxRuntimeMs = options.maxRuntimeMs === undefined ? null
     : finiteInteger(options.maxRuntimeMs, "maxRuntimeMs", { min: 1 });
-  const commit = typeof options.commit === "string" && options.commit.length > 0 ? options.commit : null;
-
-  return withProductionIoGuard(async () => {
-    const initialState = createInitialWorld({
-      seed,
-      worldId: "evolution-canary",
-      regionId: "evolution-canary",
-    });
+  const commit = options.commit ?? null;
+  if (commit !== null && typeof commit !== "string") throw new Error("invalid commit");
+  if (options.onSnapshot !== undefined && typeof options.onSnapshot !== "function") throw new Error("invalid snapshot observer");
+  return withProductionIoGuard(() => {
+    const startedAt = performance.now();
     const runtime = new WorldRuntime({
-      state: initialState,
-      simulationConfig: DEFAULT_SIMULATION_CONFIG,
+      state: createInitialWorld({ seed, worldId: "evolution-canary", regionId: "evolution-canary" }),
+      simulationConfig: { ...DEFAULT_SIMULATION_CONFIG },
     });
     let state = runtime.snapshot();
     const tracker = initializeLineage(state);
-    const snapshots = [buildSnapshot(state, tracker)];
-    const initialTraits = snapshots[0].traits;
-    const startedAt = performance.now();
+    const initial = buildSnapshot(state, tracker);
+    const snapshots = [];
+    const series = createHash("sha256");
+    let snapshotCount = 0;
+    let lastSampleTick = -1;
+    function sample(snapshot) {
+      const line = stableStringify(snapshot) + "\n";
+      series.update(line);
+      snapshotCount += 1;
+      lastSampleTick = snapshot.tick;
+      if (options.collectSnapshots !== false) snapshots.push(snapshot);
+      options.onSnapshot?.(structuredClone(snapshot), line);
+    }
+    sample(initial);
     let stopReason = null;
-
     while (state.tick < ticks) {
-      if (maxRuntimeMs !== undefined && performance.now() - startedAt >= maxRuntimeMs) {
+      if (maxRuntimeMs !== null && performance.now() - startedAt >= maxRuntimeMs) {
         stopReason = "max-runtime-ms";
         break;
       }
       state = runtime.tick().state;
-      observeLineage(tracker, state);
-      if (state.tick % sampleEvery === 0) snapshots.push(buildSnapshot(state, tracker));
+      observeLineage(tracker, state); // Every tick, not the truncated event log or sample interval.
+      if (state.tick % sampleEvery === 0) sample(buildSnapshot(state, tracker));
     }
-
-    if (snapshots.at(-1)?.tick !== state.tick) snapshots.push(buildSnapshot(state, tracker));
-
-    const finalTraits = traitMetrics(state.agents);
-    const lineage = lineageSummary(tracker, state.tick);
+    const final = buildSnapshot(state, tracker);
+    if (lastSampleTick !== state.tick) sample(final);
     const deterministicPayload = {
       schemaVersion: ARTIFACT_SCHEMA_VERSION,
       run: {
-        commit,
-        seed,
-        requestedTicks: ticks,
-        completedTicks: state.tick,
-        sampleEvery,
+        commit, seed, requestedTicks: ticks, completedTicks: state.tick, sampleEvery,
         simulationConfig: { ...DEFAULT_SIMULATION_CONFIG },
         world: { width: state.width, height: state.height, regionId: state.regionId },
-        completed: state.tick >= ticks,
-        stopReason,
+        completed: state.tick === ticks, stopReason,
+        populationDayTicks: POPULATION_DAY_TICKS,
+        elderAgeTicks: POPULATION_ELDER_AGE_TICKS,
+        neutralLifespanTicks: { min: POPULATION_MIN_LIFESPAN_TICKS, max: POPULATION_MAX_LIFESPAN_TICKS },
+        engineHash: engine.hash,
       },
-      snapshotCount: snapshots.length,
-      snapshotSeriesHash: sha256(snapshots),
-      lineage,
-      initialTraits,
-      finalTraits,
-      traitDelta: traitDelta(initialTraits, finalTraits),
-      finalEnvironment: environmentMetrics(state),
+      snapshotCount, snapshotSeriesHash: series.digest("hex"),
+      finalStateHash: sha256(state),
+      initialPopulation: initial.population.living, finalPopulation: final.population.living,
+      lineage: lineageSummary(tracker),
+      initialTraits: initial.traits, finalTraits: final.traits,
+      traitDelta: traitDelta(initial.traits, final.traits),
+      finalEnvironment: final.environment,
     };
-    const deterministicResultHash = sha256(deterministicPayload);
-    const durationMs = rounded(performance.now() - startedAt, 3);
-    const summary = {
+    return { snapshots, summary: {
       ...deterministicPayload,
-      durationMs,
-      deterministicResultHash,
-    };
-
-    return { snapshots, summary };
+      deterministicResultHash: sha256(deterministicPayload),
+      durationMs: rounded(performance.now() - startedAt, 3),
+      runtimeLimitMs: maxRuntimeMs,
+    } };
   });
 }
 
@@ -382,22 +359,28 @@ function detectCommit() {
   }
 }
 
-function localOutputDirectory(value, seed, ticks) {
+export function localOutputDirectory(value, seed, ticks) {
   const candidate = value ?? `artifacts/evolution-canary/seed-${seed}-ticks-${ticks}`;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
-    throw new Error("--output must be a local filesystem path, not a URL");
+  if (!candidate || /^[a-z][a-z0-9+.-]*:/i.test(candidate) || candidate.startsWith("//") || candidate.includes("\\")) {
+    throw new Error("--output must be a new local directory, not a URL or network path");
   }
-  return resolve(candidate);
-}
-
-async function writeArtifacts(outputDirectory, result) {
-  await mkdir(outputDirectory, { recursive: true });
-  const snapshotsPath = resolve(outputDirectory, "snapshots.jsonl");
-  const summaryPath = resolve(outputDirectory, "summary.json");
-  const snapshotText = `${result.snapshots.map((snapshot) => JSON.stringify(snapshot)).join("\n")}\n`;
-  await writeFile(snapshotsPath, snapshotText, "utf8");
-  await writeFile(summaryPath, `${JSON.stringify(result.summary, null, 2)}\n`, "utf8");
-  return { snapshotsPath, summaryPath };
+  const output = resolve(candidate);
+  // Never follow symlinks into storage, and never overwrite an existing run.
+  let ancestor = output;
+  while (true) {
+    try {
+      const entry = lstatSync(ancestor);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("unsafe output ancestor");
+      if (ancestor === output) throw new Error("output directory already exists");
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  for (const part of output.split(sep)) {
+    if ([".wrangler", ".git", "node_modules", "dist-ts", "src"].includes(part)) throw new Error("reserved output path");
+  }
+  return output;
 }
 
 function cliOptions() {
@@ -408,11 +391,12 @@ function cliOptions() {
       "sample-every": { type: "string" },
       output: { type: "string" },
       "max-runtime-ms": { type: "string" },
+      commit: { type: "string" },
     },
     strict: true,
     allowPositionals: false,
   });
-  const seed = finiteInteger(values.seed ?? DEFAULT_SEED, "seed");
+  const seed = finiteInteger(values.seed ?? DEFAULT_SEED, "seed", { max: 0xffff_ffff });
   const ticks = finiteInteger(values.ticks ?? DEFAULT_TICKS, "ticks", { min: 1 });
   const sampleEvery = finiteInteger(values["sample-every"] ?? DEFAULT_SAMPLE_EVERY, "sampleEvery", { min: 1 });
   const maxRuntimeMs = values["max-runtime-ms"] === undefined
@@ -423,27 +407,34 @@ function cliOptions() {
     ticks,
     sampleEvery,
     maxRuntimeMs,
+    commit: values.commit ?? detectCommit(),
     outputDirectory: localOutputDirectory(values.output, seed, ticks),
   };
 }
 
 async function main() {
   const options = cliOptions();
-  const result = await runEvolutionCanary({ ...options, commit: detectCommit() });
-  const files = await writeArtifacts(options.outputDirectory, result);
-  const finalSnapshot = result.snapshots.at(-1);
-  process.stdout.write(`${JSON.stringify({
-    seed: result.summary.run.seed,
-    requestedTicks: result.summary.run.requestedTicks,
-    completedTicks: result.summary.run.completedTicks,
-    finalPopulation: finalSnapshot?.population.living ?? 0,
-    births: result.summary.lineage.births,
-    deaths: result.summary.lineage.deaths,
-    durationMs: result.summary.durationMs,
-    deterministicResultHash: result.summary.deterministicResultHash,
-    snapshots: files.snapshotsPath,
-    summary: files.summaryPath,
-  })}\n`);
+  mkdirSync(dirname(options.outputDirectory), { recursive: true });
+  mkdirSync(options.outputDirectory);
+  const snapshotsPath = resolve(options.outputDirectory, "snapshots.jsonl");
+  const summaryPath = resolve(options.outputDirectory, "summary.json");
+  const fd = openSync(snapshotsPath, "wx");
+  let result;
+  try {
+    result = await runEvolutionCanary({ ...options, collectSnapshots: false,
+      onSnapshot: (_snapshot, line) => { writeSync(fd, line); },
+    });
+  } finally { closeSync(fd); }
+  writeFileSync(summaryPath, JSON.stringify(result.summary, null, 2) + "\n", { flag: "wx" });
+  process.stdout.write(JSON.stringify({
+    seed: result.summary.run.seed, requestedTicks: options.ticks,
+    completedTicks: result.summary.run.completedTicks, completed: result.summary.run.completed,
+    finalPopulation: result.summary.finalPopulation, births: result.summary.lineage.births,
+    deaths: result.summary.lineage.deaths, maxGeneration: result.summary.lineage.maxGeneration,
+    durationMs: result.summary.durationMs, deterministicResultHash: result.summary.deterministicResultHash,
+    snapshots: snapshotsPath, summary: summaryPath,
+  }) + "\n");
+  if (!result.summary.run.completed) process.exitCode = 2;
 }
 
 const invokedAsScript = process.argv[1] !== undefined
