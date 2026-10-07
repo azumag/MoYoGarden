@@ -307,3 +307,34 @@ test("caught-up cold regions deep-idle without an alarm and warm access wakes th
     Date.now = originalNow;
   }
 });
+
+test("day-long unattended gap stays within the single-Alarm tick bound", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_004_000_000;
+  Date.now = () => now;
+  try {
+    const ctx = new MemoryState();
+    const object = new RegionDurableObject(ctx, env);
+    await ctx.ready;
+    await object.fetch(request("/api/world/snapshot"));
+    const assignedAt = ctx.storage.values.get("region").lastSimulatedAt;
+
+    now += 86_400_000;
+    await object.alarm();
+
+    const state = await (await object.fetch(request("/api/world/snapshot"))).json();
+    assert.equal(state.tick, 12, "one Alarm must execute at most one 12-tick batch even with 8,640 ticks due");
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 120_000);
+    const health = await (await object.fetch(request("/api/health"))).json();
+    assert.equal(health.virtualTicksDue, 8_628);
+    assert.equal(health.virtualTicksRunnable, 12);
+    assert.equal(health.virtualTicksCapped, true);
+    assert.equal(ctx.storage.alarm, now + 1_000, "remaining debt should retry in a short bounded batch");
+
+    await object.alarm();
+    assert.equal(object.runtime.snapshot().tick, 24, "split Alarm continuation must resume the preserved debt");
+    assert.equal(ctx.storage.values.get("region").lastSimulatedAt, assignedAt + 240_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
