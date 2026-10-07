@@ -36,6 +36,26 @@ jobs:
       - name: Typecheck, test, and build
         run: npm run build
 
+      # No long simulations in CI. Retain the tested code for offline experiments.
+      - name: Upload offline evolution canary bundle
+        if: github.ref != 'refs/heads/deploy'
+        uses: actions/upload-artifact@v6
+        with:
+          name: evolution-canary-offline-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist-ts/
+            src/
+            tools/
+            tests/
+            scripts/
+            docs/
+            package.json
+            tsconfig.json
+            README.md
+            AGENTS.md
+
   production:
     name: Verify production commit
     if: github.event_name == 'push' && github.ref == 'refs/heads/deploy'
