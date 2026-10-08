@@ -1247,7 +1247,12 @@ function startConstruction(
   return structure;
 }
 
-function executeBuild(state: WorldState, agent: Agent, task: BuildTask): void {
+function executeBuild(
+  state: WorldState,
+  agent: Agent,
+  task: BuildTask,
+  absorbedConstructionWork: Map<string, number>,
+): void {
   const target = resolveBuildTaskTarget(state, agent, task);
   if (target === undefined) return;
   if (!samePosition(agent.position, target)) {
@@ -1262,6 +1267,17 @@ function executeBuild(state: WorldState, agent: Agent, task: BuildTask): void {
     agent.status = `${structure.type} complete`;
     return;
   }
+
+  // A building type can only absorb so much construction work per tick. Once a
+  // structure of this type has taken its work capacity, extra builders already
+  // standing on the same hex wait for the next tick instead of advancing it in
+  // parallel, paying neither materials nor energy for work the site cannot use.
+  const absorbedWork = absorbedConstructionWork.get(structure.id) ?? 0;
+  if (absorbedWork >= BUILD_RECIPES[structure.type].workCapacity) {
+    agent.status = `waiting for ${structure.type} work capacity`;
+    return;
+  }
+  absorbedConstructionWork.set(structure.id, absorbedWork + 1);
 
   structure.progress += 1;
   agent.energy = Math.max(0, agent.energy - 2);
@@ -1365,7 +1381,11 @@ function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, 
   });
 }
 
-function executeTask(state: WorldState, agent: Agent): void {
+function executeTask(
+  state: WorldState,
+  agent: Agent,
+  absorbedConstructionWork: Map<string, number>,
+): void {
   const task = agent.task;
   if (task === undefined) {
     agent.status = agent.autonomy ? "replanning" : "awaiting external command";
@@ -1389,7 +1409,7 @@ function executeTask(state: WorldState, agent: Agent): void {
       executeGather(state, agent, task);
       break;
     case "build":
-      executeBuild(state, agent, task);
+      executeBuild(state, agent, task, absorbedConstructionWork);
       break;
     case "deposit":
       executeDeposit(state, agent, task);
@@ -1423,6 +1443,9 @@ export function simulate(
 
   const demographicRecovery = demographicWorkRecoveryReasons(state);
   const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
+  // Construction work absorbed per structure in this tick, reset every tick.
+  // Transient simulation bookkeeping only: it is never persisted into WorldState.
+  const absorbedConstructionWork = new Map<string, number>();
   for (const agent of agents) {
     const recoveryReason = demographicRecovery.get(agent.id);
     if (recoveryReason !== undefined) {
@@ -1439,7 +1462,7 @@ export function simulate(
       const plannedTask = autonomyTask(state, agent);
       if (plannedTask !== undefined) agent.task = plannedTask;
     }
-    executeTask(state, agent);
+    executeTask(state, agent, absorbedConstructionWork);
   }
 
   if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) applyTerrainErosion(state);
