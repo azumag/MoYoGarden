@@ -9,3 +9,4 @@ dist-ts/
 .DS_Store
 public/vendor/
 public/models/*.glb
+.cloudflare/
