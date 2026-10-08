@@ -1322,6 +1322,7 @@ function executeBuild(
   agent: Agent,
   task: BuildTask,
   flow: CrowdFlow,
+  absorbedConstructionWork: Map<string, number>,
 ): void {
   const target = resolveBuildTaskTarget(state, agent, task);
   if (target === undefined) return;
@@ -1337,6 +1338,17 @@ function executeBuild(
     agent.status = `${structure.type} complete`;
     return;
   }
+
+  // A building type can only absorb so much construction work per tick. Once a
+  // structure of this type has taken its work capacity, extra builders already
+  // standing on the same hex wait for the next tick instead of advancing it in
+  // parallel, paying neither materials nor energy for work the site cannot use.
+  const absorbedWork = absorbedConstructionWork.get(structure.id) ?? 0;
+  if (absorbedWork >= BUILD_RECIPES[structure.type].workCapacity) {
+    agent.status = `waiting for ${structure.type} work capacity`;
+    return;
+  }
+  absorbedConstructionWork.set(structure.id, absorbedWork + 1);
 
   structure.progress += 1;
   agent.energy = Math.max(0, agent.energy - 2);
@@ -1449,6 +1461,7 @@ function executeTask(
   state: WorldState,
   agent: Agent,
   flow: CrowdFlow,
+  absorbedConstructionWork: Map<string, number>,
 ): void {
   const task = agent.task;
   if (task === undefined) {
@@ -1473,7 +1486,7 @@ function executeTask(
       executeGather(state, agent, task, flow);
       break;
     case "build":
-      executeBuild(state, agent, task, flow);
+      executeBuild(state, agent, task, flow, absorbedConstructionWork);
       break;
     case "deposit":
       executeDeposit(state, agent, task, flow);
@@ -1512,6 +1525,9 @@ export function simulate(
   // One departure budget per tick, shared by every task kind, so a crowded hex
   // cannot be drained faster by switching between gather / deposit / trade.
   const flow = createCrowdFlow(state);
+  // Construction work absorbed per structure in this tick, reset every tick.
+  // Transient simulation bookkeeping only: it is never persisted into WorldState.
+  const absorbedConstructionWork = new Map<string, number>();
   for (const agent of agents) {
     const recoveryReason = demographicRecovery.get(agent.id);
     if (recoveryReason !== undefined) {
@@ -1528,7 +1544,7 @@ export function simulate(
       const plannedTask = autonomyTask(state, agent);
       if (plannedTask !== undefined) agent.task = plannedTask;
     }
-    executeTask(state, agent, flow);
+    executeTask(state, agent, flow, absorbedConstructionWork);
   }
 
   if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) applyTerrainErosion(state);
