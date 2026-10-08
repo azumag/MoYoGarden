@@ -6,15 +6,24 @@ import { readFileSync } from "node:fs";
 // this complete, reviewed dependency graph. Check BEFORE evaluating imports.
 const MODULES = ["demography", "hex-grid", "prng", "protocol", "runtime", "simulation", "world", "world-scale"];
 export function auditEvolutionEngine(root = new URL("../dist-ts/src/", import.meta.url)) {
+  return auditModules(MODULES, root);
+}
+
+// Migration experiments additionally use only the existing pure ownership/hex helpers.
+export function auditMigrationEngine(root = new URL("../dist-ts/src/", import.meta.url)) {
+  return auditModules([...MODULES, "agent-ownership", "region-topology"], root);
+}
+
+function auditModules(modules, root) {
   const files = [];
-  for (const name of MODULES) {
+  for (const name of modules) {
     const source = readFileSync(new URL(`${name}.js`, root), "utf8");
     const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     if (/\b(?:import\s*\(|require\s*\(|getBuiltinModule|eval\s*\(|new\s+Function\s*\()/.test(code)) {
       throw new Error(`evolution isolation: dynamic code/import in ${name}`);
     }
     for (const match of code.matchAll(/\b(?:from\s*|import\s*)["']([^"']+)["']/g)) {
-      if (!MODULES.some((entry) => match[1] === `./${entry}.js`)) {
+      if (!modules.some((entry) => match[1] === `./${entry}.js`)) {
         throw new Error(`evolution isolation: forbidden dependency ${match[1]} in ${name}`);
       }
     }
