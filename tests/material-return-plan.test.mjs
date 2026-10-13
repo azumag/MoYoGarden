@@ -328,6 +328,117 @@ test("an unproven direct seam does not block a proven equal-distance detour", ()
   assert.equal(decision.nextHop?.direction, linkMiddle.direction);
 });
 
+test("arrival-proof retries share one request expansion budget", () => {
+  const snapshots = baseSnapshots({
+    sourceExtra: [DIRECT_SOURCE_ENTRY],
+    targetExtra: [DIRECT_TARGET_ENTRY],
+  });
+  const links = [...detourLinks, linkTarget];
+
+  for (const maxExpandedEdges of [0, 1, 2, 3, 4]) {
+    const decision = plan({
+      links,
+      snapshots,
+      budget: { maxHops: 4, maxExpandedEdges },
+    });
+    assert.deepEqual(decision, {
+      status: "budgetExhausted",
+      expandedEdges: maxExpandedEdges,
+    }, `request budget ${maxExpandedEdges} must not be replenished by a proof retry`);
+  }
+
+  const decision = plan({ links, snapshots, budget: { maxHops: 4, maxExpandedEdges: 5 } });
+  assert.equal(decision.status, "planned");
+  assert.equal(decision.expandedEdges, 5, "both attempts must count toward the request budget");
+  assert.equal(decision.storageComponentId, COMPONENT.target);
+  assert.equal(decision.hops, 2);
+  assert.equal(decision.equalDistanceHops, 1);
+  assert.equal(decision.nextHop?.direction, linkMiddle.direction);
+  assert.deepEqual(plan({
+    links: [...links].reverse(),
+    snapshots: [...snapshots].reverse(),
+    budget: { maxHops: 4, maxExpandedEdges: 5 },
+  }), decision);
+});
+
+test("exhausting all unproven arrivals preserves the aggregate expansion count", () => {
+  const snapshots = baseSnapshots({
+    sourceExtra: [DIRECT_SOURCE_ENTRY],
+    targetExtra: [DIRECT_TARGET_ENTRY],
+    targetStorage: { [FACTION]: [] },
+  });
+  const links = [...detourLinks, linkTarget];
+
+  for (const maxExpandedEdges of [5, 6]) {
+    assert.deepEqual(plan({ links, snapshots, budget: { maxHops: 4, maxExpandedEdges } }), {
+      status: "budgetExhausted",
+      expandedEdges: maxExpandedEdges,
+    });
+  }
+  for (const maxExpandedEdges of [7, 32]) {
+    assert.deepEqual(plan({ links, snapshots, budget: { maxHops: 4, maxExpandedEdges } }), {
+      status: "noStorageProof",
+      expandedEdges: 7,
+    });
+  }
+});
+
+test("a proof retry preserves hop-budget exhaustion and the consumed edge count", () => {
+  const snapshots = baseSnapshots({
+    sourceExtra: [DIRECT_SOURCE_ENTRY],
+    targetExtra: [DIRECT_TARGET_ENTRY],
+  });
+  assert.deepEqual(plan({
+    links: [...detourLinks, linkTarget],
+    snapshots,
+    budget: { maxHops: 1, maxExpandedEdges: 10 },
+  }), { status: "budgetExhausted", expandedEdges: 3 });
+});
+
+test("a proven arrival may use the final expansion without requiring another attempt", () => {
+  const snapshots = baseSnapshots({
+    sourceExtra: [DIRECT_SOURCE_ENTRY],
+    targetExtra: [DIRECT_TARGET_ENTRY],
+    targetStorage: { [FACTION]: [COMPONENT.directTarget, COMPONENT.target] },
+  });
+  const decision = plan({
+    links: [...detourLinks, linkTarget],
+    snapshots,
+    budget: { maxHops: 4, maxExpandedEdges: 2 },
+  });
+  assert.equal(decision.status, "planned");
+  assert.equal(decision.expandedEdges, 2);
+  assert.equal(decision.storageComponentId, COMPONENT.directTarget);
+  assert.equal(decision.hops, 1);
+});
+
+test("zero expansion budget still resolves an already-reached target", () => {
+  const budget = { maxHops: 0, maxExpandedEdges: 0 };
+  const decision = plan({ start: target, budget });
+  assert.equal(decision.status, "planned");
+  assert.equal(decision.expandedEdges, 0);
+  assert.equal(decision.nextHop, undefined);
+  assert.deepEqual(plan({
+    start: target,
+    budget,
+    snapshots: baseSnapshots({ targetStorage: { [FACTION]: [] } }),
+  }), { status: "noStorageProof", expandedEdges: 0 });
+});
+
+test("proof retries never mutate the request or its budget", () => {
+  const request = {
+    links: [...detourLinks, linkTarget],
+    snapshots: baseSnapshots({
+      sourceExtra: [DIRECT_SOURCE_ENTRY],
+      targetExtra: [DIRECT_TARGET_ENTRY],
+    }),
+    budget: { maxHops: 4, maxExpandedEdges: 5 },
+  };
+  const before = structuredClone(request);
+  assert.equal(plan(request).status, "planned");
+  assert.deepEqual(request, before);
+});
+
 test("already inside the target region plans without inventing a crossing", () => {
   const decision = plan({ start: target });
   assert.equal(decision.status, "planned");
@@ -387,6 +498,8 @@ test("budget exhaustion and malformed inputs never throw", () => {
     { extent: { width: 40.5, height: 24 } },
     { extent: undefined },
     { budget: { maxHops: -1, maxExpandedEdges: 4 } },
+    { budget: { maxHops: 4, maxExpandedEdges: "3" } },
+    { budget: { maxHops: 4, maxExpandedEdges: null } },
     { links: undefined },
     { snapshots: undefined },
     { links: null, snapshots: null },

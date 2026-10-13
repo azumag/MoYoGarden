@@ -13,7 +13,6 @@ import {
 import {
   planMaterialReturnDetour,
   type MaterialReturnRouteBudget,
-  type MaterialReturnRoutePlan,
 } from "./material-return-route.js";
 
 /**
@@ -74,8 +73,6 @@ export type MaterialReturnRouteDecision =
   | { status: "noKnownRoute"; expandedEdges: number }
   | { status: "budgetExhausted"; expandedEdges: number }
   | { status: "noStorageProof"; expandedEdges: number };
-
-type UnplannedMaterialReturnRoute = Exclude<MaterialReturnRoutePlan, { status: "planned" }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -175,10 +172,6 @@ function nextHopForRoute(
   return undefined;
 }
 
-function fromPlanner(plan: UnplannedMaterialReturnRoute): MaterialReturnRouteDecision {
-  return { status: plan.status, expandedEdges: plan.expandedEdges };
-}
-
 /**
  * Upper bound on how many unproven target components the resolver will exclude
  * before giving up. A region exposes at most six hex neighbors, and the number
@@ -220,17 +213,23 @@ export function planMaterialReturnRoute(
   let plannedAny = false;
 
   for (let attempt = 0; attempt < MAX_ARRIVAL_PROOF_ATTEMPTS; attempt += 1) {
-    const plan = planMaterialReturnDetour(start, targetRegionId, usableEdges, budget);
+    // Arrival-proof retries share the request's expansion limit. Keep the hop
+    // limit for each candidate route, but never replenish already-consumed edges.
+    const attemptBudget = attempt === 0 ? budget : {
+      maxHops: budget.maxHops,
+      maxExpandedEdges: budget.maxExpandedEdges - expandedEdges,
+    };
+    const plan = planMaterialReturnDetour(start, targetRegionId, usableEdges, attemptBudget);
+    expandedEdges += plan.expandedEdges;
     if (plan.status !== "planned") {
-      // No route was ever plannable: report the planner's own verdict. Once a
-      // route *was* plannable, a later failure only means the remaining
-      // candidates could not be probed, which is still "no storage proof".
-      return plannedAny
-        ? { status: "noStorageProof", expandedEdges: expandedEdges + plan.expandedEdges }
-        : fromPlanner(plan);
+      // Exhaustion must remain distinguishable from missing storage proof,
+      // including when a previous attempt found an unproven arrival.
+      return {
+        status: plannedAny && plan.status === "noKnownRoute" ? "noStorageProof" : plan.status,
+        expandedEdges,
+      };
     }
     plannedAny = true;
-    expandedEdges += plan.expandedEdges;
 
     const route = plan.route;
     const origin = route[0];
@@ -291,4 +290,3 @@ export function planMaterialReturnRoute(
 
   return { status: "noStorageProof", expandedEdges };
 }
-
