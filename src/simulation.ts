@@ -42,6 +42,15 @@ export interface SimulationResult {
   receipts: CommandReceipt[];
 }
 
+// Per-tick crowding bookkeeping shared by every movement call. `occupancy` is
+// rebuilt once per tick instead of scanning the population on each move, and is
+// updated as BOTs actually depart, so both the departure queue and the existing
+// route crowding tie-break observe the same live picture.
+interface CrowdFlow {
+  occupancy: Map<string, number>;
+  departures: Map<string, number>;
+}
+
 const NEIGHBORS: readonly GridPosition[] = HEX_GRID_STEPS;
 const HYDROLOGY_NEIGHBORS: readonly GridPosition[] = HEX_GRID_STEPS;
 
@@ -57,6 +66,13 @@ const GATHER_CROWDING_THRESHOLD = 3;
 const GATHER_CROWDED_AMOUNT = 1;
 const DEPOSIT_CROWDING_THRESHOLD = 3;
 const DEPOSIT_CROWDED_THROUGHPUT = 3;
+// High density must cost something on the movement side too. Once several BOTs
+// share one logical hex, only a bounded number of them may leave that hex per
+// tick; the rest queue behind them instead of streaming out for free. The queue
+// order is the agent id order, so a crowded hex always drains the same way and
+// no persisted state is added.
+const MOVE_CROWDING_THRESHOLD = 3;
+const MOVE_CROWDED_DEPARTURES_PER_TICK = 2;
 const AUTONOMOUS_REMOTE_TRADE_TTL = 72;
 const WATER_MOISTURE_OFFSETS = (() => {
   const offsets: { dx: number; dy: number; influence: number }[] = [];
@@ -480,7 +496,12 @@ function factionMissingForRecipe(state: WorldState, factionId: string, type: Str
   return inventoryMissingForRecipe(faction.resources, type);
 }
 
-function nextStepTowards(state: WorldState, start: GridPosition, target: GridPosition): GridPosition {
+function nextStepTowards(
+  state: WorldState,
+  start: GridPosition,
+  target: GridPosition,
+  flow?: CrowdFlow,
+): GridPosition {
   if (samePosition(start, target)) return start;
   if (!isPassable(state, target)) return start;
 
@@ -511,12 +532,16 @@ function nextStepTowards(state: WorldState, start: GridPosition, target: GridPos
   // Count the current population once per route query, not once per visited
   // shortest-path cell. Rebuild for each mover so earlier moves in this tick
   // remain visible to later BOTs; a tick-start snapshot would change routing.
-  const occupancy = new Map<string, number>();
-  for (const agent of state.agents) {
-    if (agent.hp <= 0) continue;
-    const key = positionKey(agent.position);
-    occupancy.set(key, (occupancy.get(key) ?? 0) + 1);
-  }
+  // When the caller already maintains a live occupancy index for this tick
+  // (simulate() does), reuse it so routing adds no extra population scan.
+  const occupancy = flow?.occupancy ?? (() => {
+    const built = new Map<string, number>();
+    for (const agent of state.agents) {
+      if (agent.hp <= 0) continue;
+      incrementCongestion(built, positionKey(agent.position));
+    }
+    return built;
+  })();
 
   const crowdingCost = new Map<string, number>();
   const minimumCrowdingToTarget = (position: GridPosition): number => {
@@ -557,12 +582,44 @@ function nextStepTowards(state: WorldState, start: GridPosition, target: GridPos
   return bestStep;
 }
 
-function moveAgent(state: WorldState, agent: Agent, target: GridPosition): boolean {
+function createCrowdFlow(state: Pick<WorldState, "agents">): CrowdFlow {
+  // One living-BOT occupancy pass per tick, maintained as this tick's moves are
+  // applied so every departure check sees the movers that already left.
+  const occupancy = new Map<string, number>();
+  for (const agent of state.agents) {
+    if (agent.hp <= 0) continue;
+    incrementCongestion(occupancy, positionKey(agent.position));
+  }
+  return { occupancy, departures: new Map<string, number>() };
+}
+
+function crowdedDepartureBlocked(flow: CrowdFlow, agent: Agent): boolean {
+  if ((flow.occupancy.get(positionKey(agent.position)) ?? 0) < MOVE_CROWDING_THRESHOLD) {
+    return false;
+  }
+  return (flow.departures.get(positionKey(agent.position)) ?? 0) >= MOVE_CROWDED_DEPARTURES_PER_TICK;
+}
+
+function moveAgent(state: WorldState, agent: Agent, target: GridPosition, flow?: CrowdFlow): boolean {
   if (samePosition(agent.position, target)) return true;
-  const next = nextStepTowards(state, agent.position, target);
+  const originKey = positionKey(agent.position);
+  if (flow !== undefined && crowdedDepartureBlocked(flow, agent)) {
+    // Crowding costs ticks instead of energy: the queued BOT keeps its intent,
+    // spends nothing, and leaves on a later tick once the hex drains.
+    agent.status = "waiting in crowd";
+    return false;
+  }
+  const next = nextStepTowards(state, agent.position, target, flow);
   if (samePosition(next, agent.position)) {
     agent.status = "path blocked";
     return false;
+  }
+  if (flow !== undefined) {
+    incrementCongestion(flow.departures, originKey);
+    const remaining = (flow.occupancy.get(originKey) ?? 1) - 1;
+    if (remaining > 0) flow.occupancy.set(originKey, remaining);
+    else flow.occupancy.delete(originKey);
+    incrementCongestion(flow.occupancy, positionKey(next));
   }
   agent.position = next;
   agent.energy = Math.max(0, agent.energy - 1);
@@ -979,7 +1036,12 @@ function rebalanceAutonomousDepositTarget(
   return candidate;
 }
 
-function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "gather" }>): void {
+function executeGather(
+  state: WorldState,
+  agent: Agent,
+  task: Extract<AgentTask, { type: "gather" }>,
+  flow: CrowdFlow,
+): void {
   if (inventoryTotal(agent.inventory) >= agent.capacity) {
     delete agent.task;
     agent.status = "inventory full";
@@ -1007,7 +1069,7 @@ function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask,
       target = rebalancedTarget;
       task.target = rebalancedTarget;
     }
-    moveAgent(state, agent, target);
+    moveAgent(state, agent, target, flow);
     return;
   }
 
@@ -1060,7 +1122,12 @@ function executeGather(state: WorldState, agent: Agent, task: Extract<AgentTask,
   }
 }
 
-function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "deposit" }>): void {
+function executeDeposit(
+  state: WorldState,
+  agent: Agent,
+  task: Extract<AgentTask, { type: "deposit" }>,
+  flow: CrowdFlow,
+): void {
   let structure = task.structureId === undefined ? undefined : getStructure(state, task.structureId);
   if (
     structure === undefined ||
@@ -1078,7 +1145,7 @@ function executeDeposit(state: WorldState, agent: Agent, task: Extract<AgentTask
   structure = rebalanceAutonomousDepositTarget(state, agent, task, structure);
   task.structureId = structure.id;
   if (!samePosition(agent.position, structure.position)) {
-    moveAgent(state, agent, structure.position);
+    moveAgent(state, agent, structure.position, flow);
     return;
   }
 
@@ -1247,11 +1314,16 @@ function startConstruction(
   return structure;
 }
 
-function executeBuild(state: WorldState, agent: Agent, task: BuildTask): void {
+function executeBuild(
+  state: WorldState,
+  agent: Agent,
+  task: BuildTask,
+  flow: CrowdFlow,
+): void {
   const target = resolveBuildTaskTarget(state, agent, task);
   if (target === undefined) return;
   if (!samePosition(agent.position, target)) {
-    moveAgent(state, agent, target);
+    moveAgent(state, agent, target, flow);
     return;
   }
   let structure = task.structureId === undefined ? undefined : getStructure(state, task.structureId);
@@ -1295,7 +1367,12 @@ function canTransfer(agent: Agent, inventory: Inventory): boolean {
   return RESOURCE_KINDS.every((kind) => agent.inventory[kind] >= inventory[kind]);
 }
 
-function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, { type: "trade" }>): void {
+function executeTrade(
+  state: WorldState,
+  agent: Agent,
+  task: Extract<AgentTask, { type: "trade" }>,
+  flow: CrowdFlow,
+): void {
   const target = getAgent(state, task.targetAgentId);
   if (target === undefined) {
     const remoteTradeAlive =
@@ -1307,7 +1384,7 @@ function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, 
       // ordinary movement inside simulation. The hint is source-local and is
       // revalidated at the seam before ownership handoff.
       if (!samePosition(agent.position, task.routeTarget)) {
-        moveAgent(state, agent, task.routeTarget);
+        moveAgent(state, agent, task.routeTarget, flow);
       } else {
         agent.status = `waiting to cross region for trade with ${task.targetAgentId}`;
       }
@@ -1331,7 +1408,7 @@ function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, 
   delete task.routeRegionId;
   delete task.routeTarget;
   if (!samePosition(agent.position, target.position)) {
-    moveAgent(state, agent, target.position);
+    moveAgent(state, agent, target.position, flow);
     return;
   }
   if (!canTransfer(agent, task.offer) || !canTransfer(target, task.request)) {
@@ -1365,7 +1442,11 @@ function executeTrade(state: WorldState, agent: Agent, task: Extract<AgentTask, 
   });
 }
 
-function executeTask(state: WorldState, agent: Agent): void {
+function executeTask(
+  state: WorldState,
+  agent: Agent,
+  flow: CrowdFlow,
+): void {
   const task = agent.task;
   if (task === undefined) {
     agent.status = agent.autonomy ? "replanning" : "awaiting external command";
@@ -1380,22 +1461,22 @@ function executeTask(state: WorldState, agent: Agent): void {
 
   switch (task.type) {
     case "move":
-      if (moveAgent(state, agent, task.target)) {
+      if (moveAgent(state, agent, task.target, flow)) {
         delete agent.task;
         agent.status = "destination reached";
       }
       break;
     case "gather":
-      executeGather(state, agent, task);
+      executeGather(state, agent, task, flow);
       break;
     case "build":
-      executeBuild(state, agent, task);
+      executeBuild(state, agent, task, flow);
       break;
     case "deposit":
-      executeDeposit(state, agent, task);
+      executeDeposit(state, agent, task, flow);
       break;
     case "trade":
-      executeTrade(state, agent, task);
+      executeTrade(state, agent, task, flow);
       break;
   }
 }
@@ -1423,6 +1504,9 @@ export function simulate(
 
   const demographicRecovery = demographicWorkRecoveryReasons(state);
   const agents = [...state.agents].sort((a, b) => a.id.localeCompare(b.id));
+  // One departure budget per tick, shared by every task kind, so a crowded hex
+  // cannot be drained faster by switching between gather / deposit / trade.
+  const flow = createCrowdFlow(state);
   for (const agent of agents) {
     const recoveryReason = demographicRecovery.get(agent.id);
     if (recoveryReason !== undefined) {
@@ -1439,7 +1523,7 @@ export function simulate(
       const plannedTask = autonomyTask(state, agent);
       if (plannedTask !== undefined) agent.task = plannedTask;
     }
-    executeTask(state, agent);
+    executeTask(state, agent, flow);
   }
 
   if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) applyTerrainErosion(state);
