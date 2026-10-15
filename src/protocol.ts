@@ -340,28 +340,37 @@ export const DEFAULT_SIMULATION_CONFIG: SimulationConfig = {
   externalTaskTtl: 120,
 };
 
+// Per-building-type capacities. `work` is the total construction progress a
+// structure needs; `workCapacity` is how much of that progress a single
+// structure can absorb per tick, so a crew larger than its work capacity
+// stacks on one hex without finishing the building any faster. `storageCapacity`
+// is the physical resource space the finished structure provides.
 export const BUILD_RECIPES: Record<
   StructureType,
-  { cost: Inventory; work: number; storageCapacity: number }
+  { cost: Inventory; work: number; workCapacity: number; storageCapacity: number }
 > = {
   camp: {
     cost: { wood: 8, stone: 4, food: 0 },
     work: 6,
+    workCapacity: 2,
     storageCapacity: 120,
   },
   storehouse: {
     cost: { wood: 14, stone: 8, food: 0 },
     work: 9,
+    workCapacity: 3,
     storageCapacity: 500,
   },
   market: {
     cost: { wood: 12, stone: 10, food: 4 },
     work: 11,
+    workCapacity: 3,
     storageCapacity: 250,
   },
   workshop: {
     cost: { wood: 10, stone: 14, food: 2 },
     work: 13,
+    workCapacity: 4,
     storageCapacity: 200,
   },
 };
