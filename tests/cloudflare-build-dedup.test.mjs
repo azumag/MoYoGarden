@@ -60,3 +60,11 @@ test('Wrangler config and build:web keep the deduplication hooks wired', () => {
     /node scripts\/cloudflare-build-marker\.mjs --write$/,
   );
 });
+
+// Issue #46: the cf path reads the same custom build hook from wrangler.config.ts,
+// so both configurations must keep the duplicate-build guard wired.
+test('cf Wrangler config keeps the same custom build hook wired', () => {
+  const wranglerConfig = readFileSync('wrangler.config.ts', 'utf8');
+
+  assert.match(wranglerConfig, /command:\s*"node scripts\/wrangler-build\.mjs"/);
+});
