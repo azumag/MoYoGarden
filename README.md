@@ -35,10 +35,10 @@ AIエージェントや機械BOTが住民として行動し、集落・物流・
 
 ## ローカル起動
 
-Node.js 22以降を使用します。
+`.node-version` に固定した Node.js 22.23.4 を使用します。CIも同じバージョンを読みます。
 
 ```bash
-npm install
+npm ci
 cp .dev.vars.example .dev.vars
 npm run dev
 ```

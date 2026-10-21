@@ -27,11 +27,14 @@ jobs:
       - name: Use Node.js 22
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version-file: ".node-version"
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
 
       - name: Typecheck, test, and build
         run: npm run build
@@ -52,6 +55,7 @@ jobs:
             scripts/
             docs/
             package.json
+            package-lock.json
             tsconfig.json
             README.md
             AGENTS.md
@@ -63,6 +67,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 28
     steps:
+      - name: Use security-patched Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          package-manager-cache: false
+
       - name: Wait for Cloudflare production to serve this commit
         env:
           EXPECTED_SHA: ${{ github.sha }}
