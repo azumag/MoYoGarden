@@ -1,4 +1,5 @@
 import {
+  buildDynamicHexHaloLinks,
   materializeHexHalo,
   type HexHaloEdgeSnapshot,
   type HexHaloLink,
@@ -249,11 +250,46 @@ export function autonomyHaloLinks(
   return autonomyHaloLinksForActivity(extent, regionIds, sourceRegionId, "warm");
 }
 
+/**
+ * Activity-tier halo resolution for autonomy routing (supply scouting and trade
+ * routing) that does not read the configured REGION_IDS list when the tier alone
+ * already decides the answer.
+ *
+ * `haloLinksForActivity` returns the bounded dynamic six-neighbor halo for a
+ * region whose tier is active, so evaluating the configured compatibility list
+ * before the call only to discard it left a per-tick compatibility read on the
+ * autonomy hot path. Warm/cold regions keep the existing configured-only
+ * fallback, so background fan-out is unchanged.
+ */
+export function autonomyHaloLinksForTier(
+  extent: Pick<WorldState, "width" | "height">,
+  sourceRegionId: string,
+  tier: RegionActivityTier,
+  readConfiguredRegionIds: () => readonly string[],
+) {
+  if (tier === "active") return buildDynamicHexHaloLinks(extent, sourceRegionId);
+  return autonomyHaloLinksForActivity(
+    extent,
+    readConfiguredRegionIds(),
+    sourceRegionId,
+    tier,
+  );
+}
+
+/**
+ * Accept an autonomy claim source without consulting the configured region list
+ * when the source has a resolved axial identity (canonical id or persisted
+ * garden alias). Only unresolved historical ids still need the compatibility
+ * allow-list, so cross-region claim traffic for normal sparse-world sources no
+ * longer reads REGION_IDS.
+ */
 export function isAutonomyClaimSourceRegionId(
-  regionIds: readonly string[],
+  regionIds: readonly string[] | (() => readonly string[]),
   sourceRegionId: string,
 ): boolean {
-  return regionIds.includes(sourceRegionId) || regionAxialCoordinate(sourceRegionId) !== undefined;
+  if (regionAxialCoordinate(sourceRegionId) !== undefined) return true;
+  const configured = typeof regionIds === "function" ? regionIds() : regionIds;
+  return configured.includes(sourceRegionId);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1317,11 +1353,11 @@ export class RegionDurableObject extends HaloRegionDurableObject {
     directions: readonly HexGridDirection[],
   ): Promise<HexHaloTile[]> {
     const needed = new Set(directions);
-    const links = autonomyHaloLinksForActivity(
+    const links = autonomyHaloLinksForTier(
       state,
-      configuredRegionIds(this.autonomyEnv),
       state.regionId,
       this.activityTier(),
+      () => configuredRegionIds(this.autonomyEnv),
     ).filter((link) => needed.has(link.direction));
     const requested = new Map<string, HexGridDirection[]>();
     for (const link of links) {
@@ -1471,7 +1507,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       || typeof body.claimId !== "string"
       || body.claimId.trim() === ""
       || typeof body.sourceRegionId !== "string"
-      || !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId)
+      || !isAutonomyClaimSourceRegionId(() => configuredRegionIds(this.autonomyEnv), body.sourceRegionId)
       || typeof body.factionId !== "string"
       || body.factionId.trim() === ""
       || typeof body.amount !== "number"
@@ -1608,7 +1644,7 @@ export class RegionDurableObject extends HaloRegionDurableObject {
       || typeof body.claimId !== "string"
       || body.claimId.trim() === ""
       || typeof body.sourceRegionId !== "string"
-      || !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId)
+      || !isAutonomyClaimSourceRegionId(() => configuredRegionIds(this.autonomyEnv), body.sourceRegionId)
     ) {
       return new Response(JSON.stringify({ error: "claimId and sourceRegionId are required" }), {
         status: 400,
@@ -1997,7 +2033,7 @@ delete pioneer.settlementMigrationOriginRegionId;
       typeof body.claimId !== "string" ||
       body.claimId.trim() === "" ||
       typeof body.sourceRegionId !== "string" ||
-      !isAutonomyClaimSourceRegionId(configuredRegionIds(this.autonomyEnv), body.sourceRegionId) ||
+      !isAutonomyClaimSourceRegionId(() => configuredRegionIds(this.autonomyEnv), body.sourceRegionId) ||
       typeof body.agentId !== "string" ||
       body.agentId.trim() === "" ||
       !isResourceKind(body.resource) ||
@@ -2749,11 +2785,11 @@ delete pioneer.settlementMigrationOriginRegionId;
   }
 
   private tradeRoutingLinks(state: WorldState): HexHaloLink[] {
-    return autonomyHaloLinksForActivity(
+    return autonomyHaloLinksForTier(
       state,
-      configuredRegionIds(this.autonomyEnv),
       state.regionId,
       this.activityTier(),
+      () => configuredRegionIds(this.autonomyEnv),
     );
   }
 
