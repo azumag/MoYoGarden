@@ -25,6 +25,7 @@
     "test": "npm run build:ts && node --test --test-concurrency=1 tests/*.test.mjs",
     "verify:web": "npm run build:web",
     "verify": "npm run build && npm test",
+    "experiment:migration": "npm run build:ts && node tools/migration-canary.mjs",
     "experiment:evolution": "npm run build:ts && node tools/evolution-canary.mjs",
     "mcp": "node tools/mcp.mjs",
     "demo:bot": "node tools/demo-bot.mjs",
