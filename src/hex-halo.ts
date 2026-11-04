@@ -13,6 +13,7 @@ import {
   regionAxialCoordinate,
   regionCellTransition,
   regionHexWindow,
+  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 
 export interface HexHaloLink {
@@ -153,6 +154,10 @@ export function buildHexHaloLinks(
   regionIds: readonly string[],
   sourceRegionId: string,
 ): HexHaloLink[] {
+  warnUnresolvedHistoricalRegionIds(
+    `buildHexHaloLinks(source=${sourceRegionId}) side-pair halo`,
+    [sourceRegionId],
+  );
   const topology = regionHexWindow(regionIds, sourceRegionId, 1, extent.width, extent.height);
   const source = topology.find((entry) => entry.id === sourceRegionId);
   if (source === undefined) return [];
@@ -261,6 +266,12 @@ export function buildConfiguredHexHaloLinks(
       regionAxialCoordinate(link.neighborRegionId) === undefined &&
       !exactKeys.has(hexHaloKey(link.sourcePosition, link.direction)),
   );
+  if (historicalFallback.length > 0) {
+    warnUnresolvedHistoricalRegionIds(
+      `buildConfiguredHexHaloLinks(source=${sourceRegionId}) side-pair fallback`,
+      historicalFallback.map((link) => link.neighborRegionId),
+    );
+  }
   const combined = [...links, ...historicalFallback];
   rememberConfiguredHexHaloLinks(cacheKey, combined);
   return combined;

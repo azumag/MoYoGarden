@@ -24,6 +24,7 @@ import {
   regionHexWindow,
   sparseCanonicalRegionHexWindow,
   sparseRegionHexWindow,
+  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 
 interface Env {
@@ -416,6 +417,10 @@ export class RegionDurableObject {
       };
     }
 
+    // Persisted garden aliases intentionally stay on this rectangular
+    // index-origin frame; only ids with no axial identity at all are the
+    // unresolved historical compatibility path observed for removal.
+    warnUnresolvedHistoricalRegionIds(`terrainFrame(region=${regionId})`, [regionId]);
     const entry = regionLayout(allowedRegions(this.env)).find((candidate) => candidate.id === regionId);
     return {
       worldSeed,

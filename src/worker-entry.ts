@@ -6,6 +6,7 @@ import {
   regionHexTopology,
   sparseCanonicalRegionHexWindow,
   sparseRegionHexWindow,
+  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 import baseWorker from "./worker.js";
 
@@ -157,8 +158,16 @@ export function configuredDefaultRegionId(env: RegionConfigEnv): string {
   }
   const regions = configuredRegionIds(env);
   if (requested !== undefined && requested !== "" && regions.includes(requested)) {
+    warnUnresolvedHistoricalRegionIds(
+      `configuredDefaultRegionId(default=${requested})`,
+      [requested],
+    );
     return requested;
   }
+  warnUnresolvedHistoricalRegionIds(
+    "configuredDefaultRegionId(default=REGION_IDS[0])",
+    regions.slice(0, 1),
+  );
   return regions[0] ?? "garden-1";
 }
 
