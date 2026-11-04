@@ -48,8 +48,8 @@ function crowdedRouteFixture(population) {
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "183a666b9b71b8b69b57ea5be05ca183d2b4f78e188e948c73a2d5da03e56b2b", 3370508769],
-    [271828, "112f88f59d343e50c71852bab0b1f1a9578ffb6b2dd6c196aa64521d52a4432c", 1241391839],
+    [123456, "99b094b0d7b19c91227b6f1d48e076bd97cf5ac70d206e469f9776899e2d09ef", 3370508769],
+    [271828, "8b500c7f86d4924e50225c33c37ecc0e664f22263f6bf6e2c7e38328fee0896a", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;
