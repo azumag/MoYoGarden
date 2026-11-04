@@ -201,6 +201,33 @@ export function soilFertilityFromConditions(
 }
 
 /**
+ * Sample a deterministic low-frequency precipitation field on the same axial
+ * coordinate system. The value is a normalized water-depth-per-step estimate
+ * (roughly 1e-4 to 1e-3) clamped to [0, precipMax]. It is derived rather than
+ * persisted and may include a slow time component from tick.
+ */
+export function sampleWorldPrecipitation(
+  worldSeed: number,
+  globalX: number,
+  globalY: number,
+  time = 0,
+  precipMax = 0.0012,
+): number {
+  const x = globalX + 0.5;
+  const y = globalY + 0.5;
+  const phaseA = seededUnit(worldSeed, 0x4b0f3b9d) * Math.PI * 2;
+  const phaseB = seededUnit(worldSeed, 0x7c159e13) * Math.PI * 2;
+  const t = time * 0.00037;
+  const band = Math.sin((y / 156) * Math.PI * 2 + phaseA + t * 0.31);
+  const cell = Math.cos((x / 112 - y / 94) * Math.PI * 2 + phaseB + t * 0.19);
+  const local = sampleWorldMicroVariation(worldSeed, globalX, globalY);
+  const precip = 0.00042 + band * 0.00038 + cell * 0.00026 + local * 0.00018;
+  return Math.max(0, Math.min(precipMax, precip));
+}
+
+export const precipitationAt = sampleWorldPrecipitation;
+
+/**
  * Sample low-level environment state on the same axial coordinate system used by
  * movement, perception and hydrology. Slope/convergence use all six equidistant
  * hex neighbors; no square-grid cardinal/diagonal distinction remains.
@@ -370,6 +397,41 @@ export function organicTemperatureSuitability(
   const optimum = kind === "wood" ? 0.54 : 0.62;
   const tolerance = kind === "wood" ? 0.62 : 0.58;
   return clamp01(1 - Math.abs(safeTemperature - optimum) / tolerance);
+}
+
+export function derivePermeability(
+  worldSeed: number,
+  globalX: number,
+  globalY: number,
+  elevation: number,
+  slope: number,
+): number {
+  const local = sampleWorldMicroVariation(worldSeed, globalX, globalY);
+  const base = 0.25 + (1 - elevation) * 0.35 + (1 - slope) * 0.2 + local * 0.1;
+  return Math.max(0.05, Math.min(0.95, base));
+}
+
+export function derivePorosity(
+  worldSeed: number,
+  globalX: number,
+  globalY: number,
+  elevation: number,
+): number {
+  const local = sampleWorldMicroVariation(worldSeed, globalX, globalY);
+  const base = 0.18 + (1 - elevation) * 0.25 + local * 0.08;
+  return Math.max(0.08, Math.min(0.45, base));
+}
+
+export function deriveHydraulicHead(
+  bedrockElevation: number | undefined,
+  soilThickness: number | undefined,
+  groundwaterStorage: number | undefined,
+  effectivePorosity: number,
+): number {
+  const bedrock = bedrockElevation ?? 0;
+  const storage = groundwaterStorage ?? 0;
+  const porosity = Math.max(1e-6, effectivePorosity);
+  return bedrock + storage / porosity;
 }
 
 export function createGlobalTerrainTile(

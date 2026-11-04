@@ -1,4 +1,12 @@
 import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
+import { regionGlobalCellOrigin } from "./region-topology.js";
+import {
+  deriveHydraulicHead,
+  derivePermeability,
+  derivePorosity,
+  precipitationAt,
+  sampleWorldConditions,
+} from "./world-scale.js";
 import {
   BUILD_RECIPES,
   DEFAULT_SIMULATION_CONFIG,
@@ -94,6 +102,37 @@ const WATER_MOISTURE_OFFSETS = (() => {
 function tileElevation(tile: Tile | undefined): number | undefined {
   const elevation = tile?.elevation;
   return Number.isFinite(elevation ?? Number.NaN) ? elevation : undefined;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function getTileGlobalPosition(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  tile: Tile,
+): { globalX: number; globalY: number; originX: number; originY: number } {
+  const origin = (state as any).regionId ? regionGlobalCellOrigin((state as any).regionId, state.width, state.height) : undefined;
+  const originX = origin?.x ?? 0;
+  const originY = origin?.y ?? 0;
+  return {
+    globalX: originX + tile.x,
+    globalY: originY + tile.y,
+    originX,
+    originY,
+  };
+}
+
+function soilMoistureCapacity(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  tile: Tile,
+): number {
+  const { globalX, globalY } = getTileGlobalPosition(state, tile);
+  const seed = (state as any).seed ?? 0;
+  const conditions = sampleWorldConditions(seed, globalX, globalY);
+  const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+  const soilThickness = tile.soilThickness ?? 0.01;
+  return Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
 }
 
 export function flowTargetAt(
@@ -201,11 +240,58 @@ export function terrainErosionPressureAt(
   );
 }
 
+export function updateTileSoilMoisture(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
+): void {
+  const seed = (state as any).seed ?? 0;
+  const tick = (state as any).tick ?? 0;
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") {
+      if (tile.soilMoisture === undefined || !Number.isFinite(tile.soilMoisture)) {
+        tile.soilMoisture = 1;
+      } else {
+        tile.soilMoisture = Math.min(1, (tile.soilMoisture ?? 1));
+      }
+      continue;
+    }
+    const { globalX, globalY } = getTileGlobalPosition(state, tile);
+    const conditions = sampleWorldConditions(seed, globalX, globalY);
+    const permeability = derivePermeability(seed, globalX, globalY, conditions.elevation, conditions.slope);
+    const capacity = soilMoistureCapacity(state, tile);
+
+    if (tile.soilMoisture === undefined || !Number.isFinite(tile.soilMoisture)) {
+      // delayed initialization from derived moisture
+      tile.soilMoisture = clamp01(surfaceMoistureAt(state as any, tile) * capacity * 0.6);
+    }
+
+    const precip = precipitationAt(seed, globalX, globalY, tick);
+    const currentMoisture = tile.soilMoisture ?? 0;
+    const infiltration = precip * permeability * (1 - clamp01(currentMoisture / Math.max(1e-6, capacity)));
+    let moisture = currentMoisture + infiltration;
+
+    if (moisture > capacity) {
+      const excess = moisture - capacity;
+      // Explicitly account for saturation overflow as runoff/spring-side contribution
+      // (do not silently drop). Add excess to drainage pressure effect via drainage boost.
+      const drainBoost = clamp01(excess / Math.max(1e-6, capacity));
+      if (Number.isFinite(tile.drainage ?? Number.NaN)) {
+        tile.drainage = Math.max(tile.drainage ?? 0, drainBoost * 0.8);
+      } else {
+        tile.drainage = drainBoost * 0.8;
+      }
+      moisture = capacity;
+    }
+    if (moisture < 0) moisture = 0;
+    tile.soilMoisture = moisture;
+  }
+}
+
 export function updateTileHydrology(
-  state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
 ): void {
   ensureTileElevations(state);
   ensureTileTerrainLayers(state);
+  updateTileSoilMoisture(state);
   for (const tile of state.tiles) {
     const target = flowTargetAt(state, tile);
     if (target === undefined) delete tile.flowTo;
@@ -266,7 +352,7 @@ export function applyTerrainErosion(state: WorldState): number {
 }
 
 export function surfaceMoistureAt(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "width" | "height" | "tiles" | "regionId" | "seed" | "tick">,
   position: GridPosition,
 ): number {
   const tile = getTile(state, position);
@@ -289,11 +375,23 @@ export function surfaceMoistureAt(
       : 0;
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
   const lowlandRetention = (1 - elevation) * 0.09;
-  const runoffRetention = drainageAt(state, position) * 0.14;
-  return Math.min(
+  const runoffRetention = drainageAt(state as any, position) * 0.14;
+  const base = Math.min(
     1,
     0.04 + lowlandRetention + runoffRetention + waterInfluence * 0.64 + vegetationCover * 0.16,
   );
+
+  // Blend in persisted soilMoisture from Phase 1 (derived infiltration/storage)
+  if (tile.soilMoisture !== undefined && Number.isFinite(tile.soilMoisture)) {
+    try {
+      const capacity = soilMoistureCapacity(state as any, tile);
+      const soilFrac = clamp01((tile.soilMoisture ?? 0) / Math.max(1e-6, capacity));
+      return clamp01(base * 0.7 + soilFrac * 0.4);
+    } catch {
+      return base;
+    }
+  }
+  return base;
 }
 
 export function resourceRegrowthChance(state: WorldState, tile: Tile): number {
