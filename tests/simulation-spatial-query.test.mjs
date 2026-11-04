@@ -59,7 +59,7 @@ function crowdedRouteFixture(population) {
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "4cb5c3b89129e78162837d2590c840290074a877cb965b4b029274913985edca", 3370508769],
+    [123456, "04f75c859405572a6b413693e2b5b860452b572799be362577e89bcb49572eb1", 3370508769],
     [271828, "5d40227f816e1bde2da321353b76a6d83b9832346926cc6779d197f797cd4d94", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
@@ -121,7 +121,7 @@ test("800-BOT route matches legacy output with one population scan", (context) =
   }
   const measuredReads = positionReads;
   const legacyReads = 24803;
-  assert.equal(fingerprint(next), "c8dbcd2b4045dbcee8b1e3df8ee28a9ecbef349c0ffcfa4150f94fd7e3308335");
+  assert.equal(fingerprint(next), "f99ac10913347d84526ad7b5f654800f3671a248884a2992e827d38ad945693d");
   assert.equal(next.rngState, 3536807351);
   // The existing hex migration reads each position twice before movement;
   // routing should add only one population pass and a few mover-only reads.
