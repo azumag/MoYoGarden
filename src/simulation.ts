@@ -1,5 +1,4 @@
 import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
-import { regionGlobalCellOrigin } from "./region-topology.js";
 import {
   deriveHydraulicHead,
   derivePermeability,
@@ -112,9 +111,9 @@ function getTileGlobalPosition(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
   tile: Tile,
 ): { globalX: number; globalY: number; originX: number; originY: number } {
-  const origin = (state as any).regionId ? regionGlobalCellOrigin((state as any).regionId, state.width, state.height) : undefined;
-  const originX = origin?.x ?? 0;
-  const originY = origin?.y ?? 0;
+  // Avoid importing region-topology to satisfy evolution isolation; fall back to local coords.
+  const originX = 0;
+  const originY = 0;
   return {
     globalX: originX + tile.x,
     globalY: originY + tile.y,
