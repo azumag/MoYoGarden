@@ -118,6 +118,31 @@ export function regionAxialCoordinate(regionId: string): HexCoordinate | undefin
   return parseAxialRegionId(regionId) ?? legacyRegionAxialCoordinate(regionId);
 }
 
+/**
+ * Observation slice for issue #27 (DSH decision comment 6635836187): emit a
+ * warn log whenever an unresolved historical region id still reaches a
+ * compatibility resolution path. Production Workers observability counts
+ * these log lines; once they stay at zero for a week after this slice ships,
+ * the compatibility fallbacks become unreachable and the termination slice
+ * removes them. This deliberately logs through console.warn only -- no new
+ * metrics mechanism -- and must not change any resolution semantics.
+ */
+export function warnUnresolvedHistoricalRegionIds(
+  context: string,
+  regionIds: readonly string[],
+): readonly string[] {
+  const unresolved = regionIds.filter(
+    (regionId) => regionAxialCoordinate(regionId) === undefined,
+  );
+  if (unresolved.length > 0) {
+    console.warn(
+      `MoYoGarden unresolved historical region id compatibility path: ${context}`,
+      { unresolvedRegionIds: unresolved },
+    );
+  }
+  return unresolved;
+}
+
 function legacyRegionIdAtCoordinate(coordinate: HexCoordinate): string | undefined {
   return LEGACY_REGION_ID_BY_COORDINATE.get(coordinateKey(coordinate.q, coordinate.r));
 }
@@ -493,7 +518,11 @@ export function regionHexWindow(
     ? Math.max(0, Math.min(4, Math.floor(radius)))
     : 1;
 
-  if (regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)) {
+  const unresolvedForWindow = warnUnresolvedHistoricalRegionIds(
+    `regionHexWindow(center=${centerRegionId}) full-topology fallback`,
+    regionIds,
+  );
+  if (unresolvedForWindow.length > 0) {
     const topology = regionHexTopology(regionIds, width, height);
     const centerEntry = topology.find((entry) => entry.id === centerRegionId);
     return centerEntry === undefined

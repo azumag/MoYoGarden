@@ -7,7 +7,10 @@ import type {
   HexSeamComponentRef,
   HexSeamConnectivityEdge,
 } from "./hex-seam-connectivity.js";
-import { regionAxialCoordinate } from "./region-topology.js";
+import {
+  regionAxialCoordinate,
+  warnUnresolvedHistoricalRegionIds,
+} from "./region-topology.js";
 
 export interface MaterialReturnRouteBudget {
   maxHops: number;
@@ -124,6 +127,12 @@ function stepEqualDistance(
     // Keep the historical direct-to-source compatibility path for legacy IDs
     // that do not have an axial coordinate. Canonical observations must still
     // describe a real neighboring macro hex.
+    if (adjacency === undefined) {
+      warnUnresolvedHistoricalRegionIds(
+        `material-return stepEqualDistance(${currentRegionId}->${nextRegionId})`,
+        [currentRegionId, nextRegionId],
+      );
+    }
     return adjacency === undefined || adjacency === 1 ? false : undefined;
   }
 
