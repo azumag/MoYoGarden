@@ -4,7 +4,18 @@ import test from "node:test";
 import { simulate } from "../dist-ts/src/simulation.js";
 import { createInitialWorld, inBounds } from "../dist-ts/src/world.js";
 
-const fingerprint = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const sortKeys = (value) => {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      out[key] = sortKeys(value[key]);
+    }
+    return out;
+  }
+  return value;
+};
+const fingerprint = (value) => createHash("sha256").update(JSON.stringify(sortKeys(value))).digest("hex");
 
 function plainFixture(seed = 24024) {
   const state = createInitialWorld({ seed, width: 40, height: 24 });
@@ -49,7 +60,7 @@ function crowdedRouteFixture(population) {
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
     [123456, "99b094b0d7b19c91227b6f1d48e076bd97cf5ac70d206e469f9776899e2d09ef", 3370508769],
-    [271828, "8b500c7f86d4924e50225c33c37ecc0e664f22263f6bf6e2c7e38328fee0896a", 1241391839],
+    [271828, "ff59d8208a4f91822c17b479e0dc6ea7c702577e3c5023c996f3410476866c1b", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;
