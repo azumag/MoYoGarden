@@ -189,8 +189,11 @@ export type EventKind =
   | "trade_failed"
   | "agent_moved"
   | "agent_conversation"
+  | "agent_died"
   | "autonomy_changed"
   | "goal_changed";
+
+export type AgentDeathCause = "natural_lifespan" | "basal_food_deficit" | "starvation";
 
 export interface WorldEvent {
   id: string;

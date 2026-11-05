@@ -252,3 +252,44 @@ test("terrain-only radius-two window stays passive and omits simulation objects"
     assert.equal(health.effectiveTickMs, 60_000);
   }
 });
+
+test("population timeseries samples at 60-tick boundaries and clamps API limit (R2/④)", async () => {
+  const ctx = new MemoryState();
+  const object = new RegionDurableObject(ctx, env);
+  await ctx.ready;
+  await object.fetch(request("/api/world/snapshot"));
+  const admin = { "content-type": "application/json", authorization: "Bearer admin-secret" };
+  await (await object.fetch(request("/api/admin/tick", { method: "POST", headers: admin, body: '{"count":59}' }))).json();
+  let series = await (await object.fetch(request("/api/population/timeseries"))).json();
+  assert.equal(series.samples.length, 0);
+  await (await object.fetch(request("/api/admin/tick", { method: "POST", headers: admin, body: '{"count":1}' }))).json();
+  series = await (await object.fetch(request("/api/population/timeseries?limit=9999"))).json();
+  assert.equal(series.samples.length, 1);
+  assert.equal(series.samples[0].tick, 60);
+  assert.equal(series.sampleEveryTicks, 60);
+  assert.equal(series.maxSamples, 1440);
+  assert.ok(Number.isFinite(series.samples[0].birthsCumulative));
+  assert.ok(Number.isFinite(series.samples[0].deathsCumulative));
+  const clampedLow = await (await object.fetch(request("/api/population/timeseries?limit=0"))).json();
+  assert.ok(clampedLow.samples.length <= 1);
+});
+
+test("population timeseries trims stored samples to max retention (R2/④)", async () => {
+  const ctx = new MemoryState();
+  const seedSamples = Array.from({ length: 1441 }, (_, i) => ({
+    tick: i * 60, timestampMs: i, living: 1, infant: 0, juvenile: 0, adult: 1, elder: 0, pregnant: 0,
+    birthsCumulative: 0, deathsCumulative: 0,
+  }));
+  await ctx.storage.put("population_series", {
+    version: 1, sampleEveryTicks: 60, maxSamples: 1440, birthsCumulative: 0, deathsCumulative: 0,
+    samples: seedSamples,
+  });
+  const object = new RegionDurableObject(ctx, env);
+  await ctx.ready;
+  await object.fetch(request("/api/world/snapshot"));
+  const admin = { "content-type": "application/json", authorization: "Bearer admin-secret" };
+  await (await object.fetch(request("/api/admin/tick", { method: "POST", headers: admin, body: '{"count":60}' }))).json();
+  const series = await (await object.fetch(request("/api/population/timeseries?limit=1440"))).json();
+  assert.ok(series.samples.length <= 1440);
+  assert.ok(series.samples.at(-1).tick >= 60);
+});
