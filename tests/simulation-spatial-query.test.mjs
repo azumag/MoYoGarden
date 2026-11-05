@@ -54,13 +54,13 @@ function crowdedRouteFixture(population) {
   return state;
 }
 
-// Captured from unmodified main 71b818788e554d7231485f44a9c9575a2652f139.
+// Updated for #25 Phase 1 soil moisture/precipitation balance (intentional behavior change).
 // Stay below the 120-tick erosion boundary to isolate the routing optimization
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "4cb5c3b89129e78162837d2590c840290074a877cb965b4b029274913985edca", 3370508769],
-    [271828, "5d40227f816e1bde2da321353b76a6d83b9832346926cc6779d197f797cd4d94", 1241391839],
+    [123456, "af78747a714b393bc923b438376319d17eeedb95276b915beb600588fc4396cb", 3370508769],
+    [271828, "d2f83621f6bcac356212dc770640343fa7feb3e091533aa9d3dde67690d5df9e", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;
@@ -121,7 +121,7 @@ test("800-BOT route matches legacy output with one population scan", (context) =
   }
   const measuredReads = positionReads;
   const legacyReads = 24803;
-  assert.equal(fingerprint(next), "c8dbcd2b4045dbcee8b1e3df8ee28a9ecbef349c0ffcfa4150f94fd7e3308335");
+  assert.equal(fingerprint(next), "dfa218def4f84e51f6a90c26596fe8a037c5ab1bcb5c35d3af69381c765651cf");
   assert.equal(next.rngState, 3536807351);
   // The existing hex migration reads each position twice before movement;
   // routing should add only one population pass and a few mover-only reads.

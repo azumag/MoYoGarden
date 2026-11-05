@@ -1,4 +1,11 @@
-import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
+import { HEX_GRID_STEPS, hexGridCenter, hexGridDistance, hexGridRadius } from "./hex-grid.js";
+import {
+  deriveHydraulicHead,
+  derivePermeability,
+  derivePorosity,
+  precipitationAt,
+  sampleWorldConditions,
+} from "./world-scale.js";
 import {
   BUILD_RECIPES,
   DEFAULT_SIMULATION_CONFIG,
@@ -58,6 +65,7 @@ const HYDROLOGY_NEIGHBORS: readonly GridPosition[] = HEX_GRID_STEPS;
 const WATER_MOISTURE_RADIUS = 4;
 const HYDROLOGY_EPSILON = 1e-6;
 const TERRAIN_EVOLUTION_INTERVAL = 120;
+const WATER_BALANCE_INTERVAL = 12;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP = 6;
@@ -94,6 +102,75 @@ const WATER_MOISTURE_OFFSETS = (() => {
 function tileElevation(tile: Tile | undefined): number | undefined {
   const elevation = tile?.elevation;
   return Number.isFinite(elevation ?? Number.NaN) ? elevation : undefined;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+const AXIAL_REGION_ID_PATTERN = /^hex-q(-?(?:0|[1-9]\d*))-r(-?(?:0|[1-9]\d*))$/;
+const LEGACY_REGION_AXIAL_ALIASES: ReadonlyMap<string, { q: number; r: number }> = new Map([
+  ["garden-1", { q: 0, r: 0 }],
+  ["garden-2", { q: 1, r: 0 }],
+  ["garden-3", { q: 1, r: -1 }],
+]);
+
+function regionAxialCoordinateLocal(regionId: string): { q: number; r: number } | undefined {
+  const match = AXIAL_REGION_ID_PATTERN.exec(regionId);
+  if (match !== null) {
+    const q = Number(match[1]);
+    const r = Number(match[2]);
+    if (Number.isSafeInteger(q) && Number.isSafeInteger(r)) return { q, r };
+  }
+  return LEGACY_REGION_AXIAL_ALIASES.get(regionId);
+}
+
+function projectRegionGlobalCellOriginLocal(
+  coordinate: { q: number; r: number },
+  width: number,
+  height: number,
+): { x: number; y: number } {
+  const extent = { width, height };
+  const center = hexGridCenter(extent);
+  const radius = hexGridRadius(extent);
+  const eastBasis = { x: radius * 2 + 1, y: -radius };
+  const southEastBasis = { x: radius, y: radius + 1 };
+  const regionCenter = {
+    x: coordinate.q * eastBasis.x + coordinate.r * southEastBasis.x,
+    y: coordinate.q * eastBasis.y + coordinate.r * southEastBasis.y,
+  };
+  return {
+    x: regionCenter.x - center.x,
+    y: regionCenter.y - center.y,
+  };
+}
+
+function getTileGlobalPosition(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  tile: Tile,
+): { globalX: number; globalY: number; originX: number; originY: number } {
+  const coordinate = regionAxialCoordinateLocal((state as any).regionId ?? "");
+  const origin = coordinate ? projectRegionGlobalCellOriginLocal(coordinate, state.width, state.height) : undefined;
+  const originX = origin?.x ?? 0;
+  const originY = origin?.y ?? 0;
+  return {
+    globalX: originX + tile.x,
+    globalY: originY + tile.y,
+    originX,
+    originY,
+  };
+}
+
+function soilMoistureCapacity(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  tile: Tile,
+): number {
+  const { globalX, globalY } = getTileGlobalPosition(state, tile);
+  const seed = (state as any).seed ?? 0;
+  const conditions = sampleWorldConditions(seed, globalX, globalY);
+  const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+  const soilThickness = tile.soilThickness ?? 0.01;
+  return Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
 }
 
 export function flowTargetAt(
@@ -201,11 +278,64 @@ export function terrainErosionPressureAt(
   );
 }
 
+export function updateTileSoilMoisture(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
+): void {
+  const seed = (state as any).seed ?? 0;
+  const tick = (state as any).tick ?? 0;
+  if (tick % WATER_BALANCE_INTERVAL !== 0) return;
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") {
+      tile.soilMoisture = 1;
+      tile.soilMoistureOverflow = 0;
+      continue;
+    }
+    const { globalX, globalY } = getTileGlobalPosition(state, tile);
+    // Single seed-field evaluation pass per tile per balance step
+    const conditions = sampleWorldConditions(seed, globalX, globalY);
+    const permeability = derivePermeability(seed, globalX, globalY, conditions.elevation, conditions.slope);
+    const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+    const soilThickness = tile.soilThickness ?? 0.01;
+    const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
+
+    if (tile.soilMoisture === undefined || !Number.isFinite(tile.soilMoisture)) {
+      // delayed initialization from derived moisture (no feedback loop)
+      const baseMoisture = 0.04 + (1 - conditions.elevation) * 0.09 + conditions.wetness * 0.2;
+      tile.soilMoisture = clamp01(baseMoisture) * capacity * 0.6;
+    }
+
+    const precip = precipitationAt(seed, globalX, globalY, tick) * WATER_BALANCE_INTERVAL;
+    const currentMoisture = tile.soilMoisture ?? 0;
+    const infiltration = precip * permeability * (1 - clamp01(currentMoisture / Math.max(1e-6, capacity)));
+
+    // Drying term: relax toward seed-derived equilibrium so dry cells don't saturate
+    const equilibriumFrac = clamp01(0.15 + conditions.wetness * 0.35 + (1 - conditions.slope) * 0.1 - conditions.temperature * 0.08);
+    const equilibrium = equilibriumFrac * capacity;
+    const dryingRate = 0.06 + (1 - conditions.wetness) * 0.04;
+    const drying = (currentMoisture - equilibrium) * dryingRate;
+
+    let moisture = currentMoisture + infiltration - drying;
+    let overflow = 0;
+
+    if (moisture > capacity) {
+      overflow = moisture - capacity;
+      moisture = capacity;
+    }
+    if (moisture < 0) moisture = 0;
+
+    tile.soilMoisture = moisture;
+    // Explicit overflow accounting (not written to drainage cache)
+    tile.soilMoistureOverflow = overflow;
+  }
+}
+
 export function updateTileHydrology(
-  state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
 ): void {
   ensureTileElevations(state);
   ensureTileTerrainLayers(state);
+  updateTileSoilMoisture(state);
   for (const tile of state.tiles) {
     const target = flowTargetAt(state, tile);
     if (target === undefined) delete tile.flowTo;
@@ -266,7 +396,7 @@ export function applyTerrainErosion(state: WorldState): number {
 }
 
 export function surfaceMoistureAt(
-  state: Pick<WorldState, "width" | "height" | "tiles">,
+  state: Pick<WorldState, "width" | "height" | "tiles" | "regionId" | "seed" | "tick">,
   position: GridPosition,
 ): number {
   const tile = getTile(state, position);
@@ -289,11 +419,23 @@ export function surfaceMoistureAt(
       : 0;
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0.5 : 0.5;
   const lowlandRetention = (1 - elevation) * 0.09;
-  const runoffRetention = drainageAt(state, position) * 0.14;
-  return Math.min(
+  const runoffRetention = drainageAt(state as any, position) * 0.14;
+  const base = Math.min(
     1,
     0.04 + lowlandRetention + runoffRetention + waterInfluence * 0.64 + vegetationCover * 0.16,
   );
+
+  // Blend in persisted soilMoisture from Phase 1 (derived infiltration/storage)
+  if (tile.soilMoisture !== undefined && Number.isFinite(tile.soilMoisture)) {
+    try {
+      const capacity = soilMoistureCapacity(state as any, tile);
+      const soilFrac = clamp01((tile.soilMoisture ?? 0) / Math.max(1e-6, capacity));
+      return clamp01(base * 0.7 + soilFrac * 0.4);
+    } catch {
+      return base;
+    }
+  }
+  return base;
 }
 
 export function resourceRegrowthChance(state: WorldState, tile: Tile): number {

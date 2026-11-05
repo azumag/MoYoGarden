@@ -39,6 +39,8 @@ export interface Tile {
   elevation?: number;
   bedrockElevation?: number;
   soilThickness?: number;
+  soilMoisture?: number;
+  soilMoistureOverflow?: number;
   flowTo?: GridPosition;
   drainage?: number;
   erosionPressure?: number;
