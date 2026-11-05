@@ -176,6 +176,28 @@ function soilMoistureCapacity(
   return Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
 }
 
+export function groundwaterHeadAt(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  tile: Tile,
+): number {
+  if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) {
+    return 0;
+  }
+  const { globalX, globalY } = getTileGlobalPosition(state, tile);
+  const seed = (state as any).seed ?? 0;
+  const conditions = sampleWorldConditions(seed, globalX, globalY);
+  const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+  // #25 Phase 2: derive from bedrock + soilMoisture (no new persistent fields).
+  // Treat stored soil moisture as groundwater-equivalent storage over effective porosity.
+  const storage = Math.max(0, tile.soilMoisture ?? 0);
+  return deriveHydraulicHead(
+    tile.bedrockElevation,
+    tile.soilThickness,
+    storage,
+    porosity,
+  );
+}
+
 export function flowTargetAt(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
@@ -288,6 +310,7 @@ export function updateTileSoilMoisture(
   const tick = (state as any).tick ?? 0;
   if (tick % WATER_BALANCE_INTERVAL !== 0) return;
 
+  const info = new Map<string, { capacity: number; porosity: number; permeability: number }>();
   for (const tile of state.tiles) {
     if (tile.terrain === "water") {
       tile.soilMoisture = 1;
@@ -301,6 +324,7 @@ export function updateTileSoilMoisture(
     const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
     const soilThickness = tile.soilThickness ?? 0.01;
     const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
+    info.set(positionKey(tile), { capacity, porosity, permeability });
 
     if (tile.soilMoisture === undefined || !Number.isFinite(tile.soilMoisture)) {
       // delayed initialization from derived moisture (no feedback loop)
@@ -330,6 +354,49 @@ export function updateTileSoilMoisture(
     tile.soilMoisture = moisture;
     // Explicit overflow accounting (not written to drainage cache)
     tile.soilMoistureOverflow = overflow;
+  }
+
+  // #25 Phase 2: groundwater head feedback via mass-conserving lateral seepage (bounded).
+  // Uses head = bedrock + soilMoisture/effectivePorosity; does not change drainage/erosionPressure definitions.
+  const seepageDelta = new Map<string, number>();
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
+    const key = positionKey(tile);
+    const ti = info.get(key);
+    if (ti === undefined) continue;
+    const head = deriveHydraulicHead(tile.bedrockElevation, tile.soilThickness, Math.max(0, tile.soilMoisture ?? 0), ti.porosity);
+    let available = Math.max(0, tile.soilMoisture ?? 0);
+    for (const delta of HEX_GRID_STEPS) {
+      const npos = { x: tile.x + delta.x, y: tile.y + delta.y };
+      const n = getTile(state as Pick<WorldState, "width" | "height" | "tiles">, npos);
+      if (n === undefined || n.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, n)) continue;
+      const ni = info.get(positionKey(n));
+      if (ni === undefined) continue;
+      const nhead = deriveHydraulicHead(n.bedrockElevation, n.soilThickness, Math.max(0, n.soilMoisture ?? 0), ni.porosity);
+      const diff = head - nhead;
+      if (diff <= 1e-9) continue;
+      const conductivity = Math.min(ti.permeability, ni.permeability) * 0.015;
+      const flux = Math.min(available * 0.2, diff * conductivity);
+      if (flux <= 1e-12) continue;
+      seepageDelta.set(key, (seepageDelta.get(key) ?? 0) - flux);
+      seepageDelta.set(positionKey(n), (seepageDelta.get(positionKey(n)) ?? 0) + flux);
+      available -= flux;
+    }
+  }
+  if (seepageDelta.size > 0) {
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water") continue;
+      const d = seepageDelta.get(positionKey(tile));
+      if (d === undefined || Math.abs(d) <= 1e-12) continue;
+      const ti = info.get(positionKey(tile));
+      const cap = ti?.capacity ?? 0.5;
+      let moisture = Math.max(0, (tile.soilMoisture ?? 0) + d);
+      if (moisture > cap) {
+        tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + (moisture - cap);
+        moisture = cap;
+      }
+      tile.soilMoisture = moisture;
+    }
   }
 }
 
