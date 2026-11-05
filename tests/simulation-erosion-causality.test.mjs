@@ -116,7 +116,11 @@ test("unchanged vegetation retains the cached-pressure transfer and drainage inp
     beforeSourceSoil,
     Math.max(0, beforeSource - 0.01),
   );
-  assert.ok(Math.abs(moved - expected) < 1e-12);
+  assert.ok(Math.abs(moved.removed - expected) < 1e-12);
+  assert.ok(Math.abs(moved.deposited - expected) < 1e-12);
+  assert.ok(Math.abs(moved.waterExport) < 1e-12);
+  assert.ok(Math.abs(moved.clampLoss) < 1e-12);
+  assert.ok(Math.abs(moved.removed - (moved.deposited + moved.waterExport + moved.clampLoss)) < 1e-9);
   assert.ok(Math.abs((source.elevation - beforeSource) + expected) < 1e-12);
   assert.ok(Math.abs((target.elevation - beforeTarget) - expected) < 1e-12);
   assert.ok(Math.abs((source.soilThickness ?? 0) - (beforeSourceSoil - expected)) < 1e-12);

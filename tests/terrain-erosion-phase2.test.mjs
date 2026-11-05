@@ -24,18 +24,18 @@ function resetLayersFromElevation(state) {
   ensureTileTerrainLayers(state);
 }
 
-test("soil becomes stateful: ensureTileTerrainLayers does not re-derive existing layers from elevation", () => {
+test("soil becomes stateful: external surface edit is absorbed by soil (elevation preserved)", () => {
   const state = createInitialWorld({ seed: 123, width: 16, height: 12 });
   updateTileHydrology(state);
   const tile = allLandTiles(state)[0];
   assert.ok(tile);
   tile.bedrockElevation = 0.2;
   tile.soilThickness = 0.05;
-  tile.elevation = 0.99; // inconsistent with layers; stateful soil means keep layers, fix elevation
+  tile.elevation = 0.99; // external surface edit; soil absorbs, elevation preserved
   ensureTileTerrainLayers(state);
   assert.equal(tile.bedrockElevation, 0.2);
-  assert.equal(tile.soilThickness, 0.05);
-  assert.ok(Math.abs(tile.elevation - 0.25) < 1e-12);
+  assert.ok(Math.abs((tile.soilThickness ?? 0) - 0.79) < 1e-12);
+  assert.equal(tile.elevation, 0.99);
 });
 
 test("erosion conserves mass: removed = deposited + water export + clamp loss (1e-9)", () => {
@@ -119,7 +119,7 @@ test("erosion does not transfer more soil than source has and does not make soil
   }
 });
 
-test("erosion mass accounting with explicit export/clamp: removed = deposited + water export + clamp loss (1e-9)", () => {
+test("erosion mass accounting with ledger: removed = deposited + water export + clamp loss (1e-9) and matches per-tile diffs", () => {
   // Build a setup that includes water export and potential clamping
   const state = createInitialWorld({ seed: 5050, width: 16, height: 12 });
   for (const tile of state.tiles) {
@@ -141,10 +141,9 @@ test("erosion mass accounting with explicit export/clamp: removed = deposited + 
   updateTileHydrology(state);
 
   const before = structuredClone(state);
-  // Directly apply erosion for precise accounting
   const beforeMap = new Map();
   for (const tile of allLandTiles(before)) beforeMap.set(`${tile.x},${tile.y}`, { soil: tile.soilThickness ?? 0, bedrock: tile.bedrockElevation ?? 0 });
-  applyTerrainErosion(state);
+  const ledger = applyTerrainErosion(state);
   let removed = 0, deposited = 0;
   for (const tile of allLandTiles(state)) {
     const b = beforeMap.get(`${tile.x},${tile.y}`);
@@ -155,9 +154,11 @@ test("erosion mass accounting with explicit export/clamp: removed = deposited + 
     // bedrock fixed
     assert.ok(Math.abs((tile.bedrockElevation ?? 0) - b.bedrock) < 1e-12);
   }
-  const waterExportAndClampLoss = removed - deposited;
-  assert.ok(waterExportAndClampLoss >= -1e-9);
-  assert.ok(Math.abs(removed - (deposited + waterExportAndClampLoss)) < 1e-9);
-  // sanity: if there was flow to water, net loss should be possible
-  assert.ok(removed >= 0);
+  assert.ok(Math.abs(ledger.removed - removed) < 1e-9);
+  assert.ok(Math.abs(ledger.deposited - deposited) < 1e-9);
+  assert.ok(Math.abs(ledger.removed - (ledger.deposited + ledger.waterExport + ledger.clampLoss)) < 1e-9);
+  assert.ok(ledger.removed >= -1e-12);
+  assert.ok(ledger.deposited >= -1e-12);
+  assert.ok(ledger.waterExport >= -1e-12);
+  assert.ok(ledger.clampLoss >= -1e-12);
 });

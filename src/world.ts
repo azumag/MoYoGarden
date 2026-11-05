@@ -125,12 +125,17 @@ export function ensureTileTerrainLayers(
       Number.isFinite(tile.bedrockElevation ?? Number.NaN) &&
       Number.isFinite(tile.soilThickness ?? Number.NaN);
     if (hasLayers) {
-      // Phase 2: soil is stateful. Maintain surface invariant without re-deriving from elevation.
       const bedrock = tile.bedrockElevation ?? 0;
       const soil = Math.max(0, tile.soilThickness ?? 0);
+      const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation as number) : bedrock + soil;
+      if (Math.abs(bedrock + soil - elevation) <= 1e-12) {
+        // Consistent: touch nothing (preserve bitwise elevation)
+        continue;
+      }
+      // Phase 2: external surface edits are absorbed by soil (bedrock fixed as lower bound).
       tile.bedrockElevation = bedrock;
-      tile.soilThickness = soil;
-      tile.elevation = bedrock + soil;
+      tile.soilThickness = Math.max(0, elevation - bedrock);
+      // Do not rewrite elevation
       continue;
     }
     splitTileTerrainLayers(tile);

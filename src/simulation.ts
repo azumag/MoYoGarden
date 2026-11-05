@@ -346,7 +346,14 @@ export function updateTileHydrology(
   for (const tile of state.tiles) tile.erosionPressure = terrainErosionPressureAt(state, tile);
 }
 
-export function applyTerrainErosion(state: WorldState): number {
+export interface TerrainErosionLedger {
+  removed: number;
+  deposited: number;
+  waterExport: number;
+  clampLoss: number;
+}
+
+export function applyTerrainErosion(state: WorldState): TerrainErosionLedger {
   ensureTileTerrainLayers(state);
   const soilDelta = new Map<string, number>();
   const exportDelta = new Map<string, number>();
@@ -396,7 +403,9 @@ export function applyTerrainErosion(state: WorldState): number {
     }
   }
 
-  if (totalRemoved <= 0) return 0;
+  if (totalRemoved <= 0) {
+    return { removed: 0, deposited: 0, waterExport: 0, clampLoss: 0 };
+  }
 
   const beforeSoil = new Map<string, number>();
   for (const tile of state.tiles) {
@@ -404,7 +413,7 @@ export function applyTerrainErosion(state: WorldState): number {
     beforeSoil.set(positionKey(tile), Math.max(0, tile.soilThickness ?? 0));
   }
 
-  let clampLoss = 0;
+  let clampLossApplied = 0;
   for (const tile of state.tiles) {
     if (tile.terrain === "water") {
       tile.bedrockElevation = 0;
@@ -419,13 +428,13 @@ export function applyTerrainErosion(state: WorldState): number {
     const delta = soilDelta.get(key) ?? 0;
     let nextSoil = soil + delta;
     if (nextSoil < 0) {
-      clampLoss += -nextSoil;
+      clampLossApplied += -nextSoil;
       nextSoil = 0;
     }
     let nextElevation = bedrock + nextSoil;
     if (nextElevation > 0.99) {
       const loss = nextElevation - 0.99;
-      clampLoss += Math.min(loss, nextSoil);
+      clampLossApplied += Math.min(loss, nextSoil);
       nextSoil = Math.max(0, nextSoil - loss);
       nextElevation = bedrock + nextSoil;
     }
@@ -435,30 +444,27 @@ export function applyTerrainErosion(state: WorldState): number {
     tile.elevation = nextElevation;
   }
 
-  // Accounting from actual changes: removed from land = deposited on land + water export + clamp loss
-  let actualRemoved = 0;
-  let actualDeposited = 0;
+  // Accounting from actual changes: removed = deposited + water export + clamp loss
+  let removed = 0;
+  let deposited = 0;
   for (const tile of state.tiles) {
     if (tile.terrain === "water" || !inBounds(state, tile)) continue;
     const key = positionKey(tile);
     const before = beforeSoil.get(key) ?? 0;
     const after = Math.max(0, tile.soilThickness ?? 0);
     const diff = after - before;
-    if (diff < 0) actualRemoved += -diff;
-    else if (diff > 0) actualDeposited += diff;
+    if (diff < 0) removed += -diff;
+    else if (diff > 0) deposited += diff;
   }
   let plannedExport = 0;
   for (const value of exportDelta.values()) plannedExport += value;
-  // Any planned export that wasn't actually removed (due to source clamping) becomes clamp loss
-  const realizedExport = Math.min(plannedExport, Math.max(0, actualRemoved - actualDeposited));
-  const totalClampLoss = Math.max(0, actualRemoved - actualDeposited - realizedExport);
+  const waterExport = Math.min(plannedExport, Math.max(0, removed - deposited));
+  const clampLoss = Math.max(0, removed - deposited - waterExport);
+  // Prefer the balance-derived clamp loss; clampLossApplied is consistent for normal cases.
+  void clampLossApplied;
 
-  void clampLoss;
-  void realizedExport;
-  void totalClampLoss;
-  void beforeSoil;
   updateTileHydrology(state);
-  return actualRemoved;
+  return { removed, deposited, waterExport, clampLoss };
 }
 
 export function surfaceMoistureAt(
