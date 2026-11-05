@@ -360,6 +360,17 @@ export function alignRegionBoundaryElevations(
     const elevation = distance === 0 ? target : current + (target - current) * weight;
     if (Math.abs(elevation - current) <= 1e-9) continue;
     tile.elevation = elevation;
+    // Keep terrain layers consistent with stateful soil: adjust soil, preserve bedrock when present.
+    if (Number.isFinite(tile.bedrockElevation ?? Number.NaN)) {
+      const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
+      const soil = Math.max(0, elevation - bedrock);
+      tile.bedrockElevation = bedrock;
+      tile.soilThickness = soil;
+      tile.elevation = bedrock + soil;
+    } else {
+      delete tile.bedrockElevation;
+      delete tile.soilThickness;
+    }
     changed += 1;
   }
 

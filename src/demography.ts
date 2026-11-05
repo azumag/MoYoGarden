@@ -1,5 +1,5 @@
 import { hexGridDistance } from "./hex-grid.js";
-import type { Agent, AgentHeritableTraits, WorldEvent, WorldState } from "./protocol.js";
+import type { Agent, AgentDeathCause, AgentHeritableTraits, WorldEvent, WorldState } from "./protocol.js";
 import { activeFactionStructures, getFaction } from "./world.js";
 
 // Demographic time is intentionally compressed to keep biological causality visible
@@ -105,6 +105,24 @@ export function naturalLifespanTicks(agentId: string, vitality = 1): number {
   const extraDays = demographicHash(agentId) % (POPULATION_LIFESPAN_VARIATION_DAYS + 1);
   const baseline = POPULATION_MIN_LIFESPAN_TICKS + extraDays * POPULATION_DAY_TICKS;
   return Math.round(baseline * boundedTrait(vitality));
+}
+
+function recordAgentDeath(
+  state: WorldState,
+  agent: Agent,
+  cause: AgentDeathCause,
+  message: string,
+): void {
+  state.events.push({
+    id: `event-${state.tick}-${state.events.length + 1}`,
+    tick: state.tick,
+    kind: "agent_died",
+    message,
+    agentId: agent.id,
+    factionId: agent.factionId,
+    position: { ...agent.position },
+    data: { cause, deathTick: state.tick, position: { ...agent.position } },
+  });
 }
 
 function consumeStoredFood(state: WorldState, factionId: string, amount: number): boolean {
@@ -487,6 +505,16 @@ export function applyPopulationMaintenance(state: WorldState): void {
   // dependents and legacy founders. Do not leave zero-HP residents occupying
   // housing, crowding, migration or relationship state until another subsystem
   // happens to notice them.
+  for (const agent of state.agents) {
+    if (agent.hp <= 0) {
+      recordAgentDeath(
+        state,
+        agent,
+        "basal_food_deficit",
+        `${agent.name} died from food deficit`,
+      );
+    }
+  }
   state.agents = state.agents.filter((agent) => agent.hp > 0);
 }
 
@@ -501,7 +529,15 @@ export function applyPopulationAging(state: WorldState): void {
     }
 
     const age = Math.max(0, state.tick - agent.birthTick);
-    if (age >= naturalLifespanTicks(agent.id, agent.heritableTraits?.vitality)) continue;
+    if (age >= naturalLifespanTicks(agent.id, agent.heritableTraits?.vitality)) {
+      recordAgentDeath(
+        state,
+        agent,
+        "natural_lifespan",
+        `${agent.name} died of old age`,
+      );
+      continue;
+    }
 
     if (age >= POPULATION_ELDER_AGE_TICKS && agent.lifeStage !== "elder") {
       agent.lifeStage = "elder";

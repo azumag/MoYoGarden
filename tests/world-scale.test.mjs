@@ -34,7 +34,7 @@ test("legacy default worlds gain a deterministic hex-compatible frontier without
     const next = legacy.tiles[y * legacy.width + x];
     if (!isHexGridCell(legacy, { x, y })) continue;
     assert.equal(next.terrain, tile.terrain);
-    assert.equal(next.elevation, tile.elevation);
+    assert.ok(Math.abs((next.elevation ?? 0) - (tile.elevation ?? 0)) < 1e-12);
     if (tile.resource) {
       assert.equal(next.resource?.kind, tile.resource.kind);
       assert.ok((next.resource?.amount ?? 0) >= tile.resource.amount);
@@ -105,7 +105,7 @@ test("world conditions use shared seed plus absolute axial coordinates", () => {
   assert.equal(20, 1 + 19);
   assert.ok(isHexGridCell(localSeedA, a));
   assert.ok(isHexGridCell(localSeedB, b));
-  assert.equal(a.elevation, b.elevation);
+  assert.ok(Math.abs((a.elevation ?? 0) - (b.elevation ?? 0)) < 1e-12);
   assert.equal(a.terrain, b.terrain);
   assert.deepEqual(a.resource, b.resource);
 });
@@ -129,10 +129,16 @@ test("persisted west/east hex-side elevations migrate toward the shared global f
   west.terrain = "forest";
   west.resource = { kind: "wood", amount: 7, maxAmount: 31 };
   west.elevation = 0.9;
+  delete west.bedrockElevation;
+  delete west.soilThickness;
   east.terrain = "hill";
   east.resource = { kind: "stone", amount: 5, maxAmount: 29 };
   east.elevation = 0.88;
+  delete east.bedrockElevation;
+  delete east.soilThickness;
   inner.elevation = 0.13;
+  delete inner.bedrockElevation;
+  delete inner.soilThickness;
   const preservedWestResource = structuredClone(west.resource);
   const preservedEastResource = structuredClone(east.resource);
 
@@ -146,19 +152,17 @@ test("persisted west/east hex-side elevations migrate toward the shared global f
   );
 
   assert.ok(changed > 0);
-  assert.equal(
-    west.elevation,
-    Math.max(0.03, sampleWorldConditions(seed, 40 + westX, y).elevation),
-  );
-  assert.equal(
-    east.elevation,
-    Math.max(0.03, sampleWorldConditions(seed, 40 + eastX, y).elevation),
-  );
+  assert.ok(Math.abs(
+    west.elevation - Math.max(0.03, sampleWorldConditions(seed, 40 + westX, y).elevation)
+  ) < 1e-12);
+  assert.ok(Math.abs(
+    east.elevation - Math.max(0.03, sampleWorldConditions(seed, 40 + eastX, y).elevation)
+  ) < 1e-12);
   assert.equal(west.terrain, "forest");
   assert.equal(east.terrain, "hill");
   assert.deepEqual(west.resource, preservedWestResource);
   assert.deepEqual(east.resource, preservedEastResource);
-  assert.equal(inner.elevation, 0.13);
+  assert.ok(Math.abs(inner.elevation - 0.13) < 1e-12);
 });
 
 test("terrain conditions derive bounded temperature, six-neighbor slope, convergence and wetness", () => {
