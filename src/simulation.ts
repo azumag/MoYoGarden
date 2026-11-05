@@ -69,6 +69,8 @@ const WATER_BALANCE_INTERVAL = 12;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const MAX_BEDROCK_EROSION_TRANSFER = MAX_EROSION_TRANSFER * 0.2;
+export const UPLIFT_INTERVAL = 1200;
+export const MAX_UPLIFT_PER_EVENT = 0.001;
 const SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP = 6;
 const SETTLEMENT_CAMP_MIN_SPACING = 2;
 const GATHER_BASE_AMOUNT = 2;
@@ -345,6 +347,40 @@ export function updateTileHydrology(
   const drainage = buildDrainageMap(state);
   for (const tile of state.tiles) tile.drainage = drainage.get(positionKey(tile)) ?? 0;
   for (const tile of state.tiles) tile.erosionPressure = terrainErosionPressureAt(state, tile);
+}
+
+function upliftAmountAt(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  tile: Tile,
+): number {
+  const { globalX, globalY } = getTileGlobalPosition(state, tile);
+  const seed = (state.seed ?? 0) >>> 0;
+  const p1 = (((seed * 2654435761) >>> 0) / 4294967296) * Math.PI * 2;
+  const p2 = ((((seed ^ 0x9e3779b9) * 2246822519) >>> 0) / 4294967296) * Math.PI * 2;
+  const x = globalX + 0.5;
+  const y = globalY + 0.5;
+  // Low-frequency continuous uplift field (#66-style global projection), [0, MAX_UPLIFT_PER_EVENT]
+  const v = 0.5 + 0.28 * Math.sin(x / 97 + p1) + 0.22 * Math.cos(y / 83 + x / 211 + p2);
+  return Math.max(0, Math.min(1, v)) * MAX_UPLIFT_PER_EVENT;
+}
+
+export function applyTerrainUplift(state: WorldState): number {
+  ensureTileTerrainLayers(state);
+  let total = 0;
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state, tile)) continue;
+    const u = upliftAmountAt(state, tile);
+    if (u <= HYDROLOGY_EPSILON) continue;
+    const bedrock = tile.bedrockElevation ?? 0;
+    const soil = Math.max(0, tile.soilThickness ?? 0);
+    // Contract (Phase 4): bedrockElevation += u and elevation += u simultaneously; soil unchanged.
+    tile.bedrockElevation = bedrock + u;
+    tile.soilThickness = soil;
+    tile.elevation = tile.bedrockElevation + soil;
+    total += u;
+  }
+  if (total > 0) updateTileHydrology(state);
+  return total;
 }
 
 export interface TerrainErosionLedger {
@@ -1788,6 +1824,7 @@ export function simulate(
     executeTask(state, agent, flow, absorbedConstructionWork);
   }
 
+  if (state.tick % UPLIFT_INTERVAL === 0) applyTerrainUplift(state);
   if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) applyTerrainErosion(state);
   if (state.tick % config.resourceRegrowthInterval === 0) regrowResources(state, random);
   state.rngState = random.state();
