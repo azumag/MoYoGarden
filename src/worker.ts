@@ -423,6 +423,7 @@ export class RegionDurableObject {
   private activationPromise: Promise<void> | undefined;
   private lastActivityAt = 0;
   private alarmRescheduleDeferred = false;
+  private populationSeriesCache: StoredPopulationSeries | undefined;
 
   constructor(
     private readonly ctx: DurableObjectState,
@@ -568,6 +569,7 @@ export class RegionDurableObject {
   }
 
   private async loadPopulationSeries(): Promise<StoredPopulationSeries> {
+    if (this.populationSeriesCache !== undefined) return this.populationSeriesCache;
     const stored = await this.ctx.storage.get<StoredPopulationSeries>(POPULATION_SERIES_KEY);
     if (
       stored?.version === 1 &&
@@ -575,12 +577,15 @@ export class RegionDurableObject {
       Number.isFinite(stored.birthsCumulative) &&
       Number.isFinite(stored.deathsCumulative)
     ) {
+      this.populationSeriesCache = stored;
       return stored;
     }
-    return emptyPopulationSeries();
+    this.populationSeriesCache = emptyPopulationSeries();
+    return this.populationSeriesCache;
   }
 
   private async recordPopulationSample(
+    state: WorldState,
     timestampMs: number,
     birthsDelta = 0,
     deathsDelta = 0,
@@ -591,8 +596,9 @@ export class RegionDurableObject {
     series.deathsCumulative += Math.max(0, deathsDelta);
     series.sampleEveryTicks = POPULATION_SERIES_SAMPLE_EVERY_TICKS;
     series.maxSamples = POPULATION_SERIES_MAX_SAMPLES;
-    const state = this.runtime.snapshot();
-    if (state.tick % POPULATION_SERIES_SAMPLE_EVERY_TICKS === 0) {
+    const isSampleBoundary = state.tick % POPULATION_SERIES_SAMPLE_EVERY_TICKS === 0;
+    let shouldPersist = birthsDelta > 0 || deathsDelta > 0;
+    if (isSampleBoundary) {
       const sample = populationSampleFromState(
         state,
         timestampMs,
@@ -605,14 +611,11 @@ export class RegionDurableObject {
         if (series.samples.length > POPULATION_SERIES_MAX_SAMPLES) {
           series.samples = series.samples.slice(-POPULATION_SERIES_MAX_SAMPLES);
         }
+        shouldPersist = true;
       }
-    } else if (birthsDelta > 0 || deathsDelta > 0) {
-      await this.ctx.storage.put(POPULATION_SERIES_KEY, series);
-      return;
-    } else {
-      return;
     }
-    await this.ctx.storage.put(POPULATION_SERIES_KEY, series);
+    this.populationSeriesCache = series;
+    if (shouldPersist) await this.ctx.storage.put(POPULATION_SERIES_KEY, series);
   }
 
   private async persist(): Promise<void> {
@@ -863,7 +866,7 @@ export class RegionDurableObject {
           const count = Number.isInteger(rawCount) ? Math.max(1, Math.min(100, rawCount)) : 1;
           const { state, births, deaths } = this.runtime.tickMany(count);
           this.lastSimulatedAt = Date.now();
-          await this.recordPopulationSample(Date.now(), births, deaths);
+          await this.recordPopulationSample(state, Date.now(), births, deaths);
           await this.persist();
           this.broadcastSnapshot();
           return json({ tick: state.tick, count, state });
@@ -912,9 +915,9 @@ export class RegionDurableObject {
     const nextSimulatedAt = this.lastSimulatedAt < now
       ? Math.min(now, this.lastSimulatedAt + this.tickMs)
       : now;
-    const { births, deaths } = this.runtime.tick();
+    const { state, births, deaths } = this.runtime.tick();
     this.lastSimulatedAt = nextSimulatedAt;
-    await this.recordPopulationSample(now, births, deaths);
+    await this.recordPopulationSample(state, now, births, deaths);
     await this.persist();
     this.broadcastSnapshot();
     if (!this.isAlarmRescheduleDeferred()) await this.scheduleNextTick();
