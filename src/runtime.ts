@@ -263,6 +263,16 @@ function applyStarvation(state: WorldState, starvingAgentIds: ReadonlySet<string
     agent.hp = Math.max(0, agent.hp - STARVATION_DAMAGE);
     if (agent.hp === 0) {
       deadAgentIds.add(agent.id);
+      state.events.push({
+        id: `event-${state.tick}-${state.events.length + 1}`,
+        tick: state.tick,
+        kind: "agent_died",
+        message: `${agent.name} starved`,
+        agentId: agent.id,
+        factionId: agent.factionId,
+        position: { ...agent.position },
+        data: { cause: "starvation", deathTick: state.tick, position: { ...agent.position } },
+      });
       continue;
     }
     agent.status = agent.status.startsWith("starving") ? agent.status : `starving; ${agent.status}`;
@@ -940,7 +950,12 @@ export class WorldRuntime {
     return structuredClone(this.#pendingCommands);
   }
 
-  tick(): { state: WorldState; receipts: readonly CommandReceipt[] } {
+  tick(): {
+    state: WorldState;
+    receipts: readonly CommandReceipt[];
+    births: number;
+    deaths: number;
+  } {
     const commands = this.#pendingCommands;
     this.#pendingCommands = [];
     for (const command of commands) this.#queuedCommandIds.delete(command.id);
@@ -960,17 +975,27 @@ export class WorldRuntime {
     applyStarvation(result.state, starvingAgentIds);
     applyDemography(result.state);
     applySocialInteractions(result.state);
+    const births = result.state.agents.filter((agent) => agent.birthTick === result.state.tick).length;
+    const deaths = result.state.events.filter(
+      (event) => event.kind === "agent_died" && event.tick === result.state.tick,
+    ).length;
     result.state.events = result.state.events.slice(-this.#simulationConfig.eventLimit);
     this.#state = result.state;
     const snapshot = this.snapshot();
     for (const listener of this.#listeners) listener(snapshot, result.receipts);
-    return { state: snapshot, receipts: result.receipts };
+    return { state: snapshot, receipts: result.receipts, births, deaths };
   }
 
-  tickMany(count: number): WorldState {
+  tickMany(count: number): { state: WorldState; births: number; deaths: number } {
     const safeCount = Math.max(1, Math.min(2_000, Math.floor(count)));
-    for (let index = 0; index < safeCount; index += 1) this.tick();
-    return this.snapshot();
+    let births = 0;
+    let deaths = 0;
+    for (let index = 0; index < safeCount; index += 1) {
+      const result = this.tick();
+      births += result.births;
+      deaths += result.deaths;
+    }
+    return { state: this.snapshot(), births, deaths };
   }
 
   reset(seed = this.#state.seed): WorldState {

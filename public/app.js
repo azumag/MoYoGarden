@@ -504,6 +504,7 @@ async function connect() {
     void loadTerrainWindow();
     void loadRegionWindow();
     startRegionWindowRefresh();
+    startPopulationTimeseriesRefresh();
     connectSocket();
   } catch (error) {
     if (!app.state) {
@@ -556,6 +557,7 @@ async function transitionRegion(regionId) {
     buildNeighborPreview(terrainWindowPayload);
 
     startRegionWindowRefresh();
+    startPopulationTimeseriesRefresh();
     connectSocket();
     void refreshHealth(targetRegion, transitionVersion);
     void loadTerrainWindow(true);

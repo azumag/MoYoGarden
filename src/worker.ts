@@ -79,6 +79,77 @@ const TERRAIN_FRAME_VERSION = 1;
 // 19/37/61 Durable Object snapshot requests in one simultaneous burst.
 const REGION_WINDOW_SNAPSHOT_CONCURRENCY = 6;
 
+const POPULATION_SERIES_KEY = "population_series";
+const POPULATION_SERIES_SAMPLE_EVERY_TICKS = 60;
+const POPULATION_SERIES_MAX_SAMPLES = 1440;
+
+interface PopulationSeriesSample {
+  tick: number;
+  timestampMs: number;
+  living: number;
+  infant: number;
+  juvenile: number;
+  adult: number;
+  elder: number;
+  pregnant: number;
+  birthsCumulative: number;
+  deathsCumulative: number;
+}
+
+interface StoredPopulationSeries {
+  version: 1;
+  sampleEveryTicks: number;
+  maxSamples: number;
+  birthsCumulative: number;
+  deathsCumulative: number;
+  samples: PopulationSeriesSample[];
+}
+
+function emptyPopulationSeries(): StoredPopulationSeries {
+  return {
+    version: 1,
+    sampleEveryTicks: POPULATION_SERIES_SAMPLE_EVERY_TICKS,
+    maxSamples: POPULATION_SERIES_MAX_SAMPLES,
+    birthsCumulative: 0,
+    deathsCumulative: 0,
+    samples: [],
+  };
+}
+
+function populationSampleFromState(
+  state: WorldState,
+  timestampMs: number,
+  birthsCumulative: number,
+  deathsCumulative: number,
+): PopulationSeriesSample {
+  let infant = 0;
+  let juvenile = 0;
+  let adult = 0;
+  let elder = 0;
+  let pregnant = 0;
+  for (const agent of state.agents) {
+    const stage = agent.lifeStage ?? "adult";
+    if (stage === "infant") infant += 1;
+    else if (stage === "juvenile") juvenile += 1;
+    else if (stage === "elder") elder += 1;
+    else adult += 1;
+    if (agent.pregnancy !== undefined) pregnant += 1;
+  }
+  return {
+    tick: state.tick,
+    timestampMs,
+    living: state.agents.length,
+    infant,
+    juvenile,
+    adult,
+    elder,
+    pregnant,
+    birthsCumulative,
+    deathsCumulative,
+  };
+}
+
+
 async function mapWithConcurrency<T, U>(
   values: readonly T[],
   concurrency: number,
@@ -496,6 +567,54 @@ export class RegionDurableObject {
     }
   }
 
+  private async loadPopulationSeries(): Promise<StoredPopulationSeries> {
+    const stored = await this.ctx.storage.get<StoredPopulationSeries>(POPULATION_SERIES_KEY);
+    if (
+      stored?.version === 1 &&
+      Array.isArray(stored.samples) &&
+      Number.isFinite(stored.birthsCumulative) &&
+      Number.isFinite(stored.deathsCumulative)
+    ) {
+      return stored;
+    }
+    return emptyPopulationSeries();
+  }
+
+  private async recordPopulationSample(
+    timestampMs: number,
+    birthsDelta = 0,
+    deathsDelta = 0,
+  ): Promise<void> {
+    if (!this.assigned) return;
+    const series = await this.loadPopulationSeries();
+    series.birthsCumulative += Math.max(0, birthsDelta);
+    series.deathsCumulative += Math.max(0, deathsDelta);
+    series.sampleEveryTicks = POPULATION_SERIES_SAMPLE_EVERY_TICKS;
+    series.maxSamples = POPULATION_SERIES_MAX_SAMPLES;
+    const state = this.runtime.snapshot();
+    if (state.tick % POPULATION_SERIES_SAMPLE_EVERY_TICKS === 0) {
+      const sample = populationSampleFromState(
+        state,
+        timestampMs,
+        series.birthsCumulative,
+        series.deathsCumulative,
+      );
+      const last = series.samples[series.samples.length - 1];
+      if (last?.tick !== sample.tick) {
+        series.samples.push(sample);
+        if (series.samples.length > POPULATION_SERIES_MAX_SAMPLES) {
+          series.samples = series.samples.slice(-POPULATION_SERIES_MAX_SAMPLES);
+        }
+      }
+    } else if (birthsDelta > 0 || deathsDelta > 0) {
+      await this.ctx.storage.put(POPULATION_SERIES_KEY, series);
+      return;
+    } else {
+      return;
+    }
+    await this.ctx.storage.put(POPULATION_SERIES_KEY, series);
+  }
+
   private async persist(): Promise<void> {
     this.updatedAt = Date.now();
     const stored: StoredRegion = {
@@ -742,8 +861,9 @@ export class RegionDurableObject {
               ? Number((body as { count?: unknown }).count)
               : 1;
           const count = Number.isInteger(rawCount) ? Math.max(1, Math.min(100, rawCount)) : 1;
-          const state = this.runtime.tickMany(count);
+          const { state, births, deaths } = this.runtime.tickMany(count);
           this.lastSimulatedAt = Date.now();
+          await this.recordPopulationSample(Date.now(), births, deaths);
           await this.persist();
           this.broadcastSnapshot();
           return json({ tick: state.tick, count, state });
@@ -773,6 +893,16 @@ export class RegionDurableObject {
       }
     }
 
+    if (request.method === "GET" && path === "/api/population/timeseries") {
+      const limit = parseBoundedInteger(url.searchParams.get("limit"), 1440, 1, 1440);
+      const series = await this.loadPopulationSeries();
+      return json({
+        regionId: this.runtime.snapshot().regionId,
+        ...series,
+        samples: series.samples.slice(-limit),
+      });
+    }
+
     return json({ error: "not found" }, 404);
   }
 
@@ -782,8 +912,9 @@ export class RegionDurableObject {
     const nextSimulatedAt = this.lastSimulatedAt < now
       ? Math.min(now, this.lastSimulatedAt + this.tickMs)
       : now;
-    this.runtime.tick();
+    const { births, deaths } = this.runtime.tick();
     this.lastSimulatedAt = nextSimulatedAt;
+    await this.recordPopulationSample(now, births, deaths);
     await this.persist();
     this.broadcastSnapshot();
     if (!this.isAlarmRescheduleDeferred()) await this.scheduleNextTick();
