@@ -57,14 +57,14 @@ function crowdedRouteFixture(population) {
 }
 
 // Updated for #26 Phase 2 + DSH review fixes (soil-stateful semantics, bitwise-stable consistent layers).
-// Updated for #25 Phase 2 lateral groundwater seepage feedback (12-tick water balance) — intentional
-// moisture cascade; rngState progression unchanged.
+// Updated for #25 Phase 2 (corrected): percolation to groundwaterStorage with pore cap (12-tick water balance)
+// — intentional moisture cascade; rngState progression unchanged.
 // Stay below the 120-tick erosion boundary to isolate the routing optimization
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "7c3d3ead05c31889adf57a30391466fb001de2374d8e5749cfabe42b8cc32855", 3370508769],
-    [271828, "1f60280ec8596bf72998f49dc05f29b6f7f780ec0f1a21a418e9b0a8830feec1", 1241391839],
+    [123456, "7a23349743fe6f5fd7ece30eb3903962e0de68a4f73e1e4e1016c92045917694", 3370508769],
+    [271828, "7429b5a932910d797305e0dd7102e28e44177aaebe1703aa93ee9205f4c5366e", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;
@@ -125,8 +125,8 @@ test("800-BOT route matches legacy output with one population scan", (context) =
   }
   const measuredReads = positionReads;
   const legacyReads = 24803;
-  // Hash updated for #25 Phase 2 lateral groundwater seepage feedback (intentional); rngState unchanged.
-  assert.equal(fingerprint(next), "9706d3d8ab3a6ceb5d9f9bf4a53c7cc53f1c2e689a876d91970242e0a071ca47");
+  // Hash updated for #25 Phase 2 corrected (percolation to groundwaterStorage, pore cap) — intentional; rngState unchanged.
+  assert.equal(fingerprint(next), "8873b8e221dce769123810ebeae769f1454ae568f41c67e5cb66d251f0da09df");
   assert.equal(next.rngState, 3536807351);
   // The existing hex migration reads each position twice before movement;
   // routing should add only one population pass and a few mover-only reads.

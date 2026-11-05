@@ -148,7 +148,7 @@ function projectRegionGlobalCellOriginLocal(
   };
 }
 
-function getTileGlobalPosition(
+export function getTileGlobalPosition(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
   tile: Tile,
 ): { globalX: number; globalY: number; originX: number; originY: number } {
@@ -187,9 +187,8 @@ export function groundwaterHeadAt(
   const seed = (state as any).seed ?? 0;
   const conditions = sampleWorldConditions(seed, globalX, globalY);
   const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
-  // #25 Phase 2: derive from bedrock + soilMoisture (no new persistent fields).
-  // Treat stored soil moisture as groundwater-equivalent storage over effective porosity.
-  const storage = Math.max(0, tile.soilMoisture ?? 0);
+  // #25 Phase 2 (corrected): head from saturated-zone storage, not soilMoisture.
+  const storage = Math.max(0, tile.groundwaterStorage ?? 0);
   return deriveHydraulicHead(
     tile.bedrockElevation,
     tile.soilThickness,
@@ -306,34 +305,38 @@ export function terrainErosionPressureAt(
 export function updateTileSoilMoisture(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
 ): void {
+  ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
   const seed = (state as any).seed ?? 0;
   const tick = (state as any).tick ?? 0;
   if (tick % WATER_BALANCE_INTERVAL !== 0) return;
 
-  const info = new Map<string, { capacity: number; porosity: number; permeability: number }>();
   for (const tile of state.tiles) {
     if (tile.terrain === "water") {
       tile.soilMoisture = 1;
       tile.soilMoistureOverflow = 0;
+      tile.groundwaterStorage = 0;
       continue;
     }
+    if (!inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
     const { globalX, globalY } = getTileGlobalPosition(state, tile);
     // Single seed-field evaluation pass per tile per balance step
     const conditions = sampleWorldConditions(seed, globalX, globalY);
     const permeability = derivePermeability(seed, globalX, globalY, conditions.elevation, conditions.slope);
     const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
-    const soilThickness = tile.soilThickness ?? 0.01;
+    const soilThickness = Math.max(0, tile.soilThickness ?? 0.01);
     const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
-    info.set(positionKey(tile), { capacity, porosity, permeability });
 
     if (tile.soilMoisture === undefined || !Number.isFinite(tile.soilMoisture)) {
       // delayed initialization from derived moisture (no feedback loop)
       const baseMoisture = 0.04 + (1 - conditions.elevation) * 0.09 + conditions.wetness * 0.2;
       tile.soilMoisture = clamp01(baseMoisture) * capacity * 0.6;
     }
+    if (tile.groundwaterStorage === undefined || !Number.isFinite(tile.groundwaterStorage)) {
+      tile.groundwaterStorage = 0;
+    }
 
     const precip = precipitationAt(seed, globalX, globalY, tick) * WATER_BALANCE_INTERVAL;
-    const currentMoisture = tile.soilMoisture ?? 0;
+    const currentMoisture = Math.max(0, tile.soilMoisture ?? 0);
     const infiltration = precip * permeability * (1 - clamp01(currentMoisture / Math.max(1e-6, capacity)));
 
     // Drying term: relax toward seed-derived equilibrium so dry cells don't saturate
@@ -345,58 +348,31 @@ export function updateTileSoilMoisture(
     let moisture = currentMoisture + infiltration - drying;
     let overflow = 0;
 
+    // #25 Phase 2 (corrected): percolation moves excess above field capacity from
+    // soil moisture (unsaturated zone) to groundwater storage (saturated zone).
+    const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
+    const surface = Math.max(bedrock, tile.elevation ?? (bedrock + soilThickness));
+    const maxStorage = Math.max(0, porosity * Math.max(0, surface - bedrock)); // pore cap
+    const fieldCapacity = capacity * 0.6;
+    const percRate = 0.08; // <= 0.1/step
+    let storage = Math.max(0, tile.groundwaterStorage ?? 0);
+    const percolationPotential = percRate * permeability * Math.max(0, moisture - fieldCapacity);
+    const percolation = Math.min(percolationPotential, Math.max(0, moisture), Math.max(0, maxStorage - storage));
+    moisture -= percolation;
+    storage += percolation;
+
     if (moisture > capacity) {
       overflow = moisture - capacity;
       moisture = capacity;
     }
     if (moisture < 0) moisture = 0;
+    if (storage > maxStorage) storage = maxStorage;
+    if (storage < 0) storage = 0;
 
     tile.soilMoisture = moisture;
+    tile.groundwaterStorage = storage;
     // Explicit overflow accounting (not written to drainage cache)
     tile.soilMoistureOverflow = overflow;
-  }
-
-  // #25 Phase 2: groundwater head feedback via mass-conserving lateral seepage (bounded).
-  // Uses head = bedrock + soilMoisture/effectivePorosity; does not change drainage/erosionPressure definitions.
-  const seepageDelta = new Map<string, number>();
-  for (const tile of state.tiles) {
-    if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
-    const key = positionKey(tile);
-    const ti = info.get(key);
-    if (ti === undefined) continue;
-    const head = deriveHydraulicHead(tile.bedrockElevation, tile.soilThickness, Math.max(0, tile.soilMoisture ?? 0), ti.porosity);
-    let available = Math.max(0, tile.soilMoisture ?? 0);
-    for (const delta of HEX_GRID_STEPS) {
-      const npos = { x: tile.x + delta.x, y: tile.y + delta.y };
-      const n = getTile(state as Pick<WorldState, "width" | "height" | "tiles">, npos);
-      if (n === undefined || n.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, n)) continue;
-      const ni = info.get(positionKey(n));
-      if (ni === undefined) continue;
-      const nhead = deriveHydraulicHead(n.bedrockElevation, n.soilThickness, Math.max(0, n.soilMoisture ?? 0), ni.porosity);
-      const diff = head - nhead;
-      if (diff <= 1e-9) continue;
-      const conductivity = Math.min(ti.permeability, ni.permeability) * 0.015;
-      const flux = Math.min(available * 0.2, diff * conductivity);
-      if (flux <= 1e-12) continue;
-      seepageDelta.set(key, (seepageDelta.get(key) ?? 0) - flux);
-      seepageDelta.set(positionKey(n), (seepageDelta.get(positionKey(n)) ?? 0) + flux);
-      available -= flux;
-    }
-  }
-  if (seepageDelta.size > 0) {
-    for (const tile of state.tiles) {
-      if (tile.terrain === "water") continue;
-      const d = seepageDelta.get(positionKey(tile));
-      if (d === undefined || Math.abs(d) <= 1e-12) continue;
-      const ti = info.get(positionKey(tile));
-      const cap = ti?.capacity ?? 0.5;
-      let moisture = Math.max(0, (tile.soilMoisture ?? 0) + d);
-      if (moisture > cap) {
-        tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + (moisture - cap);
-        moisture = cap;
-      }
-      tile.soilMoisture = moisture;
-    }
   }
 }
 
