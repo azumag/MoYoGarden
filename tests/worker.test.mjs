@@ -80,7 +80,7 @@ test("fresh canonical regions generate their full active terrain from the shared
   for(const tile of active){
     const expected=createGlobalTerrainTile(tile.x,tile.y,424242,origin.x,origin.y);
     assert.equal(tile.terrain,expected.terrain,`terrain mismatch at ${tile.x},${tile.y}`);
-    assert.equal(tile.elevation,expected.elevation,`elevation mismatch at ${tile.x},${tile.y}`);
+    assert.ok(Math.abs(tile.elevation - expected.elevation) < 1e-12,`elevation mismatch at ${tile.x},${tile.y}: ${tile.elevation} vs ${expected.elevation}`);
     assert.deepEqual(tile.resource,expected.resource,`resource mismatch at ${tile.x},${tile.y}`);
   }
 });

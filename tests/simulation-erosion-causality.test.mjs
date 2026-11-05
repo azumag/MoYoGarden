@@ -14,14 +14,24 @@ function channelFixture() {
   for (const tile of state.tiles) {
     tile.terrain = "plain";
     tile.elevation = 0.95;
+    delete tile.bedrockElevation;
+    delete tile.soilThickness;
     delete tile.resource;
     delete tile.flowTo;
     delete tile.drainage;
     delete tile.erosionPressure;
   }
-  for (let x = 3; x <= 9; x += 1) getTile(state, { x, y: 6 }).elevation = 0.8 - (x - 3) * 0.1;
+  for (let x = 3; x <= 9; x += 1) {
+    const t = getTile(state, { x, y: 6 });
+    t.elevation = 0.8 - (x - 3) * 0.1;
+    delete t.bedrockElevation;
+    delete t.soilThickness;
+  }
   // A closed land-only basin keeps all displaced sediment in the measured set.
-  getTile(state, { x: 10, y: 6 }).elevation = 0.1;
+  const outlet = getTile(state, { x: 10, y: 6 });
+  outlet.elevation = 0.1;
+  delete outlet.bedrockElevation;
+  delete outlet.soilThickness;
   const source = getTile(state, { x: 7, y: 6 });
   source.resource = { kind: "wood", amount: 2, maxAmount: 2 };
   const agent = state.agents[0];
@@ -93,11 +103,26 @@ test("unchanged vegetation retains the cached-pressure transfer and drainage inp
   source.flowTo = { x: target.x, y: target.y };
   source.drainage = 0.75;
   source.erosionPressure = terrainErosionPressureAt(state, source);
-  const expected = Math.min(0.001 * source.erosionPressure, (source.elevation - target.elevation) * 0.2, source.elevation - 0.01);
+  const beforePressure = source.erosionPressure;
+  const beforeSourceSoil = source.soilThickness ?? 0;
+  const beforeTargetSoil = target.soilThickness ?? 0;
   const beforeSource = source.elevation;
   const beforeTarget = target.elevation;
   const moved = applyTerrainErosion(state);
-  assert.equal(moved, expected);
-  assert.equal(source.elevation, beforeSource - expected);
-  assert.equal(target.elevation, beforeTarget + expected);
+  const drop = beforeSource - beforeTarget;
+  const expected = Math.min(
+    0.001 * beforePressure,
+    drop * 0.2,
+    beforeSourceSoil,
+    Math.max(0, beforeSource - 0.01),
+  );
+  assert.ok(Math.abs(moved.removed - expected) < 1e-12);
+  assert.ok(Math.abs(moved.deposited - expected) < 1e-12);
+  assert.ok(Math.abs(moved.waterExport) < 1e-12);
+  assert.ok(Math.abs(moved.clampLoss) < 1e-12);
+  assert.ok(Math.abs(moved.removed - (moved.deposited + moved.waterExport + moved.clampLoss)) < 1e-9);
+  assert.ok(Math.abs((source.elevation - beforeSource) + expected) < 1e-12);
+  assert.ok(Math.abs((target.elevation - beforeTarget) - expected) < 1e-12);
+  assert.ok(Math.abs((source.soilThickness ?? 0) - (beforeSourceSoil - expected)) < 1e-12);
+  assert.ok(Math.abs((target.soilThickness ?? 0) - (beforeTargetSoil + expected)) < 1e-12);
 });

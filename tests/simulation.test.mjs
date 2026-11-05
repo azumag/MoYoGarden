@@ -59,6 +59,8 @@ test("downhill flow accumulates drainage and feeds organic regrowth", () => {
   for (const tile of state.tiles) {
     tile.terrain = "plain";
     tile.elevation = 0.95;
+    delete tile.bedrockElevation;
+    delete tile.soilThickness;
     delete tile.resource;
     delete tile.flowTo;
     delete tile.drainage;
@@ -69,10 +71,14 @@ test("downhill flow accumulates drainage and feeds organic regrowth", () => {
   for (let x = 3; x <= 9; x += 1) {
     const tile = state.tiles.find((entry) => entry.x === x && entry.y === y); assert.ok(tile);
     tile.elevation = 0.8 - (x - 3) * 0.1;
+    delete tile.bedrockElevation;
+    delete tile.soilThickness;
   }
   const outlet = state.tiles.find((tile) => tile.x === 10 && tile.y === y); assert.ok(outlet);
   outlet.terrain = "water";
   outlet.elevation = 0;
+  delete outlet.bedrockElevation;
+  delete outlet.soilThickness;
 
   updateTileHydrology(state);
   const head = state.tiles.find((tile) => tile.x === 3 && tile.y === y); assert.ok(head);
@@ -99,6 +105,8 @@ test("drainage-driven erosion moves sediment downhill while vegetation protects 
   for (const tile of state.tiles) {
     tile.terrain = "plain";
     tile.elevation = 0.4;
+    delete tile.bedrockElevation;
+    delete tile.soilThickness;
     delete tile.resource;
     delete tile.flowTo;
     tile.drainage = 0;
@@ -109,6 +117,10 @@ test("drainage-driven erosion moves sediment downhill while vegetation protects 
   const target = state.tiles.find((tile) => tile.x === 8 && tile.y === 6); assert.ok(target);
   source.elevation = 0.6;
   target.elevation = 0.4;
+  delete source.bedrockElevation;
+  delete source.soilThickness;
+  delete target.bedrockElevation;
+  delete target.soilThickness;
   source.flowTo = { x: target.x, y: target.y };
   source.drainage = 1;
   source.resource = { kind: "wood", amount: 0, maxAmount: 10 };
@@ -125,7 +137,10 @@ test("drainage-driven erosion moves sediment downhill while vegetation protects 
   const pairBefore = sourceBefore + targetBefore;
   const moved = applyTerrainErosion(state);
 
-  assert.ok(moved > 0);
+  assert.ok(moved.removed > 0);
+  assert.ok(moved.deposited > 0);
+  assert.ok(Math.abs(moved.waterExport) < 1e-12);
+  assert.ok(Math.abs(moved.removed - (moved.deposited + moved.waterExport + moved.clampLoss)) < 1e-9);
   assert.ok(source.elevation < sourceBefore);
   assert.ok(target.elevation > targetBefore);
   assert.ok(Math.abs((source.elevation + target.elevation) - pairBefore) < 1e-12);

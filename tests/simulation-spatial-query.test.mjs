@@ -22,6 +22,8 @@ function plainFixture(seed = 24024) {
   for (const tile of state.tiles) {
     tile.terrain = "plain";
     tile.elevation = 0.5;
+    delete tile.bedrockElevation;
+    delete tile.soilThickness;
     delete tile.resource;
     delete tile.flowTo;
     tile.drainage = 0;
@@ -54,7 +56,7 @@ function crowdedRouteFixture(population) {
   return state;
 }
 
-// Updated for #25 Phase 1 soil moisture/precipitation balance (intentional behavior change).
+// Updated for #26 Phase 2 + DSH review fixes (soil-stateful semantics, bitwise-stable consistent layers).
 // Stay below the 120-tick erosion boundary to isolate the routing optimization
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {

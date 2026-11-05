@@ -121,11 +121,21 @@ export function ensureTileTerrainLayers(
       continue;
     }
     if (!inBounds(state, tile)) continue;
-    if (
+    const hasLayers =
       Number.isFinite(tile.bedrockElevation ?? Number.NaN) &&
-      Number.isFinite(tile.soilThickness ?? Number.NaN) &&
-      Math.abs((tile.bedrockElevation ?? 0) + (tile.soilThickness ?? 0) - (tile.elevation ?? 0)) < 1e-12
-    ) {
+      Number.isFinite(tile.soilThickness ?? Number.NaN);
+    if (hasLayers) {
+      const bedrock = tile.bedrockElevation ?? 0;
+      const soil = Math.max(0, tile.soilThickness ?? 0);
+      const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation as number) : bedrock + soil;
+      if (Math.abs(bedrock + soil - elevation) <= 1e-12) {
+        // Consistent: touch nothing (preserve bitwise elevation)
+        continue;
+      }
+      // Phase 2: external surface edits are absorbed by soil (bedrock fixed as lower bound).
+      tile.bedrockElevation = bedrock;
+      tile.soilThickness = Math.max(0, elevation - bedrock);
+      // Do not rewrite elevation
       continue;
     }
     splitTileTerrainLayers(tile);
