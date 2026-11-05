@@ -156,7 +156,7 @@ test("erosion mass accounting with ledger: removed = deposited + water export + 
   }
   assert.ok(Math.abs(ledger.removed - removed) < 1e-9);
   assert.ok(Math.abs(ledger.deposited - deposited) < 1e-9);
-  assert.ok(Math.abs(ledger.removed - (ledger.deposited + ledger.waterExport + ledger.clampLoss)) < 1e-9);
+  assert.ok(Math.abs(ledger.removed + (ledger.bedrockRemoved ?? 0) - (ledger.deposited + ledger.waterExport + ledger.clampLoss)) < 1e-9);
   assert.ok(ledger.removed >= -1e-12);
   assert.ok(ledger.deposited >= -1e-12);
   assert.ok(ledger.waterExport >= -1e-12);

@@ -140,7 +140,7 @@ test("drainage-driven erosion moves sediment downhill while vegetation protects 
   assert.ok(moved.removed > 0);
   assert.ok(moved.deposited > 0);
   assert.ok(Math.abs(moved.waterExport) < 1e-12);
-  assert.ok(Math.abs(moved.removed - (moved.deposited + moved.waterExport + moved.clampLoss)) < 1e-9);
+  assert.ok(Math.abs(moved.removed + (moved.bedrockRemoved ?? 0) - (moved.deposited + moved.waterExport + moved.clampLoss)) < 1e-9);
   assert.ok(source.elevation < sourceBefore);
   assert.ok(target.elevation > targetBefore);
   assert.ok(Math.abs((source.elevation + target.elevation) - pairBefore) < 1e-12);
