@@ -121,11 +121,16 @@ export function ensureTileTerrainLayers(
       continue;
     }
     if (!inBounds(state, tile)) continue;
-    if (
+    const hasLayers =
       Number.isFinite(tile.bedrockElevation ?? Number.NaN) &&
-      Number.isFinite(tile.soilThickness ?? Number.NaN) &&
-      Math.abs((tile.bedrockElevation ?? 0) + (tile.soilThickness ?? 0) - (tile.elevation ?? 0)) < 1e-12
-    ) {
+      Number.isFinite(tile.soilThickness ?? Number.NaN);
+    if (hasLayers) {
+      // Phase 2: soil is stateful. Maintain surface invariant without re-deriving from elevation.
+      const bedrock = tile.bedrockElevation ?? 0;
+      const soil = Math.max(0, tile.soilThickness ?? 0);
+      tile.bedrockElevation = bedrock;
+      tile.soilThickness = soil;
+      tile.elevation = bedrock + soil;
       continue;
     }
     splitTileTerrainLayers(tile);

@@ -22,6 +22,8 @@ function plainFixture(seed = 24024) {
   for (const tile of state.tiles) {
     tile.terrain = "plain";
     tile.elevation = 0.5;
+    delete tile.bedrockElevation;
+    delete tile.soilThickness;
     delete tile.resource;
     delete tile.flowTo;
     tile.drainage = 0;
@@ -54,13 +56,13 @@ function crowdedRouteFixture(population) {
   return state;
 }
 
-// Updated for #25 Phase 1 soil moisture/precipitation balance (intentional behavior change).
+// Updated for #26 Phase 2 soil-stateful erosion (intentional behavior change).
 // Stay below the 120-tick erosion boundary to isolate the routing optimization
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "af78747a714b393bc923b438376319d17eeedb95276b915beb600588fc4396cb", 3370508769],
-    [271828, "d2f83621f6bcac356212dc770640343fa7feb3e091533aa9d3dde67690d5df9e", 1241391839],
+    [123456, "d67567f3b6e7ac49fd079fec3da5612eb13f247457eff6322e2e29f207c17294", 3370508769],
+    [271828, "c9f3e01a2a8e615ed580c483c43bb989d7231dedd1320f79e25de847ff9e3ee4", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;

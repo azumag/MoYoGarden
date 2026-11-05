@@ -347,15 +347,22 @@ export function updateTileHydrology(
 }
 
 export function applyTerrainErosion(state: WorldState): number {
-  const elevationDelta = new Map<string, number>();
-  let moved = 0;
+  ensureTileTerrainLayers(state);
+  const soilDelta = new Map<string, number>();
+  const exportDelta = new Map<string, number>();
+  let totalRemoved = 0;
 
   for (const tile of state.tiles) {
     if (tile.terrain === "water" || tile.flowTo === undefined) continue;
-    const sourceElevation = tileElevation(tile);
+    if (!inBounds(state, tile)) continue;
+    const sourceBedrock = tile.bedrockElevation ?? 0;
+    const sourceSoil = Math.max(0, tile.soilThickness ?? 0);
+    const sourceElevation = sourceBedrock + sourceSoil;
     const target = getTile(state, tile.flowTo);
-    const targetElevation = tileElevation(target);
-    if (sourceElevation === undefined || target === undefined || targetElevation === undefined) continue;
+    if (target === undefined) continue;
+    const targetBedrock = target.terrain === "water" ? 0 : (target.bedrockElevation ?? 0);
+    const targetSoil = target.terrain === "water" ? 0 : Math.max(0, target.soilThickness ?? 0);
+    const targetElevation = target.terrain === "water" ? 0 : targetBedrock + targetSoil;
 
     // BOT work happens after the tick's hydrology update. Read current cover so
     // harvesting on an erosion tick affects this transfer, rather than waiting
@@ -366,33 +373,92 @@ export function applyTerrainErosion(state: WorldState): number {
 
     const drop = sourceElevation - targetElevation;
     if (drop <= HYDROLOGY_EPSILON) continue;
+    // Phase 2: move soil (stateful). Bedrock is fixed. Transfer bounded by available soil
+    // and by keeping source surface above 0.01.
+    const maxBySoil = Math.max(0, sourceSoil);
+    const maxBySurface = Math.max(0, sourceElevation - 0.01);
     const transfer = Math.min(
       MAX_EROSION_TRANSFER * pressure,
       drop * 0.2,
-      Math.max(0, sourceElevation - 0.01),
+      maxBySoil,
+      maxBySurface,
     );
-    if (transfer <= 0) continue;
+    if (transfer <= HYDROLOGY_EPSILON) continue;
 
     const sourceKey = positionKey(tile);
-    elevationDelta.set(sourceKey, (elevationDelta.get(sourceKey) ?? 0) - transfer);
-    if (target.terrain !== "water") {
+    soilDelta.set(sourceKey, (soilDelta.get(sourceKey) ?? 0) - transfer);
+    totalRemoved += transfer;
+    if (target.terrain !== "water" && inBounds(state, target)) {
       const targetKey = positionKey(target);
-      elevationDelta.set(targetKey, (elevationDelta.get(targetKey) ?? 0) + transfer);
+      soilDelta.set(targetKey, (soilDelta.get(targetKey) ?? 0) + transfer);
+    } else {
+      exportDelta.set(sourceKey, (exportDelta.get(sourceKey) ?? 0) + transfer);
     }
-    moved += transfer;
   }
 
-  if (moved <= 0) return 0;
+  if (totalRemoved <= 0) return 0;
+
+  const beforeSoil = new Map<string, number>();
   for (const tile of state.tiles) {
-    if (tile.terrain === "water") continue;
-    const elevation = tileElevation(tile);
-    const delta = elevationDelta.get(positionKey(tile));
-    if (elevation === undefined || delta === undefined) continue;
-    tile.elevation = Math.max(0.01, Math.min(0.99, elevation + delta));
+    if (tile.terrain === "water" || !inBounds(state, tile)) continue;
+    beforeSoil.set(positionKey(tile), Math.max(0, tile.soilThickness ?? 0));
   }
-  ensureTileTerrainLayers(state);
+
+  let clampLoss = 0;
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") {
+      tile.bedrockElevation = 0;
+      tile.soilThickness = 0;
+      tile.elevation = 0;
+      continue;
+    }
+    if (!inBounds(state, tile)) continue;
+    const key = positionKey(tile);
+    const bedrock = tile.bedrockElevation ?? 0;
+    const soil = Math.max(0, tile.soilThickness ?? 0);
+    const delta = soilDelta.get(key) ?? 0;
+    let nextSoil = soil + delta;
+    if (nextSoil < 0) {
+      clampLoss += -nextSoil;
+      nextSoil = 0;
+    }
+    let nextElevation = bedrock + nextSoil;
+    if (nextElevation > 0.99) {
+      const loss = nextElevation - 0.99;
+      clampLoss += Math.min(loss, nextSoil);
+      nextSoil = Math.max(0, nextSoil - loss);
+      nextElevation = bedrock + nextSoil;
+    }
+    // Never add soil to satisfy a 0.01 floor; bedrock is fixed in Phase 2.
+    tile.bedrockElevation = bedrock;
+    tile.soilThickness = nextSoil;
+    tile.elevation = nextElevation;
+  }
+
+  // Accounting from actual changes: removed from land = deposited on land + water export + clamp loss
+  let actualRemoved = 0;
+  let actualDeposited = 0;
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state, tile)) continue;
+    const key = positionKey(tile);
+    const before = beforeSoil.get(key) ?? 0;
+    const after = Math.max(0, tile.soilThickness ?? 0);
+    const diff = after - before;
+    if (diff < 0) actualRemoved += -diff;
+    else if (diff > 0) actualDeposited += diff;
+  }
+  let plannedExport = 0;
+  for (const value of exportDelta.values()) plannedExport += value;
+  // Any planned export that wasn't actually removed (due to source clamping) becomes clamp loss
+  const realizedExport = Math.min(plannedExport, Math.max(0, actualRemoved - actualDeposited));
+  const totalClampLoss = Math.max(0, actualRemoved - actualDeposited - realizedExport);
+
+  void clampLoss;
+  void realizedExport;
+  void totalClampLoss;
+  void beforeSoil;
   updateTileHydrology(state);
-  return moved;
+  return actualRemoved;
 }
 
 export function surfaceMoistureAt(
