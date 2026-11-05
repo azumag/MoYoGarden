@@ -338,6 +338,8 @@ export interface SimulationConfig {
   commandHistoryLimit: number;
   resourceRegrowthInterval: number;
   externalTaskTtl: number;
+  /** Optional test/runtime hook for Phase 4 uplift rate derivation; non-persistent. */
+  upliftRateAt?: (state: any, tile: any) => number;
 }
 
 export const DEFAULT_SIMULATION_CONFIG: SimulationConfig = {
