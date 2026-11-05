@@ -95,8 +95,8 @@ export function splitTileTerrainLayers(tile: Tile): void {
   }
 
   const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0 : 0;
-  const soilThickness = soilThicknessFromElevation(elevation);
-  const bedrockElevation = Math.max(0, elevation - soilThickness);
+  const soilThickness = Math.min(soilThicknessFromElevation(elevation), elevation);
+  const bedrockElevation = elevation - soilThickness;
   tile.bedrockElevation = bedrockElevation;
   tile.soilThickness = soilThickness;
   // Keep elevation as the surface elevation (compat alias); preserve original value without reassigning
@@ -108,8 +108,7 @@ export function splitTileTerrainLayers(tile: Tile): void {
 export function ensureTileTerrainLayers(
   state: Pick<WorldState, "width" | "height" | "tiles">,
 ): void {
-  const activeTiles = state.tiles.filter((tile) => inBounds(state, tile));
-  for (const tile of activeTiles) {
+  for (const tile of state.tiles) {
     if (tile.terrain === "water") {
       if (
         tile.elevation === 0 &&
@@ -121,6 +120,7 @@ export function ensureTileTerrainLayers(
       splitTileTerrainLayers(tile);
       continue;
     }
+    if (!inBounds(state, tile)) continue;
     if (
       Number.isFinite(tile.bedrockElevation ?? Number.NaN) &&
       Number.isFinite(tile.soilThickness ?? Number.NaN) &&
