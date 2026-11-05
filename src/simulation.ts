@@ -349,7 +349,7 @@ export function updateTileHydrology(
   for (const tile of state.tiles) tile.erosionPressure = terrainErosionPressureAt(state, tile);
 }
 
-function upliftAmountAt(
+export function upliftRateAt(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
   tile: Tile,
 ): number {
@@ -364,12 +364,17 @@ function upliftAmountAt(
   return Math.max(0, Math.min(1, v)) * MAX_UPLIFT_PER_EVENT;
 }
 
-export function applyTerrainUplift(state: WorldState): number {
+export type UpliftRateAt = typeof upliftRateAt;
+
+export function applyTerrainUplift(
+  state: WorldState,
+  rateAt: (state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">, tile: Tile) => number = upliftRateAt,
+): number {
   ensureTileTerrainLayers(state);
   let total = 0;
   for (const tile of state.tiles) {
     if (tile.terrain === "water" || !inBounds(state, tile)) continue;
-    const u = upliftAmountAt(state, tile);
+    const u = rateAt(state, tile);
     if (u <= HYDROLOGY_EPSILON) continue;
     const bedrock = tile.bedrockElevation ?? 0;
     const soil = Math.max(0, tile.soilThickness ?? 0);
@@ -1824,7 +1829,7 @@ export function simulate(
     executeTask(state, agent, flow, absorbedConstructionWork);
   }
 
-  if (state.tick % UPLIFT_INTERVAL === 0) applyTerrainUplift(state);
+  if (state.tick % UPLIFT_INTERVAL === 0) applyTerrainUplift(state, config.upliftRateAt ?? upliftRateAt);
   if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) applyTerrainErosion(state);
   if (state.tick % config.resourceRegrowthInterval === 0) regrowResources(state, random);
   state.rngState = random.state();
