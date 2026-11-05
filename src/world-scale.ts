@@ -9,7 +9,7 @@ import {
 } from "./hex-grid.js";
 import type { Tile, WorldState } from "./protocol.js";
 import { createRandom } from "./prng.js";
-import { migrateWorldToHexGrid } from "./world.js";
+import { ensureTileTerrainLayers, migrateWorldToHexGrid } from "./world.js";
 
 export const TARGET_WORLD_WIDTH = 40;
 export const TARGET_WORLD_HEIGHT = 24;
@@ -336,6 +336,10 @@ export function alignRegionBoundaryElevations(
     changed += 1;
   }
 
+  if (changed > 0) {
+    ensureTileTerrainLayers(state);
+  }
+
   return changed;
 }
 
@@ -469,6 +473,7 @@ export function initializeWorldTerrainFrame(
   }
   state.tiles = tiles;
   migrateWorldToHexGrid(state);
+  ensureTileTerrainLayers(state);
 }
 
 export function ensureWorldExtent(
@@ -509,5 +514,6 @@ export function ensureWorldExtent(
   }
 
   const migrated = migrateWorldToHexGrid(state);
+  ensureTileTerrainLayers(state);
   return extentChanged || migrated > 0;
 }

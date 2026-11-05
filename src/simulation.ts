@@ -28,6 +28,7 @@ import { createRandom } from "./prng.js";
 import {
   activeFactionStructures,
   ensureTileElevations,
+  ensureTileTerrainLayers,
   getAgent,
   getFaction,
   getStructure,
@@ -204,6 +205,7 @@ export function updateTileHydrology(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles">,
 ): void {
   ensureTileElevations(state);
+  ensureTileTerrainLayers(state);
   for (const tile of state.tiles) {
     const target = flowTargetAt(state, tile);
     if (target === undefined) delete tile.flowTo;
@@ -258,6 +260,7 @@ export function applyTerrainErosion(state: WorldState): number {
     if (elevation === undefined || delta === undefined) continue;
     tile.elevation = Math.max(0.01, Math.min(0.99, elevation + delta));
   }
+  ensureTileTerrainLayers(state);
   updateTileHydrology(state);
   return moved;
 }
@@ -1495,6 +1498,8 @@ export function simulate(
 ): SimulationResult {
   const state = structuredClone(previousState);
   migrateWorldToHexGrid(state);
+  ensureTileElevations(state);
+  ensureTileTerrainLayers(state);
   updateTileHydrology(state);
   state.tick += 1;
   state.revision += 1;

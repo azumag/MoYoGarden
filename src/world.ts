@@ -66,6 +66,14 @@ const ROLE_ORDER: readonly AgentRole[] = [
 ];
 
 const ELEVATION_WATER_RADIUS = 5;
+const SOIL_THICKNESS_MAX = 0.06;
+
+function soilThicknessFromElevation(elevation: number): number {
+  if (elevation <= 0) return 0;
+  const normalized = Math.max(0, Math.min(1, elevation));
+  const soil = SOIL_THICKNESS_MAX * (1 - normalized);
+  return Math.max(0, Math.min(SOIL_THICKNESS_MAX, soil));
+}
 
 function seededUnit(seed: number, salt: number): number {
   let value = (seed ^ salt) >>> 0;
@@ -73,6 +81,55 @@ function seededUnit(seed: number, salt: number): number {
   value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
   value = (value ^ (value >>> 16)) >>> 0;
   return value / 0xffff_ffff;
+}
+
+export function splitTileTerrainLayers(tile: Tile): void {
+  if (tile.terrain === "water") {
+    if (tile.elevation === undefined || !Number.isFinite(tile.elevation)) {
+      tile.elevation = 0;
+    }
+    tile.bedrockElevation = 0;
+    tile.soilThickness = 0;
+    tile.elevation = 0;
+    return;
+  }
+
+  const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? tile.elevation ?? 0 : 0;
+  const soilThickness = Math.min(soilThicknessFromElevation(elevation), elevation);
+  const bedrockElevation = elevation - soilThickness;
+  tile.bedrockElevation = bedrockElevation;
+  tile.soilThickness = soilThickness;
+  // Keep elevation as the surface elevation (compat alias); preserve original value without reassigning
+  if (tile.elevation !== elevation) {
+    tile.elevation = elevation;
+  }
+}
+
+export function ensureTileTerrainLayers(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+): void {
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") {
+      if (
+        tile.elevation === 0 &&
+        tile.bedrockElevation === 0 &&
+        tile.soilThickness === 0
+      ) {
+        continue;
+      }
+      splitTileTerrainLayers(tile);
+      continue;
+    }
+    if (!inBounds(state, tile)) continue;
+    if (
+      Number.isFinite(tile.bedrockElevation ?? Number.NaN) &&
+      Number.isFinite(tile.soilThickness ?? Number.NaN) &&
+      Math.abs((tile.bedrockElevation ?? 0) + (tile.soilThickness ?? 0) - (tile.elevation ?? 0)) < 1e-12
+    ) {
+      continue;
+    }
+    splitTileTerrainLayers(tile);
+  }
 }
 
 export function ensureTileElevations(
@@ -339,6 +396,7 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
   }
 
   ensureTileElevations({ seed, width, height, tiles });
+  ensureTileTerrainLayers({ width, height, tiles });
 
   const initialEvent: WorldEvent = {
     id: "event-0-world-started",
@@ -386,11 +444,15 @@ export function migrateWorldToHexGrid(state: WorldState): number {
       tile.resource !== undefined ||
       tile.flowTo !== undefined ||
       tile.elevation !== 0 ||
+      tile.bedrockElevation !== 0 ||
+      tile.soilThickness !== 0 ||
       tile.drainage !== 0 ||
       tile.erosionPressure !== 0
     ) changed += 1;
     tile.terrain = "water";
     tile.elevation = 0;
+    tile.bedrockElevation = 0;
+    tile.soilThickness = 0;
     delete tile.resource;
     delete tile.flowTo;
     tile.drainage = 0;

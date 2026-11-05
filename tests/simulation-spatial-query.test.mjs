@@ -4,7 +4,18 @@ import test from "node:test";
 import { simulate } from "../dist-ts/src/simulation.js";
 import { createInitialWorld, inBounds } from "../dist-ts/src/world.js";
 
-const fingerprint = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const sortKeys = (value) => {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      out[key] = sortKeys(value[key]);
+    }
+    return out;
+  }
+  return value;
+};
+const fingerprint = (value) => createHash("sha256").update(JSON.stringify(sortKeys(value))).digest("hex");
 
 function plainFixture(seed = 24024) {
   const state = createInitialWorld({ seed, width: 40, height: 24 });
@@ -48,8 +59,8 @@ function crowdedRouteFixture(population) {
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "8eeeefec9d00da14cc896d0c9185cd3d2a91efd8bdcc247cacd3eceb866e677b", 3370508769],
-    [271828, "8b500c7f86d4924e50225c33c37ecc0e664f22263f6bf6e2c7e38328fee0896a", 1241391839],
+    [123456, "4cb5c3b89129e78162837d2590c840290074a877cb965b4b029274913985edca", 3370508769],
+    [271828, "5d40227f816e1bde2da321353b76a6d83b9832346926cc6779d197f797cd4d94", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;
@@ -110,7 +121,7 @@ test("800-BOT route matches legacy output with one population scan", (context) =
   }
   const measuredReads = positionReads;
   const legacyReads = 24803;
-  assert.equal(fingerprint(next), "c6bef6dd8ea91821b2b252cb9874cb4e18995363788a347625965dbf93bb3231");
+  assert.equal(fingerprint(next), "c8dbcd2b4045dbcee8b1e3df8ee28a9ecbef349c0ffcfa4150f94fd7e3308335");
   assert.equal(next.rngState, 3536807351);
   // The existing hex migration reads each position twice before movement;
   // routing should add only one population pass and a few mover-only reads.
