@@ -312,11 +312,19 @@ export function updateTileSoilMoisture(
   const seed = (state as any).seed ?? 0;
   const tick = (state as any).tick ?? 0;
   if (tick % WATER_BALANCE_INTERVAL !== 0) return undefined;
-  // Snapshot heads before any modifications for boundary flux symmetry
+  let haloList: readonly HexHaloTile[] | undefined;
+  if (Array.isArray(haloOrOptions)) {
+    haloList = haloOrOptions;
+  } else if (haloOrOptions && typeof haloOrOptions === "object" && "halo" in haloOrOptions) {
+    haloList = (haloOrOptions as { halo?: readonly HexHaloTile[] }).halo;
+  }
+  // Snapshot heads before any modifications for boundary flux symmetry (only if halo present)
   const boundarySelfHeadSnapshot = new Map<string, number>();
-  for (const tile of state.tiles) {
-    if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
-    boundarySelfHeadSnapshot.set(positionKey(tile), groundwaterHeadAt(state, tile));
+  if (haloList && haloList.length > 0) {
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
+      boundarySelfHeadSnapshot.set(positionKey(tile), groundwaterHeadAt(state, tile));
+    }
   }
 
   const ledger: WaterBalanceLedger = {
@@ -432,12 +440,6 @@ export function updateTileSoilMoisture(
   routePendingOverflowToSurfaceWater(state, ledger);
 
   // #25 Phase 6: derive boundary groundwater flux to ghost tiles (observe only, no storage application)
-  let haloList: readonly HexHaloTile[] | undefined;
-  if (Array.isArray(haloOrOptions)) {
-    haloList = haloOrOptions;
-  } else if (haloOrOptions && typeof haloOrOptions === "object" && "halo" in haloOrOptions) {
-    haloList = (haloOrOptions as { halo?: readonly HexHaloTile[] }).halo;
-  }
   if (haloList && haloList.length > 0) {
     const haloLookup = hexHaloLookup(haloList);
     const seed = (state as any).seed ?? 0;
