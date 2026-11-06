@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 // A regression boundary for our trusted engine, not a sandbox for hostile code.
 // No SDK, Worker, DO, network/storage built-in or third-party module may enter
 // this complete, reviewed dependency graph. Check BEFORE evaluating imports.
-const MODULES = ["demography", "hex-grid", "prng", "protocol", "runtime", "simulation", "world", "world-scale"];
+const MODULES = ["demography", "hex-grid", "prng", "protocol", "region-topology", "runtime", "simulation", "world", "world-scale"];
 export function auditEvolutionEngine(root = new URL("../dist-ts/src/", import.meta.url)) {
   return auditModules(MODULES, root);
 }
