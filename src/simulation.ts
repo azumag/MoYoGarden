@@ -71,6 +71,11 @@ const MAX_EROSION_TRANSFER = 0.001;
 const MAX_BEDROCK_EROSION_TRANSFER = MAX_EROSION_TRANSFER * 0.2;
 export const UPLIFT_INTERVAL = 1200;
 export const MAX_UPLIFT_PER_EVENT = 0.001;
+const LANDSLIDE_SLOPE_REF = 0.15;
+const LANDSLIDE_SOIL_REF = 0.06;
+const LANDSLIDE_THRESHOLD = 0.8;
+const LANDSLIDE_MIN_DOWNSLOPE = 0.12;
+const MAX_LANDSLIDE_TRANSFER = 0.01;
 const SETTLEMENT_RESIDENT_CAPACITY_PER_CAMP = 6;
 const SETTLEMENT_CAMP_MIN_SPACING = 2;
 const GATHER_BASE_AMOUNT = 2;
@@ -576,6 +581,153 @@ export function applyTerrainErosion(state: WorldState): TerrainErosionLedger {
 
   updateTileHydrology(state);
   return { removed, deposited, waterExport, clampLoss, bedrockRemoved };
+}
+
+export interface LandslideLedger {
+  moved: number;
+  deposited: number;
+  waterExport: number;
+  clampLoss: number;
+}
+
+function landslideSaturationTerm(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  tile: Tile,
+): number {
+  const { globalX, globalY } = getTileGlobalPosition(state, tile);
+  const seed = (state as any).seed ?? 0;
+  const conditions = sampleWorldConditions(seed, globalX, globalY);
+  const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+  const capacity = soilMoistureCapacity(state, tile);
+  const satSoil = clamp01(Math.max(0, tile.soilMoisture ?? 0) / Math.max(1e-6, capacity));
+  const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
+  const soil = Math.max(0, tile.soilThickness ?? 0);
+  const surface = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation as number) : bedrock + soil;
+  const maxStorage = Math.max(0, porosity * Math.max(0, surface - bedrock));
+  const gwFill = clamp01(Math.max(0, tile.groundwaterStorage ?? 0) / Math.max(1e-6, maxStorage));
+  return clamp01(satSoil + 0.5 * gwFill);
+}
+
+function steepestDescentTarget(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  tile: Tile,
+): { target: Tile; drop: number } | undefined {
+  const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
+  const soil = Math.max(0, tile.soilThickness ?? 0);
+  const elevation = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation as number) : bedrock + soil;
+  let best: { target: Tile; drop: number } | undefined;
+  for (const delta of HEX_GRID_STEPS) {
+    const npos = { x: tile.x + delta.x, y: tile.y + delta.y };
+    const neighbor = getTile(state, npos);
+    if (neighbor === undefined || !inBounds(state, npos)) continue;
+    const nBedrock = neighbor.terrain === "water" ? 0 : Math.max(0, neighbor.bedrockElevation ?? 0);
+    const nSoil = neighbor.terrain === "water" ? 0 : Math.max(0, neighbor.soilThickness ?? 0);
+    const nElev = neighbor.terrain === "water" ? 0 : (Number.isFinite(neighbor.elevation ?? Number.NaN) ? (neighbor.elevation as number) : nBedrock + nSoil);
+    const drop = elevation - nElev;
+    if (drop <= HYDROLOGY_EPSILON) continue;
+    if (best === undefined || drop > best.drop || (Math.abs(drop - best.drop) < 1e-12 && (npos.y < best.target.y || (npos.y === best.target.y && npos.x < best.target.x)))) {
+      best = { target: neighbor, drop };
+    }
+  }
+  return best;
+}
+
+export function applyMassWasting(state: WorldState): LandslideLedger {
+  ensureTileTerrainLayers(state);
+  const soilDelta = new Map<string, number>();
+  const exportDelta = new Map<string, number>();
+  let totalMoved = 0;
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state, tile)) continue;
+    const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
+    const soil = Math.max(0, tile.soilThickness ?? 0);
+    if (soil <= HYDROLOGY_EPSILON) continue; // bedrock landslide out of scope
+    const descent = steepestDescentTarget(state, tile);
+    if (descent === undefined) continue;
+    const { target, drop } = descent;
+    if (drop <= LANDSLIDE_MIN_DOWNSLOPE) continue;
+
+    const slopeTerm = clamp01(drop / LANDSLIDE_SLOPE_REF);
+    const soilTerm = clamp01(soil / LANDSLIDE_SOIL_REF);
+    const saturationTerm = landslideSaturationTerm(state, tile);
+    const instability = clamp01(slopeTerm * (0.35 + 0.65 * saturationTerm) * soilTerm);
+    if (instability <= LANDSLIDE_THRESHOLD) continue;
+
+    const instabilityExcess = clamp01((instability - LANDSLIDE_THRESHOLD) / Math.max(1e-6, 1 - LANDSLIDE_THRESHOLD));
+    const elevation = bedrock + soil;
+    const maxBySoil = Math.max(0, soil);
+    const maxBySurface = Math.max(0, elevation - 0.01);
+    const transfer = Math.min(
+      MAX_LANDSLIDE_TRANSFER * (0.25 + 0.75 * instabilityExcess),
+      drop * 0.35,
+      maxBySoil,
+      maxBySurface,
+    );
+    if (transfer <= HYDROLOGY_EPSILON) continue;
+
+    const sourceKey = positionKey(tile);
+    soilDelta.set(sourceKey, (soilDelta.get(sourceKey) ?? 0) - transfer);
+    totalMoved += transfer;
+    if (target.terrain !== "water" && inBounds(state, target)) {
+      const targetKey = positionKey(target);
+      soilDelta.set(targetKey, (soilDelta.get(targetKey) ?? 0) + transfer);
+    } else {
+      exportDelta.set(sourceKey, (exportDelta.get(sourceKey) ?? 0) + transfer);
+    }
+  }
+
+  if (totalMoved <= 0) {
+    return { moved: 0, deposited: 0, waterExport: 0, clampLoss: 0 };
+  }
+
+  const beforeSoil = new Map<string, number>();
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state, tile)) continue;
+    beforeSoil.set(positionKey(tile), Math.max(0, tile.soilThickness ?? 0));
+  }
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water") {
+      tile.bedrockElevation = 0;
+      tile.soilThickness = 0;
+      tile.elevation = 0;
+      tile.groundwaterStorage = 0;
+      continue;
+    }
+    if (!inBounds(state, tile)) continue;
+    const key = positionKey(tile);
+    const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
+    let soil = Math.max(0, tile.soilThickness ?? 0) + (soilDelta.get(key) ?? 0);
+    if (soil < 0) soil = 0;
+    let elevation = bedrock + soil;
+    if (elevation > 0.99) {
+      const loss = elevation - 0.99;
+      soil = Math.max(0, soil - loss);
+      elevation = bedrock + soil;
+    }
+    tile.bedrockElevation = bedrock;
+    tile.soilThickness = soil;
+    tile.elevation = bedrock + soil;
+  }
+
+  let moved = 0;
+  let deposited = 0;
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state, tile)) continue;
+    const key = positionKey(tile);
+    const before = beforeSoil.get(key) ?? 0;
+    const after = Math.max(0, tile.soilThickness ?? 0);
+    const diff = after - before;
+    if (diff < 0) moved += -diff;
+    if (diff > 0) deposited += diff;
+  }
+  let plannedExport = 0;
+  for (const value of exportDelta.values()) plannedExport += value;
+  const waterExport = Math.min(plannedExport, Math.max(0, moved - deposited));
+  const clampLoss = Math.max(0, moved - deposited - waterExport);
+
+  return { moved, deposited, waterExport, clampLoss };
 }
 
 export function surfaceMoistureAt(
@@ -1872,8 +2024,15 @@ export function simulate(
     executeTask(state, agent, flow, absorbedConstructionWork);
   }
 
-  if (state.tick % UPLIFT_INTERVAL === 0) applyTerrainUplift(state, config.upliftRateAt ?? upliftRateAt);
-  if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) applyTerrainErosion(state);
+  if (state.tick % TERRAIN_EVOLUTION_INTERVAL === 0) {
+    if (state.tick % UPLIFT_INTERVAL === 0) {
+      applyTerrainUplift(state, config.upliftRateAt ?? upliftRateAt);
+    }
+    updateTileHydrology(state);
+    applyTerrainErosion(state);
+    applyMassWasting(state);
+    updateTileHydrology(state);
+  }
   if (state.tick % config.resourceRegrowthInterval === 0) regrowResources(state, random);
   state.rngState = random.state();
   state.events = state.events.slice(-config.eventLimit);
