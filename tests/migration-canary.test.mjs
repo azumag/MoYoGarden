@@ -137,7 +137,8 @@ test("birth after migration remains linked to its original-region parent", () =>
 });
 
 test("migration audit extends but does not weaken the Phase 0 allowlist", async () => {
-  assert.equal(auditEvolutionEngine().files.length, 8);
+  // #25 Phase 4 added region-topology to the base allowlist for global coordinate access
+  assert.equal(auditEvolutionEngine().files.length, 9);
   assert.equal(auditMigrationEngine().files.length, 10);
   await assert.rejects(withProductionIoGuard(() => fetch("https://example.invalid")), /blocked external I\/O/);
   await assert.rejects(withProductionIoGuard(() => Math.random()), /blocked external I\/O/);

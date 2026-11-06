@@ -47,13 +47,22 @@ test("spring discharge emerges when groundwater head exceeds surface and conserv
     if (tile.terrain === "water" || !isHexGridCell(state, tile)) continue;
     tile.groundwaterStorage = 0.05;
   }
-  const beforeTotal = state.tiles.reduce((s, t) => s + (t.groundwaterStorage ?? 0), 0);
-  const ledger = { springDischarge: 0, springDischargeByTile: new Map() };
+  const beforeGW = state.tiles.reduce((s, t) => s + (t.groundwaterStorage ?? 0), 0);
+  const beforeSoil = state.tiles.reduce((s, t) => s + (t.soilMoisture ?? 0), 0);
+  const beforeOverflow = state.tiles.reduce((s, t) => s + (t.soilMoistureOverflow ?? 0), 0);
+  const ledger = { springDischarge: 0, springDischargeByTile: new Map(), overflow: 0 };
   const discharged = applySpringDischarge(state, ledger);
-  const afterTotal = state.tiles.reduce((s, t) => s + (t.groundwaterStorage ?? 0), 0);
+  const afterGW = state.tiles.reduce((s, t) => s + (t.groundwaterStorage ?? 0), 0);
+  const afterSoil = state.tiles.reduce((s, t) => s + (t.soilMoisture ?? 0), 0);
+  const afterOverflow = state.tiles.reduce((s, t) => s + (t.soilMoistureOverflow ?? 0), 0);
   assert.ok(discharged > 0, `expected spring discharge > 0, got ${discharged}`);
-  assert.ok(Math.abs(beforeTotal - afterTotal - discharged) < 1e-9,
-    `conservation: before=${beforeTotal} after=${afterTotal} discharged=${discharged}`);
+  assert.ok(Math.abs(beforeGW - afterGW - discharged) < 1e-9,
+    `gw conservation: before=${beforeGW} after=${afterGW} discharged=${discharged}`);
+  // spring discharge credited to soil moisture and/or overflow
+  const soilGain = afterSoil - beforeSoil;
+  const overflowGain = afterOverflow - beforeOverflow;
+  assert.ok(Math.abs(discharged - soilGain - overflowGain) < 1e-9,
+    `spring balance: discharged=${discharged} soilGain=${soilGain} overflowGain=${overflowGain}`);
   assert.ok(Math.abs(ledger.springDischarge - discharged) < 1e-9);
   assert.ok(ledger.springDischargeByTile.size > 0);
 });

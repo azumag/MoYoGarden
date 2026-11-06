@@ -401,7 +401,7 @@ export interface GroundwaterFlowLedger {
 
 export function applySpringDischarge(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
-  ledger?: Pick<WaterBalanceLedger, "springDischarge" | "springDischargeByTile">,
+  ledger?: Pick<WaterBalanceLedger, "springDischarge" | "springDischargeByTile" | "overflow">,
 ): number {
   ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
   const seed = (state as any).seed ?? 0;
@@ -417,6 +417,9 @@ export function applySpringDischarge(
     const { globalX, globalY } = getTileGlobalPosition(state, tile);
     const conditions = sampleWorldConditions(seed, globalX, globalY);
     const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+    const permeability = derivePermeability(seed, globalX, globalY, conditions.elevation, conditions.slope);
+    const soilThickness = Math.max(0, tile.soilThickness ?? 0.01);
+    const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
     const head = deriveHydraulicHead(
       tile.bedrockElevation,
       tile.soilThickness,
@@ -428,11 +431,22 @@ export function applySpringDischarge(
     if (excessHead <= 0) continue;
 
     // Discharge is proportional to excess head and bounded by available storage.
-    // Water is removed from groundwater (conserved) and recorded in ledger.
+    // Water is removed from groundwater (conserved). Per DSH brief, credit the
+    // discharged water to soilMoisture in the same step (capacity bounded);
+    // excess goes to existing overflow accounting.
     const discharge = Math.min(storage, excessHead * SPRING_DISCHARGE_COEFFICIENT * Math.max(0.01, porosity));
     if (discharge <= 0) continue;
 
     tile.groundwaterStorage = storage - discharge;
+    let moisture = Math.max(0, tile.soilMoisture ?? 0) + discharge;
+    if (moisture > capacity) {
+      const overflow = moisture - capacity;
+      moisture = capacity;
+      if (ledger) ledger.overflow += overflow;
+      tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + overflow;
+    }
+    tile.soilMoisture = moisture;
+
     totalDischarge += discharge;
     if (ledger) {
       ledger.springDischarge += discharge;

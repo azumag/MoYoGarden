@@ -11,7 +11,8 @@ export function auditEvolutionEngine(root = new URL("../dist-ts/src/", import.me
 
 // Migration experiments additionally use only the existing pure ownership/hex helpers.
 export function auditMigrationEngine(root = new URL("../dist-ts/src/", import.meta.url)) {
-  return auditModules([...MODULES, "agent-ownership", "region-topology"], root);
+  const modules = [...new Set([...MODULES, "agent-ownership"])];
+  return auditModules(modules, root);
 }
 
 function auditModules(modules, root) {
