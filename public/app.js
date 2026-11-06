@@ -86,6 +86,7 @@ const app = {
   socket: null,
   pollTimer: null,
   windowTimer: null,
+  populationSeriesTimer: null,
   reconnectTimer: null,
 };
 ui.tokenInput.value = app.token;
@@ -337,6 +338,36 @@ function startRegionWindowRefresh() {
   app.windowTimer = setInterval(() => { void loadRegionWindow(); }, LIVE_REGION_WINDOW_REFRESH_MS);
 }
 
+// Population time series (#71 / #81): the observatory note shows the latest
+// server-side sample. Fetched immediately on (re)connect and every 60 s,
+// mirroring startRegionWindowRefresh(). A failed fetch is skipped silently
+// so a series outage can never break the live connection.
+const POPULATION_TIMESERIES_REFRESH_MS = 60_000;
+const POPULATION_TIMESERIES_LIMIT = 12;
+
+async function loadPopulationTimeseries() {
+  const el = document.querySelector("#observation-population-series");
+  if (!el) return;
+  try {
+    const data = await requestJson(`/api/population/timeseries?limit=${POPULATION_TIMESERIES_LIMIT}`, {}, 10_000);
+    const samples = Array.isArray(data?.samples) ? data.samples : [];
+    const latest = samples[samples.length - 1];
+    if (!latest) {
+      el.textContent = "サーバー人口時系列: —";
+      return;
+    }
+    el.textContent = `サーバー人口時系列: tick ${latest.tick} 生存 ${latest.living}（幼 ${latest.infant} / 若 ${latest.juvenile} / 成 ${latest.adult} / 老 ${latest.elder}） 妊娠 ${latest.pregnant} 累計出生 ${latest.birthsCumulative} 累計死亡 ${latest.deathsCumulative}`;
+  } catch (error) {
+    console.debug("MoYoGarden population timeseries skipped", error);
+  }
+}
+
+function startPopulationTimeseriesRefresh() {
+  clearInterval(app.populationSeriesTimer);
+  app.populationSeriesTimer = setInterval(() => { void loadPopulationTimeseries(); }, POPULATION_TIMESERIES_REFRESH_MS);
+  void loadPopulationTimeseries();
+}
+
 function applyEnvelope(value) {
   const state = value?.state || value;
   if (!state?.tiles || !state?.agents) return;
@@ -488,6 +519,7 @@ async function connect() {
   liveRegionWindowRequestVersion += 1;
   clearInterval(app.pollTimer);
   clearInterval(app.windowTimer);
+  clearInterval(app.populationSeriesTimer);
   app.socket?.close();
   clearNeighborPreview();
   setConnection("", "同期中");
