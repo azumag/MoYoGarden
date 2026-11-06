@@ -59,6 +59,8 @@ function crowdedRouteFixture(population) {
 // Updated for #26 Phase 2 + DSH review fixes (soil-stateful semantics, bitwise-stable consistent layers).
 // Updated for #25 Phase 2 (corrected): percolation to groundwaterStorage with pore cap (12-tick water balance)
 // — intentional moisture cascade; rngState progression unchanged.
+// #25 Phase 3 note: lateral groundwater flux is a no-op in this fixture
+// (groundwaterStorage stays 0 within 90 ticks), so fingerprints are unchanged.
 // Stay below the 120-tick erosion boundary to isolate the routing optimization
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
@@ -126,6 +128,7 @@ test("800-BOT route matches legacy output with one population scan", (context) =
   const measuredReads = positionReads;
   const legacyReads = 24803;
   // Hash updated for #25 Phase 2 corrected (percolation to groundwaterStorage, pore cap) — intentional; rngState unchanged.
+  // #25 Phase 3: groundwater flux is a no-op here (groundwaterStorage all 0), fingerprint unchanged.
   assert.equal(fingerprint(next), "8873b8e221dce769123810ebeae769f1454ae568f41c67e5cb66d251f0da09df");
   assert.equal(next.rngState, 3536807351);
   // The existing hex migration reads each position twice before movement;

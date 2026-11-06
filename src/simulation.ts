@@ -66,6 +66,10 @@ const WATER_MOISTURE_RADIUS = 4;
 const HYDROLOGY_EPSILON = 1e-6;
 const TERRAIN_EVOLUTION_INTERVAL = 120;
 const WATER_BALANCE_INTERVAL = 12;
+// #25 Phase 3: lateral groundwater flux scale. Kept <= 0.05 so one 12-tick
+// water step moves only a small fraction of the head gradient per edge;
+// the per-cell outflow normalization below is the hard conservation bound.
+const GROUNDWATER_CONDUCTIVITY_SCALE = 0.05;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const MAX_BEDROCK_EROSION_TRANSFER = MAX_EROSION_TRANSFER * 0.2;
@@ -307,13 +311,34 @@ export function terrainErosionPressureAt(
   );
 }
 
+export interface WaterBalanceLedger {
+  infiltration: number;
+  drying: number;
+  overflow: number;
+  percolation: number;
+  // Per-tile percolation (soilMoisture -> groundwaterStorage recharge), exposed
+  // as a ledger because Phase 3 lateral flux makes per-tile groundwaterStorage
+  // delta an unreliable percolation proxy.
+  percolationByTile: Map<string, number>;
+  flow: GroundwaterFlowLedger;
+}
+
 export function updateTileSoilMoisture(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
-): void {
+): WaterBalanceLedger | undefined {
   ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
   const seed = (state as any).seed ?? 0;
   const tick = (state as any).tick ?? 0;
-  if (tick % WATER_BALANCE_INTERVAL !== 0) return;
+  if (tick % WATER_BALANCE_INTERVAL !== 0) return undefined;
+
+  const ledger: WaterBalanceLedger = {
+    infiltration: 0,
+    drying: 0,
+    overflow: 0,
+    percolation: 0,
+    percolationByTile: new Map<string, number>(),
+    flow: { totalFlux: 0, deltaByTile: new Map<string, number>() },
+  };
 
   for (const tile of state.tiles) {
     if (tile.terrain === "water") {
@@ -352,6 +377,8 @@ export function updateTileSoilMoisture(
 
     let moisture = currentMoisture + infiltration - drying;
     let overflow = 0;
+    ledger.infiltration += infiltration;
+    ledger.drying += drying;
 
     // #25 Phase 2 (corrected): percolation moves excess above field capacity from
     // soil moisture (unsaturated zone) to groundwater storage (saturated zone).
@@ -378,7 +405,103 @@ export function updateTileSoilMoisture(
     tile.groundwaterStorage = storage;
     // Explicit overflow accounting (not written to drainage cache)
     tile.soilMoistureOverflow = overflow;
+    ledger.overflow += overflow;
+    ledger.percolation += percolation;
+    ledger.percolationByTile.set(positionKey(tile), percolation);
   }
+
+  // #25 Phase 3: after recharge, relax the saturated zone laterally inside the
+  // same water balance gate. This is a closed land-only system; springs/rivers
+  // (Phase 4) are the only path back to the surface.
+  ledger.flow = applyGroundwaterFlow(state);
+  return ledger;
+}
+
+export interface GroundwaterFlowLedger {
+  totalFlux: number;
+  // Net signed change of groundwaterStorage per tile key (negative = source).
+  deltaByTile: Map<string, number>;
+}
+
+export function applyGroundwaterFlow(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  conductivityAt?: (
+    state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+    tileA: Tile,
+    tileB: Tile,
+  ) => number,
+): GroundwaterFlowLedger {
+  ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
+  const seed = (state as any).seed ?? 0;
+  const permeability = new Map<string, number>();
+  const permeabilityFor = (tile: Tile): number => {
+    const key = positionKey(tile);
+    let value = permeability.get(key);
+    if (value === undefined) {
+      const { globalX, globalY } = getTileGlobalPosition(state, tile);
+      const conditions = sampleWorldConditions(seed, globalX, globalY);
+      value = derivePermeability(seed, globalX, globalY, conditions.elevation, conditions.slope);
+      permeability.set(key, value);
+    }
+    return value;
+  };
+  const defaultConductivity = (tileA: Tile, tileB: Tile): number =>
+    Math.min(permeabilityFor(tileA), permeabilityFor(tileB)) * GROUNDWATER_CONDUCTIVITY_SCALE;
+
+  // Head snapshot taken before any transfer: no intra-step cascading, same
+  // discipline as terrain erosion's delta map.
+  const head = new Map<string, number>();
+  const storage = new Map<string, number>();
+  const landIndex = new Map<string, Tile>();
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
+    const key = positionKey(tile);
+    landIndex.set(key, tile);
+    head.set(key, groundwaterHeadAt(state, tile));
+    storage.set(key, Math.max(0, tile.groundwaterStorage ?? 0));
+  }
+
+  interface EdgeFlux { source: string; target: string; flux: number }
+  const edges: EdgeFlux[] = [];
+  const requestedOut = new Map<string, number>();
+  for (const [sourceKey, tile] of landIndex) {
+    const headI = head.get(sourceKey) ?? 0;
+    for (const delta of HYDROLOGY_NEIGHBORS) {
+      const target = getTile(state, { x: tile.x + delta.x, y: tile.y + delta.y });
+      if (target === undefined || target.terrain === "water") continue;
+      const targetKey = positionKey(target);
+      if (!landIndex.has(targetKey)) continue;
+      const drop = headI - (head.get(targetKey) ?? 0);
+      if (drop <= 0) continue;
+      const conductivity = conductivityAt !== undefined
+        ? Math.max(0, conductivityAt(state, tile, target))
+        : defaultConductivity(tile, target);
+      const flux = conductivity * drop;
+      if (flux <= HYDROLOGY_EPSILON) continue;
+      edges.push({ source: sourceKey, target: targetKey, flux });
+      requestedOut.set(sourceKey, (requestedOut.get(sourceKey) ?? 0) + flux);
+    }
+  }
+
+  // Normalize so total outflow never exceeds the cell's snapshot storage.
+  const delta = new Map<string, number>();
+  let totalFlux = 0;
+  for (const edge of edges) {
+    const requested = requestedOut.get(edge.source) ?? 0;
+    const available = storage.get(edge.source) ?? 0;
+    const applied = requested > available ? edge.flux * (available / requested) : edge.flux;
+    if (applied <= 0) continue;
+    totalFlux += applied;
+    delta.set(edge.source, (delta.get(edge.source) ?? 0) - applied);
+    delta.set(edge.target, (delta.get(edge.target) ?? 0) + applied);
+  }
+
+  for (const [key, tile] of landIndex) {
+    const change = delta.get(key);
+    if (change === undefined || change === 0) continue;
+    tile.groundwaterStorage = Math.max(0, (storage.get(key) ?? 0) + change);
+  }
+  return { totalFlux, deltaByTile: delta };
 }
 
 export function updateTileHydrology(
