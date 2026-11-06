@@ -110,6 +110,7 @@ export function ensureTileTerrainLayers(
 ): void {
   for (const tile of state.tiles) {
     if (tile.terrain === "water") {
+      if (tile.groundwaterStorage === undefined) tile.groundwaterStorage = 0;
       if (
         tile.elevation === 0 &&
         tile.bedrockElevation === 0 &&
@@ -118,9 +119,15 @@ export function ensureTileTerrainLayers(
         continue;
       }
       splitTileTerrainLayers(tile);
+      tile.groundwaterStorage = 0;
       continue;
     }
     if (!inBounds(state, tile)) continue;
+    if (tile.groundwaterStorage === undefined || !Number.isFinite(tile.groundwaterStorage)) {
+      tile.groundwaterStorage = 0; // #25 Phase 2 lazy init
+    } else if (tile.groundwaterStorage < 0) {
+      tile.groundwaterStorage = 0;
+    }
     const hasLayers =
       Number.isFinite(tile.bedrockElevation ?? Number.NaN) &&
       Number.isFinite(tile.soilThickness ?? Number.NaN);
