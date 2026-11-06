@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HEX_GRID_DIRECTIONS, hexGridBoundaryCells, isHexGridCell } from "../dist-ts/src/hex-grid.js";
-import { buildDynamicHexHaloLinks, buildConfiguredHexHaloLinks, materializeHexHalo, hexHaloKey, hexHaloLookup } from "../dist-ts/src/hex-halo.js";
+import { buildConfiguredHexHaloLinks, materializeHexHalo, hexHaloLookup } from "../dist-ts/src/hex-halo.js";
 import { updateTileSoilMoisture, boundaryPendingAt } from "../dist-ts/src/simulation.js";
 import { createInitialWorld, getTile } from "../dist-ts/src/world.js";
 
@@ -78,14 +78,24 @@ function sumState(s) {
   return soil + gw + sw + pending;
 }
 
-// 1. Mirror symmetry test
-test("mirror symmetry: adjacent regions compute identical edge flux (1e-12)", () => {
+// 1. Mirror symmetry test - signed flux, ΣA + ΣB == 0
+test("mirror symmetry: adjacent regions compute identical edge flux with opposite signs (1e-12)", () => {
   const seed = 5555;
   const regionA = "garden-1";
   const regionB = "garden-2";
   const regionIds = ["garden-1", "garden-2", "garden-3"];
   const stateA = makeRegionState(seed, regionA);
   const stateB = makeRegionState(seed, regionB);
+  for (const tile of stateA.tiles) {
+    if (isHexGridCell(stateA, tile) && tile.terrain !== "water") {
+      tile.groundwaterStorage = 0.04;
+    }
+  }
+  for (const tile of stateB.tiles) {
+    if (isHexGridCell(stateB, tile) && tile.terrain !== "water") {
+      tile.groundwaterStorage = 0.01;
+    }
+  }
   
   const linksA = buildConfiguredHexHaloLinks(extent, regionIds, regionA);
   const linksAB = linksA.filter(l => l.neighborRegionId === regionB);
@@ -97,8 +107,8 @@ test("mirror symmetry: adjacent regions compute identical edge flux (1e-12)", ()
   const snapsA = edgeSnapshotsForRegionAllDirs(stateA);
   const haloB = materializeHexHalo(linksBA, snapsA);
   
-  assert.ok(haloA.length > 0, `haloA should have entries, got ${haloA.length}`);
-  assert.ok(haloB.length > 0, `haloB should have entries, got ${haloB.length}`);
+  assert.ok(haloA.length > 0);
+  assert.ok(haloB.length > 0);
   
   stateA.tick = 12;
   stateB.tick = 12;
@@ -107,16 +117,12 @@ test("mirror symmetry: adjacent regions compute identical edge flux (1e-12)", ()
   assert.ok(ledgerA);
   assert.ok(ledgerB);
   
-  if (ledgerA.boundaryFluxTotal > 0 || ledgerB.boundaryFluxTotal > 0) {
-    assert.ok(Math.abs(ledgerA.boundaryFluxTotal - ledgerB.boundaryFluxTotal) < 1e-12, 
-      `totals differ: A=${ledgerA.boundaryFluxTotal} B=${ledgerB.boundaryFluxTotal}`);
-  } else {
-    assert.equal(typeof ledgerA.boundaryFluxTotal, "number");
-    assert.equal(typeof ledgerB.boundaryFluxTotal, "number");
-  }
+  assert.ok(Math.abs(ledgerA.boundaryFluxTotal) > 0 || Math.abs(ledgerB.boundaryFluxTotal) > 0, "boundary flux activity must be present");
+  assert.ok(Math.abs(ledgerA.boundaryFluxTotal + ledgerB.boundaryFluxTotal) < 1e-12,
+    `symmetric flux violation: A=${ledgerA.boundaryFluxTotal} B=${ledgerB.boundaryFluxTotal}, sum=${ledgerA.boundaryFluxTotal + ledgerB.boundaryFluxTotal}`);
 });
 
-// 2. Non-invasiveness: boundary flux derivation does not change storage amounts
+// 2. Non-invasiveness
 test("non-invasiveness: boundary flux derivation does not change storage amounts (1e-12)", () => {
   const seed = 7777;
   const state1 = makeRegionState(seed, "garden-1");
@@ -127,6 +133,16 @@ test("non-invasiveness: boundary flux derivation does not change storage amounts
       tile.groundwaterStorage = 0.05;
     }
   }
+  for (const tile of state1.tiles) {
+    if (isHexGridCell(state1, tile) && tile.terrain !== "water") {
+      tile.groundwaterStorage = 0.01;
+    }
+  }
+  for (const tile of state2.tiles) {
+    if (isHexGridCell(state2, tile) && tile.terrain !== "water") {
+      tile.groundwaterStorage = 0.01;
+    }
+  }
   const links = buildConfiguredHexHaloLinks(extent, ["garden-1", "garden-2", "garden-3"], "garden-1");
   const neighborLinks = links.filter(l => l.neighborRegionId === neighborState.regionId);
   const snaps = edgeSnapshotsForRegionAllDirs(neighborState);
@@ -134,20 +150,12 @@ test("non-invasiveness: boundary flux derivation does not change storage amounts
   
   state1.tick = 12;
   state2.tick = 12;
-  const before1 = sumState(state1);
   const ledger1 = updateTileSoilMoisture(state1);
-  const after1 = sumState(state1);
-  // reset state2 to before1 state equivalent
-  const state2b = makeRegionState(seed, "garden-1");
-  state2b.tick = 12;
-  const ledger2 = updateTileSoilMoisture(state2b, halo);
-  const after2 = sumState(state2b);
+  const ledger2 = updateTileSoilMoisture(state2, halo);
   assert.ok(ledger1);
   assert.ok(ledger2);
-  // Both should produce same storage change (boundary flux doesn't affect storage)
-  assert.ok(Math.abs((after1 - before1) - (after2 - (sumState(makeRegionState(seed, "garden-1"))))) < 1e-10 || 
-            Math.abs(after1 - after2) < 1e-10, "storage should be unchanged by boundary flux derivation");
-  assert.ok(typeof ledger2.boundaryFluxTotal === "number");
+  assert.ok(Math.abs(sumState(state1) - sumState(state2)) < 1e-12, "storage should be identical");
+  assert.ok(Math.abs(ledger2.boundaryFluxTotal) > 0 || halo.length > 0, "boundary flux path must be exercised");
 });
 
 // 3. Ghost field propagation pin

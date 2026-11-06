@@ -1,4 +1,4 @@
-import { HEX_GRID_DIRECTION_STEPS, HEX_GRID_STEPS, hexGridDistance, isHexGridCell } from "./hex-grid.js";
+import { HEX_GRID_DIRECTIONS, HEX_GRID_DIRECTION_STEPS, HEX_GRID_STEPS, hexGridDistance, isHexGridCell } from "./hex-grid.js";
 import { regionGlobalCellOrigin } from "./region-topology.js";
 import { hexHaloKey, hexHaloLookup, type HexHaloTile } from "./hex-halo.js";
 import {
@@ -312,6 +312,12 @@ export function updateTileSoilMoisture(
   const seed = (state as any).seed ?? 0;
   const tick = (state as any).tick ?? 0;
   if (tick % WATER_BALANCE_INTERVAL !== 0) return undefined;
+  // Snapshot heads before any modifications for boundary flux symmetry
+  const boundarySelfHeadSnapshot = new Map<string, number>();
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
+    boundarySelfHeadSnapshot.set(positionKey(tile), groundwaterHeadAt(state, tile));
+  }
 
   const ledger: WaterBalanceLedger = {
     precipitation: 0,
@@ -441,13 +447,14 @@ export function updateTileSoilMoisture(
       if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) {
         continue;
       }
-      const selfHead = groundwaterHeadAt(state, tile);
+      const selfHead = boundarySelfHeadSnapshot.get(positionKey(tile)) ?? groundwaterHeadAt(state, tile);
       const { globalX: selfGx, globalY: selfGy } = getTileGlobalPosition(state, tile);
       const selfConditions = sampleWorldConditions(seed, selfGx, selfGy);
       const selfPorosity = derivePorosity(seed, selfGx, selfGy, selfConditions.elevation);
       const selfPermeability = derivePermeability(seed, selfGx, selfGy, selfConditions.elevation, selfConditions.slope);
-      for (let d = 0; d < HEX_GRID_STEPS.length; d++) {
-        const dir = d as any;
+      for (let d = 0; d < HEX_GRID_DIRECTIONS.length; d++) {
+        const dir = HEX_GRID_DIRECTIONS[d] as any;
+        if (dir === undefined) continue;
         const key = hexHaloKey({ x: tile.x, y: tile.y }, dir);
         const ghostEntry = haloLookup.get(key);
         if (!ghostEntry) continue;
@@ -468,9 +475,10 @@ export function updateTileSoilMoisture(
           ghostPorosity,
         );
         const drop = selfHead - ghostHead;
-        if (drop <= 0) continue;
-        const flux = Math.min(selfPermeability, ghostPermeability) * GROUNDWATER_CONDUCTIVITY_SCALE * drop;
-        if (flux <= 0) continue;
+        if (Math.abs(drop) <= HYDROLOGY_EPSILON) continue;
+        const fluxMagnitude = Math.min(selfPermeability, ghostPermeability) * GROUNDWATER_CONDUCTIVITY_SCALE * Math.abs(drop);
+        if (fluxMagnitude <= 0) continue;
+        const flux = drop > 0 ? fluxMagnitude : -fluxMagnitude;
         const cellKey = positionKey(tile);
         ledger.boundaryFluxByTile.set(cellKey, (ledger.boundaryFluxByTile.get(cellKey) ?? 0) + flux);
         ledger.boundaryFluxTotal += flux;
@@ -500,18 +508,14 @@ export function boundaryPendingAt(
     return Math.max(0, tile.soilMoistureOverflow ?? 0);
   }
   const haloLookup = hexHaloLookup(haloList);
-  let hasBoundary = false;
-  for (let d = 0; d < HEX_GRID_STEPS.length; d++) {
-    const dir = d as any;
+  for (let d = 0; d < HEX_GRID_DIRECTIONS.length; d++) {
+    const dir = HEX_GRID_DIRECTIONS[d] as any;
+    if (dir === undefined) continue;
     const key = hexHaloKey(position, dir);
     const ghostEntry = haloLookup.get(key);
     if (ghostEntry && ghostEntry.tile && ghostEntry.tile.terrain !== "water") {
-      hasBoundary = true;
-      break;
+      return Math.max(0, tile.soilMoistureOverflow ?? 0);
     }
-  }
-  if (!hasBoundary) {
-    return Math.max(0, tile.soilMoistureOverflow ?? 0);
   }
   return Math.max(0, tile.soilMoistureOverflow ?? 0);
 }
