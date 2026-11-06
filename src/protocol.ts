@@ -42,6 +42,7 @@ export interface Tile {
   soilMoisture?: number;
   soilMoistureOverflow?: number;
   groundwaterStorage?: number;
+  surfaceWater?: number;
   flowTo?: GridPosition;
   drainage?: number;
   erosionPressure?: number;
