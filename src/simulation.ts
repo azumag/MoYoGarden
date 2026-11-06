@@ -72,6 +72,7 @@ const WATER_BALANCE_INTERVAL = 12;
 // the per-cell outflow normalization below is the hard conservation bound.
 const GROUNDWATER_CONDUCTIVITY_SCALE = 0.05;
 const SPRING_DISCHARGE_COEFFICIENT = 0.15;
+const SURFACE_WATER_CAP = 0.05;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const MAX_BEDROCK_EROSION_TRANSFER = MAX_EROSION_TRANSFER * 0.2;
@@ -139,6 +140,10 @@ export function getTileGlobalPosition(
   };
 }
 
+function soilMoistureCapacityFrom(porosity: number, soilThickness: number): number {
+  return Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
+}
+
 function soilMoistureCapacity(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
   tile: Tile,
@@ -148,7 +153,7 @@ function soilMoistureCapacity(
   const conditions = sampleWorldConditions(seed, globalX, globalY);
   const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
   const soilThickness = tile.soilThickness ?? 0.01;
-  return Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
+  return soilMoistureCapacityFrom(porosity, soilThickness);
 }
 
 export function groundwaterHeadAt(
@@ -278,17 +283,21 @@ export function terrainErosionPressureAt(
 }
 
 export interface WaterBalanceLedger {
+  precipitation: number;
   infiltration: number;
   drying: number;
   overflow: number;
   percolation: number;
   springDischarge: number;
+  routed: number;
+  surfaceWaterSpill: number;
   // Per-tile percolation (soilMoisture -> groundwaterStorage recharge), exposed
   // as a ledger because Phase 3 lateral flux makes per-tile groundwaterStorage
   // delta an unreliable percolation proxy.
   percolationByTile: Map<string, number>;
   // Per-tile spring discharge (groundwater -> surface return, Phase 4)
   springDischargeByTile: Map<string, number>;
+  streamInflowByTile: Map<string, number>;
   flow: GroundwaterFlowLedger;
 }
 
@@ -301,13 +310,17 @@ export function updateTileSoilMoisture(
   if (tick % WATER_BALANCE_INTERVAL !== 0) return undefined;
 
   const ledger: WaterBalanceLedger = {
+    precipitation: 0,
     infiltration: 0,
     drying: 0,
     overflow: 0,
     percolation: 0,
     springDischarge: 0,
+    routed: 0,
+    surfaceWaterSpill: 0,
     percolationByTile: new Map<string, number>(),
     springDischargeByTile: new Map<string, number>(),
+    streamInflowByTile: new Map<string, number>(),
     flow: { totalFlux: 0, deltaByTile: new Map<string, number>() },
   };
 
@@ -316,8 +329,14 @@ export function updateTileSoilMoisture(
       tile.soilMoisture = 1;
       tile.soilMoistureOverflow = 0;
       tile.groundwaterStorage = 0;
+      if (tile.surfaceWater === undefined || !Number.isFinite(tile.surfaceWater)) {
+        tile.surfaceWater = 0;
+      }
+      tile.surfaceWater = Math.max(0, Math.min(SURFACE_WATER_CAP, tile.surfaceWater));
       continue;
     }
+    // land tiles must not carry surfaceWater store
+    if (tile.surfaceWater !== undefined) delete tile.surfaceWater;
     if (!inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
     const { globalX, globalY } = getTileGlobalPosition(state, tile);
     // Single seed-field evaluation pass per tile per balance step
@@ -337,17 +356,19 @@ export function updateTileSoilMoisture(
     }
 
     const precip = precipitationAt(seed, globalX, globalY, tick) * WATER_BALANCE_INTERVAL;
+    ledger.precipitation += precip;
     const currentMoisture = Math.max(0, tile.soilMoisture ?? 0);
     const infiltration = precip * permeability * (1 - clamp01(currentMoisture / Math.max(1e-6, capacity)));
+    const runoff = Math.max(0, precip - infiltration);
 
-    // Drying term: relax toward seed-derived equilibrium so dry cells don't saturate
+    // Drying term: relax toward seed-derived equilibrium (loss only for master balance conservation)
     const equilibriumFrac = clamp01(0.15 + conditions.wetness * 0.35 + (1 - conditions.slope) * 0.1 - conditions.temperature * 0.08);
     const equilibrium = equilibriumFrac * capacity;
     const dryingRate = 0.06 + (1 - conditions.wetness) * 0.04;
-    const drying = (currentMoisture - equilibrium) * dryingRate;
+    const drying = Math.max(0, Math.min(currentMoisture + infiltration, (currentMoisture - equilibrium) * dryingRate));
 
     let moisture = currentMoisture + infiltration - drying;
-    let overflow = 0;
+    let satOverflow = 0;
     ledger.infiltration += infiltration;
     ledger.drying += drying;
 
@@ -365,17 +386,21 @@ export function updateTileSoilMoisture(
     storage += percolation;
 
     if (moisture > capacity) {
-      overflow = moisture - capacity;
+      satOverflow = moisture - capacity;
       moisture = capacity;
     }
     if (moisture < 0) moisture = 0;
-    if (storage > maxStorage) storage = maxStorage;
+    // Percolation inflow is bounded by (maxStorage - storage), so storage should not
+    // exceed maxStorage from this step. Pre-existing over-cap excess is left for
+    // spring discharge to resolve (keeps Δgw = percolation + flowNet - spring).
     if (storage < 0) storage = 0;
 
     tile.soilMoisture = moisture;
     tile.groundwaterStorage = storage;
-    // Explicit overflow accounting (not written to drainage cache)
-    tile.soilMoistureOverflow = overflow;
+    // Explicit overflow accounting (pending pool inflow: runoff + saturation overflow)
+    // Accumulate into existing pending pool (preserved across steps for terminal depressions)
+    const overflow = runoff + satOverflow;
+    tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + overflow;
     ledger.overflow += overflow;
     ledger.percolation += percolation;
     ledger.percolationByTile.set(positionKey(tile), percolation);
@@ -388,8 +413,11 @@ export function updateTileSoilMoisture(
 
   // #25 Phase 4: spring discharge where groundwater head reaches or exceeds
   // the surface. Discharge is removed from groundwater storage (conserved) and
-  // recorded in the ledger; Phase 5 reconnects it to the surface water system.
+  // credited to soil moisture / pending overflow in the same step.
   applySpringDischarge(state, ledger);
+
+  // #25 Phase 5: route pending overflow along flowTo chains to water tiles.
+  routePendingOverflowToSurfaceWater(state, ledger);
   return ledger;
 }
 
@@ -397,6 +425,81 @@ export interface GroundwaterFlowLedger {
   totalFlux: number;
   // Net signed change of groundwaterStorage per tile key (negative = source).
   deltaByTile: Map<string, number>;
+}
+
+export function routePendingOverflowToSurfaceWater(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  ledger?: Pick<WaterBalanceLedger, "routed" | "surfaceWaterSpill" | "streamInflowByTile">,
+): void {
+  // Collect all pending overflow from land cells (100% send out)
+  const pending: Array<{ key: string; amount: number }> = [];
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state, tile)) continue;
+    const amount = Math.max(0, tile.soilMoistureOverflow ?? 0);
+    if (amount <= 0) continue;
+    pending.push({ key: positionKey(tile), amount });
+    tile.soilMoistureOverflow = 0;
+  }
+
+  const tileByKey = new Map<string, Tile>();
+  for (const tile of state.tiles) {
+    if (inBounds(state, tile)) tileByKey.set(positionKey(tile), tile);
+  }
+
+  for (const entry of pending) {
+    let currentKey = entry.key;
+    let amount = entry.amount;
+    if (amount <= 0) continue;
+    const visited = new Set<string>();
+    let delivered = false;
+
+    while (amount > 1e-15) {
+      if (visited.has(currentKey)) {
+        // Safety: keep at current cell (terminal pool)
+        const tile = tileByKey.get(currentKey);
+        if (tile && tile.terrain !== "water") {
+          tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + amount;
+        }
+        break;
+      }
+      visited.add(currentKey);
+      const tile = tileByKey.get(currentKey);
+      if (!tile) {
+        // Out of known tiles / boundary - drop to nowhere is wrong; but cannot store.
+        // Keep accounting by treating as spill? Better: cannot happen for in-bounds start.
+        break;
+      }
+      if (tile.terrain === "water") {
+        const before = Math.max(0, tile.surfaceWater ?? 0);
+        const added = Math.min(amount, Math.max(0, SURFACE_WATER_CAP - before));
+        const spill = amount - added;
+        tile.surfaceWater = before + added;
+        if (ledger) {
+          ledger.routed += amount;
+          ledger.surfaceWaterSpill += spill;
+          const k = positionKey(tile);
+          ledger.streamInflowByTile.set(k, (ledger.streamInflowByTile.get(k) ?? 0) + added);
+        }
+        delivered = true;
+        break;
+      }
+
+      const target = tile.flowTo;
+      if (!target) {
+        // Terminal land cell (depression/boundary end) - keep in pending pool
+        tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + amount;
+        if (ledger) ledger.routed += 0; // not routed to water
+        break;
+      }
+      const next = getTile(state, target);
+      if (!next || !inBounds(state, target)) {
+        // Region boundary / out of bounds - Phase 6; keep in current cell's pending pool
+        tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + amount;
+        break;
+      }
+      currentKey = positionKey(next);
+    }
+  }
 }
 
 export function applySpringDischarge(
@@ -417,9 +520,8 @@ export function applySpringDischarge(
     const { globalX, globalY } = getTileGlobalPosition(state, tile);
     const conditions = sampleWorldConditions(seed, globalX, globalY);
     const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
-    const permeability = derivePermeability(seed, globalX, globalY, conditions.elevation, conditions.slope);
     const soilThickness = Math.max(0, tile.soilThickness ?? 0.01);
-    const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
+    const capacity = soilMoistureCapacityFrom(porosity, soilThickness);
     const head = deriveHydraulicHead(
       tile.bedrockElevation,
       tile.soilThickness,
@@ -434,7 +536,7 @@ export function applySpringDischarge(
     // Water is removed from groundwater (conserved). Per DSH brief, credit the
     // discharged water to soilMoisture in the same step (capacity bounded);
     // excess goes to existing overflow accounting.
-    const discharge = Math.min(storage, excessHead * SPRING_DISCHARGE_COEFFICIENT * Math.max(0.01, porosity));
+    const discharge = Math.min(storage, excessHead * SPRING_DISCHARGE_COEFFICIENT * porosity);
     if (discharge <= 0) continue;
 
     tile.groundwaterStorage = storage - discharge;

@@ -57,16 +57,15 @@ function crowdedRouteFixture(population) {
 }
 
 // Updated for #26 Phase 2 + DSH review fixes (soil-stateful semantics, bitwise-stable consistent layers).
-// Updated for #25 Phase 2 (corrected): percolation to groundwaterStorage with pore cap (12-tick water balance)
-// — intentional moisture cascade; rngState progression unchanged.
-// #25 Phase 3 note: lateral groundwater flux is a no-op in this fixture
-// (groundwaterStorage stays 0 within 90 ticks), so fingerprints are unchanged.
+// Updated for #25 Phase 5 (surface reconnect): runoff to pending overflow, loss-only drying,
+// and flowTo routing to water-tile surfaceWater change water balance state at 12-tick steps.
+// rngState progression unchanged. Intentional model change (PR #25 Phase 5).
 // Stay below the 120-tick erosion boundary to isolate the routing optimization
 // from the separately intentional current-vegetation erosion change.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "7a23349743fe6f5fd7ece30eb3903962e0de68a4f73e1e4e1016c92045917694", 3370508769],
-    [271828, "7429b5a932910d797305e0dd7102e28e44177aaebe1703aa93ee9205f4c5366e", 1241391839],
+    [123456, "3dba9ad5ed845b3550bfc857b325412c0727a58eef3664297da591c7ea252a86", 3370508769],
+    [271828, "6981d25375112a38e222094ba7e81874327aedae11084715424004a7e12693b7", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;
@@ -127,9 +126,8 @@ test("800-BOT route matches legacy output with one population scan", (context) =
   }
   const measuredReads = positionReads;
   const legacyReads = 24803;
-  // Hash updated for #25 Phase 2 corrected (percolation to groundwaterStorage, pore cap) — intentional; rngState unchanged.
-  // #25 Phase 3: groundwater flux is a no-op here (groundwaterStorage all 0), fingerprint unchanged.
-  assert.equal(fingerprint(next), "8873b8e221dce769123810ebeae769f1454ae568f41c67e5cb66d251f0da09df");
+  // Hash updated for #25 Phase 5 (surface reconnect): runoff/pending overflow + routing; rngState unchanged.
+  assert.equal(fingerprint(next), "735aebb9f3da16674cc3bce3fd027f13c90e3e2ef032e659296094c49a3ec94c");
   assert.equal(next.rngState, 3536807351);
   // The existing hex migration reads each position twice before movement;
   // routing should add only one population pass and a few mover-only reads.
