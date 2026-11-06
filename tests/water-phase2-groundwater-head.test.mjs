@@ -66,15 +66,17 @@ test("strict water balance per step: infiltration-drying = ΔsoilMoisture + over
   for (const tile of allLandTiles(state)) {
     before.set(`${tile.x},${tile.y}`, { soil: tile.soilMoisture ?? 0, gw: tile.groundwaterStorage ?? 0 });
   }
-  updateTileSoilMoisture(state);
+  const ledger = updateTileSoilMoisture(state);
+  assert.ok(ledger !== undefined, "water balance step should run at tick 12");
 
   for (const tile of allLandTiles(state)) {
     const k = `${tile.x},${tile.y}`;
     const b = before.get(k);
     const soilAfter = tile.soilMoisture ?? 0;
-    const gwAfter = tile.groundwaterStorage ?? 0;
     const overflow = tile.soilMoistureOverflow ?? 0;
-    const percolation = gwAfter - b.gw; // no gw outflow in Phase 2
+    // Phase 3: lateral flux mixes into per-tile groundwaterStorage deltas, so
+    // percolation must come from the water balance ledger, not from delta gw.
+    const percolation = ledger.percolationByTile.get(k) ?? 0;
     assert.ok(percolation >= -1e-12);
 
     // recompute infiltration-drying using same formulas/inputs as implementation
