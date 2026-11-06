@@ -1,4 +1,5 @@
-import { HEX_GRID_STEPS, hexGridCenter, hexGridDistance, hexGridRadius } from "./hex-grid.js";
+import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
+import { regionGlobalCellOrigin } from "./region-topology.js";
 import {
   deriveHydraulicHead,
   derivePermeability,
@@ -70,6 +71,7 @@ const WATER_BALANCE_INTERVAL = 12;
 // water step moves only a small fraction of the head gradient per edge;
 // the per-cell outflow normalization below is the hard conservation bound.
 const GROUNDWATER_CONDUCTIVITY_SCALE = 0.05;
+const SPRING_DISCHARGE_COEFFICIENT = 0.15;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const MAX_BEDROCK_EROSION_TRANSFER = MAX_EROSION_TRANSFER * 0.2;
@@ -120,49 +122,13 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-const AXIAL_REGION_ID_PATTERN = /^hex-q(-?(?:0|[1-9]\d*))-r(-?(?:0|[1-9]\d*))$/;
-const LEGACY_REGION_AXIAL_ALIASES: ReadonlyMap<string, { q: number; r: number }> = new Map([
-  ["garden-1", { q: 0, r: 0 }],
-  ["garden-2", { q: 1, r: 0 }],
-  ["garden-3", { q: 1, r: -1 }],
-]);
-
-function regionAxialCoordinateLocal(regionId: string): { q: number; r: number } | undefined {
-  const match = AXIAL_REGION_ID_PATTERN.exec(regionId);
-  if (match !== null) {
-    const q = Number(match[1]);
-    const r = Number(match[2]);
-    if (Number.isSafeInteger(q) && Number.isSafeInteger(r)) return { q, r };
-  }
-  return LEGACY_REGION_AXIAL_ALIASES.get(regionId);
-}
-
-function projectRegionGlobalCellOriginLocal(
-  coordinate: { q: number; r: number },
-  width: number,
-  height: number,
-): { x: number; y: number } {
-  const extent = { width, height };
-  const center = hexGridCenter(extent);
-  const radius = hexGridRadius(extent);
-  const eastBasis = { x: radius * 2 + 1, y: -radius };
-  const southEastBasis = { x: radius, y: radius + 1 };
-  const regionCenter = {
-    x: coordinate.q * eastBasis.x + coordinate.r * southEastBasis.x,
-    y: coordinate.q * eastBasis.y + coordinate.r * southEastBasis.y,
-  };
-  return {
-    x: regionCenter.x - center.x,
-    y: regionCenter.y - center.y,
-  };
-}
-
 export function getTileGlobalPosition(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
   tile: Tile,
 ): { globalX: number; globalY: number; originX: number; originY: number } {
-  const coordinate = regionAxialCoordinateLocal((state as any).regionId ?? "");
-  const origin = coordinate ? projectRegionGlobalCellOriginLocal(coordinate, state.width, state.height) : undefined;
+  const origin = (state as any).regionId
+    ? regionGlobalCellOrigin((state as any).regionId, state.width, state.height)
+    : undefined;
   const originX = origin?.x ?? 0;
   const originY = origin?.y ?? 0;
   return {
@@ -316,10 +282,13 @@ export interface WaterBalanceLedger {
   drying: number;
   overflow: number;
   percolation: number;
+  springDischarge: number;
   // Per-tile percolation (soilMoisture -> groundwaterStorage recharge), exposed
   // as a ledger because Phase 3 lateral flux makes per-tile groundwaterStorage
   // delta an unreliable percolation proxy.
   percolationByTile: Map<string, number>;
+  // Per-tile spring discharge (groundwater -> surface return, Phase 4)
+  springDischargeByTile: Map<string, number>;
   flow: GroundwaterFlowLedger;
 }
 
@@ -336,7 +305,9 @@ export function updateTileSoilMoisture(
     drying: 0,
     overflow: 0,
     percolation: 0,
+    springDischarge: 0,
     percolationByTile: new Map<string, number>(),
+    springDischargeByTile: new Map<string, number>(),
     flow: { totalFlux: 0, deltaByTile: new Map<string, number>() },
   };
 
@@ -414,6 +385,11 @@ export function updateTileSoilMoisture(
   // same water balance gate. This is a closed land-only system; springs/rivers
   // (Phase 4) are the only path back to the surface.
   ledger.flow = applyGroundwaterFlow(state);
+
+  // #25 Phase 4: spring discharge where groundwater head reaches or exceeds
+  // the surface. Discharge is removed from groundwater storage (conserved) and
+  // recorded in the ledger; Phase 5 reconnects it to the surface water system.
+  applySpringDischarge(state, ledger);
   return ledger;
 }
 
@@ -421,6 +397,64 @@ export interface GroundwaterFlowLedger {
   totalFlux: number;
   // Net signed change of groundwaterStorage per tile key (negative = source).
   deltaByTile: Map<string, number>;
+}
+
+export function applySpringDischarge(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  ledger?: Pick<WaterBalanceLedger, "springDischarge" | "springDischargeByTile" | "overflow">,
+): number {
+  ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
+  const seed = (state as any).seed ?? 0;
+  let totalDischarge = 0;
+
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) {
+      continue;
+    }
+    const storage = Math.max(0, tile.groundwaterStorage ?? 0);
+    if (storage <= 0) continue;
+
+    const { globalX, globalY } = getTileGlobalPosition(state, tile);
+    const conditions = sampleWorldConditions(seed, globalX, globalY);
+    const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+    const permeability = derivePermeability(seed, globalX, globalY, conditions.elevation, conditions.slope);
+    const soilThickness = Math.max(0, tile.soilThickness ?? 0.01);
+    const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
+    const head = deriveHydraulicHead(
+      tile.bedrockElevation,
+      tile.soilThickness,
+      storage,
+      porosity,
+    );
+    const surface = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation ?? 0) : 0;
+    const excessHead = head - surface;
+    if (excessHead <= 0) continue;
+
+    // Discharge is proportional to excess head and bounded by available storage.
+    // Water is removed from groundwater (conserved). Per DSH brief, credit the
+    // discharged water to soilMoisture in the same step (capacity bounded);
+    // excess goes to existing overflow accounting.
+    const discharge = Math.min(storage, excessHead * SPRING_DISCHARGE_COEFFICIENT * Math.max(0.01, porosity));
+    if (discharge <= 0) continue;
+
+    tile.groundwaterStorage = storage - discharge;
+    let moisture = Math.max(0, tile.soilMoisture ?? 0) + discharge;
+    if (moisture > capacity) {
+      const overflow = moisture - capacity;
+      moisture = capacity;
+      if (ledger) ledger.overflow += overflow;
+      tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + overflow;
+    }
+    tile.soilMoisture = moisture;
+
+    totalDischarge += discharge;
+    if (ledger) {
+      ledger.springDischarge += discharge;
+      ledger.springDischargeByTile.set(positionKey(tile), discharge);
+    }
+  }
+
+  return totalDischarge;
 }
 
 export function applyGroundwaterFlow(

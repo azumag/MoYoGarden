@@ -4,14 +4,15 @@ import { readFileSync } from "node:fs";
 // A regression boundary for our trusted engine, not a sandbox for hostile code.
 // No SDK, Worker, DO, network/storage built-in or third-party module may enter
 // this complete, reviewed dependency graph. Check BEFORE evaluating imports.
-const MODULES = ["demography", "hex-grid", "prng", "protocol", "runtime", "simulation", "world", "world-scale"];
+const MODULES = ["demography", "hex-grid", "prng", "protocol", "region-topology", "runtime", "simulation", "world", "world-scale"];
 export function auditEvolutionEngine(root = new URL("../dist-ts/src/", import.meta.url)) {
   return auditModules(MODULES, root);
 }
 
 // Migration experiments additionally use only the existing pure ownership/hex helpers.
 export function auditMigrationEngine(root = new URL("../dist-ts/src/", import.meta.url)) {
-  return auditModules([...MODULES, "agent-ownership", "region-topology"], root);
+  const modules = [...new Set([...MODULES, "agent-ownership"])];
+  return auditModules(modules, root);
 }
 
 function auditModules(modules, root) {
