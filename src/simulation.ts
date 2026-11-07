@@ -1,4 +1,4 @@
-import { HEX_GRID_STEPS, hexGridDistance } from "./hex-grid.js";
+import { HEX_GRID_DIRECTIONS, HEX_GRID_DIRECTION_STEPS, HEX_GRID_STEPS, hexGridDistance, isHexGridCell } from "./hex-grid.js";
 import { regionGlobalCellOrigin } from "./region-topology.js";
 import {
   deriveHydraulicHead,
@@ -291,6 +291,7 @@ export interface WaterBalanceLedger {
   springDischarge: number;
   routed: number;
   surfaceWaterSpill: number;
+  boundaryFluxTotal: number;
   // Per-tile percolation (soilMoisture -> groundwaterStorage recharge), exposed
   // as a ledger because Phase 3 lateral flux makes per-tile groundwaterStorage
   // delta an unreliable percolation proxy.
@@ -298,16 +299,44 @@ export interface WaterBalanceLedger {
   // Per-tile spring discharge (groundwater -> surface return, Phase 4)
   springDischargeByTile: Map<string, number>;
   streamInflowByTile: Map<string, number>;
+  boundaryFluxByTile: Map<string, number>;
   flow: GroundwaterFlowLedger;
+}
+
+type BoundaryHaloEntry = {
+  sourcePosition: { x: number; y: number };
+  direction: string;
+  neighborRegionId: string;
+  neighborPosition: { x: number; y: number };
+  tile?: Tile;
+};
+
+function haloKeyLocal(position: { x: number; y: number }, direction: string): string {
+  return `${position.x},${position.y}:${direction}`;
 }
 
 export function updateTileSoilMoisture(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
+  haloOrOptions?: readonly BoundaryHaloEntry[] | { halo?: readonly BoundaryHaloEntry[] },
 ): WaterBalanceLedger | undefined {
   ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
   const seed = (state as any).seed ?? 0;
   const tick = (state as any).tick ?? 0;
   if (tick % WATER_BALANCE_INTERVAL !== 0) return undefined;
+  let haloList: readonly BoundaryHaloEntry[] | undefined;
+  if (Array.isArray(haloOrOptions)) {
+    haloList = haloOrOptions;
+  } else if (haloOrOptions && typeof haloOrOptions === "object" && "halo" in haloOrOptions) {
+    haloList = (haloOrOptions as { halo?: readonly BoundaryHaloEntry[] }).halo;
+  }
+  // Snapshot heads before any modifications for boundary flux symmetry (only if halo present)
+  const boundarySelfHeadSnapshot = new Map<string, number>();
+  if (haloList && haloList.length > 0) {
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
+      boundarySelfHeadSnapshot.set(positionKey(tile), groundwaterHeadAt(state, tile));
+    }
+  }
 
   const ledger: WaterBalanceLedger = {
     precipitation: 0,
@@ -318,9 +347,11 @@ export function updateTileSoilMoisture(
     springDischarge: 0,
     routed: 0,
     surfaceWaterSpill: 0,
+    boundaryFluxTotal: 0,
     percolationByTile: new Map<string, number>(),
     springDischargeByTile: new Map<string, number>(),
     streamInflowByTile: new Map<string, number>(),
+    boundaryFluxByTile: new Map<string, number>(),
     flow: { totalFlux: 0, deltaByTile: new Map<string, number>() },
   };
 
@@ -418,7 +449,72 @@ export function updateTileSoilMoisture(
 
   // #25 Phase 5: route pending overflow along flowTo chains to water tiles.
   routePendingOverflowToSurfaceWater(state, ledger);
+
+  // #25 Phase 6: derive boundary groundwater flux to ghost tiles (observe only, no storage application)
+  if (haloList && haloList.length > 0) {
+    const haloLookup = new Map<string, BoundaryHaloEntry>();
+    for (const entry of haloList) {
+      haloLookup.set(haloKeyLocal(entry.sourcePosition, entry.direction), entry);
+    }
+    const seed = (state as any).seed ?? 0;
+    const width = (state as any).width ?? 0;
+    const height = (state as any).height ?? 0;
+    for (const tile of state.tiles) {
+      if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) {
+        continue;
+      }
+      const selfHead = boundarySelfHeadSnapshot.get(positionKey(tile)) ?? groundwaterHeadAt(state, tile);
+      const { globalX: selfGx, globalY: selfGy } = getTileGlobalPosition(state, tile);
+      const selfConditions = sampleWorldConditions(seed, selfGx, selfGy);
+      const selfPorosity = derivePorosity(seed, selfGx, selfGy, selfConditions.elevation);
+      const selfPermeability = derivePermeability(seed, selfGx, selfGy, selfConditions.elevation, selfConditions.slope);
+      for (let d = 0; d < HEX_GRID_DIRECTIONS.length; d++) {
+        const dir = HEX_GRID_DIRECTIONS[d] as any;
+        if (dir === undefined) continue;
+        const key = haloKeyLocal({ x: tile.x, y: tile.y }, dir);
+        const ghostEntry = haloLookup.get(key);
+        if (!ghostEntry) continue;
+        const ghostTile = ghostEntry.tile;
+        if (!ghostTile || ghostTile.terrain === "water") continue;
+        const neighborRegionId = ghostEntry.neighborRegionId;
+        const neighborPos = ghostEntry.neighborPosition;
+        const neighborOrigin = regionGlobalCellOrigin(neighborRegionId, width, height);
+        const ghostGx = (neighborOrigin?.x ?? 0) + neighborPos.x;
+        const ghostGy = (neighborOrigin?.y ?? 0) + neighborPos.y;
+        const ghostConditions = sampleWorldConditions(seed, ghostGx, ghostGy);
+        const ghostPorosity = derivePorosity(seed, ghostGx, ghostGy, ghostConditions.elevation);
+        const ghostPermeability = derivePermeability(seed, ghostGx, ghostGy, ghostConditions.elevation, ghostConditions.slope);
+        const ghostHead = deriveHydraulicHead(
+          ghostTile.bedrockElevation,
+          ghostTile.soilThickness,
+          Math.max(0, ghostTile.groundwaterStorage ?? 0),
+          ghostPorosity,
+        );
+        const drop = selfHead - ghostHead;
+        if (Math.abs(drop) <= HYDROLOGY_EPSILON) continue;
+        const fluxMagnitude = Math.min(selfPermeability, ghostPermeability) * GROUNDWATER_CONDUCTIVITY_SCALE * Math.abs(drop);
+        if (fluxMagnitude <= 0) continue;
+        const flux = drop > 0 ? fluxMagnitude : -fluxMagnitude;
+        const cellKey = positionKey(tile);
+        ledger.boundaryFluxByTile.set(cellKey, (ledger.boundaryFluxByTile.get(cellKey) ?? 0) + flux);
+        ledger.boundaryFluxTotal += flux;
+      }
+    }
+  }
+
   return ledger;
+}
+
+export function boundaryPendingAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+  _haloOrOptions?: readonly BoundaryHaloEntry[] | { halo?: readonly BoundaryHaloEntry[] },
+): number {
+  const tile = getTile(state, position);
+  if (tile === undefined || tile.terrain === "water" || !inBounds(state, position)) {
+    return 0;
+  }
+  return Math.max(0, tile.soilMoistureOverflow ?? 0);
 }
 
 export interface GroundwaterFlowLedger {
@@ -488,7 +584,6 @@ export function routePendingOverflowToSurfaceWater(
       if (!target) {
         // Terminal land cell (depression/boundary end) - keep in pending pool
         tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + amount;
-        if (ledger) ledger.routed += 0; // not routed to water
         break;
       }
       const next = getTile(state, target);
