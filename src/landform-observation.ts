@@ -3,6 +3,7 @@ import type { Tile, WorldState } from "./protocol.js";
 import { getTile, inBounds } from "./world.js";
 
 export type LandformKind = "floodplain" | "alluvialFan" | "delta" | "riverIncision";
+export type TerrainLandform = "floodplain" | "alluvial-fan" | "delta" | "incised";
 
 export interface LandformObservation {
   kind: LandformKind;
@@ -157,4 +158,35 @@ export function observeLandforms(
     delta: observeDelta(state, tile, previous?.delta ?? false),
     riverIncision: observeRiverIncision(state, tile, previous?.riverIncision ?? false),
   };
+}
+
+const LANDFORM_KIND_TO_TERRAIN: Record<LandformKind, TerrainLandform> = {
+  floodplain: "floodplain",
+  alluvialFan: "alluvial-fan",
+  delta: "delta",
+  riverIncision: "incised",
+};
+
+const LANDFORM_PRIORITY: readonly LandformKind[] = ["riverIncision", "delta", "alluvialFan", "floodplain"];
+
+export function terrainLandformAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  tile: Tile,
+  previous?: TerrainLandform,
+): TerrainLandform | undefined {
+  if (tile.terrain === "water" || !inBounds(state, tile)) return undefined;
+  const prevKind = previous === "alluvial-fan" ? "alluvialFan" : previous === "incised" ? "riverIncision" : previous;
+  const obs = {
+    riverIncision: observeRiverIncision(state, tile, prevKind === "riverIncision"),
+    delta: observeDelta(state, tile, prevKind === "delta"),
+    alluvialFan: observeAlluvialFan(state, tile, prevKind === "alluvialFan"),
+    floodplain: observeFloodplain(state, tile, prevKind === "floodplain"),
+  } as const;
+  let best: { kind: LandformKind; strength: number } | undefined;
+  for (const kind of LANDFORM_PRIORITY) {
+    const o = obs[kind];
+    if (!o.active) continue;
+    if (best === undefined || o.strength > best.strength + EPS) best = { kind, strength: o.strength };
+  }
+  return best ? LANDFORM_KIND_TO_TERRAIN[best.kind] : undefined;
 }
