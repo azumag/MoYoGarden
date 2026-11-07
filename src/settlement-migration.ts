@@ -455,6 +455,7 @@ function addSettlementSupportTile(
     support.pathogenReservoirSamples += 1;
   }
   // groundwater proximity (Phase 7): shallow groundwater preferred, bounded term
+  // Uses fixed assumed porosity for halo-tile approximation (no global coords context here).
   const storage = Math.max(0, (tile as any).groundwaterStorage ?? 0);
   const bedrock = Math.max(0, (tile as any).bedrockElevation ?? 0);
   const soil = Math.max(0, (tile as any).soilThickness ?? 0);

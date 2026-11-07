@@ -95,18 +95,17 @@ test("percolation calibration: groundwater accumulates and springs can emerge ov
   let s = createInitialWorld({ seed: 424242, width: 40, height: 24, regionId: "garden-1" });
   for (let i = 0; i < 1200; i++) s = simulate(s).state;
   const totalGW = s.tiles.reduce((sum, t) => sum + (t.groundwaterStorage ?? 0), 0);
-  const totalSoil = s.tiles.reduce((sum, t) => sum + (t.terrain === "water" ? 0 : (t.soilMoisture ?? 0)), 0);
-  // Phase 7 capillary rise may redistribute gw to soil; system still accumulates water
-  assert.ok(totalGW + totalSoil > 0, `expected subsurface water, got gw=${totalGW} soil=${totalSoil}`);
-  // Verify springs/capillary conditions can form (head near/exceeds surface with storage history)
-  let activeCells = 0;
+  assert.ok(totalGW > 0, `expected groundwater accumulation, got ${totalGW}`);
+  // Verify springs can form given accumulated storage (head exceeds surface somewhere)
+  let springCells = 0;
   for (const t of s.tiles) {
     if (t.terrain === "water" || !isHexGridCell(s, t)) continue;
+    if ((t.groundwaterStorage ?? 0) <= 0) continue;
     const head = groundwaterHeadAt(s, t);
     const surface = t.elevation ?? 0;
-    if (head > surface - 0.05 && ((t.groundwaterStorage ?? 0) > 0 || (t.soilMoisture ?? 0) > 0.05)) activeCells++;
+    if (head > surface) springCells++;
   }
-  assert.ok(activeCells > 0, `expected spring/capillary-forming conditions: activeCells=${activeCells} totalGW=${totalGW}`);
+  assert.ok(springCells > 0, `expected spring-forming conditions: springCells=${springCells} totalGW=${totalGW}`);
 });
 
 test("water balance step includes spring discharge in ledger and preserves invariants", () => {
