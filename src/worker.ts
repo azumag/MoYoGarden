@@ -19,6 +19,7 @@ import {
 import {
   HEX_DIRECTIONS,
   parseAxialRegionId,
+  regionAxialCoordinate,
   regionGlobalCellOrigin,
   regionHexTopology,
   regionHexWindow,
@@ -512,17 +513,25 @@ export class RegionDurableObject {
     if (initializeFreshTerrain && canonicalGlobalFrame) {
       initializeWorldTerrainFrame(state, worldSeed, origin.x, origin.y);
     }
-    if (entry !== undefined) {
-      alignRegionBoundaryElevations(
-        state,
-        worldSeed,
-        origin.x,
-        origin.y,
-        {
-          west: entry.neighbors.west !== null,
-          east: entry.neighbors.east !== null,
-        },
-      );
+    // #26 Phase 8: canonical fresh frames rely on continuous global derived fields (no align).
+    // Legacy/persisted regions use axial adjacency when resolved; unresolved IDs fall back to W/E + warn.
+    if (!(canonicalGlobalFrame && initializeFreshTerrain)) {
+      const axial = regionAxialCoordinate(state.regionId);
+      if (axial !== undefined) {
+        const topo = regionHexTopology(allowedRegions(this.env));
+        const self = topo.find((t) => t.id === state.regionId);
+        if (self !== undefined) {
+          const directions = Object.fromEntries(
+            HEX_DIRECTIONS.map((d) => [d, self.neighbors[d] !== null]),
+          ) as Partial<Record<(typeof HEX_DIRECTIONS)[number], boolean>>;
+          alignRegionBoundaryElevations(state, worldSeed, origin.x, origin.y, { directions });
+        }
+      } else if (entry !== undefined) {
+        warnUnresolvedHistoricalRegionIds(`alignBoundaryEdges(region=${state.regionId})`, [state.regionId]);
+        alignRegionBoundaryElevations(state, worldSeed, origin.x, origin.y, {
+          directions: { west: entry.neighbors.west !== null, east: entry.neighbors.east !== null },
+        });
+      }
     }
     updateTileHydrology(state);
   }
