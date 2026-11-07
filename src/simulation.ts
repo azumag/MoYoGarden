@@ -73,6 +73,8 @@ const WATER_BALANCE_INTERVAL = 12;
 const GROUNDWATER_CONDUCTIVITY_SCALE = 0.05;
 const SPRING_DISCHARGE_COEFFICIENT = 0.15;
 const SURFACE_WATER_CAP = 0.05;
+const CAPILLARY_REACH = 0.03;
+const CAPILLARY_RATE = 0.02;
 const EROSION_SLOPE_SCALE = 0.18;
 const MAX_EROSION_TRANSFER = 0.001;
 const MAX_BEDROCK_EROSION_TRANSFER = MAX_EROSION_TRANSFER * 0.2;
@@ -175,6 +177,57 @@ export function groundwaterHeadAt(
     storage,
     porosity,
   );
+}
+
+export function groundwaterDepthAt(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  position: GridPosition,
+): number {
+  const tile = getTile(state, position);
+  if (tile === undefined || tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, position)) {
+    return 0;
+  }
+  const head = groundwaterHeadAt(state, tile);
+  const surface = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation ?? 0) : 0;
+  return Math.max(0, surface - head);
+}
+
+export function springDischargeAt(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  position: GridPosition,
+): number {
+  const tile = getTile(state, position);
+  if (tile === undefined || tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, position)) {
+    return 0;
+  }
+  const storage = Math.max(0, tile.groundwaterStorage ?? 0);
+  if (storage <= 0) return 0;
+  const { globalX, globalY } = getTileGlobalPosition(state, tile);
+  const seed = (state as any).seed ?? 0;
+  const conditions = sampleWorldConditions(seed, globalX, globalY);
+  const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+  const head = deriveHydraulicHead(tile.bedrockElevation, tile.soilThickness, storage, porosity);
+  const surface = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation ?? 0) : 0;
+  const excessHead = head - surface;
+  if (excessHead <= 0) return 0;
+  return Math.min(storage, excessHead * SPRING_DISCHARGE_COEFFICIENT * porosity);
+}
+
+export function surfaceWaterNearbyAt(
+  state: Pick<WorldState, "width" | "height" | "tiles">,
+  position: GridPosition,
+): number {
+  let value = 0;
+  for (const offset of WATER_MOISTURE_OFFSETS) {
+    const neighbor = getTile(state, {
+      x: position.x + offset.dx,
+      y: position.y + offset.dy,
+    });
+    if (neighbor?.terrain !== "water") continue;
+    const sw = Math.max(0, neighbor.surfaceWater ?? 0);
+    value = Math.max(value, offset.influence * sw);
+  }
+  return value;
 }
 
 export function flowTargetAt(
@@ -292,6 +345,7 @@ export interface WaterBalanceLedger {
   routed: number;
   surfaceWaterSpill: number;
   boundaryFluxTotal: number;
+  capillaryRise: number;
   // Per-tile percolation (soilMoisture -> groundwaterStorage recharge), exposed
   // as a ledger because Phase 3 lateral flux makes per-tile groundwaterStorage
   // delta an unreliable percolation proxy.
@@ -300,6 +354,7 @@ export interface WaterBalanceLedger {
   springDischargeByTile: Map<string, number>;
   streamInflowByTile: Map<string, number>;
   boundaryFluxByTile: Map<string, number>;
+  capillaryRiseByTile: Map<string, number>;
   flow: GroundwaterFlowLedger;
 }
 
@@ -329,12 +384,22 @@ export function updateTileSoilMoisture(
   } else if (haloOrOptions && typeof haloOrOptions === "object" && "halo" in haloOrOptions) {
     haloList = (haloOrOptions as { halo?: readonly BoundaryHaloEntry[] }).halo;
   }
-  // Snapshot heads before any modifications for boundary flux symmetry (only if halo present)
+  // Snapshot heads before any modifications for boundary flux symmetry (only if halo present, boundary cells only)
   const boundarySelfHeadSnapshot = new Map<string, number>();
   if (haloList && haloList.length > 0) {
+    const boundaryHaloLookup = new Map<string, BoundaryHaloEntry>();
+    for (const entry of haloList) {
+      boundaryHaloLookup.set(haloKeyLocal(entry.sourcePosition, entry.direction), entry);
+    }
     for (const tile of state.tiles) {
       if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) continue;
-      boundarySelfHeadSnapshot.set(positionKey(tile), groundwaterHeadAt(state, tile));
+      let isBoundary = false;
+      for (const dir of HEX_GRID_DIRECTIONS) {
+        const key = haloKeyLocal({ x: tile.x, y: tile.y }, dir);
+        const ge = boundaryHaloLookup.get(key);
+        if (ge && ge.tile && ge.tile.terrain !== "water") { isBoundary = true; break; }
+      }
+      if (isBoundary) boundarySelfHeadSnapshot.set(positionKey(tile), groundwaterHeadAt(state, tile));
     }
   }
 
@@ -348,10 +413,12 @@ export function updateTileSoilMoisture(
     routed: 0,
     surfaceWaterSpill: 0,
     boundaryFluxTotal: 0,
+    capillaryRise: 0,
     percolationByTile: new Map<string, number>(),
     springDischargeByTile: new Map<string, number>(),
     streamInflowByTile: new Map<string, number>(),
     boundaryFluxByTile: new Map<string, number>(),
+    capillaryRiseByTile: new Map<string, number>(),
     flow: { totalFlux: 0, deltaByTile: new Map<string, number>() },
   };
 
@@ -447,6 +514,9 @@ export function updateTileSoilMoisture(
   // credited to soil moisture / pending overflow in the same step.
   applySpringDischarge(state, ledger);
 
+  // #25 Phase 7: capillary rise (internal transfer groundwater -> soilMoisture)
+  applyCapillaryRise(state, ledger);
+
   // #25 Phase 5: route pending overflow along flowTo chains to water tiles.
   routePendingOverflowToSurfaceWater(state, ledger);
 
@@ -468,9 +538,7 @@ export function updateTileSoilMoisture(
       const selfConditions = sampleWorldConditions(seed, selfGx, selfGy);
       const selfPorosity = derivePorosity(seed, selfGx, selfGy, selfConditions.elevation);
       const selfPermeability = derivePermeability(seed, selfGx, selfGy, selfConditions.elevation, selfConditions.slope);
-      for (let d = 0; d < HEX_GRID_DIRECTIONS.length; d++) {
-        const dir = HEX_GRID_DIRECTIONS[d] as any;
-        if (dir === undefined) continue;
+      for (const dir of HEX_GRID_DIRECTIONS) {
         const key = haloKeyLocal({ x: tile.x, y: tile.y }, dir);
         const ghostEntry = haloLookup.get(key);
         if (!ghostEntry) continue;
@@ -652,6 +720,53 @@ export function applySpringDischarge(
   }
 
   return totalDischarge;
+}
+
+export function applyCapillaryRise(
+  state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">,
+  ledger?: Pick<WaterBalanceLedger, "capillaryRise" | "capillaryRiseByTile" | "overflow">,
+): number {
+  ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
+  const seed = (state as any).seed ?? 0;
+  let total = 0;
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state as Pick<WorldState, "width" | "height">, tile)) {
+      continue;
+    }
+    const storage = Math.max(0, tile.groundwaterStorage ?? 0);
+    if (storage <= 0) continue;
+    const { globalX, globalY } = getTileGlobalPosition(state, tile);
+    const conditions = sampleWorldConditions(seed, globalX, globalY);
+    const porosity = derivePorosity(seed, globalX, globalY, conditions.elevation);
+    const soilThickness = Math.max(0, tile.soilThickness ?? 0.01);
+    const capacity = soilMoistureCapacityFrom(porosity, soilThickness);
+    const head = deriveHydraulicHead(tile.bedrockElevation, tile.soilThickness, storage, porosity);
+    const surface = Number.isFinite(tile.elevation ?? Number.NaN) ? (tile.elevation ?? 0) : 0;
+    // Spring/artesian zone (head >= surface) is handled by spring discharge; capillary acts below breakthrough.
+    if (head >= surface) continue;
+    const proximity = Math.max(0, CAPILLARY_REACH - (surface - head));
+    if (proximity <= 0) continue;
+    const moisture = Math.max(0, tile.soilMoisture ?? 0);
+    const soilRoom = Math.max(0, capacity - moisture);
+    if (soilRoom <= 0 && moisture >= capacity) continue;
+    const capillary = Math.min(CAPILLARY_RATE * proximity, soilRoom, storage);
+    if (capillary <= 0) continue;
+    tile.groundwaterStorage = storage - capillary;
+    let newMoisture = moisture + capillary;
+    if (newMoisture > capacity) {
+      const overflow = newMoisture - capacity;
+      newMoisture = capacity;
+      if (ledger) ledger.overflow += overflow;
+      tile.soilMoistureOverflow = (tile.soilMoistureOverflow ?? 0) + overflow;
+    }
+    tile.soilMoisture = newMoisture;
+    total += capillary;
+    if (ledger) {
+      ledger.capillaryRise += capillary;
+      ledger.capillaryRiseByTile.set(positionKey(tile), capillary);
+    }
+  }
+  return total;
 }
 
 export function applyGroundwaterFlow(

@@ -209,7 +209,7 @@ test("cadence gate, rngState untouched, bedrock+soil==elevation (1e-12) preserve
 });
 
 // Carryover 1: synthetic per-tile balance with active spring discharge
-test("carryover: per-tile gw balance in spring-active step Δgw = percolation + flowNet - spring (1e-9)", () => {
+test("carryover: per-tile gw balance in spring-active step Δgw = percolation + flowNet - spring - capillary (1e-9)", () => {
   const state = landWaterFixture(8808, { allLand: true });
   updateTileHydrology(state);
   for (const tile of state.tiles) {
@@ -241,10 +241,11 @@ test("carryover: per-tile gw balance in spring-active step Δgw = percolation + 
     const perc = ledger.percolationByTile.get(k) ?? 0;
     const flowNet = ledger.flow.deltaByTile.get(k) ?? 0;
     const spring = ledger.springDischargeByTile.get(k) ?? 0;
+    const capillary = ledger.capillaryRiseByTile?.get(k) ?? 0;
     if (spring > 0) springActive = true;
-    const expected = before + perc + flowNet - spring;
+    const expected = before + perc + flowNet - spring - capillary;
     assert.ok(Math.abs(after - expected) < 1e-9,
-      `gw balance mismatch at ${k}: after=${after} expected=${expected} (perc=${perc} flow=${flowNet} spring=${spring})`);
+      `gw balance mismatch at ${k}: after=${after} expected=${expected} (perc=${perc} flow=${flowNet} spring=${spring} cap=${capillary})`);
   }
   assert.ok(springActive, "expected spring discharge activity in synthetic setup");
 });

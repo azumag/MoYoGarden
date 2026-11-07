@@ -155,7 +155,7 @@ test("non-invasiveness: boundary flux derivation does not change storage amounts
   assert.ok(ledger1);
   assert.ok(ledger2);
   assert.ok(Math.abs(sumState(state1) - sumState(state2)) < 1e-12, "storage should be identical");
-  assert.ok(Math.abs(ledger2.boundaryFluxTotal) > 0 || halo.length > 0, "boundary flux path must be exercised");
+  assert.ok(Math.abs(ledger2.boundaryFluxTotal) > 0, "boundary flux path must be exercised");
 });
 
 // 3. Ghost field propagation pin

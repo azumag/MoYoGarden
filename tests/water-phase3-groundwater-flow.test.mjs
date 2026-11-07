@@ -164,10 +164,11 @@ test("water step at tick 12 runs percolation + flow; rngState untouched; bedrock
   const ledger = updateTileSoilMoisture(state);
   assert.ok(ledger !== undefined);
   assert.ok(ledger.flow !== undefined);
-  // Conservation: percolation adds water, flow only redistributes.
+  // Conservation: percolation adds water, flow only redistributes, capillary moves gw->soil.
   const after = totalGroundwater(state);
-  assert.ok(Math.abs(after - before - ledger.percolation) < 1e-9,
-    `${after} vs ${before} + ${ledger.percolation}`);
+  const capillary = ledger.capillaryRise ?? 0;
+  assert.ok(Math.abs(after - before - ledger.percolation + capillary) < 1e-9,
+    `${after} vs ${before} + ${ledger.percolation} - ${capillary}`);
   assert.equal(state.rngState, rngBefore);
   for (const tile of allLandTiles(state)) {
     assert.ok((tile.groundwaterStorage ?? 0) >= -1e-12);

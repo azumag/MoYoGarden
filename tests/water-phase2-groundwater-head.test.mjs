@@ -140,7 +140,9 @@ test("storage <= pore cap and cap reached => percolation bounded to zero at cap"
   state.tick = 12;
   updateTileSoilMoisture(state);
   assert.ok((tile.groundwaterStorage ?? 0) <= maxStorage + 1e-12);
-  assert.ok(Math.abs((tile.groundwaterStorage ?? 0) - maxStorage) < 1e-9, `should stay at cap: ${tile.groundwaterStorage} vs ${maxStorage}`);
+  // Capillary rise (Phase 7) may move water from gw to soil; percolation still bounded by cap
+  // so storage should not exceed cap. It may decrease due to capillary.
+  assert.ok((tile.groundwaterStorage ?? 0) >= 0);
 });
 
 test("higher permeability produces larger percolation", () => {
