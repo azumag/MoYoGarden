@@ -1,6 +1,5 @@
 import { HEX_GRID_DIRECTIONS, HEX_GRID_DIRECTION_STEPS, HEX_GRID_STEPS, hexGridDistance, isHexGridCell } from "./hex-grid.js";
 import { regionGlobalCellOrigin } from "./region-topology.js";
-import { hexHaloKey, hexHaloLookup, type HexHaloTile } from "./hex-halo.js";
 import {
   deriveHydraulicHead,
   derivePermeability,
@@ -304,19 +303,31 @@ export interface WaterBalanceLedger {
   flow: GroundwaterFlowLedger;
 }
 
+type BoundaryHaloEntry = {
+  sourcePosition: { x: number; y: number };
+  direction: string;
+  neighborRegionId: string;
+  neighborPosition: { x: number; y: number };
+  tile?: Tile;
+};
+
+function haloKeyLocal(position: { x: number; y: number }, direction: string): string {
+  return `${position.x},${position.y}:${direction}`;
+}
+
 export function updateTileSoilMoisture(
   state: Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId" | "tick">,
-  haloOrOptions?: readonly HexHaloTile[] | { halo?: readonly HexHaloTile[] },
+  haloOrOptions?: readonly BoundaryHaloEntry[] | { halo?: readonly BoundaryHaloEntry[] },
 ): WaterBalanceLedger | undefined {
   ensureTileTerrainLayers(state as Pick<WorldState, "width" | "height" | "tiles">);
   const seed = (state as any).seed ?? 0;
   const tick = (state as any).tick ?? 0;
   if (tick % WATER_BALANCE_INTERVAL !== 0) return undefined;
-  let haloList: readonly HexHaloTile[] | undefined;
+  let haloList: readonly BoundaryHaloEntry[] | undefined;
   if (Array.isArray(haloOrOptions)) {
     haloList = haloOrOptions;
   } else if (haloOrOptions && typeof haloOrOptions === "object" && "halo" in haloOrOptions) {
-    haloList = (haloOrOptions as { halo?: readonly HexHaloTile[] }).halo;
+    haloList = (haloOrOptions as { halo?: readonly BoundaryHaloEntry[] }).halo;
   }
   // Snapshot heads before any modifications for boundary flux symmetry (only if halo present)
   const boundarySelfHeadSnapshot = new Map<string, number>();
@@ -441,7 +452,10 @@ export function updateTileSoilMoisture(
 
   // #25 Phase 6: derive boundary groundwater flux to ghost tiles (observe only, no storage application)
   if (haloList && haloList.length > 0) {
-    const haloLookup = hexHaloLookup(haloList);
+    const haloLookup = new Map<string, BoundaryHaloEntry>();
+    for (const entry of haloList) {
+      haloLookup.set(haloKeyLocal(entry.sourcePosition, entry.direction), entry);
+    }
     const seed = (state as any).seed ?? 0;
     const width = (state as any).width ?? 0;
     const height = (state as any).height ?? 0;
@@ -457,7 +471,7 @@ export function updateTileSoilMoisture(
       for (let d = 0; d < HEX_GRID_DIRECTIONS.length; d++) {
         const dir = HEX_GRID_DIRECTIONS[d] as any;
         if (dir === undefined) continue;
-        const key = hexHaloKey({ x: tile.x, y: tile.y }, dir);
+        const key = haloKeyLocal({ x: tile.x, y: tile.y }, dir);
         const ghostEntry = haloLookup.get(key);
         if (!ghostEntry) continue;
         const ghostTile = ghostEntry.tile;
@@ -494,26 +508,29 @@ export function updateTileSoilMoisture(
 export function boundaryPendingAt(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
-  haloOrOptions?: readonly HexHaloTile[] | { halo?: readonly HexHaloTile[] },
+  haloOrOptions?: readonly BoundaryHaloEntry[] | { halo?: readonly BoundaryHaloEntry[] },
 ): number {
   const tile = getTile(state, position);
   if (tile === undefined || tile.terrain === "water" || !inBounds(state, position)) {
     return 0;
   }
-  let haloList: readonly HexHaloTile[] | undefined;
+  let haloList: readonly BoundaryHaloEntry[] | undefined;
   if (Array.isArray(haloOrOptions)) {
     haloList = haloOrOptions;
   } else if (haloOrOptions && typeof haloOrOptions === "object" && "halo" in haloOrOptions) {
-    haloList = (haloOrOptions as { halo?: readonly HexHaloTile[] }).halo;
+    haloList = (haloOrOptions as { halo?: readonly BoundaryHaloEntry[] }).halo;
   }
   if (!haloList || haloList.length === 0) {
     return Math.max(0, tile.soilMoistureOverflow ?? 0);
   }
-  const haloLookup = hexHaloLookup(haloList);
+  const haloLookup = new Map<string, BoundaryHaloEntry>();
+  for (const entry of haloList) {
+    haloLookup.set(haloKeyLocal(entry.sourcePosition, entry.direction), entry);
+  }
   for (let d = 0; d < HEX_GRID_DIRECTIONS.length; d++) {
     const dir = HEX_GRID_DIRECTIONS[d] as any;
     if (dir === undefined) continue;
-    const key = hexHaloKey(position, dir);
+    const key = haloKeyLocal(position, dir);
     const ghostEntry = haloLookup.get(key);
     if (ghostEntry && ghostEntry.tile && ghostEntry.tile.terrain !== "water") {
       return Math.max(0, tile.soilMoistureOverflow ?? 0);
