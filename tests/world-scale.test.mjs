@@ -147,7 +147,7 @@ test("persisted west/east hex-side elevations migrate toward the shared global f
     seed,
     40,
     0,
-    { west: true, east: true },
+    { directions: { west: true, east: true } },
     4,
   );
 

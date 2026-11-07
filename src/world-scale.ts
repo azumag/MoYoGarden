@@ -21,10 +21,8 @@ export interface WorldCoordinateSpace {
 }
 
 export interface RegionBoundaryEdges {
-  west?: boolean;
-  east?: boolean;
-  north?: boolean;
-  south?: boolean;
+  /** Hex-edge directions (region-topology/axial vocabulary) that border another region. */
+  directions: Partial<Record<HexGridDirection, boolean>>;
 }
 
 export interface WorldWind {
@@ -330,6 +328,7 @@ export function alignRegionBoundaryElevations(
   edges: RegionBoundaryEdges,
   bandWidth = 4,
 ): number {
+  const dirs = edges.directions ?? {};
   const safeBand = Math.max(1, Math.min(Math.max(state.width, state.height), Math.floor(bandWidth)));
   const center = hexGridCenter(state);
   const radius = hexGridRadius(state);
@@ -339,11 +338,14 @@ export function alignRegionBoundaryElevations(
     if (!isHexGridCell(state, tile) || tile.terrain === "water") continue;
     const q = tile.x - center.x;
     const r = tile.y - center.y;
+    const s = -q - r;
     const edgeDistances: number[] = [];
-    if (edges.west) edgeDistances.push(q + radius);
-    if (edges.east) edgeDistances.push(radius - q);
-    if (edges.north) edgeDistances.push(r + radius);
-    if (edges.south) edgeDistances.push(radius - r);
+    if (dirs.west) edgeDistances.push(q + radius);
+    if (dirs.east) edgeDistances.push(radius - q);
+    if (dirs.northWest) edgeDistances.push(r + radius);
+    if (dirs.southEast) edgeDistances.push(radius - r);
+    if (dirs.northEast) edgeDistances.push(radius - s); // R + q + r
+    if (dirs.southWest) edgeDistances.push(s + radius); // R - q - r
     if (edgeDistances.length === 0) continue;
 
     const distance = Math.min(...edgeDistances);
@@ -360,7 +362,8 @@ export function alignRegionBoundaryElevations(
     const elevation = distance === 0 ? target : current + (target - current) * weight;
     if (Math.abs(elevation - current) <= 1e-9) continue;
     tile.elevation = elevation;
-    // Keep terrain layers consistent with stateful soil: adjust soil, preserve bedrock when present.
+    // Keep terrain layers consistent with stateful soil (#68): adjust soil, preserve bedrock when present.
+    // Applied on all aligned hex edges.
     if (Number.isFinite(tile.bedrockElevation ?? Number.NaN)) {
       const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
       const soil = Math.max(0, elevation - bedrock);
