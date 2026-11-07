@@ -33,6 +33,7 @@ const SETTLEMENT_STRUCTURE_DENSITY_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_CAPACITY_EPSILON = 1e-6;
 const SETTLEMENT_RESOURCE_AMOUNT_EPSILON = 1e-6;
 const SETTLEMENT_WATER_FRACTION_EPSILON = 1e-6;
+const SETTLEMENT_GROUNDWATER_PROXIMITY_EPSILON = 1e-6;
 export const SETTLEMENT_MIGRATION_SCOUT_INTERVAL = 12;
 
 export interface AutonomousSettlementMigrationPlan {
@@ -364,6 +365,8 @@ interface SettlementNeighborSupport {
   erosionPressureSamples: number;
   pathogenReservoirTotal: number;
   pathogenReservoirSamples: number;
+  groundwaterProximityTotal: number;
+  groundwaterProximitySamples: number;
   resources: Record<ResourceKind, number>;
   resourceCapacity: Record<ResourceKind, number>;
 }
@@ -415,6 +418,8 @@ function emptySettlementNeighborSupport(): SettlementNeighborSupport {
     erosionPressureSamples: 0,
     pathogenReservoirTotal: 0,
     pathogenReservoirSamples: 0,
+    groundwaterProximityTotal: 0,
+    groundwaterProximitySamples: 0,
     resources: { wood: 0, stone: 0, food: 0 },
     resourceCapacity: { wood: 0, stone: 0, food: 0 },
   };
@@ -449,6 +454,17 @@ function addSettlementSupportTile(
     support.pathogenReservoirTotal += pathogenReservoir;
     support.pathogenReservoirSamples += 1;
   }
+  // groundwater proximity (Phase 7): shallow groundwater preferred, bounded term
+  const storage = Math.max(0, (tile as any).groundwaterStorage ?? 0);
+  const bedrock = Math.max(0, (tile as any).bedrockElevation ?? 0);
+  const soil = Math.max(0, (tile as any).soilThickness ?? 0);
+  const surface = Number.isFinite((tile as any).elevation ?? Number.NaN) ? ((tile as any).elevation ?? (bedrock + soil)) : (bedrock + soil);
+  const assumedPorosity = 0.3;
+  const head = bedrock + Math.min(storage / Math.max(1e-6, assumedPorosity), Math.max(0, surface - bedrock));
+  const depth = Math.max(0, surface - head);
+  const proximity = Math.max(0, Math.min(1, 1 - depth / 0.2)); // bounded [0,1], shallow = higher
+  support.groundwaterProximityTotal += proximity;
+  support.groundwaterProximitySamples += 1;
   const resource = tile.resource;
   if (resource === undefined) return;
   if (resource.maxAmount > 0) support.resourceCapacity[resource.kind] += resource.maxAmount;
@@ -807,6 +823,22 @@ function compareSurfaceWaterFraction(
   return Math.abs(delta) > SETTLEMENT_WATER_FRACTION_EPSILON ? delta : 0;
 }
 
+function averageGroundwaterProximity(support: SettlementNeighborSupport): number {
+  return support.groundwaterProximitySamples > 0
+    ? support.groundwaterProximityTotal / support.groundwaterProximitySamples
+    : 0;
+}
+
+function compareGroundwaterProximity(
+  a: SettlementNeighborSupport,
+  b: SettlementNeighborSupport,
+): number {
+  if (a.groundwaterProximitySamples === 0 || b.groundwaterProximitySamples === 0) return 0;
+  // bounded term (weight effect <= 0.1): shallow groundwater (higher proximity) preferred
+  const delta = (averageGroundwaterProximity(b) - averageGroundwaterProximity(a)) * 0.1;
+  return Math.abs(delta) > SETTLEMENT_GROUNDWATER_PROXIMITY_EPSILON ? delta : 0;
+}
+
 function compareContinuationResourceCapacity(
   candidate: SettlementNeighborSupport,
   local: SettlementNeighborSupport,
@@ -892,6 +924,7 @@ function compareSettlementSupport(
     || compareResourceAmountDensity(a, b, "stone")
     || compareAverageDrainage(a, b)
     || compareSurfaceWaterFraction(a, b)
+    || compareGroundwaterProximity(a, b)
   );
 }
 
