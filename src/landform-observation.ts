@@ -260,7 +260,7 @@ export function observeBaseflowMap(state: BaseflowState): Map<string, BaseflowOb
     }
     const storage = Math.max(0, tile.groundwaterStorage ?? 0);
     const maxStorage = groundwaterMaxStorage(state, tile);
-    const ratio = maxStorage > EPS ? storage / maxStorage : 0;
+    const ratio = maxStorage > EPS ? clamp01(storage / maxStorage) : 0;
     const source = tile.flowTo !== undefined && ratio >= BASEFLOW_SOURCE_THRESHOLD;
     if (source) sources.push(tile);
     result.set(keyOf(tile), source

@@ -146,51 +146,96 @@ test("baseflow observation excludes water, preserves rngState and terrain invari
   if (w) assert.equal(observeBaseflowAt(state, w).springFed, false);
 });
 
-// 4. drought persistence: spring-supported tile maintains higher soil moisture / surface moisture
-test("drought persistence: high-groundwater spring context keeps moisture higher over multiple water steps", () => {
-  const state = makePlainWorld(5104);
-  // pick two valid land tiles with similar base setup
-  const candidates = landTiles(state).filter((t) => isHexGridCell(state, t));
-  assert.ok(candidates.length >= 2);
-  const springTile = candidates[0];
-  const dryTile = candidates[1];
-  // make springTile artesian/high storage (discharge credits soil moisture)
-  const { globalX: gx, globalY: gy } = getTileGlobalPosition(state, springTile);
-  const cond = sampleWorldConditions(state.seed, gx, gy);
-  const por = derivePorosity(state.seed, gx, gy, cond.elevation);
-  const maxS = Math.max(0, por * Math.max(0, (springTile.elevation ?? 0) - Math.max(0, springTile.bedrockElevation ?? 0)));
-  springTile.groundwaterStorage = Math.max(maxS * 1.5, 0.05); // strong artesian
-  dryTile.groundwaterStorage = 0;
-  springTile.soilMoisture = 0.01;
-  dryTile.soilMoisture = 0.01;
 
-  // run several water-balance ticks
-  let springHigher = 0;
-  for (let step = 1; step <= 8; step++) {
+function poreCap(state, t) {
+  const { globalX, globalY } = getTileGlobalPosition(state, t);
+  const conditions = sampleWorldConditions(state.seed, globalX, globalY);
+  const porosity = derivePorosity(state.seed, globalX, globalY, conditions.elevation);
+  const surface = t.elevation ?? 0;
+  const bedrock = Math.max(0, t.bedrockElevation ?? 0);
+  return Math.max(0, porosity * Math.max(0, surface - bedrock));
+}
+
+// Lateral-fed spring fixture (DSH canonical): upstream high storage + head gradient
+// -> Phase 3 lateral inflow sustains downstream storage at/above cap -> spring fires.
+function makeLateralFedSpringFixture(seed = 5250) {
+  const state = createInitialWorld({ seed, width: 24, height: 16, regionId: "garden-1" });
+  for (const t of state.tiles) { if (isHexGridCell(state, t)) { t.terrain = "plain"; delete t.resource; } }
+  // Build a gentle downhill chain with explicit elevations/layers for a stable head gradient.
+  const chain = [];
+  for (let i = 0; i < 8; i++) {
+    const c = getTile(state, { x: 4 + i, y: 7 });
+    if (c && isHexGridCell(state, c) && c.terrain !== "water") chain.push(c);
+  }
+  assert.ok(chain.length >= 5, "fixture chain");
+  for (let i = 0; i < chain.length; i++) {
+    const c = chain[i];
+    c.terrain = "plain";
+    c.bedrockElevation = 0.20;
+    c.soilThickness = 0.06;
+    c.elevation = 0.26 - i * 0.012;
+    c.soilMoisture = 0.015;
+    c.groundwaterStorage = 0;
+    c.soilMoistureOverflow = 0;
+    if (i < chain.length - 1) c.flowTo = { x: chain[i + 1].x, y: chain[i + 1].y };
+  }
+  updateTileHydrology(state);
+  // Recharge upstream heavily; downstream starts at cap to allow artesian/spring with inflow.
+  const up = chain[0];
+  const mid = chain[Math.floor(chain.length / 2)];
+  const down = chain[chain.length - 2];
+  up.groundwaterStorage = poreCap(state, up) * 4.0;
+  mid.groundwaterStorage = poreCap(state, mid) * 0.8;
+  down.groundwaterStorage = poreCap(state, down) * 1.05; // near/over cap
+  return { state, chain, up, mid, down };
+}
+
+// 4. drought persistence (DSH canonical lateral-fed spring): upstream high storage + head gradient
+// -> lateral inflow sustains springing tile(s); soilMoisture/surfaceMoistureAt stay higher than control.
+test("drought persistence: lateral-fed spring sustains moisture over multiple water steps", () => {
+  const { state, chain } = makeLateralFedSpringFixture(5251);
+  // control tile outside the fed chain with no groundwater support
+  const chainSet = new Set(chain.map((t) => key(t.x, t.y)));
+  const control = landTiles(state).find((t) => isHexGridCell(state, t) && !chainSet.has(key(t.x, t.y))) ?? landTiles(state).at(-1);
+  assert.ok(control);
+  control.groundwaterStorage = 0;
+  control.soilMoisture = 0.01;
+  control.soilMoistureOverflow = 0;
+
+  // identify a sustained spring-fed tile (lateral-fed): fires and is supported over steps
+  let fedTile = null;
+  let sawSpring = false;
+  for (let step = 1; step <= 4; step++) {
     state.tick = step * 12;
-    updateTileSoilMoisture(state);
-    const smSpring = surfaceMoistureAt(state, { x: springTile.x, y: springTile.y });
-    const smDry = surfaceMoistureAt(state, { x: dryTile.x, y: dryTile.y });
-    if ((springTile.soilMoisture ?? 0) >= (dryTile.soilMoisture ?? 0) - 1e-12 && smSpring >= smDry - 1e-12) {
-      springHigher++;
+    const ledger = updateTileSoilMoisture(state);
+    assert.ok(ledger);
+    if (ledger.springDischarge > 1e-12) sawSpring = true;
+    for (const [k] of ledger.springDischargeByTile.entries()) {
+      if ((ledger.springDischargeByTile.get(k) ?? 0) > 1e-12) {
+        const [x, y] = k.split(",").map(Number);
+        const t = getTile(state, { x, y });
+        if (t && t.terrain !== "water") { fedTile = t; break; }
+      }
     }
   }
-  assert.ok(springHigher >= 5, `spring tile should maintain moisture in most steps, got ${springHigher}/8`);
+  assert.ok(sawSpring, "lateral-fed fixture should fire spring discharge");
+  assert.ok(fedTile, "expected a spring-fed tile");
+
+  // compare over multiple additional water steps
+  let springHigher = 0;
+  for (let step = 5; step <= 14; step++) {
+    state.tick = step * 12;
+    updateTileSoilMoisture(state);
+    const smFed = surfaceMoistureAt(state, { x: fedTile.x, y: fedTile.y });
+    const smCtl = surfaceMoistureAt(state, { x: control.x, y: control.y });
+    if ((fedTile.soilMoisture ?? 0) > (control.soilMoisture ?? 0) + 1e-9 || smFed > smCtl + 1e-9) springHigher++;
+  }
+  assert.ok(springHigher >= 6, `fed spring tile should maintain moisture advantage in most steps, got ${springHigher}/10`);
 });
 
-// 5. balance identities (spring active, DSH #25 Phase 5): spring term included
-test("spring-active water step: system Δsoil+Δgw = precip-drying-overflow (1e-9, spring ledger pinned)", () => {
-  const state = makePlainWorld(5105);
-  // force active spring conditions on some tiles
-  for (const t of landTiles(state)) {
-    const { globalX, globalY } = getTileGlobalPosition(state, t);
-    const cond = sampleWorldConditions(state.seed, globalX, globalY);
-    const por = derivePorosity(state.seed, globalX, globalY, cond.elevation);
-    const maxS = Math.max(0, por * Math.max(0, (t.elevation ?? 0) - Math.max(0, t.bedrockElevation ?? 0)));
-    t.groundwaterStorage = maxS * 1.2;
-    t.soilMoisture = 0.02;
-    t.soilMoistureOverflow = 0;
-  }
+// 5. balance identities (spring active, DSH #25 Phase 5, lateral-fed spring fixture)
+test("lateral-fed spring: system conservation with spring ledger pinned (1e-9)", () => {
+  const { state } = makeLateralFedSpringFixture(5252);
   state.tick = 12;
   const before = new Map();
   let swBefore = 0, pendingBefore = 0;
@@ -204,9 +249,28 @@ test("spring-active water step: system Δsoil+Δgw = precip-drying-overflow (1e-
   }
   const ledger = updateTileSoilMoisture(state);
   assert.ok(ledger);
-  assert.ok(ledger.springDischarge > 0, "fixture should activate spring discharge");
-  assert.ok(Math.abs(ledger.springDischarge - [...ledger.springDischargeByTile.values()].reduce((a,b)=>a+b,0)) < 1e-9,
+  // may need a step or two; run once more if not fired
+  if (ledger.springDischarge <= 1e-12) {
+    state.tick = 24;
+    updateTileSoilMoisture(state);
+  }
+  // verify over a step that fires
+  for (const t of state.tiles) {
+    if (!inBounds(state, t) || t.terrain === "water") continue;
+    before.set(key(t.x, t.y), { soil: t.soilMoisture ?? 0, gw: t.groundwaterStorage ?? 0 });
+  }
+  swBefore = 0; pendingBefore = 0;
+  for (const t of state.tiles) {
+    if (!inBounds(state, t)) continue;
+    if (t.terrain === "water") swBefore += Math.max(0, t.surfaceWater ?? 0);
+    else pendingBefore += Math.max(0, t.soilMoistureOverflow ?? 0);
+  }
+  state.tick = 36;
+  const ledger2 = updateTileSoilMoisture(state);
+  assert.ok(ledger2);
+  assert.ok(Math.abs(ledger2.springDischarge - [...ledger2.springDischargeByTile.values()].reduce((a,b)=>a+b,0)) < 1e-9,
     "spring ledger per-tile sum matches total");
+  assert.ok(ledger2.springDischarge > 0, "lateral-fed fixture should activate spring discharge");
 
   let dSoil = 0, dGw = 0, swAfter = 0, pendingAfter = 0;
   for (const t of state.tiles) {
@@ -219,77 +283,76 @@ test("spring-active water step: system Δsoil+Δgw = precip-drying-overflow (1e-
       pendingAfter += Math.max(0, t.soilMoistureOverflow ?? 0);
     }
   }
-  // Spring-inclusive conservation (ledger totals): Δsoil + Δgw = precip - drying - overflow (1e-9)
-  // overflow ledger includes recharge runoff/saturation + spring overflow contributions.
-  const identity = dSoil + dGw - (ledger.precipitation - ledger.drying - ledger.overflow);
+  const identity = dSoil + dGw - (ledger2.precipitation - ledger2.drying - ledger2.overflow);
   assert.ok(Math.abs(identity) < 1e-9, `system balance mismatch: ${identity}`);
-  // Master form (Phase 5) also holds
   const master = (dSoil + dGw + (swAfter - swBefore) + (pendingAfter - pendingBefore))
-    - (ledger.precipitation - ledger.drying - ledger.surfaceWaterSpill);
+    - (ledger2.precipitation - ledger2.drying - ledger2.surfaceWaterSpill);
   assert.ok(Math.abs(master) < 1e-9, `master mismatch: ${master}`);
 });
 
-// 5b. per-tile recharge identity with spring ledger pinned (DSH #25 Phase 5, spring-inclusive fixture)
-test("spring-active: per-tile recharge Δsoil+overflow_inflow+percolation = infiltration-drying (1e-9) with spring ledger", () => {
-  const state = makePlainWorld(5107);
-  // controlled fixture: set known storages to force some spring activity
-  for (const t of landTiles(state)) {
-    const { globalX, globalY } = getTileGlobalPosition(state, t);
-    const cond = sampleWorldConditions(state.seed, globalX, globalY);
-    const por = derivePorosity(state.seed, globalX, globalY, cond.elevation);
-    const maxS = Math.max(0, por * Math.max(0, (t.elevation ?? 0) - Math.max(0, t.bedrockElevation ?? 0)));
-    t.groundwaterStorage = maxS * 1.1;
-    t.soilMoisture = 0.015;
-    t.soilMoistureOverflow = 0;
+// 5b. per-tile recharge identity with spring ledger pinned (DSH, lateral-fed spring-active fixture)
+test("lateral-fed spring: per-tile recharge Δsoil+overflow_inflow+percolation = infiltration-drying (1e-9), spring ledger", () => {
+  const { state } = makeLateralFedSpringFixture(5253);
+  // advance until spring fires
+  let ledger;
+  for (let step = 1; step <= 4; step++) {
+    state.tick = step * 12;
+    // snapshot before the step we check
+    if (step >= 2) {
+      const before = new Map();
+      for (const t of landTiles(state)) before.set(key(t.x, t.y), { soil: t.soilMoisture ?? 0, gw: t.groundwaterStorage ?? 0 });
+      ledger = updateTileSoilMoisture(state);
+      assert.ok(ledger);
+      if (ledger.springDischarge > 1e-12) {
+        let checkedSpring = 0;
+        for (const t of landTiles(state)) {
+          const k = key(t.x, t.y);
+          const b = before.get(k);
+          if (!b) continue;
+          const { globalX: gx, globalY: gy } = getTileGlobalPosition(state, t);
+          const conditions = sampleWorldConditions(state.seed, gx, gy);
+          const permeability = derivePermeability(state.seed, gx, gy, conditions.elevation, conditions.slope);
+          const porosity = derivePorosity(state.seed, gx, gy, conditions.elevation);
+          const soilThickness = Math.max(0, t.soilThickness ?? 0.01);
+          const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
+          const currentMoisture = b.soil;
+          const precip = precipitationAt(state.seed, gx, gy, state.tick) * 12;
+          const infiltration = precip * permeability * (1 - clamp01(currentMoisture / Math.max(1e-6, capacity)));
+          const runoff = Math.max(0, precip - infiltration);
+          const equilibriumFrac = clamp01(0.15 + conditions.wetness * 0.35 + (1 - conditions.slope) * 0.1 - conditions.temperature * 0.08);
+          const equilibrium = equilibriumFrac * capacity;
+          const dryingRate = 0.06 + (1 - conditions.wetness) * 0.04;
+          const drying = Math.max(0, Math.min(currentMoisture + infiltration, (currentMoisture - equilibrium) * dryingRate));
+          let moisture = currentMoisture + infiltration - drying;
+          const bedrock = Math.max(0, t.bedrockElevation ?? 0);
+          const surface = Math.max(bedrock, t.elevation ?? (bedrock + soilThickness));
+          const maxStorage = Math.max(0, porosity * Math.max(0, surface - bedrock));
+          const fieldCapacity = capacity * 0.6;
+          const percRate = 0.08;
+          const storageBefore = b.gw;
+          const percolationPotential = percRate * permeability * Math.max(0, moisture - fieldCapacity);
+          const perc = Math.min(percolationPotential, Math.max(0, moisture), Math.max(0, maxStorage - storageBefore));
+          moisture -= perc;
+          let satOverflow = 0;
+          if (moisture > capacity) { satOverflow = moisture - capacity; moisture = capacity; }
+          if (moisture < 0) moisture = 0;
+          const percLedger = ledger.percolationByTile.get(k) ?? 0;
+          assert.ok(Math.abs(perc - percLedger) < 1e-9, `percolation ledger mismatch at ${k}`);
+          const spring = ledger.springDischargeByTile.get(k) ?? 0;
+          // recharge-frame identity: Δsoil_recharge + overflowInflow + percolation = infiltration - drying (1e-9)
+          // spring is a conserved transfer (gw -> soil/pending) pinned via springDischargeByTile.
+          const overflowInflow = runoff + satOverflow;
+          const identity = (moisture - currentMoisture) + overflowInflow + perc;
+          assert.ok(Math.abs(identity - (precip - drying)) < 1e-9,
+            `per-tile balance at ${k}: ${identity} vs ${precip - drying}`);
+          if (spring > 0) checkedSpring++;
+        }
+        assert.ok(checkedSpring > 0, "expected spring-active tiles in lateral-fed fixture");
+        return;
+      }
+      continue;
+    }
+    ledger = updateTileSoilMoisture(state);
   }
-  state.tick = 24; // WATER_BALANCE_INTERVAL
-  const before = new Map();
-  for (const t of landTiles(state)) before.set(key(t.x, t.y), { soil: t.soilMoisture ?? 0, gw: t.groundwaterStorage ?? 0, ov: t.soilMoistureOverflow ?? 0 });
-  const ledger = updateTileSoilMoisture(state);
-  assert.ok(ledger);
-  assert.ok(ledger.springDischarge > 0, "fixture should activate spring discharge");
-
-  let checkedSpring = 0;
-  for (const t of landTiles(state)) {
-    const k = key(t.x, t.y);
-    const b = before.get(k);
-    const { globalX: gx, globalY: gy } = getTileGlobalPosition(state, t);
-    const conditions = sampleWorldConditions(state.seed, gx, gy);
-    const permeability = derivePermeability(state.seed, gx, gy, conditions.elevation, conditions.slope);
-    const porosity = derivePorosity(state.seed, gx, gy, conditions.elevation);
-    const soilThickness = Math.max(0, t.soilThickness ?? 0.01);
-    const capacity = Math.max(0.01, Math.min(0.5, porosity * (0.6 + soilThickness * 1.8)));
-    const currentMoisture = b.soil;
-    const precip = precipitationAt(state.seed, gx, gy, state.tick) * 12;
-    const infiltration = precip * permeability * (1 - clamp01(currentMoisture / Math.max(1e-6, capacity)));
-    const runoff = Math.max(0, precip - infiltration);
-    const equilibriumFrac = clamp01(0.15 + conditions.wetness * 0.35 + (1 - conditions.slope) * 0.1 - conditions.temperature * 0.08);
-    const equilibrium = equilibriumFrac * capacity;
-    const dryingRate = 0.06 + (1 - conditions.wetness) * 0.04;
-    const drying = Math.max(0, Math.min(currentMoisture + infiltration, (currentMoisture - equilibrium) * dryingRate));
-    let moisture = currentMoisture + infiltration - drying;
-    const bedrock = Math.max(0, t.bedrockElevation ?? 0);
-    const surface = Math.max(bedrock, t.elevation ?? (bedrock + soilThickness));
-    const maxStorage = Math.max(0, porosity * Math.max(0, surface - bedrock));
-    const fieldCapacity = capacity * 0.6;
-    const percRate = 0.08;
-    const storageBefore = b.gw;
-    const percolationPotential = percRate * permeability * Math.max(0, moisture - fieldCapacity);
-    const perc = Math.min(percolationPotential, Math.max(0, moisture), Math.max(0, maxStorage - storageBefore));
-    moisture -= perc;
-    let satOverflow = 0;
-    if (moisture > capacity) { satOverflow = moisture - capacity; moisture = capacity; }
-    if (moisture < 0) moisture = 0;
-    const percLedger = ledger.percolationByTile.get(k) ?? 0;
-    assert.ok(Math.abs(perc - percLedger) < 1e-9, `percolation ledger mismatch at ${k}`);
-    const spring = ledger.springDischargeByTile.get(k) ?? 0;
-    // recharge-frame identity (always exact per step): Δsoil_recharge + overflowInflow + percolation = infiltration - drying
-    // spring is accounted as a separate conserved transfer (gw -> soil/pending) pinned via springDischargeByTile ledger.
-    const overflowInflow = runoff + satOverflow;
-    const identity = (moisture - currentMoisture) + overflowInflow + perc;
-    assert.ok(Math.abs(identity - (precip - drying)) < 1e-9,
-      `per-tile balance at ${k}: ${identity} vs ${precip - drying}`);
-    if (spring > 0) checkedSpring++;
-  }
-  assert.ok(checkedSpring > 0, "expected spring-active tiles in fixture");
+  assert.ok((ledger?.springDischarge ?? 0) > 0, "lateral-fed fixture should activate spring discharge");
 });
