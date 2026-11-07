@@ -508,33 +508,11 @@ export function updateTileSoilMoisture(
 export function boundaryPendingAt(
   state: Pick<WorldState, "width" | "height" | "tiles">,
   position: GridPosition,
-  haloOrOptions?: readonly BoundaryHaloEntry[] | { halo?: readonly BoundaryHaloEntry[] },
+  _haloOrOptions?: readonly BoundaryHaloEntry[] | { halo?: readonly BoundaryHaloEntry[] },
 ): number {
   const tile = getTile(state, position);
   if (tile === undefined || tile.terrain === "water" || !inBounds(state, position)) {
     return 0;
-  }
-  let haloList: readonly BoundaryHaloEntry[] | undefined;
-  if (Array.isArray(haloOrOptions)) {
-    haloList = haloOrOptions;
-  } else if (haloOrOptions && typeof haloOrOptions === "object" && "halo" in haloOrOptions) {
-    haloList = (haloOrOptions as { halo?: readonly BoundaryHaloEntry[] }).halo;
-  }
-  if (!haloList || haloList.length === 0) {
-    return Math.max(0, tile.soilMoistureOverflow ?? 0);
-  }
-  const haloLookup = new Map<string, BoundaryHaloEntry>();
-  for (const entry of haloList) {
-    haloLookup.set(haloKeyLocal(entry.sourcePosition, entry.direction), entry);
-  }
-  for (let d = 0; d < HEX_GRID_DIRECTIONS.length; d++) {
-    const dir = HEX_GRID_DIRECTIONS[d] as any;
-    if (dir === undefined) continue;
-    const key = haloKeyLocal(position, dir);
-    const ghostEntry = haloLookup.get(key);
-    if (ghostEntry && ghostEntry.tile && ghostEntry.tile.terrain !== "water") {
-      return Math.max(0, tile.soilMoistureOverflow ?? 0);
-    }
   }
   return Math.max(0, tile.soilMoistureOverflow ?? 0);
 }
