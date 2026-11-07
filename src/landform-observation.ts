@@ -1,5 +1,7 @@
 import { HEX_GRID_STEPS } from "./hex-grid.js";
 import type { Tile, WorldState } from "./protocol.js";
+import { regionGlobalCellOrigin } from "./region-topology.js";
+import { derivePorosity, sampleWorldConditions } from "./world-scale.js";
 import { getTile, inBounds } from "./world.js";
 
 export type LandformKind = "floodplain" | "alluvialFan" | "delta" | "riverIncision";
@@ -189,4 +191,114 @@ export function terrainLandformAt(
     if (best === undefined || o.strength > best.strength + EPS) best = { kind, strength: o.strength };
   }
   return best ? LANDFORM_KIND_TO_TERRAIN[best.kind] : undefined;
+}
+
+
+// #25 Phase 5: baseflow observation (derived, non-persistent, deterministic, read-only).
+// Spring source = near-saturated aquifer with outflow; spring-fed = reachable downstream
+// via flowTo chain (finite steps). No simulation/state mutation, no rng consumption.
+
+export const BASEFLOW_SOURCE_THRESHOLD = 0.9;
+export const BASEFLOW_PROPAGATION_STEPS = 6;
+
+export interface BaseflowObservation {
+  /** Near-saturated groundwater with defined outflow (baseflow source). */
+  source: boolean;
+  /** Tile is a spring source or reachable downstream from a spring source. */
+  springFed: boolean;
+  /** Shortest flowTo-step distance from a spring source (0 = source), if springFed. */
+  stepsFromSource?: number;
+  groundwaterFillRatio: number;
+}
+
+type BaseflowState = Pick<WorldState, "seed" | "width" | "height" | "tiles" | "regionId">;
+
+function tileGlobalPos(state: BaseflowState, tile: Tile): { globalX: number; globalY: number } {
+  const origin = state.regionId
+    ? regionGlobalCellOrigin(state.regionId, state.width, state.height)
+    : undefined;
+  const ox = origin?.x ?? 0;
+  const oy = origin?.y ?? 0;
+  return { globalX: ox + tile.x, globalY: oy + tile.y };
+}
+
+function groundwaterMaxStorage(state: BaseflowState, tile: Tile): number {
+  const surface = tileElevation(tile);
+  const bedrock = Math.max(0, tile.bedrockElevation ?? 0);
+  const poreDepth = Math.max(0, surface - bedrock);
+  if (poreDepth <= 0) return 0;
+  const { globalX, globalY } = tileGlobalPos(state, tile);
+  const conditions = sampleWorldConditions(state.seed, globalX, globalY);
+  const porosity = derivePorosity(state.seed, globalX, globalY, conditions.elevation);
+  return Math.max(0, porosity * poreDepth);
+}
+
+export function observeBaseflowSpringSource(state: BaseflowState, tile: Tile): boolean {
+  if (tile.terrain === "water" || !inBounds(state, tile)) return false;
+  if (tile.flowTo === undefined) return false;
+  const storage = Math.max(0, tile.groundwaterStorage ?? 0);
+  const maxStorage = groundwaterMaxStorage(state, tile);
+  if (maxStorage <= EPS) return false;
+  return storage / maxStorage >= BASEFLOW_SOURCE_THRESHOLD;
+}
+
+/**
+ * Derive baseflow observations for all land tiles: spring sources and downstream
+ * spring-fed propagation along flowTo chains (up to BASEFLOW_PROPAGATION_STEPS).
+ * Pure, deterministic, read-only, no rngState consumption.
+ */
+export function observeBaseflowMap(state: BaseflowState): Map<string, BaseflowObservation> {
+  const result = new Map<string, BaseflowObservation>();
+  const keyOf = (t: Tile) => `${t.x},${t.y}`;
+
+  // Compute per-tile source/fill in deterministic tile order.
+  const sources: Tile[] = [];
+  for (const tile of state.tiles) {
+    if (tile.terrain === "water" || !inBounds(state, tile)) {
+      result.set(keyOf(tile), { source: false, springFed: false, groundwaterFillRatio: 0 });
+      continue;
+    }
+    const storage = Math.max(0, tile.groundwaterStorage ?? 0);
+    const maxStorage = groundwaterMaxStorage(state, tile);
+    const ratio = maxStorage > EPS ? clamp01(storage / maxStorage) : 0;
+    const source = tile.flowTo !== undefined && ratio >= BASEFLOW_SOURCE_THRESHOLD;
+    if (source) sources.push(tile);
+    result.set(keyOf(tile), source
+      ? { source: true, springFed: true, groundwaterFillRatio: ratio, stepsFromSource: 0 }
+      : { source: false, springFed: false, groundwaterFillRatio: ratio });
+  }
+
+  // Propagate spring-fed label downstream from each source (deterministic source order).
+  for (const src of sources) {
+    let cur: Tile | undefined = src;
+    for (let step = 1; step <= BASEFLOW_PROPAGATION_STEPS; step++) {
+      if (cur?.flowTo === undefined) break;
+      const next: Tile | undefined = getTile(state, cur.flowTo);
+      if (next === undefined || !inBounds(state, next) || next.terrain === "water") break;
+      const k = keyOf(next);
+      const prev = result.get(k);
+      if (prev && prev.springFed && (prev.stepsFromSource ?? Infinity) <= step) {
+        cur = next;
+        continue; // already reached at equal/shorter distance
+      }
+      const bestStep = Math.min(prev?.stepsFromSource ?? Infinity, step);
+      result.set(k, {
+        source: prev?.source ?? false,
+        springFed: true,
+        groundwaterFillRatio: prev?.groundwaterFillRatio ?? 0,
+        stepsFromSource: bestStep,
+      });
+      cur = next;
+    }
+  }
+
+  return result;
+}
+
+export function observeBaseflowAt(state: BaseflowState, tile: Tile): BaseflowObservation {
+  if (tile.terrain === "water" || !inBounds(state, tile)) {
+    return { source: false, springFed: false, groundwaterFillRatio: 0 };
+  }
+  const map = observeBaseflowMap(state);
+  return map.get(`${tile.x},${tile.y}`) ?? { source: false, springFed: false, groundwaterFillRatio: 0 };
 }
