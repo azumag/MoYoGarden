@@ -2,7 +2,6 @@ import {
   HEX_GRID_DIRECTIONS,
   HEX_GRID_DIRECTION_STEPS,
   hexGridBoundaryCells,
-  hexGridHandoffTarget,
   oppositeHexGridDirection,
   type HexGridDirection,
   type HexGridExtent,
@@ -13,7 +12,6 @@ import {
   regionAxialCoordinate,
   regionCellTransition,
   regionHexWindow,
-  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 
 export interface HexHaloLink {
@@ -145,59 +143,31 @@ export function hexHaloKey(position: HexGridPosition, direction: HexGridDirectio
 }
 
 /**
- * Legacy/configuration-oriented halo mapping. Unknown historical region IDs
- * still rely on the older side-to-side pairing until their axial identity is
- * migrated. Axial production IDs should prefer buildConfiguredHexHaloLinks.
+ * Configuration-oriented halo mapping for regions with resolved axial identity.
+ * Unknown historical IDs are not valid region identities after the termination
+ * slice and produce no halo links.
  */
 export function buildHexHaloLinks(
   extent: HexGridExtent,
   regionIds: readonly string[],
   sourceRegionId: string,
 ): HexHaloLink[] {
-  warnUnresolvedHistoricalRegionIds(
-    `buildHexHaloLinks(source=${sourceRegionId}) side-pair halo`,
-    [sourceRegionId],
-  );
-  const topology = regionHexWindow(regionIds, sourceRegionId, 1, extent.width, extent.height);
-  const source = topology.find((entry) => entry.id === sourceRegionId);
-  if (source === undefined) return [];
-
-  const links: HexHaloLink[] = [];
-  for (const direction of HEX_GRID_DIRECTIONS) {
-    const neighborRegionId = source.neighbors[direction];
-    if (neighborRegionId === null) continue;
-    for (const sourcePosition of hexGridBoundaryCells(extent, direction)) {
-      const neighborPosition = hexGridHandoffTarget(extent, sourcePosition, direction);
-      if (neighborPosition === undefined) continue;
-      links.push({
-        sourceRegionId,
-        sourcePosition,
-        direction,
-        neighborRegionId,
-        neighborPosition,
-        neighborDirection: oppositeHexGridDirection(direction),
-      });
-    }
-  }
-  return links;
+  if (regionAxialCoordinate(sourceRegionId) === undefined) return [];
+  // Preserve the legacy API while using exact configured axial ownership.
+  return buildConfiguredHexHaloLinks(extent, regionIds, sourceRegionId);
 }
 
 /**
  * Build a configured-only halo using the shared global cell ownership frame.
- * Known axial neighbors stay on exact global ownership even when REGION_IDS
- * still contains an unresolved historical entry. Historical neighbors retain
- * the old side-pair mapping only for source-direction slots that exact axial
- * ownership did not already claim, so one compatibility ID cannot downgrade
- * water/vegetation/wind propagation between otherwise-migrated regions.
+ * After termination, every valid region identity has an axial coordinate, so
+ * configured neighbors are resolved exactly from the local axial neighborhood.
  */
 export function buildConfiguredHexHaloLinks(
   extent: HexGridExtent,
   regionIds: readonly string[],
   sourceRegionId: string,
 ): HexHaloLink[] {
-  if (regionAxialCoordinate(sourceRegionId) === undefined) {
-    return buildHexHaloLinks(extent, regionIds, sourceRegionId);
-  }
+  if (regionAxialCoordinate(sourceRegionId) === undefined) return [];
 
   const cacheKey = configuredHexHaloCacheKey(extent, regionIds, sourceRegionId);
   const cached = configuredHexHaloLinkCache.get(cacheKey);
@@ -207,17 +177,8 @@ export function buildConfiguredHexHaloLinks(
     return cached.map(cloneHaloLink);
   }
 
-  // Resolve the configured axial neighborhood once per halo materialization.
-  // The old path rebuilt the same REGION_IDS index inside
-  // configuredRegionCellTransition for every directed boundary cell (up to 138
-  // times for the radius-11 simulation hex). Keeping unresolved historical IDs
-  // out of this exact window preserves their side-pair fallback below, while
-  // known aliases/canonical IDs keep the same input-order ownership semantics.
-  const axialRegionIds = regionIds.filter(
-    (regionId) => regionAxialCoordinate(regionId) !== undefined,
-  );
   const source = regionHexWindow(
-    axialRegionIds,
+    regionIds,
     sourceRegionId,
     1,
     extent.width,
@@ -241,7 +202,7 @@ export function buildConfiguredHexHaloLinks(
       );
       if (transition === undefined) continue;
       const neighborRegionId = source.neighbors[transition.direction];
-      if (neighborRegionId === null) continue;
+      if (neighborRegionId === null || neighborRegionId === undefined) continue;
       links.push({
         sourceRegionId,
         sourcePosition,
@@ -253,28 +214,8 @@ export function buildConfiguredHexHaloLinks(
     }
   }
 
-  if (!regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)) {
-    rememberConfiguredHexHaloLinks(cacheKey, links);
-    return links;
-  }
-
-  const exactKeys = new Set(
-    links.map((link) => hexHaloKey(link.sourcePosition, link.direction)),
-  );
-  const historicalFallback = buildHexHaloLinks(extent, regionIds, sourceRegionId).filter(
-    (link) =>
-      regionAxialCoordinate(link.neighborRegionId) === undefined &&
-      !exactKeys.has(hexHaloKey(link.sourcePosition, link.direction)),
-  );
-  if (historicalFallback.length > 0) {
-    warnUnresolvedHistoricalRegionIds(
-      `buildConfiguredHexHaloLinks(source=${sourceRegionId}) side-pair fallback`,
-      historicalFallback.map((link) => link.neighborRegionId),
-    );
-  }
-  const combined = [...links, ...historicalFallback];
-  rememberConfiguredHexHaloLinks(cacheKey, combined);
-  return combined;
+  rememberConfiguredHexHaloLinks(cacheKey, links);
+  return links;
 }
 
 /**
@@ -328,25 +269,6 @@ export function buildDynamicHexHaloLinks(
   return links;
 }
 
-export function boundaryDirectionForNeighbor(
-  regionIds: readonly string[],
-  sourceRegionId: string,
-  neighborRegionId: string,
-  width: number,
-  height: number,
-): { sourceDirection: HexGridDirection; neighborDirection: HexGridDirection } | undefined {
-  const topology = regionHexWindow(regionIds, sourceRegionId, 1, width, height);
-  const source = topology.find((entry) => entry.id === sourceRegionId);
-  if (source === undefined) return undefined;
-  const sourceDirection = HEX_GRID_DIRECTIONS.find(
-    (direction) => source.neighbors[direction] === neighborRegionId,
-  );
-  if (sourceDirection === undefined) return undefined;
-  return {
-    sourceDirection,
-    neighborDirection: oppositeHexGridDirection(sourceDirection),
-  };
-}
 
 export function materializeHexHalo(
   links: readonly HexHaloLink[],

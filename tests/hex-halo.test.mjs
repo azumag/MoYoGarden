@@ -20,7 +20,15 @@ import {
 } from "../dist-ts/src/hex-grid.js";
 
 const extent = { width: 40, height: 24 };
-const regionIds = Array.from({ length: 7 }, (_, index) => `garden-${index + 1}`);
+const regionIds = [
+  "garden-1",
+  "garden-2",
+  "garden-3",
+  "hex-q0-r-1",
+  "hex-q-1-r0",
+  "hex-q-1-r1",
+  "hex-q0-r1",
+];
 const hexHaloSource = await readFile(new URL("../src/hex-halo.ts", import.meta.url), "utf8");
 const haloRegionSource = await readFile(new URL("../src/halo-region.ts", import.meta.url), "utf8");
 
@@ -116,11 +124,13 @@ test("full ring center exposes one ghost link for every cell on all six sides", 
   assert.equal(links.length, 6 * 23);
   assert.equal(new Set(links.map((entry) => hexHaloKey(entry.sourcePosition, entry.direction))).size, links.length);
 
+  // Exact axial ownership can distribute boundary cells across hex neighbors by
+  // transition direction rather than by a single rectangular side owner.
+  assert.equal(new Set(links.map((entry) => entry.neighborRegionId)).size, 6);
   for (const direction of HEX_GRID_DIRECTIONS) {
     const side = links.filter((entry) => entry.direction === direction);
     assert.equal(side.length, hexGridBoundaryCells(extent, direction).length);
     assert.equal(side.length, 23);
-    assert.equal(new Set(side.map((entry) => entry.neighborRegionId)).size, 1);
   }
 });
 
@@ -211,14 +221,17 @@ test("materialized halo selects the freshest duplicate edge snapshot independent
 
 test("missing neighbor edge data leaves only unavailable ghost links unmaterialized", () => {
   const links = buildHexHaloLinks(extent, regionIds, "garden-1");
-  const eastLinks = links.filter((entry) => entry.direction === "east");
-  const eastRegion = eastLinks[0].neighborRegionId;
+  const target = links[0];
+  assert.ok(target);
+  const sameEdgeLinks = links.filter(
+    (entry) => entry.neighborRegionId === target.neighborRegionId && entry.neighborDirection === target.neighborDirection,
+  );
   const halo = materializeHexHalo(links, [{
-    regionId: eastRegion,
-    direction: "west",
+    regionId: target.neighborRegionId,
+    direction: target.neighborDirection,
     tick: 1,
     revision: 1,
-    tiles: eastLinks.map((entry) => ({
+    tiles: sameEdgeLinks.map((entry) => ({
       position: { ...entry.neighborPosition },
       tile: {
         x: entry.neighborPosition.x,
@@ -228,6 +241,6 @@ test("missing neighbor edge data leaves only unavailable ghost links unmateriali
       },
     })),
   }]);
-  assert.equal(halo.length, 23);
-  assert.ok(halo.every((entry) => entry.direction === "east"));
+  assert.equal(halo.length, sameEdgeLinks.length);
+  assert.ok(halo.every((entry) => entry.neighborRegionId === target.neighborRegionId));
 });

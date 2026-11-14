@@ -29,7 +29,6 @@ import {
   hexDistance,
   regionAxialCoordinate,
   regionCellTransition,
-  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 import { globalHandoffAgentId } from "./agent-ownership.js";
 import {
@@ -290,12 +289,7 @@ export function isAutonomyClaimSourceRegionId(
 ): boolean {
   if (regionAxialCoordinate(sourceRegionId) !== undefined) return true;
   const configured = typeof regionIds === "function" ? regionIds() : regionIds;
-  if (!configured.includes(sourceRegionId)) return false;
-  warnUnresolvedHistoricalRegionIds(
-    `isAutonomyClaimSourceRegionId(source=${sourceRegionId})`,
-    [sourceRegionId],
-  );
-  return true;
+  return configured.includes(sourceRegionId);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

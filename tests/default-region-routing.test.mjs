@@ -72,7 +72,8 @@ test("production meta enrichment reports the configured default rather than list
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.defaultRegion, "garden-3");
-  assert.deepEqual(payload.regions, ["garden-1", "garden-2", "garden-3"]);
+  assert.equal(payload.regions.length, 7);
+  assert.ok(payload.regions.includes("garden-3"));
 });
 
 test("header-scoped canonical meta stays sparse without REGION_IDS enumeration", async () => {

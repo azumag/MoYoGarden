@@ -105,13 +105,8 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-function configuredRegionIds(env: HaloEnv): string[] {
-  const configured = env.REGION_IDS ?? env.DEFAULT_REGION_ID ?? "garden-1";
-  const regions = configured
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry));
-  return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
+function configuredRegionIds(_env: HaloEnv): string[] {
+  return [...PERSISTED_LEGACY_REGION_IDS];
 }
 
 function worldSeedValue(value: string | undefined): number {
@@ -736,14 +731,9 @@ export class RegionDurableObject extends MoveRegionDurableObject {
 
   private haloEnvironmentFrame(state: WorldState): HaloEnvironmentFrame {
     const globalOrigin = regionGlobalCellOrigin(state.regionId, state.width, state.height);
-    const legacyPhysicalOrigin = globalOrigin === undefined
-      ? regionHexWindow(
-          configuredRegionIds(this.haloEnv),
-          state.regionId,
-          0,
-          state.width,
-          state.height,
-        ).find((candidate) => candidate.id === state.regionId)?.physicalOrigin
+    const legacyPhysicalOrigin = globalOrigin === undefined && isPersistedLegacyRegionId(state.regionId)
+      ? regionHexWindow([...PERSISTED_LEGACY_REGION_IDS], state.regionId, 0, state.width, state.height)
+          .find((candidate) => candidate.id === state.regionId)?.physicalOrigin
       : undefined;
     const origin = haloEnvironmentOrigin(
       state.regionId,
@@ -767,14 +757,12 @@ export class RegionDurableObject extends MoveRegionDurableObject {
     // no longer depends on activity tier without reintroducing continuous fan-out.
     const links = shouldUseDynamicEnvironmentalHalo(state, state.regionId, tier)
       ? buildDynamicHexHaloLinks(state, state.regionId)
-      : isPersistedLegacyRegionId(state.regionId)
-        ? buildConfiguredHexHaloLinks(state, PERSISTED_LEGACY_REGION_IDS, state.regionId)
-        : haloLinksForActivity(
-            state,
-            configuredRegionIds(this.haloEnv),
-            state.regionId,
-            tier,
-          );
+      : haloLinksForActivity(
+          state,
+          configuredRegionIds(this.haloEnv),
+          state.regionId,
+          tier,
+        );
     const requested = new Map<string, HexGridDirection[]>();
     for (const link of links) {
       const directions = requested.get(link.neighborRegionId) ?? [];
