@@ -171,6 +171,103 @@ test("same socialMemory gives same pairing decision despite mass death events (R
   assert.equal(run(true), "r1-partner");
 });
 
+test("infant death records lifeStage and ageTicks on agent_died", () => {
+  const state = createInitialWorld({ seed: 39046 });
+  const faction = state.factions[0];
+  assert.ok(faction);
+  faction.resources.food = 0;
+  for (const structure of state.structures) structure.storage.food = 0;
+
+  const infant = adultWithBirth(state, 0, "infant-victim");
+  infant.lifeStage = "infant";
+  infant.status = "infant; food insecure";
+  infant.hp = 1;
+  infant.energy = 10;
+  state.agents = [infant];
+  state.tick = POPULATION_BASAL_FOOD_INTERVAL_TICKS;
+
+  applyPopulationMaintenance(state);
+
+  assert.equal(state.agents.length, 0);
+  const death = state.events.find(
+    (event) => event.kind === "agent_died" && event.agentId === infant.id,
+  );
+  assert.ok(death);
+  assert.equal(death.data?.cause, "basal_food_deficit");
+  assert.equal(death.data?.lifeStage, "infant");
+  assert.equal(death.data?.ageTicks, state.tick - infant.birthTick);
+});
+
+test("adult and elder deaths record lifeStage and ageTicks; legacy founders omit both", () => {
+  const state = createInitialWorld({ seed: 39047 });
+  const adult = adultWithBirth(state, 0, "adult-victim");
+  adult.heritableTraits = { vitality: 1, carryingCapacity: 1 };
+  const elder = adultWithBirth(state, 0, "elder-victim");
+  elder.lifeStage = "elder";
+  elder.heritableTraits = { vitality: 1, carryingCapacity: 1 };
+  state.agents = [adult, elder];
+  state.tick = Math.max(
+    naturalLifespanTicks(adult.id, 1),
+    naturalLifespanTicks(elder.id, 1),
+  );
+
+  applyPopulationAging(state);
+
+  for (const victim of [adult, elder]) {
+    const death = state.events.find(
+      (event) => event.kind === "agent_died" && event.agentId === victim.id,
+    );
+    assert.ok(death, `expected agent_died for ${victim.id}`);
+    assert.equal(death.data?.lifeStage, victim.lifeStage);
+    assert.equal(death.data?.ageTicks, state.tick - victim.birthTick);
+  }
+
+  const founderState = createInitialWorld({ seed: 39048 });
+  const founderFaction = founderState.factions[0];
+  assert.ok(founderFaction);
+  founderFaction.resources.food = 0;
+  for (const structure of founderState.structures) structure.storage.food = 0;
+  const founder = adultWithBirth(founderState, undefined, "founder-victim");
+  delete founder.lifeStage;
+  founder.hp = 1;
+  founder.energy = 10;
+  founderState.agents = [founder];
+  founderState.tick = POPULATION_BASAL_FOOD_INTERVAL_TICKS;
+
+  applyPopulationMaintenance(founderState);
+
+  const founderDeath = founderState.events.find(
+    (event) => event.kind === "agent_died" && event.agentId === founder.id,
+  );
+  assert.ok(founderDeath);
+  assert.equal(founderDeath.data?.cause, "basal_food_deficit");
+  assert.equal(founderDeath.data?.deathTick, founderState.tick);
+  assert.deepEqual(founderDeath.data?.position, founderDeath.position);
+  assert.equal(founderDeath.data?.lifeStage, undefined);
+  assert.equal(founderDeath.data?.ageTicks, undefined);
+});
+
+test("pregnancy_lost events under mass-death truncation do not break construction familiarity", () => {
+  const state = createInitialWorld({ seed: 39049 });
+  const faction = state.factions.find((entry) => entry.id === "ember");
+  assert.ok(faction);
+  for (const tile of state.tiles) if (tile.terrain === "water") tile.terrain = "plain";
+  const [a, b] = state.agents.filter((agent) => agent.factionId === faction.id).slice(0, 2);
+  assert.ok(a && b);
+  delete a.socialMemory; delete b.socialMemory;
+  state.structures = [{ id: "shared-workshop-pl", factionId: faction.id, type: "workshop", position: { ...a.position }, status: "active", progress: 13, requiredProgress: 13, storage: { wood: 0, stone: 0, food: 0 } }];
+  const workEvents = [
+    { id: "w1", tick: 100, kind: "construction_started", message: "s", agentId: a.id, factionId: faction.id, position: { ...a.position }, data: { structureId: "shared-workshop-pl" } },
+    { id: "w2", tick: 101, kind: "construction_progress", message: "p", agentId: b.id, factionId: faction.id, position: { ...b.position }, data: { structureId: "shared-workshop-pl" } },
+  ];
+  const losses = Array.from({ length: 400 }, (_, i) => ({ id: `pl${i}`, tick: 50 + i, kind: "pregnancy_lost", message: "l", agentId: `dead-parent-${i}`, factionId: faction.id, position: { x: 0, y: 0 }, data: { outcome: "gestational_parent_died", parentId: `dead-parent-${i}`, partnerId: `partner-${i}`, conceivedAtTick: 0, dueAtTick: 8640, gestationElapsedTicks: 50 + i, parentDeathCause: "starvation", deathTick: 50 + i, position: { x: 0, y: 0 } } }));
+  state.events = [...losses, ...workEvents]; state.tick = 200;
+  applyConstructionCollaborationFamiliarity(state);
+  assert.equal(a.socialMemory?.[0]?.agentId, b.id);
+  assert.equal(a.socialMemory?.[0]?.familiarity, 1);
+  assert.equal(b.socialMemory?.[0]?.agentId, a.id);
+});
+
 test("death events and tick stats are deterministic for same seed (R2/①)", () => {
   function run() {
     const state = createInitialWorld({ seed: 39045 });
