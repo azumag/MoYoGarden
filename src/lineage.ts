@@ -94,7 +94,9 @@ export function canonicalGrandparentList(
     seen.add(canonical);
     result.push(canonical);
   }
-  result.sort((a, b) => a.localeCompare(b));
+  // Plain code-unit comparison, not localeCompare: ICU presence/version must
+  // not change the stored order, and callers only read it as a set anyway.
+  result.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return result.slice(0, LINEAGE_GRANDPARENT_LIMIT);
 }
 
