@@ -27,13 +27,16 @@ function unavailableRegionSnapshot(): Response {
   });
 }
 
-function regionWindowCenter(request: Request, env: RegionWindowReliabilityEnv): string {
+function isSupportedRegionId(regionId: string): boolean {
+  return /^[a-z0-9][a-z0-9-]{0,47}$/.test(regionId);
+}
+
+function regionWindowCenter(request: Request, env: RegionWindowReliabilityEnv): string | undefined {
   const url = new URL(request.url);
   const requested =
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
-  return requested === undefined || requested === ""
-    ? configuredDefaultRegionId(env)
-    : requested;
+  if (requested === undefined || requested === "") return configuredDefaultRegionId(env) ?? undefined;
+  return isSupportedRegionId(requested) ? requested : undefined;
 }
 
 function routedSnapshotRegionId(input: RequestInfo | URL): string | undefined {
@@ -148,10 +151,16 @@ async function validatedSnapshotResponse(
 function reliableRegionWindowEnv(
   request: Request,
   env: RegionWindowReliabilityEnv,
-): RegionWindowReliabilityEnv {
+): RegionWindowReliabilityEnv | Response {
   const url = new URL(request.url);
   if (request.method !== "GET" || url.pathname !== "/api/world/window") return env;
   const centerRegionId = regionWindowCenter(request, env);
+  if (centerRegionId === undefined) {
+    return new Response(JSON.stringify({ error: "unknown or disabled region" }), {
+      status: 404,
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
   const regions = {
     idFromName: (...args: Parameters<RegionWindowReliabilityEnv["REGIONS"]["idFromName"]>) =>
       env.REGIONS.idFromName(...args),
@@ -173,6 +182,8 @@ export { RegionDurableObject };
 
 export default {
   async fetch(request: Request, env: RegionWindowReliabilityEnv): Promise<Response> {
-    return baseWorker.fetch(request, reliableRegionWindowEnv(request, env));
+    const reliable = reliableRegionWindowEnv(request, env);
+    if (reliable instanceof Response) return reliable;
+    return baseWorker.fetch(request, reliable);
   },
 };

@@ -24,8 +24,23 @@ function outletFixture() {
     delete agent.task;
   }
 
-  const link = buildHexHaloLinks(state, ["garden-1", "garden-2"], "garden-1")
-    .filter((entry) => entry.direction === "east")[11];
+  const allLinks = buildHexHaloLinks(state, ["garden-1", "garden-2"], "garden-1");
+  const link = allLinks.find((entry) => {
+    if (entry.neighborRegionId !== "garden-2") return false;
+    const probeTile = state.tiles[entry.sourcePosition.y * state.width + entry.sourcePosition.x];
+    if (!probeTile) return false;
+    const prev = { elevation: probeTile.elevation, drainage: probeTile.drainage };
+    probeTile.elevation = 0.8;
+    probeTile.drainage = 0.8;
+    const probeHalo = [{
+      ...entry,
+      tile: { x: entry.neighborPosition.x, y: entry.neighborPosition.y, terrain: "plain", elevation: 0.62, drainage: 0 },
+    }];
+    const outlet = haloFlowOutletAt(state, probeTile, probeHalo);
+    probeTile.elevation = prev.elevation;
+    probeTile.drainage = prev.drainage;
+    return outlet?.neighborRegionId === "garden-2";
+  }) ?? allLinks.find((entry) => entry.neighborRegionId === "garden-2");
   assert.ok(link);
   const tile = state.tiles[link.sourcePosition.y * state.width + link.sourcePosition.x];
   assert.ok(tile);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker, { RegionDurableObject, regionLayout, regionTickDelayMs, regionVirtualCatchUpPlan, regionWindow } from "../dist-ts/src/worker.js";
+import worker, { RegionDurableObject, regionLayout, regionTickDelayMs, regionVirtualCatchUpPlan } from "../dist-ts/src/worker.js";
 import { isHexGridCell } from "../dist-ts/src/hex-grid.js";
 import { regionGlobalCellOrigin } from "../dist-ts/src/region-topology.js";
 import { createGlobalTerrainTile } from "../dist-ts/src/world-scale.js";
@@ -36,10 +36,6 @@ function request(path,init={}){const headers=new Headers(init.headers);headers.s
 test("region tick cadence slows only while inactive",()=>{assert.equal(regionTickDelayMs(10000,false),60000);assert.equal(regionTickDelayMs(10000,true),10000);assert.equal(regionTickDelayMs(1000000,false),3600000);});
 
 test("region layout gives adjacent chunks contiguous global coordinates",()=>{const layout=regionLayout(["garden-1","garden-2","garden-3"],40,24);assert.deepEqual(layout.map((entry)=>entry.origin),[{x:0,y:0},{x:40,y:0},{x:80,y:0}]);assert.equal(layout[0].origin.x+layout[0].extent.width,layout[1].origin.x);assert.equal(layout[1].origin.x+layout[1].extent.width,layout[2].origin.x);assert.deepEqual(layout.map((entry)=>entry.neighbors),[{west:null,east:"garden-2"},{west:"garden-1",east:"garden-3"},{west:"garden-2",east:null}]);});
-
-test("region window follows logical hex distance instead of array index distance",()=>{const ids=Array.from({length:19},(_,index)=>`garden-${index+1}`);assert.deepEqual(regionWindow(ids,"garden-1",1,40,24).map((entry)=>entry.id),["garden-1","garden-2","garden-3","garden-4","garden-5","garden-6","garden-7"]);assert.deepEqual(regionWindow(ids,"garden-3",1,40,24).map((entry)=>entry.id),["garden-1","garden-2","garden-3","garden-4","garden-9","garden-11","garden-12"]);assert.deepEqual(regionWindow(ids,"garden-3",0,40,24).map((entry)=>entry.id),["garden-3"]);assert.deepEqual(regionWindow(ids,"garden-4",0,40,24).map((entry)=>entry.id),["garden-4"]);assert.deepEqual(regionWindow(ids,"garden-1",2,40,24).map((entry)=>entry.id),ids);assert.deepEqual(regionWindow(ids,"missing",1,40,24),[]);});
-
-test("canonical sparse region window follows encoded axial coordinates instead of list order",()=>{const center="hex-q10-r-4",far="hex-q100-r100";const neighbors=["hex-q11-r-4","hex-q10-r-3","hex-q9-r-3","hex-q9-r-4","hex-q10-r-5","hex-q11-r-5"];const ids=[center,far,...neighbors];assert.deepEqual(regionWindow(ids,center,1,40,24).map((entry)=>entry.id),[center,...neighbors]);assert.deepEqual(regionWindow(ids,center,0,40,24).map((entry)=>entry.id),[center]);});
 
 test("scoped meta keeps region topology bounded to the requested axial window",async()=>{const center="hex-q10-r-4",far="hex-q100-r100";const neighbors=["hex-q11-r-4","hex-q10-r-3","hex-q9-r-3","hex-q9-r-4","hex-q10-r-5","hex-q11-r-5"];const ids=[center,far,...neighbors];const response=await worker.fetch(new Request(`https://moyo.example/api/meta?region=${center}&radius=1`),{REGION_IDS:ids.join(","),WORLD_SEED:"424242"});assert.equal(response.status,200);const payload=await response.json();const expected=[center,...neighbors].sort();assert.deepEqual([...payload.regions].sort(),expected);assert.deepEqual(payload.world.regionTopology.regions.map((entry)=>entry.id).sort(),expected);assert.deepEqual(payload.world.regionLayout.map((entry)=>entry.id).sort(),expected);});
 

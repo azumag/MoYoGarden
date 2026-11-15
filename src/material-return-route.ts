@@ -9,7 +9,6 @@ import type {
 } from "./hex-seam-connectivity.js";
 import {
   regionAxialCoordinate,
-  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 
 export interface MaterialReturnRouteBudget {
@@ -124,16 +123,9 @@ function stepEqualDistance(
 ): boolean | undefined {
   if (nextRegionId === targetRegionId) {
     const adjacency = regionDistance(currentRegionId, nextRegionId);
-    // Keep the historical direct-to-source compatibility path for legacy IDs
-    // that do not have an axial coordinate. Canonical observations must still
-    // describe a real neighboring macro hex.
-    if (adjacency === undefined) {
-      warnUnresolvedHistoricalRegionIds(
-        `material-return stepEqualDistance(${currentRegionId}->${nextRegionId})`,
-        [currentRegionId, nextRegionId],
-      );
-    }
-    return adjacency === undefined || adjacency === 1 ? false : undefined;
+    // After termination, unresolved historical IDs are not valid region
+    // identities. Treat any remaining non-adjacent step as invalid.
+    return adjacency === 1 ? false : undefined;
   }
 
   const adjacency = regionDistance(currentRegionId, nextRegionId);

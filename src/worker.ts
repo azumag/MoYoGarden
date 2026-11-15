@@ -25,7 +25,6 @@ import {
   regionHexWindow,
   sparseCanonicalRegionHexWindow,
   sparseRegionHexWindow,
-  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 
 interface Env {
@@ -225,25 +224,6 @@ export function regionLayout(
   }));
 }
 
-export function regionWindow(
-  regionIds: readonly string[],
-  centerRegionId: string,
-  radius = 1,
-  width = TARGET_WORLD_WIDTH,
-  height = TARGET_WORLD_HEIGHT,
-): RegionLayoutEntry[] {
-  return regionHexWindow(regionIds, centerRegionId, radius, width, height).map((entry) => ({
-    id: entry.id,
-    index: entry.index,
-    grid: { x: entry.index, y: 0 },
-    origin: entry.physicalOrigin,
-    extent: { width, height },
-    neighbors: {
-      west: entry.index > 0 ? regionIds[entry.index - 1] ?? null : null,
-      east: entry.index + 1 < regionIds.length ? regionIds[entry.index + 1] ?? null : null,
-    },
-  }));
-}
 
 export function sparseRegionWindow(
   regionIds: readonly string[],
@@ -300,34 +280,47 @@ function boolValue(value: string | undefined, fallback: boolean): boolean {
   return value.toLowerCase() === "true";
 }
 
-function allowedRegions(env: Env): string[] {
-  const configured = env.REGION_IDS ?? env.DEFAULT_REGION_ID ?? "garden-1";
-  const regions = configured
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry));
-  return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
+const PERSISTED_LEGACY_REGION_IDS = ["garden-1", "garden-2", "garden-3"] as const;
+
+function isPersistedLegacyRegionId(regionId: string | undefined): regionId is (typeof PERSISTED_LEGACY_REGION_IDS)[number] {
+  return regionId !== undefined && PERSISTED_LEGACY_REGION_IDS.some((candidate) => candidate === regionId);
+}
+
+function defaultRegionId(env: Env): string | undefined {
+  const requested = env.DEFAULT_REGION_ID?.trim();
+  if (requested === undefined || requested === "" || isPersistedLegacyRegionId(requested)) {
+    return requested === undefined || requested === "" ? "garden-1" : requested;
+  }
+  if (parseAxialRegionId(requested) !== undefined) {
+    try {
+      if (regionGlobalCellOrigin(requested) === undefined) return undefined;
+    } catch {
+      return undefined;
+    }
+    return requested;
+  }
+  return undefined;
 }
 
 function resolveRegion(request: Request, env: Env): string | undefined {
   const url = new URL(request.url);
   const requested =
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
-  if (requested !== undefined && requested !== "" && parseAxialRegionId(requested) !== undefined) {
-  // Canonical ids are intentionally sparse/list-free, but the shared global
-  // cell frame still has to fit inside JavaScript safe integers. Reject an
-  // unprojectable public coordinate as an unavailable region instead of
-  // letting later topology/window projection throw a 500.
-  try {
-    if (regionGlobalCellOrigin(requested) === undefined) return undefined;
-  } catch {
-    return undefined;
+  if (requested === undefined || requested === "") return defaultRegionId(env);
+  if (isPersistedLegacyRegionId(requested)) return requested;
+  if (parseAxialRegionId(requested) !== undefined) {
+    // Canonical ids are intentionally sparse/list-free, but the shared global
+    // cell frame still has to fit inside JavaScript safe integers. Reject an
+    // unprojectable public coordinate as an unavailable region instead of
+    // letting later topology/window projection throw a 500.
+    try {
+      if (regionGlobalCellOrigin(requested) === undefined) return undefined;
+    } catch {
+      return undefined;
+    }
+    return requested;
   }
-  return requested;
-}
-  const regions = allowedRegions(env);
-  if (requested === undefined || requested === "") return regions[0];
-  return regions.includes(requested) ? requested : undefined;
+  return undefined;
 }
 
 function hashRegion(regionId: string): number {
@@ -491,10 +484,8 @@ export class RegionDurableObject {
     }
 
     // Persisted garden aliases intentionally stay on this rectangular
-    // index-origin frame; only ids with no axial identity at all are the
-    // unresolved historical compatibility path observed for removal.
-    warnUnresolvedHistoricalRegionIds(`terrainFrame(region=${regionId})`, [regionId]);
-    const entry = regionLayout(allowedRegions(this.env)).find((candidate) => candidate.id === regionId);
+    // index-origin frame (stable for the fixed garden-1/2/3 set).
+    const entry = regionLayout([...PERSISTED_LEGACY_REGION_IDS]).find((candidate) => candidate.id === regionId);
     return {
       worldSeed,
       entry,
@@ -514,11 +505,11 @@ export class RegionDurableObject {
       initializeWorldTerrainFrame(state, worldSeed, origin.x, origin.y);
     }
     // #26 Phase 8: canonical fresh frames rely on continuous global derived fields (no align).
-    // Legacy/persisted regions use axial adjacency when resolved; unresolved IDs fall back to W/E + warn.
+    // Persisted garden aliases use axial adjacency over the fixed legacy set.
     if (!(canonicalGlobalFrame && initializeFreshTerrain)) {
       const axial = regionAxialCoordinate(state.regionId);
       if (axial !== undefined) {
-        const topo = regionHexTopology(allowedRegions(this.env));
+        const topo = regionHexTopology([...PERSISTED_LEGACY_REGION_IDS]);
         const self = topo.find((t) => t.id === state.regionId);
         if (self !== undefined) {
           const directions = Object.fromEntries(
@@ -526,11 +517,6 @@ export class RegionDurableObject {
           ) as Partial<Record<(typeof HEX_DIRECTIONS)[number], boolean>>;
           alignRegionBoundaryElevations(state, worldSeed, origin.x, origin.y, { directions });
         }
-      } else if (entry !== undefined) {
-        warnUnresolvedHistoricalRegionIds(`alignBoundaryEdges(region=${state.regionId})`, [state.regionId]);
-        alignRegionBoundaryElevations(state, worldSeed, origin.x, origin.y, {
-          directions: { west: entry.neighbors.west !== null, east: entry.neighbors.east !== null },
-        });
       }
     }
     updateTileHydrology(state);
@@ -964,29 +950,25 @@ export default {
         return json({ error: "unknown or disabled region" }, 404);
       }
       const radius = parseBoundedInteger(url.searchParams.get("radius"), 1, 0, 4);
-      const canonicalScoped = scopedRegion !== undefined && parseAxialRegionId(scopedRegion) !== undefined;
-      const regions = canonicalScoped ? undefined : allowedRegions(env);
+      const effectiveDefault = defaultRegionId(env);
+      if (scopedRegion === undefined && effectiveDefault === undefined) {
+        return json({ error: "unknown or disabled region" }, 404);
+      }
+      const centerRegion = scopedRegion ?? effectiveDefault!;
+      const canonicalScoped = parseAxialRegionId(centerRegion) !== undefined;
+      const legacyRegions = [...PERSISTED_LEGACY_REGION_IDS];
       const topology = canonicalScoped
-        ? sparseCanonicalRegionHexWindow(scopedRegion, radius)
-        : scopedRegion === undefined
-          ? regionHexTopology(regions ?? [])
-          : sparseRegionHexWindow(regions ?? [], scopedRegion, radius);
+        ? sparseCanonicalRegionHexWindow(centerRegion, radius)
+        : sparseRegionHexWindow(legacyRegions, centerRegion, radius);
       const layout = canonicalScoped
-        ? sparseCanonicalRegionWindow(scopedRegion, radius)
-        : scopedRegion === undefined
-          ? regionLayout(regions ?? [])
-          : sparseRegionWindow(regions ?? [], scopedRegion, radius);
-      const exposedRegions = scopedRegion === undefined
-        ? regions ?? []
-        : topology.map((entry) => entry.id);
-      const defaultRegion = canonicalScoped
-        ? env.DEFAULT_REGION_ID?.trim() || "garden-1"
-        : regions?.[0] ?? "garden-1";
+        ? sparseCanonicalRegionWindow(centerRegion, radius)
+        : sparseRegionWindow(legacyRegions, centerRegion, radius);
+      const exposedRegions = topology.map((entry) => entry.id);
       return json({
         service: "moyo-garden",
         version: "0.2.0",
         regions: exposedRegions,
-        defaultRegion,
+        defaultRegion: centerRegion,
         runtime: "Cloudflare Workers + Durable Objects",
         world: {
           coordinateSpace: "global-grid",
@@ -1010,7 +992,7 @@ export default {
       const terrainOnly = url.searchParams.get("terrain") === "1";
       const entries = parseAxialRegionId(regionId) !== undefined
         ? sparseCanonicalRegionWindow(regionId, radius)
-        : sparseRegionWindow(allowedRegions(env), regionId, radius);
+        : sparseRegionWindow([...PERSISTED_LEGACY_REGION_IDS], regionId, radius);
       const chunks = await mapWithConcurrency(
         entries,
         REGION_WINDOW_SNAPSHOT_CONCURRENCY,

@@ -17,7 +17,7 @@ Workerは`/api/*`を処理し、それ以外はStatic Assetsへ渡します。HT
 
 ## 1領域＝1 Durable Object
 
-`REGION_IDS`に許可したIDだけを`idFromName(regionId)`へ変換します。任意の文字列で無制限にDOを作られないようにしています。
+`REGION_IDS` は optional な互換 allow-list です（canonical `hex-q<q>-r<r>` には作用しません。historical 名を許可したい運用のみ明示設定します）。公開ルーティングは canonical 構文検証・safe-integer projection guard・persisted legacy alias（`garden-1/2/3`）の固定解決により、未解決 historical ID を deterministic 404 として扱います。
 
 Durable Objectは次を1行のJSONとしてSQLiteへ保存します。
 

@@ -7,7 +7,7 @@
 - Admin API: `ADMIN_TOKEN`のみ
 - `OPEN_COMMANDS`: 既定で無効
 - リクエストbody: 64 KiB上限
-- `REGION_IDS`: 許可領域を明示し、任意IDによるDO大量作成を防止
+- `REGION_IDS`（optional）: canonical には作用しない互換 allow-list。historical 名を許可したい運用のみ明示設定する。公開ルーティングは canonical 構文検証・safe-integer projection guard と persisted legacy alias の固定解決で、未解決 historical ID を deterministic 404 として防止
 - Command ID: キュー済み・処理済みの冪等性チェック
 - Secret: Gitへ保存しない
 - ブラウザ入力token: `sessionStorage`だけに保存

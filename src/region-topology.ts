@@ -118,30 +118,6 @@ export function regionAxialCoordinate(regionId: string): HexCoordinate | undefin
   return parseAxialRegionId(regionId) ?? legacyRegionAxialCoordinate(regionId);
 }
 
-/**
- * Observation slice for issue #27 (DSH decision comment 6635836187): emit a
- * warn log whenever an unresolved historical region id still reaches a
- * compatibility resolution path. Production Workers observability counts
- * these log lines; once they stay at zero for a week after this slice ships,
- * the compatibility fallbacks become unreachable and the termination slice
- * removes them. This deliberately logs through console.warn only -- no new
- * metrics mechanism -- and must not change any resolution semantics.
- */
-export function warnUnresolvedHistoricalRegionIds(
-  context: string,
-  regionIds: readonly string[],
-): readonly string[] {
-  const unresolved = regionIds.filter(
-    (regionId) => regionAxialCoordinate(regionId) === undefined,
-  );
-  if (unresolved.length > 0) {
-    console.warn(
-      `MoYoGarden unresolved historical region id compatibility path: ${context}`,
-      { unresolvedRegionIds: unresolved },
-    );
-  }
-  return unresolved;
-}
 
 function legacyRegionIdAtCoordinate(coordinate: HexCoordinate): string | undefined {
   return LEGACY_REGION_ID_BY_COORDINATE.get(coordinateKey(coordinate.q, coordinate.r));
@@ -377,29 +353,6 @@ function configuredRegionIdAtCoordinate(
   return selected;
 }
 
-/**
- * Resolve one configured neighbor without rebuilding the whole region topology.
- * Axial-aware ids take the direct coordinate path; unresolved historical ids
- * retain the old ring-allocation fallback until REGION_IDS compatibility ends.
- */
-export function configuredRegionNeighborId(
-  regionIds: readonly string[],
-  sourceRegionId: string,
-  direction: HexDirection,
-  width = TARGET_WORLD_WIDTH,
-  height = TARGET_WORLD_HEIGHT,
-): string | undefined {
-  const source = regionAxialCoordinate(sourceRegionId);
-  if (source !== undefined) {
-    const indexById = new Map(regionIds.map((regionId, index) => [regionId, index] as const));
-    if (!indexById.has(sourceRegionId)) return undefined;
-    return configuredRegionIdAtCoordinate(hexNeighborCoordinate(source, direction), indexById);
-  }
-
-  const sourceEntry = regionHexTopology(regionIds, width, height)
-    .find((entry) => entry.id === sourceRegionId);
-  return sourceEntry?.neighbors[direction] ?? undefined;
-}
 
 /**
  * Resolve one exact adjacent global cell without requiring the target region to
@@ -446,56 +399,6 @@ export function regionCellTransition(
   return resolved;
 }
 
-/**
- * Resolve a local coordinate outside one axial region into the configured
- * neighboring region that owns the exact same global simulation cell.
- *
- * The internal cell-step direction and the macro-region direction are not
- * interchangeable along slanted edges. Resolving through `globalCellOrigin`
- * avoids teleporting a crossing onto a merely corresponding boundary slot.
- */
-export function configuredRegionCellTransition(
-  regionIds: readonly string[],
-  sourceRegionId: string,
-  desiredPosition: HexGridPosition,
-  width = TARGET_WORLD_WIDTH,
-  height = TARGET_WORLD_HEIGHT,
-): RegionCellTransition | undefined {
-  const source = regionAxialCoordinate(sourceRegionId);
-  if (source === undefined) return undefined;
-  const indexById = new Map(regionIds.map((regionId, index) => [regionId, index] as const));
-  if (!indexById.has(sourceRegionId)) return undefined;
-  if (!Number.isSafeInteger(desiredPosition.x) || !Number.isSafeInteger(desiredPosition.y)) return undefined;
-
-  const safeWidth = Number.isSafeInteger(width) && width > 0 ? width : TARGET_WORLD_WIDTH;
-  const safeHeight = Number.isSafeInteger(height) && height > 0 ? height : TARGET_WORLD_HEIGHT;
-  const extent = { width: safeWidth, height: safeHeight };
-  if (isHexGridCell(extent, desiredPosition)) return undefined;
-
-  const sourceOrigin = projectRegionGlobalCellOrigin(source, safeWidth, safeHeight);
-  const globalPosition = {
-    x: sourceOrigin.x + desiredPosition.x,
-    y: sourceOrigin.y + desiredPosition.y,
-  };
-
-  let resolved: RegionCellTransition | undefined;
-  for (const direction of HEX_DIRECTIONS) {
-    const targetCoordinate = hexNeighborCoordinate(source, direction);
-    const targetRegionId = configuredRegionIdAtCoordinate(targetCoordinate, indexById);
-    if (targetRegionId === undefined) continue;
-    const targetOrigin = projectRegionGlobalCellOrigin(targetCoordinate, safeWidth, safeHeight);
-    const targetPosition = {
-      x: globalPosition.x - targetOrigin.x,
-      y: globalPosition.y - targetOrigin.y,
-    };
-    if (!isHexGridCell(extent, targetPosition)) continue;
-    if (resolved !== undefined) {
-      throw new Error("global cell is owned by multiple configured neighboring regions");
-    }
-    resolved = { direction, targetRegionId, targetPosition };
-  }
-  return resolved;
-}
 
 /**
  * Build only the configured topology entries inside a bounded axial window.
@@ -517,18 +420,6 @@ export function regionHexWindow(
   const safeRadius = Number.isFinite(radius)
     ? Math.max(0, Math.min(4, Math.floor(radius)))
     : 1;
-
-  const unresolvedForWindow = warnUnresolvedHistoricalRegionIds(
-    `regionHexWindow(center=${centerRegionId}) full-topology fallback`,
-    regionIds,
-  );
-  if (unresolvedForWindow.length > 0) {
-    const topology = regionHexTopology(regionIds, width, height);
-    const centerEntry = topology.find((entry) => entry.id === centerRegionId);
-    return centerEntry === undefined
-      ? []
-      : topology.filter((entry) => hexDistance(entry.axial, centerEntry.axial) <= safeRadius);
-  }
 
   const center = regionAxialCoordinate(centerRegionId);
   if (center === undefined) return [];
@@ -643,9 +534,6 @@ export function sparseRegionHexWindow(
   height = TARGET_WORLD_HEIGHT,
 ): RegionHexTopologyEntry[] {
   if (regionIds.length === 0) return [];
-  if (regionIds.some((regionId) => regionAxialCoordinate(regionId) === undefined)) {
-    return regionHexWindow(regionIds, centerRegionId, radius, width, height);
-  }
 
   const center = regionAxialCoordinate(centerRegionId);
   if (center === undefined) return [];

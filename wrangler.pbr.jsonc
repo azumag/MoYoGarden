@@ -28,7 +28,6 @@
   ],
   "vars": {
     "DEFAULT_REGION_ID": "garden-1",
-    "REGION_IDS": "garden-1",
     "WORLD_SEED": "424242",
     "TICK_MS": "10000",
     "OPEN_COMMANDS": "false"

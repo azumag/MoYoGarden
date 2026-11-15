@@ -3,10 +3,10 @@ import { RegionDurableObject } from "./storage-reservation-region.js";
 import { isHexGridCell } from "./hex-grid.js";
 import {
   parseAxialRegionId,
+  regionGlobalCellOrigin,
   regionHexTopology,
   sparseCanonicalRegionHexWindow,
   sparseRegionHexWindow,
-  warnUnresolvedHistoricalRegionIds,
 } from "./region-topology.js";
 import baseWorker from "./worker.js";
 
@@ -38,10 +38,20 @@ const DEFAULT_BUILD_METADATA: BuildMetadata = {
 };
 
 const PERSISTED_LEGACY_REGION_IDS = ["garden-1", "garden-2", "garden-3"] as const;
-const PERSISTED_LEGACY_REGION_LIST = PERSISTED_LEGACY_REGION_IDS.join(",");
 
 function isPersistedLegacyRegionId(regionId: string | undefined): regionId is (typeof PERSISTED_LEGACY_REGION_IDS)[number] {
   return regionId !== undefined && PERSISTED_LEGACY_REGION_IDS.some((candidate) => candidate === regionId);
+}
+
+function isSupportedRegionId(regionId: string | undefined): regionId is string {
+  if (regionId === undefined || regionId === "") return false;
+  if (isPersistedLegacyRegionId(regionId)) return true;
+  if (parseAxialRegionId(regionId) === undefined) return false;
+  try {
+    return regionGlobalCellOrigin(regionId) !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 export { RegionDurableObject };
@@ -131,71 +141,39 @@ export function enrichRegionWindowPayload(
   };
 }
 
-function configuredRegionIds(env: RegionConfigEnv): string[] {
-  const configured = env.REGION_IDS ?? env.DEFAULT_REGION_ID ?? "garden-1";
-  const regions = configured
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry));
-  return regions.length > 0 ? [...new Set(regions)] : ["garden-1"];
+function configuredRegionIds(_env: RegionConfigEnv): string[] {
+  // Historical allow-list behavior is removed; the fixed persisted legacy set is
+  // the only configuration-independent compatibility group.
+  return [...PERSISTED_LEGACY_REGION_IDS];
 }
 
 /**
- * DEFAULT_REGION_ID is the public routing authority. REGION_IDS remains a
- * compatibility allow-list/order for historical region IDs, but changing that
- * list's order must not silently change which region opens by default. Canonical
- * axial IDs and the three persisted production aliases are valid defaults even
- * before they are enumerated in REGION_IDS.
+ * DEFAULT_REGION_ID is the public routing authority for omitted regions. After
+ * termination, only canonical axial IDs and the three persisted production
+ * aliases are valid defaults; unresolved historical defaults are rejected.
  */
-export function configuredDefaultRegionId(env: RegionConfigEnv): string {
+export function configuredDefaultRegionId(env: RegionConfigEnv): string | undefined {
   const requested = env.DEFAULT_REGION_ID?.trim();
-  if (
-    requested !== undefined &&
-    requested !== "" &&
-    (parseAxialRegionId(requested) !== undefined || isPersistedLegacyRegionId(requested))
-  ) {
-    return requested;
-  }
-  const regions = configuredRegionIds(env);
-  if (requested !== undefined && requested !== "" && regions.includes(requested)) {
-    warnUnresolvedHistoricalRegionIds(
-      `configuredDefaultRegionId(default=${requested})`,
-      [requested],
-    );
-    return requested;
-  }
-  warnUnresolvedHistoricalRegionIds(
-    "configuredDefaultRegionId(default=REGION_IDS[0])",
-    regions.slice(0, 1),
-  );
-  return regions[0] ?? "garden-1";
+  if (requested === undefined || requested === "") return "garden-1";
+  return isSupportedRegionId(requested) ? requested : undefined;
 }
 
-/**
- * The legacy worker resolves omitted regions from REGION_IDS[0]. Production is
- * wrapped here so DEFAULT_REGION_ID remains authoritative without changing the
- * compatibility semantics of explicit ?region= / x-moyo-region requests.
- */
 export function routeConfiguredDefaultRegion(
   request: Request,
   env: RegionConfigEnv,
-): Request {
+): Request | Response {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/api/") || url.pathname === "/api/meta") return request;
   const requested =
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
   if (requested !== undefined && requested !== "") return request;
+  const defaultRegion = configuredDefaultRegionId(env);
+  if (defaultRegion === undefined) return unknownRegionResponse();
   const headers = new Headers(request.headers);
-  headers.set("x-moyo-region", configuredDefaultRegionId(env));
+  headers.set("x-moyo-region", defaultRegion);
   return new Request(request, { headers });
 }
 
-/**
- * Base /api/meta scoping predates x-moyo-region and only reads the query string.
- * Normalize an explicit header into that existing scoped path so canonical
- * metadata requests stay bounded and do not fall back to REGION_IDS enumeration.
- * Query routing remains authoritative when both forms are present.
- */
 export function routeMetaRegionHeader(request: Request): Request {
   if (request.method !== "GET") return request;
   const url = new URL(request.url);
@@ -211,17 +189,10 @@ export function routeMetaRegionHeader(request: Request): Request {
   });
 }
 
-/**
- * An unscoped metadata request with a canonical DEFAULT_REGION_ID already has a
- * complete axial identity, so route it through the base worker's existing sparse
- * scoped-meta path instead of falling back to REGION_IDS enumeration. Persisted
- * garden aliases intentionally keep their fixed three-region compatibility view,
- * and unknown historical defaults keep the legacy allow-list behavior.
- */
 export function routeImplicitCanonicalMetaRegion(
   request: Request,
   env: RegionConfigEnv,
-): Request {
+): Request | Response {
   if (request.method !== "GET") return request;
   const url = new URL(request.url);
   if (url.pathname !== "/api/meta") return request;
@@ -229,12 +200,18 @@ export function routeImplicitCanonicalMetaRegion(
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
   if (requested !== undefined && requested !== "") return request;
   const defaultRegion = env.DEFAULT_REGION_ID?.trim();
-  if (defaultRegion === undefined || parseAxialRegionId(defaultRegion) === undefined) return request;
-  url.searchParams.set("region", defaultRegion);
-  return new Request(url.toString(), {
-    method: "GET",
-    headers: request.headers,
-  });
+  if (defaultRegion === undefined || defaultRegion === "") return request;
+  if (parseAxialRegionId(defaultRegion) !== undefined) {
+    if (!isSupportedRegionId(defaultRegion)) return unknownRegionResponse();
+    url.searchParams.set("region", defaultRegion);
+    return new Request(url.toString(), {
+      method: "GET",
+      headers: request.headers,
+    });
+  }
+  // Unresolved historical default must 404 (termination slice).
+  if (!isPersistedLegacyRegionId(defaultRegion)) return unknownRegionResponse();
+  return request;
 }
 
 function routedRegionId(request: Request): string | undefined {
@@ -253,23 +230,12 @@ function implicitPersistedLegacyMetaRegion(request: Request, env: RegionConfigEn
   return isPersistedLegacyRegionId(defaultRegion) ? defaultRegion : undefined;
 }
 
-/**
- * Public requests scoped to the three persisted production aliases have a
- * complete built-in axial identity. Feed the legacy base worker only that fixed
- * compatibility set instead of consulting REGION_IDS, so normal garden-1/2/3
- * routing remains available even while REGION_IDS is being downgraded to an
- * optional historical allow-list. The same bounded compatibility view now also
- * backs unscoped /api/meta when DEFAULT_REGION_ID is one of those aliases, which
- * keeps the production metadata/verification path independent of REGION_IDS.
- * Unknown historical IDs keep the old config path and canonical IDs already use
- * their list-free sparse path.
- */
 function listIndependentLegacyRoutingEnv(request: Request, env: WorkerEnv): WorkerEnv {
   const regionId = routedRegionId(request) ?? implicitPersistedLegacyMetaRegion(request, env);
   if (!isPersistedLegacyRegionId(regionId)) return env;
   return new Proxy(env, {
     get(target, property, receiver) {
-      if (property === "REGION_IDS") return PERSISTED_LEGACY_REGION_LIST;
+      if (property === "REGION_IDS") return PERSISTED_LEGACY_REGION_IDS.join(",");
       return Reflect.get(target, property, receiver);
     },
   });
@@ -295,6 +261,17 @@ function hiddenInternalEndpoint(): Response {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+    },
+  });
+}
+
+function unknownRegionResponse(): Response {
+  return new Response(JSON.stringify({ error: "unknown or disabled region" }), {
+    status: 404,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
     },
   });
 }
@@ -362,13 +339,12 @@ export async function readRegionWindowSnapshotResponseWithDeadline(
   }, timeoutMs);
 }
 
-function regionWindowCenter(request: Request, env: WorkerEnv): string {
+function regionWindowCenter(request: Request, env: WorkerEnv): string | undefined {
   const url = new URL(request.url);
   const requested =
     url.searchParams.get("region")?.trim() || request.headers.get("x-moyo-region")?.trim();
-  return requested === undefined || requested === ""
-    ? configuredDefaultRegionId(env)
-    : requested;
+  if (requested === undefined || requested === "") return configuredDefaultRegionId(env);
+  return isSupportedRegionId(requested) ? requested : undefined;
 }
 
 function failSoftRegionWindowEnv(env: WorkerEnv, centerRegionId: string): WorkerEnv {
@@ -402,7 +378,7 @@ function failSoftRegionWindowEnv(env: WorkerEnv, centerRegionId: string): Worker
   } as unknown as WorkerEnv["REGIONS"];
   const failSoftEnv = { ...env, REGIONS: regions };
   return isPersistedLegacyRegionId(centerRegionId)
-    ? { ...failSoftEnv, REGION_IDS: PERSISTED_LEGACY_REGION_LIST }
+    ? { ...failSoftEnv, REGION_IDS: PERSISTED_LEGACY_REGION_IDS.join(",") }
     : failSoftEnv;
 }
 
@@ -422,19 +398,19 @@ export default {
       return hiddenInternalEndpoint();
     }
 
-    const routedRequest = routeConfiguredDefaultRegion(
-      routeImplicitCanonicalMetaRegion(routeMetaRegionHeader(request), env),
-      env,
-    );
+    const implicitMeta = routeImplicitCanonicalMetaRegion(routeMetaRegionHeader(request), env);
+    if (implicitMeta instanceof Response) return implicitMeta;
+    const defaultRouted = routeConfiguredDefaultRegion(implicitMeta, env);
+    if (defaultRouted instanceof Response) return defaultRouted;
+    const routedRequest = defaultRouted;
     const routedEnv = listIndependentLegacyRoutingEnv(routedRequest, env);
     const isRegionWindow = request.method === "GET" && url.pathname === "/api/world/window";
-    // A radius window is a best-effort aggregation of independent neighboring
-    // region DOs, but the center snapshot is the coordinate/state authority for
-    // the entire payload. Fail soft only for neighbors; a missing center must
-    // fail the request instead of publishing a misleading centerless window.
-    const baseEnv = isRegionWindow
-      ? failSoftRegionWindowEnv(routedEnv, regionWindowCenter(routedRequest, routedEnv))
-      : routedEnv;
+    let baseEnv = routedEnv;
+    if (isRegionWindow) {
+      const center = regionWindowCenter(routedRequest, routedEnv);
+      if (center === undefined) return unknownRegionResponse();
+      baseEnv = failSoftRegionWindowEnv(routedEnv, center);
+    }
     let response: Response;
     try {
       response = await baseWorker.fetch(routedRequest, baseEnv);
@@ -453,7 +429,7 @@ export default {
         enrichMetaPayload(
           await response.json() as unknown,
           DEFAULT_BUILD_METADATA,
-          requestedRegion ? undefined : configuredDefaultRegionId(env),
+          requestedRegion ? undefined : configuredDefaultRegionId(env) ?? undefined,
         ),
       );
     }
@@ -467,7 +443,7 @@ export default {
         ? []
         : isPersistedLegacyRegionId(centerRegion)
           ? PERSISTED_LEGACY_REGION_IDS
-          : configuredRegionIds(env);
+          : PERSISTED_LEGACY_REGION_IDS;
       return jsonResponse(
         response,
         enrichRegionWindowPayload(payload, regionIds, {
