@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  areCloseLineageKin,
   canonicalGrandparentList,
   LINEAGE_GRANDPARENT_LIMIT,
   newbornAgentLineage,
@@ -136,8 +137,40 @@ test("grandparent record stays bounded at LINEAGE_GRANDPARENT_LIMIT", () => {
   assert.equal(list.length, LINEAGE_GRANDPARENT_LIMIT);
   assert.deepEqual(
     list,
-    [...list].sort((a, b) => a.localeCompare(b)),
+    [...list].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
     "grandparents stay sorted after truncation",
+  );
+});
+
+test("canonicalGrandparentList sort is pinned to code-unit order, not ICU", () => {
+  // 'Z' (U+005A) precedes 'a' (U+0061) under code-unit order, while ICU's
+  // localeCompare orders 'a' before 'z' case-insensitively. Pinning the exact
+  // output makes reintroducing a locale-dependent comparator a test failure
+  // on any ICU build, instead of a silent environment-dependent drift.
+  const list = canonicalGrandparentList(REGION_ID, ["gp-a", "gp-Z", "gp-b"]);
+  assert.deepEqual(list, [
+    `agent-global:${REGION_ID}:gp-Z`,
+    `agent-global:${REGION_ID}:gp-a`,
+    `agent-global:${REGION_ID}:gp-b`,
+  ]);
+  // The stored list is input-order independent: any permutation canonicalizes
+  // to the same sequence, and kin matching reads the list as a set
+  // (includes/some), so the comparator change cannot alter product behavior.
+  assert.deepEqual(
+    canonicalGrandparentList(REGION_ID, ["gp-b", "gp-Z", "gp-a"]),
+    list,
+  );
+  const grandchild = (grandparents) => ({
+    id: "gc",
+    lineage: { generation: 2, grandparents },
+  });
+  assert.equal(
+    areCloseLineageKin(REGION_ID, grandchild([list[0], list[1]]), { id: list[1] }),
+    true,
+  );
+  assert.equal(
+    areCloseLineageKin(REGION_ID, grandchild([list[1], list[0]]), { id: list[1] }),
+    true,
   );
 });
 
