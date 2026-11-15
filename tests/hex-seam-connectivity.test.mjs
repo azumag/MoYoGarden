@@ -265,22 +265,16 @@ test("same-version duplicate missing the seam cell fails closed", () => {
   );
 });
 
-test("historical side-pair fallback is rejected when it is not the exact global-cell owner", () => {
+test("unresolved historical side-pair fallback produces no compatibility links", () => {
   const fallbackLinks = buildHexHaloLinks(
     extent,
     ["garden-1", "legacy-east"],
     "garden-1",
   );
-  const link = fallbackLinks.find((candidate) => candidate.neighborRegionId === "legacy-east");
-  assert.ok(link, "fixture should expose the historical compatibility neighbor");
-
-  assert.deepEqual(
-    buildReciprocalHexSeamConnectivity(
-      extent,
-      [link],
-      snapshotsForLink(link),
-    ),
-    [],
+  assert.equal(
+    fallbackLinks.some((candidate) => candidate.neighborRegionId === "legacy-east"),
+    false,
+    "unresolved historical neighbors must not receive side-pair fallback links",
   );
 });
 

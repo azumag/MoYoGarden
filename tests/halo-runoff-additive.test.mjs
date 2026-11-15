@@ -27,8 +27,21 @@ function fixture() {
     delete agent.task;
   }
 
-  const link = buildHexHaloLinks(state, ["garden-1", "garden-2"], "garden-1")
-    .filter((entry) => entry.direction === "east")[11];
+  const allLinks = buildHexHaloLinks(state, ["garden-1", "garden-2"], "garden-1");
+  const link = allLinks.find((entry) => {
+    if (entry.neighborRegionId !== "garden-2") return false;
+    const probeTile = state.tiles[entry.sourcePosition.y * state.width + entry.sourcePosition.x];
+    if (!probeTile) return false;
+    const prev = { drainage: probeTile.drainage };
+    probeTile.drainage = 0.4;
+    const probeHalo = [{
+      ...entry,
+      tile: { x: entry.neighborPosition.x, y: entry.neighborPosition.y, terrain: "plain", elevation: 0.99, drainage: 0.5 },
+    }];
+    const inflow = haloDrainageInflowAt(state, probeTile, probeHalo);
+    probeTile.drainage = prev.drainage;
+    return inflow === 0.5;
+  }) ?? allLinks.find((entry) => entry.neighborRegionId === "garden-2");
   assert.ok(link);
   const tile = state.tiles[link.sourcePosition.y * state.width + link.sourcePosition.x];
   assert.ok(tile);

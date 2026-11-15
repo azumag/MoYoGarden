@@ -455,8 +455,11 @@ test("already inside the target region plans without inventing a crossing", () =
 
 test("unknown legacy topology and empty observations fail closed", () => {
   const legacyLinks = buildHexHaloLinks(extent, ["garden-1", "legacy-east"], "garden-1");
-  const legacyLink = legacyLinks.find((link) => link.neighborRegionId === "legacy-east");
-  assert.ok(legacyLink);
+  assert.equal(
+    legacyLinks.some((link) => link.neighborRegionId === "legacy-east"),
+    false,
+    "unresolved historical neighbors must not produce compatibility halo links",
+  );
 
   const unknownStart = plan({
     start: { regionId: "legacy-unknown", revision: 1, tick: 1, componentId: 5 },
@@ -467,7 +470,6 @@ test("unknown legacy topology and empty observations fail closed", () => {
   );
 
   assert.equal(plan({ links: [], snapshots: [] }).status, "noKnownRoute");
-  assert.equal(plan({ links: [legacyLink] }).status, "noKnownRoute");
   assert.equal(
     plan({ snapshots: baseSnapshots().filter((s) => s.regionId !== middleRegionId) }).status,
     "noKnownRoute",

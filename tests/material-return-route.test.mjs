@@ -263,7 +263,7 @@ test("malformed graph observations fail closed without mutating the input", () =
   assert.deepEqual(edges, before);
 });
 
-test("unknown legacy ids keep direct-to-source compatibility but do not invent relay topology", () => {
+test("unresolved historical ids fail closed for direct and relay material-return routes", () => {
   const legacyStart = ref("legacy-a", 10);
   const legacyMiddle = ref("legacy-b", 20);
   const target = ref("legacy-source", 30);
@@ -274,11 +274,7 @@ test("unknown legacy ids keep direct-to-source compatibility but do not invent r
     [edge(legacyStart, target)],
     generous,
   );
-  assert.equal(direct.status, "planned");
-  assert.deepEqual(direct.route.map((node) => node.regionId), [
-    "legacy-a",
-    "legacy-source",
-  ]);
+  assert.equal(direct.status, "noKnownRoute");
 
   const relayed = planMaterialReturnDetour(
     legacyStart,
