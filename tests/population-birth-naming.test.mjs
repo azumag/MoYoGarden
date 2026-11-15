@@ -81,6 +81,7 @@ test("multiple births in one tick receive distinct numbers", () => {
 
   assert.equal(born.length, 2);
   assert.deepEqual(born.map((agent) => agent.name).sort(), ["Ember 5", "Ember 6"]);
+  assert.equal(new Set(born.map((agent) => agent.id)).size, 2);
 });
 
 test("a legacy save without the counter seeds it from existing names and population", () => {
