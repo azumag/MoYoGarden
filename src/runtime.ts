@@ -21,6 +21,7 @@ import {
   dependentCaregiverId,
   inheritHeritableTraits,
   normalizedHeritableTraits,
+  recordAgentDeath,
 } from "./demography.js";
 import { hexGridDistance } from "./hex-grid.js";
 import { areCloseLineageKin, newbornAgentLineage, pregnancyLineageSnapshot } from "./lineage.js";
@@ -264,16 +265,7 @@ function applyStarvation(state: WorldState, starvingAgentIds: ReadonlySet<string
     agent.hp = Math.max(0, agent.hp - STARVATION_DAMAGE);
     if (agent.hp === 0) {
       deadAgentIds.add(agent.id);
-      state.events.push({
-        id: `event-${state.tick}-${state.events.length + 1}`,
-        tick: state.tick,
-        kind: "agent_died",
-        message: `${agent.name} starved`,
-        agentId: agent.id,
-        factionId: agent.factionId,
-        position: { ...agent.position },
-        data: { cause: "starvation", deathTick: state.tick, position: { ...agent.position } },
-      });
+      recordAgentDeath(state, agent, "starvation", `${agent.name} starved`);
       continue;
     }
     agent.status = agent.status.startsWith("starving") ? agent.status : `starving; ${agent.status}`;
