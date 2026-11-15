@@ -7,6 +7,7 @@ import {
   type HexGridDirection,
 } from "./hex-grid.js";
 import { dependentCaregiverId } from "./demography.js";
+import { canonicalLineageId } from "./lineage.js";
 import {
   BUILD_RECIPES,
   inventoryTotal,
@@ -65,12 +66,8 @@ export function settlementFamilyRegistrationDeferred(
 }
 
 const MAX_SETTLEMENT_FAMILY_FOLLOWERS = 6;
-const GLOBAL_AGENT_PREFIX = "agent-global:";
-
 function sourceResidentGlobalId(state: WorldState, agentId: string): string {
-  return agentId.startsWith(GLOBAL_AGENT_PREFIX)
-    ? agentId
-    : `${GLOBAL_AGENT_PREFIX}${state.regionId}:${agentId}`;
+  return canonicalLineageId(state.regionId, agentId);
 }
 
 function sourceResidentMatchesReference(

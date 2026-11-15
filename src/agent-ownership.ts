@@ -1,4 +1,10 @@
 import {
+  canonicalGrandparentList,
+  globalHandoffAgentId,
+  isGlobalAgentId,
+  lineageReferenceMatchesAgent,
+} from "./lineage.js";
+import {
   BUILD_RECIPES,
   type Agent,
   type GridPosition,
@@ -6,6 +12,8 @@ import {
   type WorldState,
 } from "./protocol.js";
 import { getFaction, getTile, isPassable } from "./world.js";
+
+export { globalHandoffAgentId } from "./lineage.js";
 
 export interface RegionOwnershipSnapshot {
   state: WorldState;
@@ -22,8 +30,6 @@ export interface OwnershipMutationResult<T> {
   value?: T;
   reason?: string;
 }
-
-const GLOBAL_AGENT_PREFIX = "agent-global:";
 
 function cloneSnapshot(
   state: WorldState,
@@ -98,7 +104,7 @@ function arrivalTaskAfterHandoff(
   }
   if (
     task.type === "trade"
-    && task.targetAgentId.startsWith(GLOBAL_AGENT_PREFIX)
+    && isGlobalAgentId(task.targetAgentId)
   ) {
     const targetPresent = targetState.agents.some((entry) => entry.id === task.targetAgentId);
     const retryBudget = task.handoffRetryBudget ?? 1;
@@ -170,21 +176,35 @@ function arrivalTaskAfterHandoff(
   return undefined;
 }
 
-export function globalHandoffAgentId(agentId: string, originRegionId: string): string {
-  if (agentId.startsWith(GLOBAL_AGENT_PREFIX)) return agentId;
-  return `${GLOBAL_AGENT_PREFIX}${originRegionId}:${agentId}`;
-}
-
 function promoteAgentFamilyReferences(agent: Agent, originRegionId: string): void {
   if (agent.parents !== undefined) {
     agent.parents = agent.parents.map((parentId) =>
       globalHandoffAgentId(parentId, originRegionId)
     ) as [string, string];
   }
+  if (agent.lineage !== undefined) {
+    // Grandparent identities were fixed in world-global form at birth, so
+    // promotion is normally a no-op; re-normalizing keeps the stored list
+    // canonical, deduplicated and sorted even for hand-written legacy states.
+    agent.lineage = {
+      ...agent.lineage,
+      grandparents: canonicalGrandparentList(
+        originRegionId,
+        Array.isArray(agent.lineage.grandparents) ? agent.lineage.grandparents : [],
+      ),
+    };
+  }
   if (agent.pregnancy !== undefined) {
     agent.pregnancy = {
       ...agent.pregnancy,
       partnerId: globalHandoffAgentId(agent.pregnancy.partnerId, originRegionId),
+      ...(Array.isArray(agent.pregnancy.partnerParents)
+        ? {
+            partnerParents: agent.pregnancy.partnerParents.map((parentId) =>
+              globalHandoffAgentId(parentId, originRegionId)
+            ) as [string, string],
+          }
+        : {}),
     };
   }
   if (agent.socialMemory !== undefined) {
@@ -204,6 +224,7 @@ function rewriteResidentFamilyReference(
   sourceLocalId: string,
   promotedId: string,
   currentTick: number,
+  regionId: string,
 ): void {
   if (sourceLocalId === promotedId) return;
   if (agent.parents !== undefined) {
@@ -211,8 +232,44 @@ function rewriteResidentFamilyReference(
       parentId === sourceLocalId ? promotedId : parentId
     ) as [string, string];
   }
-  if (agent.pregnancy?.partnerId === sourceLocalId) {
-    agent.pregnancy = { ...agent.pregnancy, partnerId: promotedId };
+  if (agent.lineage !== undefined) {
+    // A resident child may still name the departed grandparent by its old
+    // source-local form; rewrite that reference to the same world-global
+    // identity the departed agent itself now carries.
+    const currentGrandparents = Array.isArray(agent.lineage.grandparents)
+      ? agent.lineage.grandparents
+      : [];
+    agent.lineage = {
+      ...agent.lineage,
+      grandparents: canonicalGrandparentList(
+        regionId,
+        currentGrandparents.map((grandparentId) =>
+          lineageReferenceMatchesAgent(regionId, grandparentId, sourceLocalId)
+            ? promotedId
+            : grandparentId
+        ),
+      ),
+    };
+  }
+  if (agent.pregnancy !== undefined) {
+    // partnerParents keeps the conception-time raw form; only entries naming
+    // the departed agent are promoted, others stay untouched until birth.
+    const partnerParents = !Array.isArray(agent.pregnancy.partnerParents)
+      ? undefined
+      : agent.pregnancy.partnerParents.map((parentId) =>
+          lineageReferenceMatchesAgent(regionId, parentId, sourceLocalId)
+            ? promotedId
+            : parentId
+        ) as [string, string];
+    if (agent.pregnancy.partnerId === sourceLocalId || partnerParents !== undefined) {
+      agent.pregnancy = {
+        ...agent.pregnancy,
+        ...(agent.pregnancy.partnerId === sourceLocalId
+          ? { partnerId: promotedId }
+          : {}),
+        ...(partnerParents === undefined ? {} : { partnerParents }),
+      };
+    }
   }
   if (
     agent.task?.source === "autonomy"
@@ -280,7 +337,13 @@ export function detachAgentOwnership(
   snapshot.state.agents = snapshot.state.agents.filter((entry) => entry.id !== agentId);
   const promotedId = globalHandoffAgentId(agent.id, state.regionId);
   for (const resident of snapshot.state.agents) {
-    rewriteResidentFamilyReference(resident, agent.id, promotedId, snapshot.state.tick);
+    rewriteResidentFamilyReference(
+      resident,
+      agent.id,
+      promotedId,
+      snapshot.state.tick,
+      snapshot.state.regionId,
+    );
   }
   // Recent events remain a rolling-deploy compatibility memory, while the
   // bounded per-agent socialMemory above is the durable low-level relationship

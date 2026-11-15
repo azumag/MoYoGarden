@@ -123,12 +123,27 @@ export interface AgentPregnancy {
   // Snapshot the partner side of inheritance at conception so a later region
   // handoff or death cannot erase biological causality before birth.
   partnerTraits?: AgentHeritableTraits;
+  // The same conception-time snapshot covers the partner side of the child's
+  // lineage: generation for max()+1 derivation and the partner's parents for
+  // grandparent recording. Absent on pregnancies persisted before lineage.
+  partnerGeneration?: number;
+  partnerParents?: [string, string];
 }
 
 export interface AgentSocialMemory {
   agentId: string;
   familiarity: number;
   lastInteractionTick: number;
+}
+
+export interface AgentLineage {
+  // Biological generation: 0 for founders and persisted residents that predate
+  // lineage; lineage-born agents get max(parent generations) + 1 at birth.
+  generation: number;
+  // Bounded biological-grandparent identities (at most 4), stored in
+  // world-global form, deduplicated and sorted so the record is fixed at
+  // birth and stays stable across ownership handoffs and ancestor death.
+  grandparents: string[];
 }
 
 export interface Agent {
@@ -153,6 +168,9 @@ export interface Agent {
   // neutral 1.0 multipliers; lineage-born agents receive bounded inherited values.
   heritableTraits?: AgentHeritableTraits;
   parents?: [string, string];
+  // Optional bounded lineage record. Written once at birth and carried across
+  // handoff; absent on founders and persisted residents that predate it.
+  lineage?: AgentLineage;
   pregnancy?: AgentPregnancy;
   lastBirthTick?: number;
   // Bounded low-level relationship memory survives event-log truncation while

@@ -24,6 +24,7 @@ import {
   recordAgentDeath,
 } from "./demography.js";
 import { hexGridDistance } from "./hex-grid.js";
+import { newbornAgentLineage, pregnancyLineageSnapshot } from "./lineage.js";
 import { simulate } from "./simulation.js";
 import { ensureWorldExtent } from "./world-scale.js";
 import {
@@ -466,6 +467,7 @@ function birthDuePregnancies(state: WorldState): void {
       reproductiveRole: demographicHash(childId) % 2 === 0 ? "gestational" : "partner",
       heritableTraits: inheritHeritableTraits(parent, partnerTraits, childId),
       parents: [parent.id, pregnancy.partnerId],
+      lineage: newbornAgentLineage(state.regionId, parent, pregnancy, partner),
     });
     delete parent.pregnancy;
     parent.lastBirthTick = state.tick;
@@ -523,6 +525,7 @@ function planConceptions(state: WorldState): void {
         conceivedAtTick: state.tick,
         dueAtTick: state.tick + POPULATION_GESTATION_TICKS,
         partnerTraits: normalizedHeritableTraits(partner),
+        ...pregnancyLineageSnapshot(partner),
       };
       parent.reproductiveRole ??= "gestational";
       partner.reproductiveRole ??= "partner";
