@@ -62,10 +62,12 @@ function crowdedRouteFixture(population) {
 // rngState progression unchanged. Intentional model change (PR #25 Phase 5).
 // Stay below the 120-tick erosion boundary to isolate the routing optimization
 // from the separately intentional current-vegetation erosion change.
+// Hash updated for #91: Faction.birthSequence (persisted lineage naming counter)
+// is part of the state. PRNG progression is intentionally unchanged.
 test("spatial routing preserves full seeded simulation state and PRNG progression", () => {
   for (const [seed, expectedHash, expectedRng] of [
-    [123456, "3dba9ad5ed845b3550bfc857b325412c0727a58eef3664297da591c7ea252a86", 3370508769],
-    [271828, "6981d25375112a38e222094ba7e81874327aedae11084715424004a7e12693b7", 1241391839],
+    [123456, "664e427f50a43d8757aa7d1180adcd9d1aa9c879c17c0851b45124f5ee875a23", 3370508769],
+    [271828, "7e699087ea3c8d36a4807dccca4a40b3c4f6876ca2755b4bcfb6ad5227a0deb3", 1241391839],
   ]) {
     let state = createInitialWorld({ seed, width: 40, height: 24 });
     for (let tick = 0; tick < 90; tick += 1) state = simulate(state).state;
@@ -127,7 +129,8 @@ test("800-BOT route matches legacy output with one population scan", (context) =
   const measuredReads = positionReads;
   const legacyReads = 24803;
   // Hash updated for #25 Phase 5 (surface reconnect): runoff/pending overflow + routing; rngState unchanged.
-  assert.equal(fingerprint(next), "735aebb9f3da16674cc3bce3fd027f13c90e3e2ef032e659296094c49a3ec94c");
+  // Hash updated for #91: Faction.birthSequence is persisted state; rngState unchanged.
+  assert.equal(fingerprint(next), "b27c2d542a7b5d62280fe6ba4c075fda24ce2608a87f201becf07230a1ebd53c");
   assert.equal(next.rngState, 3536807351);
   // The existing hex migration reads each position twice before movement;
   // routing should add only one population pass and a few mover-only reads.

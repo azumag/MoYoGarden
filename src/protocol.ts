@@ -55,6 +55,10 @@ export interface Faction {
   color: string;
   resources: Inventory;
   credits: number;
+  // Optional monotonic counter for lineage-born display names. It keeps issued
+  // names from being reused after a death without a schemaVersion bump; legacy
+  // saves omit it and seed it once from the live population and names.
+  birthSequence?: number;
 }
 
 export interface AgentTaskBase {

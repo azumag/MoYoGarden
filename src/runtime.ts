@@ -7,6 +7,7 @@ import {
   type Agent,
   type AgentRole,
   type CommandReceipt,
+  type Faction,
   type GridPosition,
   parseCommand,
   type ResourceKind,
@@ -422,6 +423,40 @@ function applyLifeStageTransitions(state: WorldState): void {
   }
 }
 
+function escapeNamePrefix(prefix: string): string {
+  return prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Allocate the next display-name number for a faction.
+ *
+ * The number comes from a persisted monotonic counter rather than the live
+ * population, so a death cannot free a previously issued name. Live names
+ * still act as a floor: legacy schemaVersion=1 saves have no counter, and
+ * cross-region migrants may carry numbers above the local counter. Using the
+ * maximum keeps new births distinct from every resident in this region
+ * without renaming anyone.
+ */
+function allocateBirthSequence(state: WorldState, faction: Faction, prefix: string): number {
+  const pattern = new RegExp(`^${escapeNamePrefix(prefix)} (\\d+)$`);
+  let highest = faction.birthSequence;
+  if (highest === undefined) {
+    // Seed once from the live population so an old save continues the
+    // numbered series instead of restarting at 1.
+    highest = state.agents.filter((agent) => agent.factionId === faction.id).length;
+  }
+  for (const agent of state.agents) {
+    if (agent.factionId !== faction.id) continue;
+    const digits = pattern.exec(agent.name)?.[1];
+    if (digits === undefined) continue;
+    const observed = Number(digits);
+    if (Number.isFinite(observed) && observed > highest) highest = observed;
+  }
+  const sequence = highest + 1;
+  faction.birthSequence = sequence;
+  return sequence;
+}
+
 function birthDuePregnancies(state: WorldState): void {
   const gestationalParents = [...state.agents]
     .filter((agent) => agent.pregnancy !== undefined && agent.pregnancy.dueAtTick <= state.tick)
@@ -441,6 +476,7 @@ function birthDuePregnancies(state: WorldState): void {
     const role = populationRole(state, parent.factionId);
     const childId = `agent-${parent.factionId}-birth-${state.tick}-${generation}`;
     const prefix = faction.name.split(/\s+/)[0] || faction.id;
+    const birthSequence = allocateBirthSequence(state, faction, prefix);
     const nourished = consumeStoredFood(state, parent.factionId, POPULATION_BIRTH_FOOD_COST);
     const partner = getAgent(state, pregnancy.partnerId);
     const partnerTraits = pregnancy.partnerTraits ??
@@ -448,7 +484,7 @@ function birthDuePregnancies(state: WorldState): void {
 
     state.agents.push({
       id: childId,
-      name: `${prefix} ${generation}`,
+      name: `${prefix} ${birthSequence}`,
       factionId: parent.factionId,
       role,
       position: { ...parent.position },
@@ -468,7 +504,7 @@ function birthDuePregnancies(state: WorldState): void {
     });
     delete parent.pregnancy;
     parent.lastBirthTick = state.tick;
-    parent.status = `caring for newborn ${prefix} ${generation}`;
+    parent.status = `caring for newborn ${prefix} ${birthSequence}`;
   }
 }
 

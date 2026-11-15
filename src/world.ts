@@ -401,6 +401,10 @@ export function createInitialWorld(options: WorldOptions = {}): WorldState {
       color: definition.color,
       resources: emptyInventory(),
       credits: 0,
+      // Start the lineage-naming series at the founder count so the first
+      // birth keeps the long-standing "<faction> 5" label. The counter only
+      // moves forward from here, so a later death cannot free that number.
+      birthSequence: ROLE_ORDER.length,
     });
 
     const positions = spawnPositions(spawn, width, height);
