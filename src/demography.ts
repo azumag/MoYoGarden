@@ -1,4 +1,5 @@
 import { hexGridDistance } from "./hex-grid.js";
+import { lineageReferenceMatchesAgent } from "./lineage.js";
 import type { Agent, AgentDeathCause, AgentHeritableTraits, WorldEvent, WorldState } from "./protocol.js";
 import { activeFactionStructures, getFaction } from "./world.js";
 
@@ -35,7 +36,6 @@ const POPULATION_FOOD_INSECURITY_HEALTH_COST = 1;
 export const POPULATION_CARE_WORK_RECOVERY_ENERGY = 35;
 const POPULATION_RELATIONSHIP_MEMORY_LIMIT = 8;
 const POPULATION_RELATIONSHIP_FAMILIARITY_MAX = 32;
-const GLOBAL_AGENT_PREFIX = "agent-global:";
 export const POPULATION_TRAIT_MIN = 0.9;
 export const POPULATION_TRAIT_MAX = 1.1;
 export const POPULATION_TRAIT_MUTATION_MAX = 0.02;
@@ -145,19 +145,6 @@ function consumeStoredFood(state: WorldState, factionId: string, amount: number)
   return true;
 }
 
-function lineageReferenceMatchesAgent(
-  state: WorldState,
-  candidateId: string,
-  referenceId: string,
-): boolean {
-  if (candidateId === referenceId) return true;
-  const canonical = (agentId: string): string =>
-    agentId.startsWith(GLOBAL_AGENT_PREFIX)
-      ? agentId
-      : `${GLOBAL_AGENT_PREFIX}${state.regionId}:${agentId}`;
-  return canonical(candidateId) === canonical(referenceId);
-}
-
 function socialFamiliarityBetween(
   state: WorldState,
   left: Agent,
@@ -165,7 +152,7 @@ function socialFamiliarityBetween(
 ): number {
   const familiarityFrom = (source: Agent, target: Agent): number =>
     (source.socialMemory ?? []).reduce((best, entry) => {
-      if (!lineageReferenceMatchesAgent(state, target.id, entry.agentId)) return best;
+      if (!lineageReferenceMatchesAgent(state.regionId, target.id, entry.agentId)) return best;
       const familiarity = Number.isFinite(entry.familiarity)
         ? Math.max(0, entry.familiarity)
         : 0;
@@ -181,7 +168,7 @@ export function dependentCaregiverId(
   const parents = (dependent.parents ?? [])
     .flatMap((parentId) => {
       const parent = state.agents.find((candidate) =>
-        lineageReferenceMatchesAgent(state, candidate.id, parentId) &&
+        lineageReferenceMatchesAgent(state.regionId, candidate.id, parentId) &&
         candidate.factionId === dependent.factionId &&
         candidate.hp > 0
       );

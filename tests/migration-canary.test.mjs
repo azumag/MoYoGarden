@@ -137,9 +137,10 @@ test("birth after migration remains linked to its original-region parent", () =>
 });
 
 test("migration audit extends but does not weaken the Phase 0 allowlist", async () => {
-  // #25 Phase 4 added region-topology to the base allowlist for global coordinate access
-  assert.equal(auditEvolutionEngine().files.length, 9);
-  assert.equal(auditMigrationEngine().files.length, 10);
+  // #25 Phase 4 added region-topology to the base allowlist for global coordinate access;
+  // #89 added lineage for canonical family-reference normalization.
+  assert.equal(auditEvolutionEngine().files.length, 10);
+  assert.equal(auditMigrationEngine().files.length, 11);
   await assert.rejects(withProductionIoGuard(() => fetch("https://example.invalid")), /blocked external I\/O/);
   await assert.rejects(withProductionIoGuard(() => Math.random()), /blocked external I\/O/);
   const source = readFileSync(new URL("../tools/migration-canary.mjs", import.meta.url), "utf8");
