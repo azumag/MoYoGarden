@@ -98,10 +98,14 @@ test("a legacy save without the counter seeds it from existing names and populat
   delete legacyChild.task;
   state.agents.push(legacyChild);
 
+  const populationBeforeBirth = state.agents.filter((agent) => agent.factionId === faction.id).length;
   expectBirth(state, parents[0].id);
   const { state: next, born } = tickForBirths(state);
 
   assert.equal(born.length, 1);
+  // The id keeps the population-derived generation while the name follows the
+  // persisted counter; pin both so the id cannot quietly move to birthSequence.
+  assert.equal(born[0].id, `agent-ember-birth-${next.tick}-${populationBeforeBirth + 1}`);
   assert.equal(born[0].name, "Ember 13");
   assert.equal(next.factions.find((entry) => entry.id === faction.id).birthSequence, 13);
   assert.equal(next.agents.find((agent) => agent.id === legacyChild.id).name, "Ember 12");
