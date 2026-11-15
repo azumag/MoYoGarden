@@ -94,8 +94,43 @@ export function canonicalGrandparentList(
     seen.add(canonical);
     result.push(canonical);
   }
-  result.sort((a, b) => a.localeCompare(b));
+  // Plain code-unit comparison, not localeCompare: ICU presence/version must
+  // not change the stored order, and callers only read it as a set anyway.
+  result.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return result.slice(0, LINEAGE_GRANDPARENT_LIMIT);
+}
+
+/**
+ * Close-kin check for reproduction. Every reference is canonicalized before
+ * comparison so a handoff that promoted only one side of a relationship
+ * cannot hide it, and so persisted `parents` in mixed local/global forms
+ * still resolve to the same world-global identities.
+ *
+ * Bounded scope: great-grandparents are never recorded, so second cousins
+ * (shared great-grandparents) stay outside the filter by design.
+ */
+export function areCloseLineageKin(
+  regionId: string,
+  first: Pick<Agent, "id" | "parents" | "lineage">,
+  second: Pick<Agent, "id" | "parents" | "lineage">,
+): boolean {
+  const firstId = canonicalLineageId(regionId, first.id);
+  const secondId = canonicalLineageId(regionId, second.id);
+  if (firstId === secondId) return true;
+  const canonicalRefs = (ids: readonly string[] | undefined): string[] =>
+    (ids ?? []).map((id) => canonicalLineageId(regionId, id));
+  const firstParents = canonicalRefs(first.parents);
+  const secondParents = canonicalRefs(second.parents);
+  const firstGrandparents = canonicalRefs(normalizedAgentLineage(first).grandparents);
+  const secondGrandparents = canonicalRefs(normalizedAgentLineage(second).grandparents);
+  const shares = (a: readonly string[], b: readonly string[]): boolean =>
+    a.some((id) => b.includes(id));
+
+  if (firstParents.includes(secondId) || secondParents.includes(firstId)) return true;
+  if (shares(firstParents, secondParents)) return true;
+  if (firstGrandparents.includes(secondId) || secondGrandparents.includes(firstId)) return true;
+  if (shares(firstParents, secondGrandparents) || shares(secondParents, firstGrandparents)) return true;
+  return shares(firstGrandparents, secondGrandparents);
 }
 
 /**

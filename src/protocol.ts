@@ -214,10 +214,16 @@ export type EventKind =
   | "agent_moved"
   | "agent_conversation"
   | "agent_died"
+  | "pregnancy_lost"
   | "autonomy_changed"
   | "goal_changed";
 
 export type AgentDeathCause = "natural_lifespan" | "basal_food_deficit" | "starvation";
+
+// Pregnancy loss is recorded on the gestational parent rather than on a fetus
+// agent (none exists before birth). `outcome` is the classification entry point;
+// only a gestational parent's death terminates gestation today.
+export type PregnancyLossOutcome = "gestational_parent_died";
 
 export interface WorldEvent {
   id: string;

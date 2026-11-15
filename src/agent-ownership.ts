@@ -314,6 +314,11 @@ function rewriteHistoricalAgentReference(
     if (event.data?.targetAgentId === sourceLocalId) {
       event.data = { ...event.data, targetAgentId: promotedId };
     }
+    // pregnancy_lost events keep the conception partner under data.partnerId;
+    // promote it to the same world-global identity when that partner moves.
+    if (event.data?.partnerId === sourceLocalId) {
+      event.data = { ...event.data, partnerId: promotedId };
+    }
   }
 }
 

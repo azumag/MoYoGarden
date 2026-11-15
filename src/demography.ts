@@ -1,6 +1,6 @@
 import { hexGridDistance } from "./hex-grid.js";
 import { lineageReferenceMatchesAgent } from "./lineage.js";
-import type { Agent, AgentDeathCause, AgentHeritableTraits, WorldEvent, WorldState } from "./protocol.js";
+import type { Agent, AgentDeathCause, AgentHeritableTraits, PregnancyLossOutcome, WorldEvent, WorldState } from "./protocol.js";
 import { activeFactionStructures, getFaction } from "./world.js";
 
 // Demographic time is intentionally compressed to keep biological causality visible
@@ -107,12 +107,25 @@ export function naturalLifespanTicks(agentId: string, vitality = 1): number {
   return Math.round(baseline * boundedTrait(vitality));
 }
 
-function recordAgentDeath(
+export function recordAgentDeath(
   state: WorldState,
   agent: Agent,
   cause: AgentDeathCause,
   message: string,
 ): void {
+  const data: Record<string, unknown> = {
+    cause,
+    deathTick: state.tick,
+    position: { ...agent.position },
+  };
+  // cause says why the resident died; lifeStage/ageTicks say who died. Infant
+  // and juvenile deaths are therefore identified by attribute, not by a new
+  // cause. Legacy founders carry neither field, so their events keep the
+  // existing shape.
+  if (agent.lifeStage !== undefined) data.lifeStage = agent.lifeStage;
+  if (agent.birthTick !== undefined) {
+    data.ageTicks = Math.max(0, state.tick - agent.birthTick);
+  }
   state.events.push({
     id: `event-${state.tick}-${state.events.length + 1}`,
     tick: state.tick,
@@ -121,8 +134,37 @@ function recordAgentDeath(
     agentId: agent.id,
     factionId: agent.factionId,
     position: { ...agent.position },
-    data: { cause, deathTick: state.tick, position: { ...agent.position } },
+    data,
   });
+
+  const pregnancy = agent.pregnancy;
+  if (pregnancy !== undefined) {
+    // A gestational parent's death ends the pregnancy. Record the loss on the
+    // parent as its own additive event (no fetus agent exists, and agent_died
+    // stays reserved for residents) so the causal chain survives in the log.
+    const gestationElapsedTicks = Math.max(0, state.tick - pregnancy.conceivedAtTick);
+    state.events.push({
+      id: `event-${state.tick}-${state.events.length + 1}`,
+      tick: state.tick,
+      kind: "pregnancy_lost",
+      message: `${agent.name} died while pregnant; gestation ended after ${gestationElapsedTicks} ticks`,
+      agentId: agent.id,
+      factionId: agent.factionId,
+      position: { ...agent.position },
+      data: {
+        outcome: "gestational_parent_died" satisfies PregnancyLossOutcome,
+        parentId: agent.id,
+        partnerId: pregnancy.partnerId,
+        conceivedAtTick: pregnancy.conceivedAtTick,
+        dueAtTick: pregnancy.dueAtTick,
+        gestationElapsedTicks,
+        parentDeathCause: cause,
+        deathTick: state.tick,
+        position: { ...agent.position },
+      },
+    });
+    delete agent.pregnancy;
+  }
 }
 
 function consumeStoredFood(state: WorldState, factionId: string, amount: number): boolean {

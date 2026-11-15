@@ -22,9 +22,10 @@ import {
   dependentCaregiverId,
   inheritHeritableTraits,
   normalizedHeritableTraits,
+  recordAgentDeath,
 } from "./demography.js";
 import { hexGridDistance } from "./hex-grid.js";
-import { newbornAgentLineage, pregnancyLineageSnapshot } from "./lineage.js";
+import { areCloseLineageKin, newbornAgentLineage, pregnancyLineageSnapshot } from "./lineage.js";
 import { simulate } from "./simulation.js";
 import { ensureWorldExtent } from "./world-scale.js";
 import {
@@ -265,16 +266,7 @@ function applyStarvation(state: WorldState, starvingAgentIds: ReadonlySet<string
     agent.hp = Math.max(0, agent.hp - STARVATION_DAMAGE);
     if (agent.hp === 0) {
       deadAgentIds.add(agent.id);
-      state.events.push({
-        id: `event-${state.tick}-${state.events.length + 1}`,
-        tick: state.tick,
-        kind: "agent_died",
-        message: `${agent.name} starved`,
-        agentId: agent.id,
-        factionId: agent.factionId,
-        position: { ...agent.position },
-        data: { cause: "starvation", deathTick: state.tick, position: { ...agent.position } },
-      });
+      recordAgentDeath(state, agent, "starvation", `${agent.name} starved`);
       continue;
     }
     agent.status = agent.status.startsWith("starving") ? agent.status : `starving; ${agent.status}`;
@@ -351,11 +343,8 @@ function isAdultForReproduction(agent: Agent, tick: number): boolean {
   return tick - agent.birthTick >= POPULATION_MATURITY_TICKS;
 }
 
-function areCloseReproductiveKin(first: Agent, second: Agent): boolean {
-  const firstParents: readonly string[] = first.parents ?? [];
-  const secondParents: readonly string[] = second.parents ?? [];
-  if (firstParents.includes(second.id) || secondParents.includes(first.id)) return true;
-  return firstParents.some((parentId) => secondParents.includes(parentId));
+function areCloseReproductiveKin(state: WorldState, first: Agent, second: Agent): boolean {
+  return areCloseLineageKin(state.regionId, first, second);
 }
 
 function pairConversationCount(state: WorldState, firstId: string, secondId: string): number {
@@ -543,7 +532,7 @@ function planConceptions(state: WorldState): void {
         .filter((candidate) =>
           candidate.id !== parent.id &&
           reproductiveRole(candidate) === "partner" &&
-          !areCloseReproductiveKin(parent, candidate) &&
+          !areCloseReproductiveKin(state, parent, candidate) &&
           manhattanDistance(candidate.position, parent.position) <= POPULATION_PARENT_RADIUS
         )
         .map((candidate) => ({
