@@ -99,6 +99,39 @@ export function canonicalGrandparentList(
 }
 
 /**
+ * Close-kin check for reproduction. Every reference is canonicalized before
+ * comparison so a handoff that promoted only one side of a relationship
+ * cannot hide it, and so persisted `parents` in mixed local/global forms
+ * still resolve to the same world-global identities.
+ *
+ * Bounded scope: great-grandparents are never recorded, so second cousins
+ * (shared great-grandparents) stay outside the filter by design.
+ */
+export function areCloseLineageKin(
+  regionId: string,
+  first: Pick<Agent, "id" | "parents" | "lineage">,
+  second: Pick<Agent, "id" | "parents" | "lineage">,
+): boolean {
+  const firstId = canonicalLineageId(regionId, first.id);
+  const secondId = canonicalLineageId(regionId, second.id);
+  if (firstId === secondId) return true;
+  const canonicalRefs = (ids: readonly string[] | undefined): string[] =>
+    (ids ?? []).map((id) => canonicalLineageId(regionId, id));
+  const firstParents = canonicalRefs(first.parents);
+  const secondParents = canonicalRefs(second.parents);
+  const firstGrandparents = canonicalRefs(normalizedAgentLineage(first).grandparents);
+  const secondGrandparents = canonicalRefs(normalizedAgentLineage(second).grandparents);
+  const shares = (a: readonly string[], b: readonly string[]): boolean =>
+    a.some((id) => b.includes(id));
+
+  if (firstParents.includes(secondId) || secondParents.includes(firstId)) return true;
+  if (shares(firstParents, secondParents)) return true;
+  if (firstGrandparents.includes(secondId) || secondGrandparents.includes(firstId)) return true;
+  if (shares(firstParents, secondGrandparents) || shares(secondParents, firstGrandparents)) return true;
+  return shares(firstGrandparents, secondGrandparents);
+}
+
+/**
  * Conception-time snapshot of the partner's lineage, mirroring the existing
  * `partnerTraits` precedent so a later handoff or death cannot erase the
  * child's generation or grandparents before birth.

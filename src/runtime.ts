@@ -23,7 +23,7 @@ import {
   normalizedHeritableTraits,
 } from "./demography.js";
 import { hexGridDistance } from "./hex-grid.js";
-import { newbornAgentLineage, pregnancyLineageSnapshot } from "./lineage.js";
+import { areCloseLineageKin, newbornAgentLineage, pregnancyLineageSnapshot } from "./lineage.js";
 import { simulate } from "./simulation.js";
 import { ensureWorldExtent } from "./world-scale.js";
 import {
@@ -350,11 +350,8 @@ function isAdultForReproduction(agent: Agent, tick: number): boolean {
   return tick - agent.birthTick >= POPULATION_MATURITY_TICKS;
 }
 
-function areCloseReproductiveKin(first: Agent, second: Agent): boolean {
-  const firstParents: readonly string[] = first.parents ?? [];
-  const secondParents: readonly string[] = second.parents ?? [];
-  if (firstParents.includes(second.id) || secondParents.includes(first.id)) return true;
-  return firstParents.some((parentId) => secondParents.includes(parentId));
+function areCloseReproductiveKin(state: WorldState, first: Agent, second: Agent): boolean {
+  return areCloseLineageKin(state.regionId, first, second);
 }
 
 function pairConversationCount(state: WorldState, firstId: string, secondId: string): number {
@@ -507,7 +504,7 @@ function planConceptions(state: WorldState): void {
         .filter((candidate) =>
           candidate.id !== parent.id &&
           reproductiveRole(candidate) === "partner" &&
-          !areCloseReproductiveKin(parent, candidate) &&
+          !areCloseReproductiveKin(state, parent, candidate) &&
           manhattanDistance(candidate.position, parent.position) <= POPULATION_PARENT_RADIUS
         )
         .map((candidate) => ({
