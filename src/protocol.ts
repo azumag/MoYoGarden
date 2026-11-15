@@ -210,10 +210,16 @@ export type EventKind =
   | "agent_moved"
   | "agent_conversation"
   | "agent_died"
+  // Additive to the schemaVersion=1 event contract: a gestation that ends because
+  // the gestational parent died produces no agent, so it cannot use agent_died.
+  // Existing consumers filter by kind and ignore this value.
+  | "pregnancy_lost"
   | "autonomy_changed"
   | "goal_changed";
 
 export type AgentDeathCause = "natural_lifespan" | "basal_food_deficit" | "starvation";
+
+export type PregnancyLossOutcome = "gestational_parent_died";
 
 export interface WorldEvent {
   id: string;

@@ -314,6 +314,11 @@ function rewriteHistoricalAgentReference(
     if (event.data?.targetAgentId === sourceLocalId) {
       event.data = { ...event.data, targetAgentId: promotedId };
     }
+    // pregnancy_lost carries the partner's durable identity so a later handoff of
+    // that partner keeps the gestation trace resolvable.
+    if (event.data?.partnerId === sourceLocalId) {
+      event.data = { ...event.data, partnerId: promotedId };
+    }
   }
 }
 

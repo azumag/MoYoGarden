@@ -44,6 +44,8 @@ test("natural lifespan death emits agent_died with cause and position", () => {
   assert.deepEqual(death.position, { x: 3, y: 4 });
   assert.equal(death.data?.cause, "natural_lifespan");
   assert.equal(death.data?.deathTick, state.tick);
+  assert.equal(death.data?.lifeStage, "adult");
+  assert.equal(death.data?.ageTicks, state.tick);
   assert.deepEqual(death.data?.position, { x: 3, y: 4 });
 });
 
@@ -68,6 +70,8 @@ test("basal food deficit death emits agent_died", () => {
   const death = state.events.find((event) => event.kind === "agent_died" && event.agentId === agent.id);
   assert.ok(death);
   assert.equal(death.data?.cause, "basal_food_deficit");
+  assert.equal(death.data?.lifeStage, "adult");
+  assert.equal(death.data?.ageTicks, POPULATION_BASAL_FOOD_INTERVAL_TICKS);
   assert.deepEqual(death.position, { x: 5, y: 6 });
 });
 
@@ -99,8 +103,59 @@ test("runtime starvation death emits agent_died", () => {
   assert.equal(death.data?.cause, "starvation");
   assert.equal(death.tick, snapshot.tick);
   assert.equal(death.data?.deathTick, snapshot.tick);
+  assert.equal(death.data?.lifeStage, "adult");
+  assert.equal(Object.hasOwn(death.data, "ageTicks"), false, "legacy agent without birthTick has no age");
   assert.ok(death.position && Number.isInteger(death.position.x) && Number.isInteger(death.position.y));
   assert.deepEqual(death.data?.position, death.position);
+});
+
+test("infant food-deficit death records life stage and age", () => {
+  const state = createInitialWorld({ seed: 39046 });
+  const faction = state.factions[0];
+  assert.ok(faction);
+  faction.resources.food = 0;
+  for (const structure of state.structures) structure.storage.food = 0;
+
+  const infant = adultWithBirth(state, 0, "infant-victim");
+  infant.factionId = faction.id;
+  infant.lifeStage = "infant";
+  infant.hp = 1;
+  infant.energy = 10;
+  state.agents = [infant];
+  state.tick = POPULATION_BASAL_FOOD_INTERVAL_TICKS;
+
+  applyPopulationMaintenance(state);
+
+  const death = state.events.find((event) => event.kind === "agent_died" && event.agentId === infant.id);
+  assert.ok(death);
+  assert.equal(death.data?.cause, "basal_food_deficit");
+  assert.equal(death.data?.lifeStage, "infant");
+  assert.equal(death.data?.ageTicks, POPULATION_BASAL_FOOD_INTERVAL_TICKS);
+});
+
+test("legacy founder death omits life stage and age instead of inventing them", () => {
+  const state = createInitialWorld({ seed: 39047 });
+  const faction = state.factions[0];
+  assert.ok(faction);
+  faction.resources.food = 0;
+  for (const structure of state.structures) structure.storage.food = 0;
+
+  const founder = adultWithBirth(state, 0, "legacy-victim");
+  delete founder.birthTick;
+  delete founder.lifeStage;
+  founder.factionId = faction.id;
+  founder.hp = 1;
+  founder.energy = 10;
+  state.agents = [founder];
+  state.tick = POPULATION_BASAL_FOOD_INTERVAL_TICKS;
+
+  applyPopulationMaintenance(state);
+
+  const death = state.events.find((event) => event.kind === "agent_died" && event.agentId === founder.id);
+  assert.ok(death);
+  assert.equal(death.data?.cause, "basal_food_deficit");
+  assert.equal(Object.hasOwn(death.data, "lifeStage"), false);
+  assert.equal(Object.hasOwn(death.data, "ageTicks"), false);
 });
 
 test("tick reports births and deaths for the current tick", () => {
