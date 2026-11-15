@@ -188,12 +188,19 @@ test("pregnancy persisted before snapshots falls back to the living partner", ()
   assert.deepEqual(newborn.lineage?.grandparents, [`agent-global:${REGION_ID}:gp-c`]);
 });
 
-test("lineage fields are write-only: adversarial seeds cannot change outcomes (R2)", () => {
+test("unmatched lineage data does not change births or pairing (R2)", () => {
   const { state } = familyWorld();
+  // PR2 reads `lineage` through the close-kin filter, so the old "write-only"
+  // invariant now holds only for values that name no shared ancestor: unique
+  // adversarial grandparents plus an extreme generation must still leave
+  // pairing and birth outcomes untouched.
   const seeded = () => {
     const copy = structuredClone(state);
     for (const agent of copy.agents) {
-      agent.lineage = { generation: 99, grandparents: ["agent-global:ghost:bogus"] };
+      agent.lineage = {
+        generation: 99,
+        grandparents: [`agent-global:ghost:bogus-${agent.id}`],
+      };
     }
     return copy;
   };
