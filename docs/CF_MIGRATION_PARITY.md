@@ -9,8 +9,9 @@
 ```text
 branch        cf/cli-migration-verify-20261009（main 4a44817 から分岐）
 cf            1.0.0-beta.12（検証用のグローバル install）
-project cf    1.0.0-beta.13（devDependency として追加）
-wrangler      4.148.0（cf の Wrangler bundler は 4.136.0 以上が必要）
+project cf    1.0.0-rc.4（devDependency として追加）
+wrangler      4.167.0（cf 1.0.0-rc.4 の local runtime は 4.163.0 以上を要求）
+undici        7.30.2（overrides、npm audit high 対策）
 Node.js       24.18.0（cf は Node.js 22 以降が必要）
 ```
 
@@ -20,7 +21,7 @@ Node.js       24.18.0（cf は Node.js 22 以降が必要）
 |---|---|
 | `cloudflare.config.ts` | `cf migrate` が生成。`TODO(@cloudflare)` と `throw` をすべて解消し、production と PBR preview を 1 ファイルに統合 |
 | `wrangler.config.ts` | `cf migrate` が生成。cf の Wrangler bundler が読む build 設定（custom build hook / source map / assets ディレクトリ / 型生成の無効化） |
-| `package.json` / `package-lock.json` | `cf` を devDependency に追加、`wrangler` を 4.148.0 へ更新 |
+| `package.json` / `package-lock.json` | `cf` を devDependency に追加、`wrangler` を 4.167.0 へ更新、`undici` を overrides で 7.30.2 へ |
 | `.gitignore` | `.cloudflare/`（cf の Build Output / 生成型）を追加 |
 | `tests/cloudflare-build-dedup.test.mjs` | `wrangler.config.ts` が同じ custom build hook を保つ回帰テストを追加 |
 | `wrangler.jsonc` / `wrangler.pbr.jsonc` | **未変更**（検証中は fallback として維持） |
@@ -102,7 +103,7 @@ cf が beta のため、`@cloudflare/config` と `wrangler.config.ts` のフィ�
 
 ## production 経路への影響（要判断）
 
-parity 検証のため **`wrangler` を 4.127.1 → 4.148.0 に更新**しています。cf の Wrangler bundler は 4.136.0 以上を要求するため必須です。
+parity 検証のため **`wrangler` を 4.127.1 → 4.167.0 に更新**しています。cf 1.0.0-rc.4 の local runtime は 4.163.0 以上を要求するため必須です。
 
 ただし `wrangler` は現在の本番 deploy（Workers Builds の Deploy command `npx wrangler deploy`）でも使われるため、この更新は**本番 deploy 経路に触れる唯一の変更**です。`deploy` へ反映する前に、Workers Builds で新 wrangler の deploy を 1 回検証するか、`cf` 切替と同じタイミングでまとめて反映する判断が必要です。
 
