@@ -7,8 +7,7 @@
 ## 検証環境
 
 ```text
-branch        cf/cli-migration-verify-20261009（main 4a44817 から分岐）
-cf            1.0.0-beta.12（検証用のグローバル install）
+branch        cf/cli-migration-verify-20261009（main 6bf2996 から分岐）
 project cf    1.0.0-rc.4（devDependency として追加）
 wrangler      4.167.0（cf 1.0.0-rc.4 の local runtime は 4.163.0 以上を要求）
 undici        7.30.2（overrides、npm audit high 対策）
@@ -103,7 +102,7 @@ cf が beta のため、`@cloudflare/config` と `wrangler.config.ts` のフィ�
 
 ## production 経路への影響（要判断）
 
-parity 検証のため **`wrangler` を 4.127.1 → 4.167.0 に更新**しています。cf 1.0.0-rc.4 の local runtime は 4.163.0 以上を要求するため必須です。
+parity 検証のため **`wrangler` を 4.151.3（base main の版）→ 4.167.0 に更新**しています。cf 1.0.0-rc.4 の local runtime は 4.163.0 以上を要求するため必須です。
 
 ただし `wrangler` は現在の本番 deploy（Workers Builds の Deploy command `npx wrangler deploy`）でも使われるため、この更新は**本番 deploy 経路に触れる唯一の変更**です。`deploy` へ反映する前に、Workers Builds で新 wrangler の deploy を 1 回検証するか、`cf` 切替と同じタイミングでまとめて反映する判断が必要です。
 
